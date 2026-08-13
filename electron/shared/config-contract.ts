@@ -200,6 +200,168 @@ export interface EnvDiagnostic {
  */
 export const ENV_PROBE_ARGS: readonly string[] = ['-l', '-i', '-c', 'printenv'];
 
+/**
+ * The marker that brackets the login-env probe's own output (HIVE-84).
+ *
+ * A login shell is *expected* to print things this app did not ask for — a
+ * version-manager banner, an oh-my-zsh update notice, a motd. Reading a
+ * transcript that has been prefixed by a banner would treat the banner's tail
+ * as a variable, and a banner containing an `=` would silently produce a
+ * plausible-looking bogus entry. Taking only what falls between the first and
+ * last marker removes that whole class of failure rather than trying to filter
+ * it record by record.
+ *
+ * Deliberately not a value anybody would set: it exists to be absent from a
+ * real environment.
+ */
+export const LOGIN_ENV_DELIMITER = '__hive_login_env_boundary__';
+
+/**
+ * What separates one variable from the next in the login-env transcript
+ * (HIVE-86).
+ *
+ * **NUL, because it is the one byte an environment variable cannot contain.**
+ * `execve` stores the environment as NUL-terminated strings, so a value holding
+ * a NUL is not representable — which makes it the only separator a value can
+ * never counterfeit. A newline is *not* such a byte, and assuming it was is the
+ * defect this replaced.
+ *
+ * @see LOGIN_ENV_PROBE_ARGS for the transcript this delimits.
+ */
+export const LOGIN_ENV_RECORD_SEPARATOR = '\0';
+
+/**
+ * The only variables the login shell is allowed to hand back (HIVE-84).
+ *
+ * An allowlist rather than a merge, because "import my environment" and
+ * "import the three things this app actually reads" differ by an unbounded set
+ * of variables that would change app behaviour with no diagnostic — an rc file
+ * exporting `NODE_OPTIONS`, `ELECTRON_RUN_AS_NODE` or a proxy setting would be
+ * doing so to a process the user is not thinking about.
+ *
+ * `PATH` is the one that matters and the reason this exists: a GUI-launched
+ * app inherits launchd's four-entry `PATH`, so a Homebrew `gh` is genuinely
+ * invisible. The two token variables are here because Settings reports on them
+ * by name — and reports them as *absent* today for the same rc-file reason.
+ *
+ * **Presence, never value, leaves this process.** The values are written into
+ * `process.env` so `gh` can use them; what the renderer is told is which names
+ * were imported. See `integrations/gh.ts` for the same rule stated for reads.
+ *
+ * Since HIVE-86 this list is also enforced **at the shell**, not merely
+ * filtered after the fact — see {@link LOGIN_ENV_PROBE_ARGS}.
+ */
+export const LOGIN_ENV_IMPORT_KEYS: readonly string[] = [
+  'PATH',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+];
+
+/**
+ * The shell commands that print one `KEY=VALUE` record, NUL-terminated.
+ *
+ * **Deliberately free of variable-expansion syntax.** An earlier draft used
+ * `"KEY=${KEY-}"`, which is POSIX and reads better — and which fish rejects at
+ * parse time (`${` is not a variable there; fish spells it `{$VAR}`), aborting
+ * the whole `-c` string before a single byte is printed. `defaultShell()` reads
+ * `getpwuid`, so a fish user's login shell is genuinely what gets probed, and
+ * that draft would have handed them no markers, no import, and the HIVE-84
+ * defect back — a regression, since the `printenv` protocol it replaced used
+ * only `printf`, `printenv` and `;`, all of which fish supports.
+ *
+ * So the value is fetched by `printenv KEY`, an external command, and the `=`
+ * is printed separately. Nothing here is interpreted as syntax by any shell
+ * this app can be pointed at.
+ *
+ * Two consequences the parser must know about, both handled in `parseLoginEnv`:
+ *
+ * - `printenv` terminates its output with a newline of its own, so every record
+ *   carries exactly one trailing `\n` that is not part of the value.
+ * - An **unset** variable makes `printenv` print nothing and exit non-zero. The
+ *   record is then bare `KEY=` with no trailing newline, which reads as unset —
+ *   the answer we want. (An rc file running `set -e` would abort the probe at
+ *   that point; the result is a reported failure, never a wrong value.)
+ *
+ * The name is checked rather than trusted. Every caller today passes a
+ * compile-time constant, so this can only fire during development — which is
+ * exactly when a key like `FOO'; rm -rf ~; :'` should stop the build instead of
+ * becoming a shell command. It is the guard that lets the interpolation below
+ * be read as safe without having to re-derive that fact from the call site.
+ */
+function loginEnvRecordExpr(key: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    throw new Error(
+      `LOGIN_ENV_IMPORT_KEYS: ${JSON.stringify(key)} is not a shell-safe variable name`,
+    );
+  }
+  return `printf '%s=' '${key}'; printenv '${key}'; printf '\\0';`;
+}
+
+/**
+ * The exact argv the login-environment import runs the shell with (HIVE-84,
+ * reshaped by HIVE-86).
+ *
+ * The same `-l -i -c` as {@link ENV_PROBE_ARGS}, and for the same measured
+ * reason: zsh sources `.zshrc` only for *interactive* shells, and `.zshrc` is
+ * overwhelmingly where a developer's `PATH` is actually assembled — Homebrew's
+ * shellenv, nvm, mise, pyenv. A merely-login, non-interactive probe would come
+ * back with a `PATH` missing exactly the entries this import exists to
+ * recover.
+ *
+ * ## Why not `printenv` (HIVE-86)
+ *
+ * The original protocol printed the whole environment, one `KEY=VALUE` per
+ * line, and split the transcript on newlines. That is only lossless while no
+ * value contains a newline — and values do. The case that broke it is
+ * completely ordinary: `~/.zshrc` running
+ * `export PATH="$PATH:$(npm bin -g)"`, where `npm bin` was removed in npm 9+
+ * and substitutes a multi-line error message *into `PATH` itself*. `printenv`
+ * emitted it faithfully; the parser then truncated `PATH` at the first newline
+ * and dropped every entry after it. A continuation line that happened to read
+ * `GH_TOKEN=…` would have been adopted as a real variable.
+ *
+ * So the transcript is now **NUL-delimited** — see
+ * {@link LOGIN_ENV_RECORD_SEPARATOR} for why that byte in particular — and the
+ * shell is asked for {@link LOGIN_ENV_IMPORT_KEYS} **by name** rather than for
+ * everything. Naming them moves the allowlist to the only place it is fully
+ * effective: a value this app never asked for is now never printed, never
+ * buffered, and never in reach of a parsing mistake. The JS-side filter in
+ * `importLoginEnv` stays as the second line of defence.
+ *
+ * The leading `\0` before the opening marker keeps rc-file banner output — a
+ * version-manager notice, a motd — in a record of its own instead of glued to
+ * the marker, so the marker is still matched by equality.
+ *
+ * The command is a single `-c` string, which is the one place in this codebase
+ * a shell is handed a string to interpret — unavoidable, since asking a shell
+ * what its environment is means asking the shell. It is safe because every
+ * part of the string is a **compile-time constant**: the marker, and the
+ * allowlist's own key names, each checked by {@link loginEnvRecordExpr}.
+ * Nothing from the renderer, the config file, or the environment reaches it.
+ * The shell *path* is still an argv entry, never part of this string.
+ */
+export const LOGIN_ENV_PROBE_ARGS: readonly string[] = [
+  '-l',
+  '-i',
+  '-c',
+  [
+    `printf '\\0%s\\0' '${LOGIN_ENV_DELIMITER}';`,
+    ...LOGIN_ENV_IMPORT_KEYS.map(loginEnvRecordExpr),
+    `printf '%s\\0' '${LOGIN_ENV_DELIMITER}'`,
+  ].join(' '),
+];
+
+/**
+ * Whether the app imports its `PATH` from the login shell. Default **on**.
+ *
+ * On, because the failure it fixes is the default experience of an installed
+ * build, and the workaround — hand-editing a `PATH` into the config file —
+ * requires the user to first understand launchd. Off exists for the rc file
+ * this app should not fight: one that is slow, prompts, or has side effects
+ * worth not triggering once per launch.
+ */
+export const DEFAULT_IMPORT_LOGIN_ENV = true;
+
 /** Which project's environment to diagnose. Omitted id means the top-level env. */
 export interface DiagnoseEnvRequest {
   id?: string;
@@ -341,6 +503,16 @@ export interface ConfigSnapshot {
    * See {@link DEFAULT_SESSION_METRICS} for what turning it off costs and buys.
    */
   sessionMetrics: boolean;
+  /**
+   * Whether the app imports {@link LOGIN_ENV_IMPORT_KEYS} from the login shell
+   * at startup (HIVE-84).
+   *
+   * `true` — the default — is what makes a Finder-launched build see the same
+   * `PATH` a terminal does, and so the only reason `gh` is findable in a
+   * packaged app at all. `false` keeps launchd's inherited environment, which
+   * is the pre-HIVE-84 behaviour.
+   */
+  importLoginEnv: boolean;
   /**
    * Human-readable problems, in the order they were found.
    *
@@ -697,6 +869,7 @@ export function emptySnapshot(
     claudeCommand: DEFAULT_CLAUDE_COMMAND,
     subscriptionAuth: DEFAULT_SUBSCRIPTION_AUTH,
     sessionMetrics: DEFAULT_SESSION_METRICS,
+    importLoginEnv: DEFAULT_IMPORT_LOGIN_ENV,
     env: {},
     projects: [],
     notifications: { ...DEFAULT_NOTIFICATIONS },
@@ -788,6 +961,17 @@ export interface SetRuntimeRequest {
    * there is no `null` case: absent already means "leave it alone".
    */
   env?: Record<string, string>;
+  /**
+   * Whether to import the login shell's environment at startup (HIVE-84).
+   *
+   * A plain boolean, not nullable: unlike a per-project override there is no
+   * lower level to fall back to, so "off" is a value rather than an absence —
+   * the same reasoning {@link SetNotificationsRequest} states for a preference.
+   *
+   * **Takes effect on the next launch**, because the import runs once at boot.
+   * The Settings control says so rather than implying a live change.
+   */
+  importLoginEnv?: boolean;
 }
 
 /**
