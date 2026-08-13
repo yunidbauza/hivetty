@@ -73,6 +73,41 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: pnpm run desktop:publish
 
+      - name: Collapse duplicate releases for this tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # electron-builder's GitHub publisher races itself: the asset uploads
+        # each create-or-find the release, and more than one can win. Observed
+        # on both v0.1.0 runs — two releases for one tag, with a lone
+        # `.dmg.blockmap` stranded on the loser. `releaseType: release` did not
+        # fix it (GitHub does not enforce one release per tag through the API),
+        # and there is no electron-builder switch to turn the second uploader
+        # off, so the workflow cleans up after it rather than leaving a
+        # confusing half-release in the list every time.
+        #
+        # The keeper is identified by the asset that actually matters: a release
+        # without `latest-mac.yml` cannot serve an update, so it is never the
+        # one to keep. If no release carries it, nothing is deleted and the step
+        # says so — cleaning up on an unrecognised shape is how you delete the
+        # good one.
+        run: |
+          set -euo pipefail
+          releases=$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq "[.[] | select(.tag_name == \"${GITHUB_REF_NAME}\")]")
+          keep=$(echo "$releases" | jq -r \
+            'map(select([.assets[].name] | index("latest-mac.yml"))) | .[0].id // empty')
+          if [ -z "$keep" ]; then
+            echo "No release for ${GITHUB_REF_NAME} carries latest-mac.yml — leaving everything alone."
+            exit 0
+          fi
+          echo "Keeping release $keep."
+          echo "$releases" | jq -r --arg keep "$keep" '.[] | select(.id != ($keep | tonumber)) | .id' \
+          | while read -r stray; do
+              echo "Deleting duplicate release $stray"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/$stray"
+            done
+
       - name: Record what shipped
         # The signature state of the shipped bundle, in the build log, on every
         # release. The whole update design turns on whether this says `adhoc`,
