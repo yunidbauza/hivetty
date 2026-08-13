@@ -15,8 +15,8 @@ import {
  * What is worth asserting here is everything the design turns on: that a
  * background check is silent when it finds nothing and a menu check never is,
  * that a release announces itself once rather than four times a day, and — the
- * one that justifies the whole two-path design — that an ad-hoc build which
- * gets refused stops trying and starts sending the user to the download page.
+ * one that justifies the whole two-path design — that a build refused at the
+ * swap stops trying and starts sending the user to the download page.
  *
  * None of that is reachable through `electron-updater`, which is exactly why
  * `updater.ts` does not import it.
@@ -25,28 +25,29 @@ import {
 const SELF_INSTALL: UpdateCapability = {
   canCheck: true,
   mode: 'self-install',
-  unverified: false,
   reason: 'Signed with a Developer ID. Updates install themselves.',
 };
 
-const ADHOC: UpdateCapability = {
-  canCheck: true,
-  mode: 'self-install',
-  unverified: true,
-  reason: 'This copy is ad-hoc signed…',
-};
+/**
+ * A build the probe cleared for self-install that macOS then refuses anyway.
+ *
+ * Ad-hoc no longer reaches this state — the probe sends it straight to manual,
+ * because a real 0.1.0 → 0.1.1 update proved it can never install. What remains
+ * is the case this guards: a Developer ID build refused at the swap for some
+ * other reason, which must not leave the user staring at a restart that never
+ * comes.
+ */
+const REFUSED_AT_SWAP: UpdateCapability = SELF_INSTALL;
 
 const MANUAL: UpdateCapability = {
   canCheck: true,
   mode: 'manual',
-  unverified: false,
   reason: 'This copy is not code signed…',
 };
 
 const DEV: UpdateCapability = {
   canCheck: false,
   mode: 'manual',
-  unverified: false,
   reason: 'This is a development run.',
 };
 
@@ -67,7 +68,10 @@ function harness(
   const engine = {
     check: vi.fn().mockResolvedValue(found),
     download: vi.fn().mockResolvedValue(undefined),
-    install: vi.fn(),
+    // The real engine's `install` only ever rejects: on success the process is
+    // replaced, so nothing resolves. A fake that resolves would let a broken
+    // `install` look fine.
+    install: vi.fn().mockReturnValue(new Promise(() => undefined)),
   };
   const notify = vi.fn();
   const openExternal = vi.fn();
@@ -260,16 +264,17 @@ describe('createUpdater — download and install', () => {
   });
 });
 
-describe('createUpdater — the ad-hoc signature question', () => {
+describe('createUpdater — a swap macOS refuses', () => {
   /**
-   * The behaviour the whole two-path design exists for.
+   * The safety net, and the bug it was written for.
    *
-   * An ad-hoc bundle is *allowed to try*. When macOS refuses the swap, the
-   * refusal must convert into a working manual path — and must not be retried,
-   * because the answer will not change for the life of the process.
+   * Squirrel validates the signature at the **swap**, not at the download — so
+   * a build can download cleanly, report itself ready, and then be refused. If
+   * that refusal is not converted into a working manual path, the app has told
+   * the user to expect a restart and delivers nothing.
    */
   it('falls back to the download page when macOS refuses the swap', async () => {
-    const h = harness(ADHOC);
+    const h = harness(REFUSED_AT_SWAP);
     h.engine.download.mockRejectedValue(
       new Error('Could not get code signature for running application'),
     );
@@ -281,17 +286,14 @@ describe('createUpdater — the ad-hoc signature question', () => {
     expect(h.openExternal).toHaveBeenCalledWith(
       'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
     );
-    expect(updater.status().capability).toMatchObject({
-      mode: 'manual',
-      unverified: false,
-    });
+    expect(updater.status().capability).toMatchObject({ mode: 'manual' });
     expect(updater.status().capability.reason).toContain(
       'macOS refused to install the update in place',
     );
   });
 
-  it('stops attempting the download after one refusal', async () => {
-    const h = harness(ADHOC);
+  it('stops attempting after one refusal', async () => {
+    const h = harness(REFUSED_AT_SWAP);
     h.engine.download.mockRejectedValue(new Error('refused'));
     const updater = createUpdater(h.deps);
 
@@ -304,8 +306,39 @@ describe('createUpdater — the ad-hoc signature question', () => {
     expect(h.openExternal).toHaveBeenCalledTimes(2);
   });
 
+  it('turns a refused swap into the download page rather than silence', async () => {
+    /**
+     * The bug this test exists for, found by driving a real 0.1.0 → 0.1.1
+     * update: `quitAndInstall` returns immediately whether or not the swap will
+     * happen, so the original synchronous `try`/`catch` caught nothing. The app
+     * said "restart to install", the user clicked, and absolutely nothing
+     * happened — no error, no restart, no explanation.
+     */
+    const h = harness(REFUSED_AT_SWAP);
+    h.engine.install.mockRejectedValue(
+      new Error(
+        'Code signature at URL file:///…/The Hive.app/ did not pass validation: code failed to satisfy specified code requirement(s)',
+      ),
+    );
+    const updater = createUpdater(h.deps);
+
+    await updater.check('auto');
+    await updater.download();
+    expect(updater.status().state).toBe('ready');
+
+    await updater.install();
+
+    expect(h.openExternal).toHaveBeenCalledWith(
+      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+    );
+    expect(updater.status().capability.mode).toBe('manual');
+    expect(updater.status().capability.reason).toContain(
+      'macOS refused to install the update in place',
+    );
+  });
+
   it('re-points a subsequent announcement at the page once demoted', async () => {
-    const h = harness(ADHOC);
+    const h = harness(REFUSED_AT_SWAP);
     h.engine.download.mockRejectedValue(new Error('refused'));
     const updater = createUpdater(h.deps);
 

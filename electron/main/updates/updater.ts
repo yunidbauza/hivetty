@@ -14,10 +14,10 @@ import { demoteToManual } from './capability';
  *
  * Nothing in this file imports `electron` or `electron-updater`. That is not
  * fastidiousness — it is the only way the interesting behaviour is testable at
- * all. What is worth asserting here is the *decision-making*: that an ad-hoc
- * build demotes itself after one refusal instead of retrying forever, that a
- * menu-initiated check answers even when the answer is "nothing", that a given
- * release announces itself exactly once. None of that needs a bundle, a network
+ * all. What is worth asserting here is the *decision-making*: that a refused
+ * install demotes instead of retrying forever, that a menu-initiated check
+ * answers even when the answer is "nothing", that a given release announces
+ * itself exactly once. None of that needs a bundle, a network
  * or a signature, and all of it would be untestable if this file reached for
  * `autoUpdater` directly. `engine.ts` is the twenty lines that do.
  *
@@ -46,8 +46,15 @@ export interface UpdateEngine {
    * on macOS the signature check happens here, not at install time.
    */
   download(onProgress: (percent: number) => void): Promise<void>;
-  /** Quit and relaunch onto the staged version. Never returns normally. */
-  install(): void;
+  /**
+   * Quit and relaunch onto the staged version.
+   *
+   * **Only ever rejects.** On success this process is replaced, so nothing
+   * resolves. Squirrel validates the signature at the *swap*, long after the
+   * download reported success, so this rejection is the only place a refusal
+   * can be seen.
+   */
+  install(): Promise<never>;
 }
 
 export interface UpdaterDeps {
@@ -89,7 +96,7 @@ export interface Updater {
   /** Begin the download the user just agreed to, or open the page instead. */
   download(): Promise<void>;
   /** Restart onto the staged version, or open the page if that is refused. */
-  install(): void;
+  install(): Promise<void>;
   status(): UpdateStatus;
 }
 
@@ -312,13 +319,23 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     },
     check,
     download,
-    install() {
+    async install() {
       if (state !== 'ready' || capability.mode === 'manual') {
         openReleasePage();
         return;
       }
+      /**
+       * Awaited, and the await is the whole point.
+       *
+       * `quitAndInstall` returns immediately whether or not the swap will
+       * happen, so a synchronous `try`/`catch` here caught nothing: the app
+       * stayed running, having just told the user it was restarting onto a new
+       * version, and said nothing further. The engine turns Squirrel's
+       * asynchronous refusal into a rejection so it lands in `fallBackToManual`
+       * and the user gets the download page instead of silence.
+       */
       try {
-        engine.install();
+        await engine.install();
       } catch (cause) {
         fallBackToManual(cause);
       }

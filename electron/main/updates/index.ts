@@ -42,7 +42,6 @@ function pendingStatus(): UpdateStatus {
   return idleUpdateStatus(app.getVersion(), {
     canCheck: false,
     mode: 'manual',
-    unverified: false,
     reason: 'Working out whether this copy can update itself…',
   });
 }
@@ -163,7 +162,7 @@ export async function downloadUpdate(): Promise<void> {
 /** A clicked "Update ready" row. */
 export async function installUpdate(): Promise<void> {
   const instance = await ensureUpdater();
-  instance.install();
+  await instance.install();
 }
 
 export function updateStatus(): UpdateStatus {

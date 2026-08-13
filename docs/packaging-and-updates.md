@@ -43,12 +43,17 @@ shipped that default and produced two failures at once:
 
 A draft is **invisible to the updater** — the releases API will not serve one to
 an unauthenticated client — so a release that looks published in the web UI
-reaches nobody, and every running app reports itself up to date. And drafts have
-no tag until they are published, so GitHub cannot dedupe them: parallel asset
-uploads each created a release and the assets split across the two.
+reaches nobody, and every running app reports itself up to date. Do not change
+this back.
 
-A non-draft release is tagged at creation, so the second uploader finds the
-first. Do not change this back.
+The duplicate is a **separate** bug and `releaseType` does not fix it: the
+second run produced two non-draft releases for the same tag, because GitHub does
+not enforce one release per tag through the API and electron-builder's parallel
+asset uploads each create-or-find one. There is no switch to turn the second
+uploader off, so the workflow's *Collapse duplicate releases* step cleans up
+after it — keeping whichever release carries `latest-mac.yml`, since a release
+without it cannot serve an update. Confirmed working on the v0.1.1 run:
+`Keeping release 369619750. Deleting duplicate release 369619747`.
 
 ## What is in the bundle, and one thing that is not
 
@@ -108,39 +113,60 @@ itself in at the next quit — including a quit caused by a crash.
 
 ### The ad-hoc signature problem
 
-**This is the load-bearing constraint, and it is not solved.**
+**This is the load-bearing constraint, and it cannot be solved without an Apple
+Developer ID.**
 
-There is no Apple Developer ID for this project, so the bundle is ad-hoc signed
-(`scripts/adhoc-sign.mjs`). Ad-hoc is the floor rather than a choice: Apple
-Silicon refuses to execute an unsigned binary at all.
+The bundle is ad-hoc signed (`scripts/adhoc-sign.mjs`). Ad-hoc is the floor
+rather than a choice: Apple Silicon refuses to execute an unsigned binary at all.
 
-Squirrel.Mac — which is what Electron's `autoUpdater` is, and what
-`electron-updater` drives on macOS — verifies an update against the running
-app's **designated requirement**. For a Developer ID signature that requirement
-names the certificate, and it holds across every build you ever sign. For an
-ad-hoc signature the designated requirement is the binary's `cdhash`, which is a
-hash of that exact build. Version 0.1.1 has a different cdhash from 0.1.0 by
-construction, so it cannot satisfy 0.1.0's requirement.
+Squirrel.Mac — what Electron's `autoUpdater` is, and what `electron-updater`
+drives on macOS — verifies an update against the running app's **designated
+requirement**. For a Developer ID that names the certificate and holds across
+every build you ever sign. For an ad-hoc signature it is the binary's cdhash:
 
-No amount of *correct* ad-hoc signing changes this. It is a property of what an
-ad-hoc signature means.
+```
+$ codesign -d -r- "The Hive.app"
+# designated => cdhash H"4070118b4071c5c37facee2a4e06c36b9a79dd4c"
+```
 
-So the app carries two paths and picks on evidence:
+A successor has a different cdhash by construction, so it can never satisfy its
+predecessor's requirement.
 
-1. `probeUpdateCapability()` reads the bundle's own signature with `codesign`.
-   A Developer ID is `self-install`. Ad-hoc is `self-install` but **`unverified`**
-   — allowed to try. Unsigned, or `codesign` unavailable, is `manual`.
-2. An `unverified` build attempts the download. On macOS the signature check
-   happens during *staging*, not at install, which is why `engine.ts` waits for
-   `update-downloaded` rather than resolving when `downloadUpdate()` does — that
-   is what makes the refusal observable at all.
-3. A refusal calls `demoteToManual`. The capability becomes `manual` for the rest
-   of the session, the reason is recorded for the Settings pane, and the click
-   opens the release page. **A failed self-install costs a click, not the
-   feature.**
+**This was measured, not reasoned about.** 0.1.0 and 0.1.1 were published and the
+packaged 0.1.0 was driven through the whole flow. The check found 0.1.1, the
+130MB zip downloaded, Squirrel staged it, `update-downloaded` fired, the app
+reported the update **ready** — and the swap failed:
 
-If a Developer ID ever appears, nothing in the app changes: the probe reads the
-new signature and the first path starts working.
+```
+[Error: Code signature at URL file:///…/The Hive.app/ did not pass validation:
+ code failed to satisfy specified code requirement(s)]
+  code: -1, domain: 'SQRLCodeSignatureErrorDomain'
+```
+
+Two consequences shaped the code, and both are counter-intuitive enough to be
+worth stating plainly:
+
+1. **Squirrel validates at the swap, not at the download.** Everything up to and
+   including `update-downloaded` succeeds. An implementation that trusted that
+   event would promise a restart it cannot deliver.
+2. **`quitAndInstall` does not throw.** It returns immediately and the refusal
+   arrives later on the `error` event. A synchronous `try`/`catch` around it
+   catches nothing — the first cut of this code had exactly that, and the
+   observed behaviour was a user clicking "restart to install" and *nothing
+   happening at all*.
+
+So:
+
+- `probeUpdateCapability()` classifies ad-hoc as **`manual`** up front. There is
+  no point downloading 130MB for a swap that cannot succeed, and no point
+  claiming readiness that cannot be honoured. The Inbox row opens the release
+  page instead, which works.
+- `engine.install()` returns a promise that **only ever rejects** — on success
+  the process is replaced, so nothing resolves — and `updater.install()` awaits
+  it. A Developer ID build refused for some other reason still degrades to the
+  download page via `demoteToManual` rather than going silent.
+- A Developer ID signature is classified `self-install` and the whole path
+  works. Nothing in the app changes if one ever appears.
 
 ### Gatekeeper
 

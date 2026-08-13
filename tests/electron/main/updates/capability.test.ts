@@ -47,25 +47,27 @@ describe('probeUpdateCapability', () => {
       codesign: vi.fn().mockResolvedValue(DEVELOPER_ID),
     });
 
-    expect(capability).toMatchObject({
-      canCheck: true,
-      mode: 'self-install',
-      unverified: false,
-    });
+    expect(capability).toMatchObject({ canCheck: true, mode: 'self-install' });
   });
 
-  it('reads an ad-hoc signature as a self-install worth attempting, but unverified', async () => {
-    // The distinction the whole design rests on: allowed to try, not trusted.
+  it('sends an ad-hoc build straight down the manual path', async () => {
+    /**
+     * Measured, not assumed. 0.1.0 and 0.1.1 were published and the packaged
+     * 0.1.0 was driven through the whole flow: the download succeeded, the app
+     * reported the update ready, and the swap failed with
+     * `SQRLCodeSignatureErrorDomain` — "code failed to satisfy specified code
+     * requirement(s)". An ad-hoc bundle's designated requirement is its own
+     * cdhash, so no successor can ever satisfy it.
+     *
+     * Attempting anyway would cost a 130MB download and a false promise of a
+     * restart, every session, forever.
+     */
     const capability = await probeUpdateCapability({
       ...base,
       codesign: vi.fn().mockResolvedValue(ADHOC),
     });
 
-    expect(capability).toMatchObject({
-      canCheck: true,
-      mode: 'self-install',
-      unverified: true,
-    });
+    expect(capability).toMatchObject({ canCheck: true, mode: 'manual' });
     expect(capability.reason).toContain('ad-hoc signed');
   });
 
@@ -99,21 +101,23 @@ describe('probeUpdateCapability', () => {
     });
 
     expect(codesign).not.toHaveBeenCalled();
-    expect(capability).toMatchObject({ mode: 'self-install', unverified: false });
+    expect(capability).toMatchObject({ mode: 'self-install' });
   });
 });
 
 describe('demoteToManual', () => {
-  it('resolves the uncertainty to a no, rather than leaving it open', async () => {
+  it('turns a self-install build into a manual one, naming what macOS said', async () => {
+    // The runtime safety net for a build the probe cleared — the swap can still
+    // be refused, and the refusal arrives asynchronously long after the
+    // download claimed success.
     const before = await probeUpdateCapability({
       ...base,
-      codesign: vi.fn().mockResolvedValue(ADHOC),
+      codesign: vi.fn().mockResolvedValue(DEVELOPER_ID),
     });
     const after = demoteToManual(before, 'code signature not valid');
 
-    expect(before.unverified).toBe(true);
-    // Not `unverified: true` any more — it has been verified, negatively.
-    expect(after).toMatchObject({ mode: 'manual', unverified: false });
+    expect(before.mode).toBe('self-install');
+    expect(after.mode).toBe('manual');
     expect(after.reason).toContain('code signature not valid');
   });
 });
