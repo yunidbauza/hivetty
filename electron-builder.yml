@@ -101,3 +101,18 @@ publish:
   provider: github
   owner: yunidbauza
   repo: the-hive
+  # electron-builder's GitHub provider defaults to `draft`, and a draft release
+  # is invisible to the updater: it is not served by the releases API to an
+  # unauthenticated client, so every running app would go on reporting itself up
+  # to date while the release sat there looking published in the web UI. The tag
+  # is already the deliberate act — a second manual step to make it real would
+  # only be a step to forget.
+  #
+  # It also fixes a duplicate the draft default produces. Observed on the first
+  # v0.1.0 run: **two** draft releases for one tag, assets split across them —
+  # one holding a lone `.blockmap`, the other the dmg, the zip and
+  # `latest-mac.yml`. Parallel asset uploads each create-or-find the release, and
+  # GitHub cannot dedupe drafts by tag because a draft has no tag until it is
+  # published. A non-draft release is tagged at creation, so the second uploader
+  # finds the first rather than making another.
+  releaseType: release
