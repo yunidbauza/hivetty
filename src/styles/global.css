@@ -1,0 +1,109 @@
+/**
+ * Global resets, keyframes, and scrollbars.
+ *
+ * Colour belongs in tokens.css. Anything here that needs a colour reads it
+ * through a `--cc-*` variable so light mode keeps working.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* The shell fills the viewport and never scrolls as a page — the left rail,
+     center stage, and activity rail each own their own scrollbar (story 020).
+     Without this, a tall rail would scroll the whole document and drag the
+     terminal out of view. */
+  overflow: hidden;
+  background: var(--cc-bg);
+  color: var(--cc-ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Interactive controls always show a pointer cursor — Tailwind v4 dropped the
+   base rule that used to provide this. */
+button:not(:disabled),
+[role='button']:not([aria-disabled='true']),
+summary,
+label[for] {
+  cursor: pointer;
+}
+
+/**
+ * Status animations.
+ *
+ * `ccpulse` drives the working-status dot; `ccblink` is for cursor-like
+ * affordances. Both are registered with Tailwind in tokens.css as
+ * `--animate-ccpulse` / `--animate-ccblink`, so components use
+ * `animate-ccpulse` rather than hand-written CSS.
+ */
+@keyframes ccpulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes ccblink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Respect a user's reduced-motion preference — a pulsing dot is decoration,
+   not information; the status is also carried by colour and by label text. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Thin custom scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--cc-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--cc-border);
+  border-radius: 5px;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

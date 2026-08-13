@@ -1,0 +1,82 @@
+# App icon
+
+The desktop icon is the app in miniature: a terminal window in the app's own
+chrome, and on the screen a prompt line — a pale-blue chevron and the hive mark
+standing on a cursor underscore, the mark playing the character the caret is
+holding.
+
+Nothing here is hand-drawn. Everything is cut from `hive-mark.png`, kept beside
+these files because nothing serves it any more — and painted in tokens from
+`src/styles/tokens.css`: ink `#10152A` for the chrome, Serenity `#334FA9` for
+the screen, `#8FA7F2` for the chevron and two of the title-bar dots, `#74B79C`
+for the live one. If a colour changes in the tokens it must change in the
+generator too; the icon has no palette of its own.
+
+## What is here
+
+| File | For |
+| --- | --- |
+| `icon.png` | 1024px master, full-bleed. The source electron-builder resamples from. |
+| `icon-macos.png` | The same art on Apple's grid — 824 of 1024 points, margin around it. |
+| `icon.icns` | macOS, cut from `icon-macos.png`. |
+| `icon.ico` | Windows. 16 · 24 · 32 · 48 · 64 · 128 · 256. |
+| `icons/<n>x<n>.png` | The Linux ladder, 16 → 1024. |
+| `hive-mark.png` | The mark itself, the source every one of the above is cut from. |
+
+Three more come off the same master and land in `public/`, because the renderer
+serves them: `favicon.png` and `apple-touch-icon.png` for the browser tab, and
+`hive-tile.png` — the header's top-left tile, which is this icon with its prompt
+line taken out and the mark recentred. Top-left, browser tab and dock are one
+design at three sizes; none of them can drift, because one script writes them
+all.
+
+## Regenerating
+
+    python3 scripts/icon/generate-app-icon.py
+
+A one-off asset step, not part of `pnpm build` — run it when the mark or the
+design changes and commit what it writes. It needs Pillow (`pip install
+pillow`); the `.icns` additionally needs macOS's `iconutil`, and the script says
+so and skips that one file rather than failing on another platform.
+
+The script also floors `hive-mark.png`'s alpha on the way in: the original
+carried a baked-in transparency checkerboard at alpha 17, which printed a faint
+grid behind the mark wherever it was composited, the header tile included.
+
+## Wiring the installer
+
+There is no packaging config in the repo yet. When electron-builder lands, this
+directory is what it should be pointed at — the file names above are already the
+ones it looks for:
+
+```yaml
+directories:
+  buildResources: resources
+mac:
+  icon: resources/icon.icns
+win:
+  icon: resources/icon.ico
+linux:
+  icon: resources/icons
+```
+
+## Where the icon comes from at runtime
+
+| | Packaged app | `pnpm desktop:dev` |
+| --- | --- | --- |
+| macOS | the bundle's `.icns` | `app.dock.setIcon` with `icon-macos.png` |
+| Windows | the `.ico` compiled into the `.exe` | `BrowserWindow`'s `icon`, `icon.png` |
+| Linux | the `.desktop` entry | `BrowserWindow`'s `icon`, `icon.png` |
+
+The packaged column is entirely the installer's doing — none of it can be set
+from inside a running process, which is why `electron/main/app-icon.ts` returns
+nothing at all when `app.isPackaged`. The dev column exists only so a
+development run does not sit in the dock under Electron's default icon; it
+reads the masters straight from the working tree.
+
+**Which master matters.** macOS lays the dock out on a grid where an icon
+occupies 824 of 1024 points; the margin is how every icon lines up at the same
+apparent size. Hand the dock a full-bleed tile and it obeys — the app then
+stands a head taller than its neighbours, which is exactly what happened when
+the dev dock was pointed at `icon.png`. Windows and Linux draw the file as
+given and take the full-bleed master.

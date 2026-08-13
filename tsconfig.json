@@ -1,0 +1,54 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    // `node` is here for the test tree, which reads fixture files off disk.
+    "types": ["vite/client", "node"],
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    /* Strictness — non-negotiable (story 010) */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "erasableSyntaxOnly": true,
+
+    /* Path aliases. Mirrored in `vite.aliases.mjs`, which every bundler config
+       imports — TypeScript cannot import a JS module to build its config, so
+       these two lists are the only copies and `pnpm verify:boundaries` asserts
+       they agree (story 080).
+       Rule inherited from incorpx: always absolute `@/` imports, never
+       relative parent imports (`../`). */
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@components/*": ["./src/components/*"],
+      "@features/*": ["./src/features/*"],
+      "@lib/*": ["./src/lib/*"],
+      "@stores/*": ["./src/stores/*"],
+      "@hooks/*": ["./src/hooks/*"],
+      "@utils/*": ["./src/utils/*"],
+      "@types/*": ["./src/types/*"],
+      "@config/*": ["./src/config/*"],
+      /* Types only. A value import from here would pull main-process code into
+         the renderer bundle and trip the ESLint zone (story 083). */
+      "@shared/*": ["./electron/shared/*"],
+      /* Shared test scaffolding. Test code only — an import from `src/` or
+         `electron/` through this trips the ESLint zone. */
+      "@tests/*": ["./tests/*"]
+    }
+  },
+  "include": ["src", "tests", "__mocks__"]
+}

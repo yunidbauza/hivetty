@@ -1,0 +1,305 @@
+/**
+ * Design tokens — the single source of truth for colour in the app.
+ *
+ * The `--cc-*` custom properties come from the concept file (retired from the
+ * tree; `git log -- concept/` still has it) and keep its names. `@theme inline` binds
+ * them to Tailwind's namespaces without copying the values, so a single
+ * `data-theme` flip on <body> recolours the whole app.
+ *
+ * Components use the resulting utilities (`bg-panel`, `text-muted`,
+ * `border-soft`). Raw hex literals in component code are banned.
+ *
+ * The terminal text palette is deliberately NOT here — it never reaches CSS.
+ * It lives in `src/lib/terminal/ansi.ts` and is consumed as JS by xterm's
+ * `theme` option and by the ANSI colorizer.
+ */
+
+@import 'tailwindcss';
+
+:root {
+  --cc-bg: #10152a;
+  --cc-panel: #141a33;
+  --cc-panel-2: #121731;
+  --cc-hover: #1b2344;
+  --cc-active: #222c55;
+  --cc-border: #273159;
+  --cc-border-soft: #1e2747;
+  --cc-ink: #e9effc;
+  --cc-muted: #98a3cc;
+  --cc-subtle: #6b779f;
+  --cc-brand: #8fa7f2;
+  --cc-green: #74b79c;
+  --cc-amber: #ffac47;
+  --cc-red: #ff8d85;
+  --cc-chip: #1c2648;
+  /**
+   * Hover for a card already filled with `--cc-chip` — the PRs panel's live
+   * cards (052).
+   *
+   * `--cc-hover` cannot serve: it is calibrated against `--cc-panel`, and on a
+   * chip fill it lands *below* the surface it is meant to lift (#1b2344 under
+   * #1c2648), so the affordance reads as a faint darkening or vanishes. This
+   * continues the lift in the direction the theme already lifts — brighter in
+   * dark, deeper in light — so a filled card answers the pointer the way a flat
+   * one does.
+   */
+  --cc-chip-hover: #232e57;
+  --cc-term-bg: #0b1023;
+  --cc-term-input: #0e1430;
+
+  /**
+   * Chrome for DOM surfaces that sit *on* the terminal background — today the
+   * orchestrator's session table (story 041).
+   *
+   * They are surface and label colours, not terminal *text* colours: the TERM
+   * text palette stays out of CSS entirely (see the note at the top of this
+   * file, and the test that enforces it). These three have no TERM equivalent
+   * and would otherwise be raw hexes in a component, which is banned.
+   *
+   * Like `--cc-term-bg`, they are overridden for light mode: the terminal
+   * surface follows the theme, so the chrome sitting on it has to as well.
+   */
+  --cc-term-row-hover: #161f45;
+  --cc-term-row-active: #1a2450;
+  --cc-term-head: #4d5a86;
+  /* Unselected track and dot outline in the picker's steppers (story 044). */
+  --cc-term-track: #3a4674;
+
+  /**
+   * Brand fills — deliberately theme-invariant, and not overridden below.
+   *
+   * `--cc-brand` is a *text* colour and flips between themes for legibility on
+   * a panel. These are *surfaces*: the hive mark's tile and the primary action
+   * keep the same APFM blue in light and dark, exactly as the concept does
+   * (`var(--blue-600/700/800)`, which its light theme leaves alone). Reusing
+   * `--cc-brand` here would repaint the logo tile pale blue in dark mode.
+   */
+  --cc-brand-fill: #5e76d0;
+  --cc-brand-fill-hover: #4f6ac5;
+  --cc-brand-fill-strong: #334fa9; /* Serenity — the signature brand blue */
+  --cc-on-brand: #ffffff;
+
+  /* Notification badge fill. Theme-invariant for the same reason, and darker
+     than `--cc-red` so white badge text clears AA (4.87:1). */
+  --cc-danger-solid: #d3372f;
+
+  /**
+   * Rail density (story 105) — the comfortable values, which are the numbers
+   * the rails have always used.
+   *
+   * Spacing rather than colour, but the same mechanism and the same reason: one
+   * attribute write on <body> re-spaces both rails and every row inside them,
+   * and no component re-renders to do it. Density is a preference, so it has to
+   * survive a reload; a prop threaded through six panels would have to be read
+   * from the store by each of them.
+   *
+   * These are what actually read as "dense" — rail width, the gap under a
+   * rail's tab bar, the gap between items in a list, and the vertical padding
+   * of a bordered card.
+   *
+   * There are two list scales because the panels already had two: work and the
+   * activity feed sit at 10px, the inbox and PRs at 8px. Collapsing them to one
+   * token would have re-spaced two panels in *comfortable* mode, which is a
+   * visual change this story is not making. Each keeps its own value and gets
+   * its own compact one.
+   */
+  /**
+   * Syntax highlighting for the editor.
+   *
+   * **These are CSS, where the terminal's palette deliberately is not**, and
+   * the difference is worth stating because the note at the top of this file
+   * says the opposite about `TERM`. xterm resolves colour from a JS `theme`
+   * object and paints into markup it owns, so a custom property has no path to
+   * a terminal cell. CodeMirror is the other way round: its themes are
+   * CSS-in-JS that emit real rules, so `color: var(--cc-code-keyword)` resolves
+   * exactly like any other declaration — and the editor follows `data-theme`
+   * with no JavaScript involved at all.
+   *
+   * Nine roles, not a full TextMate scope list. Every additional role is a
+   * colour somebody has to choose twice and check for contrast twice, and past
+   * this point the returns are decorative: keyword, string, number, comment and
+   * name carry almost all of the legibility.
+   *
+   * Hues are drawn from the palette already above rather than invented, so the
+   * editor reads as part of this app and not as a themed component dropped into
+   * it.
+   */
+  --cc-code-keyword: #b39ff0;
+  --cc-code-string: #74b79c;
+  --cc-code-number: #ffac47;
+  --cc-code-comment: #6b779f;
+  --cc-code-name: #8fa7f2;
+  --cc-code-type: #7fd0e0;
+  --cc-code-operator: #98a3cc;
+  --cc-code-constant: #ff8d85;
+  --cc-code-invalid: #ff8d85;
+  /** The active line and the selection, on the editor's own background. */
+  --cc-code-active-line: #171e3c;
+  --cc-code-selection: #2b3768;
+
+  --cc-rail-w-left: 268px;
+  --cc-rail-w-right: 316px;
+  --cc-rail-gap: 18px;
+  --cc-list-gap: 10px;
+  --cc-list-gap-sm: 8px;
+  --cc-row-py: 7px;
+  --cc-card-py: 10px;
+}
+
+/**
+ * Compact. Comfortable carries no attribute, so the `:root` values above apply
+ * unmodified — the same arrangement `data-theme` uses for dark.
+ */
+body[data-density='compact'] {
+  --cc-rail-w-left: 232px;
+  --cc-rail-w-right: 276px;
+  --cc-rail-gap: 11px;
+  --cc-list-gap: 6px;
+  --cc-list-gap-sm: 5px;
+  --cc-row-py: 4px;
+  --cc-card-py: 6px;
+}
+
+body[data-theme='light'] {
+  --cc-bg: #fdfdfb;
+  --cc-panel: #ffffff;
+  --cc-panel-2: #f7fafb;
+  --cc-hover: #f4f9ff;
+  --cc-active: #e9f3fc;
+  --cc-border: #d4dee3;
+  --cc-border-soft: #edf2f4;
+  --cc-ink: #2c2f34;
+  --cc-muted: #73767c;
+  --cc-subtle: #8e949c;
+  --cc-brand: #334fa9;
+  --cc-green: #2e6b52;
+  --cc-amber: #c77414;
+  --cc-red: #d3372f;
+  --cc-chip: #edf2f4;
+  /* Light lifts by *deepening*: the chip already sits below a white panel, so
+     its hover continues down rather than back up toward the panel. */
+  --cc-chip-hover: #e2eaee;
+
+  /**
+   * The terminal surface, which **does** follow the theme.
+   *
+   * It did not always, and the reversal is worth recording. Stories 011 and 042
+   * kept these dark in light mode on the reasoning that a terminal is dark
+   * because that is what a terminal is — true of a terminal *emulator*, whose
+   * window is the whole application. It stopped being true here once the editor
+   * landed on the same centre stage and adopted the theme properly: a light app
+   * with one dark slab in the middle reads as a panel that failed to load, and
+   * the seam is loudest exactly where the two surfaces meet.
+   *
+   * `--cc-term-bg` is `--cc-panel-2` — the editor's ground. That is not a
+   * coincidence and must not drift: it is also `TERM_LIGHT.bg` in `ansi.ts`,
+   * because xterm paints its own background and the DOM paints the padding
+   * around it. Two different systems, one colour, or a visible rectangle
+   * appears at the terminal's edge. `ansi.test.ts` asserts the two agree.
+   */
+  --cc-term-bg: #f7fafb;
+  --cc-term-input: #ffffff;
+  /**
+   * Deepened, not borrowed from `--cc-hover`.
+   *
+   * `--cc-hover` (#f4f9ff) is calibrated against `--cc-panel` (#ffffff) and is
+   * *lighter* than the terminal's new ground (#f7fafb) — hovering a session-table
+   * row would have moved it 1.008:1, which is no affordance at all, against
+   * 1.183:1 in dark. These continue in the direction the light theme already
+   * lifts, and land on the steps the app's own chrome uses on a panel: hover
+   * 1.057:1 (app: 1.058), active 1.129:1 (app: 1.124).
+   */
+  --cc-term-row-hover: #eef4f9;
+  --cc-term-row-active: #e4edf5;
+  --cc-term-head: #6b6e74;
+  --cc-term-track: #d4dee3;
+
+  /**
+   * The editor, which follows the theme — as, now, does the terminal above it.
+   *
+   * This block used to open by explaining why the editor was the exception: a
+   * document surface follows the theme, a terminal does not. The terminal won
+   * that argument the other way round, and these nine roles turned out to be
+   * the light palette the terminal adopts, so `TERM_LIGHT` in `ansi.ts` mirrors
+   * six of them by name. Changing one of these now recolours both surfaces, and
+   * `ansi.test.ts` fails if only one of the two copies moves.
+   *
+   * Darkened for contrast on white rather than reused from above: `--cc-green`
+   * at its dark-mode value clears nothing on `#ffffff`.
+   */
+  --cc-code-keyword: #6f42c1;
+  --cc-code-string: #2e6b52;
+  --cc-code-number: #a1541a;
+  --cc-code-comment: #8e949c;
+  --cc-code-name: #334fa9;
+  --cc-code-type: #0b6b7d;
+  --cc-code-operator: #73767c;
+  --cc-code-constant: #b3271f;
+  --cc-code-invalid: #d3372f;
+  --cc-code-active-line: #f4f9ff;
+  --cc-code-selection: #cfe3f7;
+}
+
+/**
+ * `inline` matters: it makes the utilities emit `var(--cc-*)` rather than
+ * resolving the value at build time, which is what lets the `data-theme`
+ * override above recolour everything through the same variables.
+ */
+@theme inline {
+  --color-bg: var(--cc-bg);
+  --color-panel: var(--cc-panel);
+  --color-panel-2: var(--cc-panel-2);
+  --color-hover: var(--cc-hover);
+  --color-active: var(--cc-active);
+  --color-border: var(--cc-border);
+  --color-border-soft: var(--cc-border-soft);
+  --color-ink: var(--cc-ink);
+  --color-muted: var(--cc-muted);
+  --color-subtle: var(--cc-subtle);
+  --color-brand: var(--cc-brand);
+  --color-green: var(--cc-green);
+  --color-amber: var(--cc-amber);
+  --color-red: var(--cc-red);
+  --color-chip: var(--cc-chip);
+  --color-chip-hover: var(--cc-chip-hover);
+  --color-term-bg: var(--cc-term-bg);
+  --color-term-input: var(--cc-term-input);
+  --color-term-row-hover: var(--cc-term-row-hover);
+  --color-term-row-active: var(--cc-term-row-active);
+  --color-term-head: var(--cc-term-head);
+  --color-term-track: var(--cc-term-track);
+  --color-brand-fill: var(--cc-brand-fill);
+  --color-brand-fill-hover: var(--cc-brand-fill-hover);
+  --color-brand-fill-strong: var(--cc-brand-fill-strong);
+  --color-on-brand: var(--cc-on-brand);
+  --color-danger-solid: var(--cc-danger-solid);
+  /**
+   * The code roles are bound here too, even though CodeMirror reaches them as
+   * `var(--cc-code-*)` directly rather than through a utility. The editor's
+   * *chrome* — the gutter, the tab strip, the conflict banner — is ordinary
+   * markup, and it should be able to say `text-code-comment` rather than
+   * reaching for the raw property.
+   */
+  --color-code-keyword: var(--cc-code-keyword);
+  --color-code-string: var(--cc-code-string);
+  --color-code-number: var(--cc-code-number);
+  --color-code-comment: var(--cc-code-comment);
+  --color-code-name: var(--cc-code-name);
+  --color-code-type: var(--cc-code-type);
+  --color-code-operator: var(--cc-code-operator);
+  --color-code-constant: var(--cc-code-constant);
+  --color-code-invalid: var(--cc-code-invalid);
+  --color-code-active-line: var(--cc-code-active-line);
+  --color-code-selection: var(--cc-code-selection);
+
+  --font-mono: ui-monospace, Menlo, 'SF Mono', monospace;
+  /**
+   * The one non-mono face in the app: the picker's title (story 044) and
+   * anything else the concept sets in a serif. System stack rather than a
+   * webfont — this is a prototype, and a network round-trip for one heading is
+   * a poor trade.
+   */
+  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
+  --animate-ccpulse: ccpulse 1.6s ease-in-out infinite;
+  --animate-ccblink: ccblink 1s step-end infinite;
+}

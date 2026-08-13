@@ -1,0 +1,285 @@
+// @vitest-environment node
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  HOOK_ENV_SESSION,
+  HOOK_ENV_TOKEN,
+  HOOK_EVENTS,
+  HOOK_STATUS,
+  HOOK_HEADER_SESSION,
+  HOOK_HEADER_TOKEN,
+} from '../../../../electron/shared/hook-contract';
+import { METRICS_REFRESH_SECONDS } from '../../../../electron/shared/metrics-contract';
+import {
+  hookSettings,
+  metricsScript,
+  statusLineSettings,
+  writeHookSettings,
+} from '../../../../electron/main/hooks/settings';
+
+/**
+ * The settings file and the receiver are two halves of one contract (HIVE-62).
+ *
+ * The file names the headers Claude will send; the receiver authenticates on
+ * exactly those names. A mismatch is silent and total — every hook answers 403,
+ * every session's status falls back to pty inference, and nothing anywhere says
+ * why. So the halves are pinned against the shared constants here rather than
+ * against string literals, which would agree with themselves and nothing else.
+ */
+describe('hookSettings', () => {
+  const URL = 'http://127.0.0.1:51234/hook';
+  const settings = hookSettings(URL);
+
+  it('subscribes to exactly the events the app handles', () => {
+    expect(Object.keys(settings.hooks).sort()).toEqual([...HOOK_EVENTS].sort());
+  });
+
+  /**
+   * `SessionEnd` **is** subscribed now, and the reason the old omission gave is
+   * still respected.
+   *
+   * That reason was: `/clear` fires it on a live session, so calling it
+   * `terminated` locks the user out of a working agent. Both remain true. What
+   * changed is that the event no longer produces a status at all — it produces
+   * `done` on its own channel, and only for `reason: 'clear'`. The guarantee
+   * that used to be expressed by not subscribing is now expressed by
+   * {@link StatusHookEvent}, which excludes it from the status map so no edit
+   * can quietly map it back onto `terminated`.
+   */
+  it('subscribes SessionEnd, but never as a status', () => {
+    expect(Object.keys(settings.hooks)).toContain('SessionEnd');
+    expect(Object.keys(HOOK_STATUS)).not.toContain('SessionEnd');
+  });
+
+  it('posts every event to the receiver over http', () => {
+    for (const event of HOOK_EVENTS) {
+      const [entry] = settings.hooks[event] as { hooks: { type: string; url: string }[] }[];
+      expect(entry!.hooks[0]!.type).toBe('http');
+      expect(entry!.hooks[0]!.url).toBe(URL);
+    }
+  });
+
+  it('sends the two headers the receiver authenticates on', () => {
+    const handler = (
+      settings.hooks.Stop as {
+        hooks: { headers: Record<string, string>; allowedEnvVars: string[] }[];
+      }[]
+    )[0]!.hooks[0]!;
+
+    expect(handler.headers[HOOK_HEADER_SESSION]).toBe(`$${HOOK_ENV_SESSION}`);
+    expect(handler.headers[HOOK_HEADER_TOKEN]).toBe(`$${HOOK_ENV_TOKEN}`);
+  });
+
+  it('allowlists both variables, without which they arrive as literal $NAME', () => {
+    /**
+     * Claude will not interpolate an environment variable into a header unless
+     * it is named here. Omitted, the receiver sees the literal string `$HIVE_…`
+     * and answers 403 to everything — which looks exactly like a wrong token.
+     */
+    const handler = (
+      settings.hooks.Stop as { hooks: { allowedEnvVars: string[] }[] }[]
+    )[0]!.hooks[0]!;
+
+    expect(handler.allowedEnvVars).toEqual([HOOK_ENV_SESSION, HOOK_ENV_TOKEN]);
+  });
+
+  it('is serialisable — it is written to disk as JSON', () => {
+    expect(() => JSON.stringify(settings)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(settings))).toEqual(settings);
+  });
+});
+
+/**
+ * The status line half (HIVE-79).
+ *
+ * This is the mechanism that makes the header's numbers real, and it is also
+ * the one part of this file a *user* can see the effect of: `--settings` sits
+ * at command-line precedence, so the entry written here replaces whatever
+ * status line they configured for themselves, inside Hive sessions only.
+ */
+describe('statusLineSettings', () => {
+  const scriptPath = '/Users/x/Library/Application Support/The Hive/hive/statusline.sh';
+
+  it('runs the script through a shell, quoted', () => {
+    const entry = statusLineSettings(scriptPath);
+
+    // The macOS userData path contains a space; an unquoted argument splits on
+    // it and Claude Code runs `/bin/sh /Users/x/Library/Application`.
+    expect(entry?.command).toBe(`/bin/sh '${scriptPath}'`);
+  });
+
+  it('survives a path containing a single quote', () => {
+    const entry = statusLineSettings("/Users/o'brien/hive/statusline.sh");
+
+    expect(entry?.command).toBe(`/bin/sh '/Users/o'\\''brien/hive/statusline.sh'`);
+  });
+
+  it('sets a refresh interval, because the event triggers go quiet when idle', () => {
+    expect(statusLineSettings(scriptPath)?.refreshInterval).toBe(
+      METRICS_REFRESH_SECONDS,
+    );
+  });
+});
+
+describe('metricsScript', () => {
+  const url = 'http://127.0.0.1:51234/statusline';
+  const script = metricsScript(url);
+
+  /**
+   * The single most important property of this script, and the reason it exists
+   * in this shape at all: Claude Code renders whatever a status line prints, and
+   * printing these numbers would duplicate the header six inches below it.
+   */
+  it('writes nothing to stdout on any path', () => {
+    // The response body is discarded and stderr is redirected; nothing echoes.
+    expect(script).toContain('-o /dev/null');
+    expect(script).toContain('2>/dev/null');
+    expect(script).not.toMatch(/^\s*(echo|printf)\b/m);
+  });
+
+  it('exits zero even when the receiver has gone away', () => {
+    // The app can quit while a session keeps running. A non-zero exit would
+    // surface in the user's terminal as a failing status line command.
+    expect(script.trimEnd().endsWith('exit 0')).toBe(true);
+  });
+
+  it('forwards stdin as the body rather than re-encoding it', () => {
+    expect(script).toContain('--data-binary @-');
+  });
+
+  it('carries both correlation headers from the pty environment', () => {
+    expect(script).toContain(`${HOOK_HEADER_SESSION}: $${HOOK_ENV_SESSION}`);
+    expect(script).toContain(`${HOOK_HEADER_TOKEN}: $${HOOK_ENV_TOKEN}`);
+  });
+
+  it('declines to POST at all when either variable is missing', () => {
+    // An empty header is an unattributable body the receiver answers 400 to.
+    expect(script).toContain(`[ -n "$${HOOK_ENV_SESSION}" ] || exit 0`);
+    expect(script).toContain(`[ -n "$${HOOK_ENV_TOKEN}" ] || exit 0`);
+  });
+
+  it('bounds the request, because it runs on a timer per live session', () => {
+    expect(script).toContain('-m 5');
+  });
+
+  it('bakes in the URL rather than adding a variable to every pty', () => {
+    expect(script).toContain(`'${url}'`);
+  });
+});
+
+
+/**
+ * The status line is the half that can be switched off (HIVE-79).
+ *
+ * Hooks and metrics share a file and a receiver, but only one of them has a
+ * visible cost inside the terminal: Claude Code drops most of its footer
+ * keyboard hints for *any* configured status line, whether or not it renders
+ * anything. A user who would rather keep those hints than see the header's
+ * gauges is making a reasonable trade, and this is what lets them.
+ */
+describe('writeHookSettings', () => {
+  it('omits statusLine entirely when no metrics URL is given', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hive-settings-'));
+
+    const paths = await writeHookSettings(dir, 'http://127.0.0.1:1234/hook');
+    const written = JSON.parse(await readFile(paths.dark, 'utf8')) as {
+      hooks: unknown;
+      statusLine?: unknown;
+    };
+
+    // The hooks half is unaffected — the two are separable, not coupled.
+    expect(written.hooks).toBeDefined();
+    expect(written).not.toHaveProperty('statusLine');
+  });
+
+  it('writes both halves when one is given', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hive-settings-'));
+
+    const paths = await writeHookSettings(
+      dir,
+      'http://127.0.0.1:1234/hook',
+      'http://127.0.0.1:1234/statusline',
+    );
+    const written = JSON.parse(await readFile(paths.dark, 'utf8')) as {
+      hooks: unknown;
+      statusLine?: { type: string; command: string };
+    };
+
+    expect(written.hooks).toBeDefined();
+    expect(written.statusLine?.type).toBe('command');
+    expect(written.statusLine?.command).toContain('statusline.sh');
+  });
+
+  it('never reads or writes anything outside the directory it was given', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hive-settings-'));
+
+    const paths = await writeHookSettings(
+      dir,
+      'http://127.0.0.1:1234/hook',
+      'http://127.0.0.1:1234/statusline',
+    );
+
+    // The user's own ~/.claude/settings.json is theirs; this module has no
+    // business anywhere near it.
+    expect(paths.dark.startsWith(dir)).toBe(true);
+    expect(paths.light.startsWith(dir)).toBe(true);
+  });
+
+  /**
+   * One file per theme, differing in exactly one key.
+   *
+   * Two immutable files rather than one rewritten at spawn: a theme toggle must
+   * not reach backwards into a session already reading the file, whose other
+   * half — the hooks — is what makes its status reportable at all.
+   */
+  it('writes a file for each theme, and only the theme differs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hive-settings-'));
+
+    const paths = await writeHookSettings(
+      dir,
+      'http://127.0.0.1:1234/hook',
+      'http://127.0.0.1:1234/statusline',
+    );
+
+    expect(paths.dark).not.toBe(paths.light);
+
+    const dark = JSON.parse(await readFile(paths.dark, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const light = JSON.parse(await readFile(paths.light, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+
+    expect(dark.theme).toBe('dark');
+    expect(light.theme).toBe('light');
+    expect({ ...dark, theme: null }).toEqual({ ...light, theme: null });
+  });
+
+  /**
+   * The agent view is off in every session, whatever else the file says.
+   *
+   * `←` is the app's own "back to the orchestrator" key, and Claude Code binds
+   * the same key at an empty prompt to its own agent list — a second fleet view
+   * inside one tab of the first. `keymap.ts` races for that keystroke; this
+   * removes what it is racing for. Verified against Claude Code 2.1.228: the
+   * footer's `← 2 agents` affordance disappears and a bare `←` does nothing.
+   */
+  it('disables the agent view in both files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'hive-settings-'));
+
+    const paths = await writeHookSettings(dir, 'http://127.0.0.1:1234/hook');
+
+    for (const path of [paths.dark, paths.light]) {
+      const written = JSON.parse(await readFile(path, 'utf8')) as {
+        disableAgentView?: boolean;
+      };
+      expect(written.disableAgentView).toBe(true);
+    }
+  });
+});

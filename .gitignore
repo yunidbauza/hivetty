@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+# electron-vite's three-target output (story 080)
+out/
+*.tsbuildinfo
+
+# test output
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+.playwright-cli/
+
+# local env
+.env
+.env.local
+.env.*.local
+
+# editor / tooling
+.idea/
+*.swp
+.claude/worktrees/
+.tmp/
+
+# Brainstorming visual companion (superpowers)
+.superpowers/
+
+# Superpowers plans and specs — working notes for one story at one moment,
+# not a record the repo maintains. They go stale the day their story ships
+# (paths that have since moved, links to a stories/ tree that no longer
+# exists), and a reader cannot tell which are current. What survives a story
+# belongs in AGENTS.md or the commit that shipped it.
+# Everything committed up to this point stays in history.
+docs/superpowers/
