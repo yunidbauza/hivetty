@@ -117,13 +117,38 @@ export function createElectronUpdaterEngine(
 
     install() {
       /**
-       * `isSilent: false`, `isForceRunAfter: true`.
+       * Returns a promise that **only ever rejects**.
        *
-       * The second matters: without it a macOS update quits the app and leaves
-       * the user staring at a desktop, which reads as a crash rather than an
-       * update.
+       * On success this process is replaced and nothing here resolves, which is
+       * why the caller must not await it as though it were an ordinary async
+       * call. On failure Squirrel reports through the `error` event, and this is
+       * the only place that failure can be observed.
+       *
+       * It is observable at all only because the refusal is asynchronous:
+       * `quitAndInstall` returns immediately and cheerfully. Measured, with the
+       * app's stderr captured:
+       *
+       *     [Error: Code signature at URL file:///…/The Hive.app/ did not pass
+       *      validation: code failed to satisfy specified code requirement(s)]
+       *       code: -1, domain: 'SQRLCodeSignatureErrorDomain'
+       *
+       * An earlier cut wrapped `quitAndInstall` in a `try`/`catch`, which caught
+       * nothing — the app simply stayed running, having just told the user it
+       * was about to restart on a new version.
        */
-      autoUpdater.quitAndInstall(false, true);
+      return new Promise<never>((_resolve, reject) => {
+        autoUpdater.once('error', (cause: Error) => {
+          reject(cause);
+        });
+        /**
+         * `isSilent: false`, `isForceRunAfter: true`.
+         *
+         * The second matters: without it a macOS update quits the app and
+         * leaves the user staring at a desktop, which reads as a crash rather
+         * than an update.
+         */
+        autoUpdater.quitAndInstall(false, true);
+      });
     },
   };
 }

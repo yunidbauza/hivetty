@@ -11,25 +11,35 @@
  * is whether the network answered.
  *
  * macOS asks a second question first. Electron's `autoUpdater` is Squirrel.Mac,
- * and Squirrel.Mac refuses to swap a bundle whose code signature it cannot read
- * and match. A build signed with a Developer ID satisfies it; a build signed
- * **ad-hoc** — which is what this app is, because no Developer ID exists to
- * sign it with — may or may not, and the honest answer is that it is not
- * knowable from the outside. Apple does not document the requirement Squirrel
- * checks against, and reports in the wild disagree.
+ * and Squirrel.Mac verifies an update against the running app's **designated
+ * requirement** before it will swap anything.
  *
- * So the app carries two update paths and picks between them on evidence rather
- * than on hope: it *probes* what this bundle can do, it *attempts* the good path
- * when the probe says it is possible, and it *degrades* to the manual path — open
- * the release page, download the disk image — the moment an attempt proves the
- * probe optimistic. {@link UpdateCapability} is that judgement, and
- * {@link UpdateState} records which path a given update actually took.
+ * For a Developer ID signature that requirement names the certificate, and it
+ * holds across every build you ever sign. For an **ad-hoc** signature — which is
+ * what this app has, because no Developer ID exists to sign it with — the
+ * designated requirement is the binary's `cdhash`:
  *
- * The alternative designs were both worse. Always self-installing produces an
- * app whose update button silently does nothing on the one platform it ships
- * for. Always sending the user to a web page throws away a working install on
- * every machine where the signature *is* good enough — including every future
- * build, if a Developer ID ever appears.
+ *     $ codesign -d -r- "The Hive.app"
+ *     # designated => cdhash H"4070118b4071c5c37facee2a4e06c36b9a79dd4c"
+ *
+ * A new version has a different cdhash by construction, so it can never satisfy
+ * the old one's requirement. **Measured, not assumed** — 0.1.0 was published,
+ * then 0.1.1, and the packaged 0.1.0 was driven through the whole flow:
+ *
+ *     [Error: Code signature at URL file:///…/The Hive.app/ did not pass
+ *      validation: code failed to satisfy specified code requirement(s)]
+ *       code: -1, domain: 'SQRLCodeSignatureErrorDomain'
+ *
+ * The download and the staging both *succeed* — that is the trap. Squirrel
+ * validates at the swap, not at the download, so an app that trusted
+ * `update-downloaded` would tell the user an update was ready, take the restart,
+ * and come back on the old version with nothing to explain it.
+ *
+ * So {@link UpdateCapability} sends ad-hoc builds down the **manual** path from
+ * the start: no 130MB download that was never going to install. The self-install
+ * path stays for the day a Developer ID appears, and {@link demoteToManual}
+ * remains the runtime safety net for a signed build refused for some other
+ * reason.
  */
 
 /** Where a user goes when the app cannot update itself. */
@@ -61,13 +71,6 @@ export interface UpdateCapability {
    * `manual` — open the release page and let the user do it.
    */
   mode: 'self-install' | 'manual';
-  /**
-   * True when `mode` is `self-install` but the evidence is circumstantial —
-   * an ad-hoc signature on macOS. The path is attempted; a failure downgrades
-   * the capability to `manual` for the rest of the session rather than being
-   * retried into the same wall.
-   */
-  unverified: boolean;
   /** One sentence, shown to the user. Never a stack trace. */
   reason: string;
 }

@@ -27,23 +27,33 @@ import type { UpdateCapability } from '@shared/update-contract';
  *
  * | What `codesign` says | Verdict | Why |
  * | --- | --- | --- |
- * | `Authority=Developer ID Application: …` | self-install, verified | The case Squirrel was designed for. |
- * | `Signature=adhoc` | self-install, **unverified** | Might work. Attempted, and demoted on failure. |
- * | not signed / command failed | manual | Squirrel has nothing to check. Do not waste the download. |
+ * | `Authority=Developer ID Application: …` | self-install | The case Squirrel was designed for. |
+ * | `Signature=adhoc` | manual | Cannot satisfy its own successor's requirement. Measured — see below. |
+ * | not signed / command failed | manual | Squirrel has nothing to check. |
  *
- * ## Why ad-hoc gets attempted rather than refused
+ * ## Why ad-hoc is refused up front rather than attempted
  *
- * This build is ad-hoc signed and will be for as long as there is no Apple
- * Developer ID to sign it with — arm64 macOS refuses to *launch* an unsigned
- * binary at all, so `-` is the floor, not a choice. Whether Squirrel accepts
- * that floor is genuinely disputed, and the only instrument that settles it is
- * an actual update on an actual machine.
+ * An earlier cut of this file let ad-hoc *try*, on the reasoning that reports in
+ * the wild disagree and only a real update settles it. A real update settled it.
  *
- * Refusing pre-emptively would mean the app never finds out, and would keep
- * sending users to a web page on some future day when the signature *is* good.
- * Attempting-and-demoting costs one failed swap, once, and then behaves
- * correctly for the rest of the session — and it records the reason, so the
- * Settings pane can say what happened instead of leaving a mystery.
+ * 0.1.0 and 0.1.1 were published, and the packaged 0.1.0 was driven through the
+ * whole flow. The check found 0.1.1, the 130MB zip downloaded, Squirrel staged
+ * it, `update-downloaded` fired and the app reported the update **ready** — and
+ * then the swap failed:
+ *
+ *     [Error: Code signature at URL file:///…/The Hive.app/ did not pass
+ *      validation: code failed to satisfy specified code requirement(s)]
+ *       code: -1, domain: 'SQRLCodeSignatureErrorDomain'
+ *
+ * The cause is structural, not a misconfiguration. An ad-hoc bundle's designated
+ * requirement is its own `cdhash` (`codesign -d -r-` says so out loud), and the
+ * successor has a different one by construction. No ad-hoc build can ever
+ * satisfy its predecessor's requirement.
+ *
+ * So the cost of "attempt and demote" is not one cheap failure — it is a 130MB
+ * download and a **false promise of readiness** every session, on a path that
+ * cannot ever work. Manual from the start is the honest classification, and the
+ * self-install path is still here in full for the day a Developer ID appears.
  */
 
 const run = promisify(execFile);
@@ -100,7 +110,6 @@ export async function probeUpdateCapability(
     return {
       canCheck: false,
       mode: 'manual',
-      unverified: false,
       reason:
         'This is a development run. Only an installed copy of the app can update itself.',
     };
@@ -110,7 +119,6 @@ export async function probeUpdateCapability(
     return {
       canCheck: true,
       mode: 'self-install',
-      unverified: false,
       reason: 'Updates install themselves and the app restarts.',
     };
   }
@@ -130,7 +138,6 @@ export async function probeUpdateCapability(
     return {
       canCheck: true,
       mode: 'manual',
-      unverified: false,
       reason: `This copy has no readable code signature, so macOS will not let it replace itself. Updates open the download page instead (${String(cause)
         .split('\n')[0]
         .trim()}).`,
@@ -141,7 +148,6 @@ export async function probeUpdateCapability(
     return {
       canCheck: true,
       mode: 'self-install',
-      unverified: false,
       reason: 'Signed with a Developer ID. Updates install themselves.',
     };
   }
@@ -149,17 +155,15 @@ export async function probeUpdateCapability(
   if (/Signature=adhoc/.test(signature)) {
     return {
       canCheck: true,
-      mode: 'self-install',
-      unverified: true,
+      mode: 'manual',
       reason:
-        'This copy is ad-hoc signed rather than signed with an Apple Developer ID. Installing an update in place is attempted, and falls back to the download page if macOS refuses it.',
+        'This copy is ad-hoc signed rather than signed with an Apple Developer ID, so macOS will not let a new version replace it in place. Updates open the download page instead.',
     };
   }
 
   return {
     canCheck: true,
     mode: 'manual',
-    unverified: false,
     reason:
       'This copy is not code signed, so macOS will not let it replace itself. Updates open the download page instead.',
   };
@@ -168,10 +172,11 @@ export async function probeUpdateCapability(
 /**
  * The demotion, applied after an attempt proved the probe optimistic.
  *
- * Kept here rather than inline in the updater so that "what an ad-hoc signature
- * turned out to be worth" is decided in exactly one file. The resulting
- * capability is `manual` and no longer `unverified` — the uncertainty is gone,
- * it has been resolved to a no.
+ * Reachable for a build the probe passed — a Developer ID one refused for some
+ * other reason — and it is the reason `install()` awaits its engine rather than
+ * firing and forgetting. Squirrel validates at the *swap*, long after the
+ * download reported success, so a refusal that is not caught here is an app that
+ * promises a restart and comes back on the old version saying nothing.
  */
 export function demoteToManual(
   capability: UpdateCapability,
@@ -180,7 +185,6 @@ export function demoteToManual(
   return {
     canCheck: capability.canCheck,
     mode: 'manual',
-    unverified: false,
     reason: `macOS refused to install the update in place, so updates now open the download page (${cause}).`,
   };
 }
