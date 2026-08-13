@@ -31,6 +31,25 @@ publishes three assets to a GitHub Release:
 re-cutting a release under the same tag fails the integrity check on any client
 that is mid-download. `workflow_dispatch` exists for rebuilds.
 
+### `releaseType: release` is load-bearing
+
+electron-builder's GitHub provider defaults to `draft`. The first v0.1.0 run
+shipped that default and produced two failures at once:
+
+```
+{"id":369616527,"tag":"v0.1.0","draft":true,"assets":["The-Hive-0.1.0-arm64.dmg.blockmap"]}
+{"id":369616528,"tag":"v0.1.0","draft":true,"assets":["latest-mac.yml","…zip","…dmg","…zip.blockmap"]}
+```
+
+A draft is **invisible to the updater** — the releases API will not serve one to
+an unauthenticated client — so a release that looks published in the web UI
+reaches nobody, and every running app reports itself up to date. And drafts have
+no tag until they are published, so GitHub cannot dedupe them: parallel asset
+uploads each created a release and the assets split across the two.
+
+A non-draft release is tagged at creation, so the second uploader finds the
+first. Do not change this back.
+
 ## What is in the bundle, and one thing that is not
 
 `asarUnpack` pulls `node-pty` out of the archive. This is not an optimisation —
