@@ -34,6 +34,8 @@ import {
   Moon,
   PaperPlaneTilt,
   PlusCircle,
+  ArrowCircleUp,
+  ArrowClockwise,
   Question,
   Robot,
   SlackLogo,
@@ -103,6 +105,15 @@ const GLYPHS: Record<string, PhosphorIcon> = {
   // A session that has run out of instructions and is waiting
   // on the user to type. A keyboard, because that is what it wants.
   'ph-keyboard': Keyboard,
+
+  /*
+    The app's own two kinds. Caught by the fallback in exactly the way the note
+    above promises: the packaged app showed a question mark where the update
+    row's glyph should have been, because registering a kind in
+    `notification-contract.ts` does not register its icon here.
+  */
+  'ph-arrow-circle-up': ArrowCircleUp,
+  'ph-arrow-clockwise': ArrowClockwise,
 
   /**
    * The project explorer and the editor.
