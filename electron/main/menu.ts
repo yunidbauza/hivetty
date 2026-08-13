@@ -18,6 +18,15 @@ export interface MenuContext {
   /** DevTools is a dev-only affordance; a shipped app does not offer it. */
   isDev: boolean;
   appName: string;
+  /**
+   * Runs "Check for updates…". Injected rather than imported so the template
+   * stays a pure value — the unit test asserts the item is *there* and that
+   * choosing it calls this, neither of which should need an updater.
+   *
+   * Optional: the menu is also built in contexts that have no updater, and an
+   * absent handler drops the item rather than offering one that does nothing.
+   */
+  onCheckForUpdates?: () => void;
 }
 
 /**
@@ -29,13 +38,31 @@ export function buildMenuTemplate({
   isMac,
   isDev,
   appName,
+  onCheckForUpdates,
 }: MenuContext): MenuItemConstructorOptions[] {
+  /**
+   * Directly under About, which is where macOS users look for it.
+   *
+   * The ellipsis is Apple's convention and it is load-bearing information: it
+   * promises the item opens something rather than acting immediately. This one
+   * always answers with a dialog — including "You're up to date", which is the
+   * case a version without the ellipsis would mislead about.
+   */
+  const updateItem: MenuItemConstructorOptions[] =
+    onCheckForUpdates === undefined
+      ? []
+      : [
+          { type: 'separator' },
+          { label: 'Check for Updates…', click: () => onCheckForUpdates() },
+        ];
+
   const appMenu: MenuItemConstructorOptions[] = isMac
     ? [
         {
           label: appName,
           submenu: [
             { role: 'about' },
+            ...updateItem,
             { type: 'separator' },
             { role: 'hide' },
             { role: 'hideOthers' },

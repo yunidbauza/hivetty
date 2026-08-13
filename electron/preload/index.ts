@@ -67,7 +67,10 @@ import type {
   JiraTransition,
 } from '@shared/jira-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
-import type { HiveNotification } from '@shared/notification-contract';
+import type {
+  HiveNotification,
+  NotificationAction,
+} from '@shared/notification-contract';
 import type {
   SessionBranchEvent,
   SessionClearedEvent,
@@ -75,6 +78,7 @@ import type {
   SessionStatusEvent,
   SessionTicketIntentEvent,
 } from '@shared/session-contract';
+import type { UpdateStatus } from '@shared/update-contract';
 
 /**
  * The bridge (story 082).
@@ -316,6 +320,15 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(
         CH.notificationsDelivery,
       ) as Promise<NotificationDeliveryStatus>,
+    /** Hand a clicked row's action back to main to carry out. */
+    act: (action: NotificationAction): Promise<void> =>
+      ipcRenderer.invoke(CH.notificationsAct, action) as Promise<void>,
+  },
+  updates: {
+    status: (): Promise<UpdateStatus> =>
+      ipcRenderer.invoke(CH.updatesStatus) as Promise<UpdateStatus>,
+    check: (): Promise<void> =>
+      ipcRenderer.invoke(CH.updatesCheck) as Promise<void>,
   },
   session: {
     onStatus: (callback: (event: SessionStatusEvent) => void) =>

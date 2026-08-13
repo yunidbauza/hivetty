@@ -34,6 +34,7 @@ import type {
   WriteRequest,
 } from './ipc-contract';
 import { ISSUE_KEY_PATTERN } from './jira-contract';
+import type { NotificationAction } from './notification-contract';
 import {
   NOTIFICATION_DELIVERIES,
   isNotificationDelivery,
@@ -662,6 +663,51 @@ export function parseMarkReadRequest(input: unknown): string | null {
     return fail('markRead: expected a notification id, or null for all');
   }
   return input;
+}
+
+/**
+ * The `notifications:act` payload — a notification's action, handed back by
+ * the renderer for main to carry out.
+ *
+ * **Returns `null` rather than throwing**, which is the opposite of every other
+ * guard here, and the reason is what the caller does with the answer. A
+ * malformed spawn request is a bug worth surfacing loudly; a malformed action
+ * is a *click*, and the worst honest outcome of a click main does not
+ * understand is that nothing happens. Throwing would reject the promise in the
+ * renderer, where the only available response is to log it.
+ *
+ * `session` is validated the same way every other entity id is. `url` is
+ * checked for shape only — whether it is safe to *open* is
+ * `isSafeExternalUrl`'s job at the point of opening, and duplicating that
+ * policy here would create two allowlists that can disagree.
+ */
+export function parseNotificationAction(
+  input: unknown,
+): NotificationAction | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return null;
+  }
+
+  const { type } = input as { type?: unknown };
+
+  switch (type) {
+    case 'none':
+    case 'update.download':
+    case 'update.install':
+      return { type };
+    case 'session': {
+      const { entityId } = input as { entityId?: unknown };
+      return typeof entityId === 'string' && entityId !== ''
+        ? { type: 'session', entityId }
+        : null;
+    }
+    case 'url': {
+      const { url } = input as { url?: unknown };
+      return typeof url === 'string' && url !== '' ? { type: 'url', url } : null;
+    }
+    default:
+      return null;
+  }
 }
 
 /** RFC-1123 label. No leading or trailing hyphen. */

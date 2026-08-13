@@ -59,14 +59,25 @@ export function NotificationCard({ notif }: NotificationCardProps) {
         markRead(notif.id);
 
         /**
-         * A `url` action is deliberately not opened from here.
+         * `session` here, everything else in main.
          *
-         * External links are main's, through `external-links.ts`, which is what
-         * keeps a foreign URL out of the app's own navigation. No producer of
-         * `url` actions exists yet — Slack is HIVE-77 — so rather than route one
-         * badly in advance, the click marks read and stays put.
+         * Only the renderer knows what opening a session *means* — it is a tab,
+         * a selection and a view transition, none of which main can see. Every
+         * other action is the reverse: opening a URL goes through main's
+         * external-link allowlist, and installing an update is main's by
+         * definition.
+         *
+         * The row used to stop at `session` and silently drop the rest, which
+         * was correct while nothing produced the rest. `act` hands them back
+         * along the same router a clicked desktop toast takes, so a row and a
+         * toast cannot come to mean different things about one notification.
          */
-        if (notif.action.type === 'session') openEntity(notif.action.entityId);
+        if (notif.action.type === 'session') {
+          openEntity(notif.action.entityId);
+          return;
+        }
+        if (notif.action.type === 'none') return;
+        void window.hive?.notifications.act(notif.action);
       }}
       className={cn(
         'flex items-start gap-2.5 rounded-xl border px-3 py-[var(--cc-card-py)] text-left hover:bg-hover',

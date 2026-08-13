@@ -116,6 +116,20 @@ export interface NotificationHub {
   list(): HiveNotification[];
   /** Mark one read, or every one when `id` is null. */
   markRead(id: string | null): void;
+  /**
+   * Carry out an action, exactly as clicking the desktop toast would.
+   *
+   * Exposed so a clicked *inbox row* reaches the same router. Before this the
+   * router was reachable only from inside `raise`, so the row could act on the
+   * one action type the renderer could handle by itself and silently ignored
+   * the rest — which is how a `url` notification came to be documented as
+   * "deliberately not opened from here".
+   *
+   * It does not mark anything read: the row already did that with the id it
+   * holds, and the toast path marks read before calling this. Doing it here as
+   * well would need an id this signature has no reason to take.
+   */
+  activate(action: NotificationAction): void;
   /** Drop everything. Used by tests and by a config reset. */
   clear(): void;
 }
@@ -288,6 +302,8 @@ export function createNotificationHub(
     },
 
     markRead,
+
+    activate,
 
     clear() {
       buffer = [];

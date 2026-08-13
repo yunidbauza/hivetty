@@ -68,7 +68,10 @@ import type {
   JiraTransition,
 } from './jira-contract';
 import type { SessionMetricsEvent } from './metrics-contract';
-import type { HiveNotification } from './notification-contract';
+import type {
+  HiveNotification,
+  NotificationAction,
+} from './notification-contract';
 import type {
   SessionEffort,
   SessionModel,
@@ -79,6 +82,7 @@ import type {
   SessionStatusEvent,
   SessionTicketIntentEvent,
 } from './session-contract';
+import type { UpdateStatus } from './update-contract';
 
 export const CH = {
   configGet: 'config:get',
@@ -252,6 +256,32 @@ export const CH = {
    * needs `gh` goes on paying for `gh` exactly once when it opens.
    */
   notificationsDelivery: 'notifications:delivery',
+  /**
+   * Do what a clicked notification says to do.
+   *
+   * The renderer used to handle a clicked row itself, which worked for exactly
+   * one action type — `session`, the only one it can carry out. Everything else
+   * a notification can point at is main's: a `url` goes through the external
+   * link allowlist, and an update action reaches the updater. Rather than teach
+   * the renderer a second way to do each of those, the row hands the action
+   * back and main routes it through the *same* code path a clicked desktop
+   * toast takes. One router, two entry points — so a toast and a row can never
+   * drift into doing different things about the same notification.
+   *
+   * Safe to expose: the action is validated against the union in
+   * `notification-contract.ts` before anything acts on it, and the only member
+   * carrying free text is `url`, which `isSafeExternalUrl` already gates.
+   */
+  notificationsAct: 'notifications:act',
+  /** What the app knows about a newer version of itself. */
+  updatesStatus: 'updates:status',
+  /**
+   * Look now, from the Settings pane.
+   *
+   * The same verb the menu item drives, so the pane cannot develop its own idea
+   * of what checking means.
+   */
+  updatesCheck: 'updates:check',
   configCloneStart: 'config:clone-start',
   configCloneCancel: 'config:clone-cancel',
   configCloneDone: 'config:clone-done', // main → renderer
@@ -978,6 +1008,25 @@ export interface HiveBridge {
      * the one thing in the settings pane that has to be re-asked on a timer.
      */
     delivery(): Promise<NotificationDeliveryStatus>;
+    /**
+     * Carry out a notification's action.
+     *
+     * The renderer still handles `session` itself — only it knows what opening
+     * one means — and hands everything else here. See {@link CH.notificationsAct}.
+     */
+    act(action: NotificationAction): Promise<void>;
+  };
+  /**
+   * The app's newer self.
+   *
+   * A namespace of its own rather than fields on `appInfo`, because `appInfo`
+   * is a snapshot of facts that cannot change while the app runs, and this
+   * changes four times in the course of one update.
+   */
+  updates: {
+    status(): Promise<UpdateStatus>;
+    /** Look now. Reports its own result in a dialog; resolves when done. */
+    check(): Promise<void>;
   };
   /** Real session lifecycle, derived in main (story 096). */
   session: {
@@ -1063,6 +1112,7 @@ export const BRIDGE_KEYS = [
   'notifications',
   'pty',
   'session',
+  'updates',
 ] as const;
 
 /** The exact key set of `window.hive.session`. */
@@ -1188,7 +1238,13 @@ export const BRIDGE_NOTIFICATIONS_KEYS = [
   // The one verb the settings pane may ask on a timer — see
   // `CH.notificationsDelivery` for why it is not a field on integrations status.
   'delivery',
+  // The router for everything a row cannot carry out itself — see
+  // `CH.notificationsAct`.
+  'act',
 ] as const;
+
+/** The exact key set of `window.hive.updates`. */
+export const BRIDGE_UPDATES_KEYS = ['status', 'check'] as const;
 
 /** The exact key set of `window.hive.config`. */
 export const BRIDGE_CONFIG_KEYS = [

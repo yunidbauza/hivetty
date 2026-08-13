@@ -96,6 +96,8 @@ export const NOTIFICATION_KINDS = [
   'pr.checks_failed',
   'pr.review_requested',
   'agent.custom',
+  'app.update_available',
+  'app.update_ready',
 ] as const;
 
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -141,7 +143,18 @@ export type NotificationAction =
   /** Open this session's tab. `entityId` is a **terminal** id — see `currentRowFor`. */
   | { type: 'session'; entityId: string }
   /** Open this URL in the user's browser. */
-  | { type: 'url'; url: string };
+  | { type: 'url'; url: string }
+  /**
+   * Start downloading the update this notification announced.
+   *
+   * Carries no version. The updater already knows which release it found, and a
+   * version on the action would be a second copy of that fact that could
+   * disagree with it — a stale row clicked an hour later would ask for a
+   * download of something the updater has since moved past.
+   */
+  | { type: 'update.download' }
+  /** Quit and swap in the update that has finished downloading. */
+  | { type: 'update.install' };
 
 /** One thing that wants the user's attention. */
 export interface HiveNotification {
@@ -318,6 +331,44 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'Someone is waiting on you to look at their pull request.',
     icon: 'ph-git-pull-request',
     tone: 'amber',
+    defaultDelivery: 'both',
+  },
+  'app.update_available': {
+    source: 'app',
+    label: 'When a new version is available',
+    description:
+      'A newer release of The Hive has been published. Nothing happens until you say so.',
+    icon: 'ph-arrow-circle-up',
+    tone: 'brand',
+    /**
+     * `both`, and it is the least chatty kind in this registry.
+     *
+     * The producer is capped by the version itself: a given release announces
+     * itself once per running app, no matter how often the checker looks,
+     * because the dedup id is the version string. So `both` costs exactly one
+     * toast per release — which is roughly one a week at this project's pace,
+     * and is the notification a user most plausibly wants pulled out of a panel
+     * they were not looking at.
+     */
+    defaultDelivery: 'both',
+  },
+  'app.update_ready': {
+    source: 'app',
+    label: 'When an update is ready to install',
+    description:
+      'The download finished. Clicking it restarts the app on the new version.',
+    icon: 'ph-arrow-clockwise',
+    tone: 'green',
+    /**
+     * `both`, because this one interrupts on purpose.
+     *
+     * The user asked for the download and then went back to work. The whole
+     * point of not auto-installing is that the restart happens when *they* say
+     * — and a restart prompt that waits silently in a panel is a download that
+     * never lands.
+     *
+     * It cannot repeat: a download completes once per version per launch.
+     */
     defaultDelivery: 'both',
   },
   'agent.custom': {

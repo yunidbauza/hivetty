@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   IpcValidationError,
   parseMarkReadRequest,
+  parseNotificationAction,
   parseSetNotificationsRequest,
 } from '../../../electron/shared/guards';
 
@@ -96,5 +97,56 @@ describe('parseSetNotificationsRequest', () => {
     expect(() => parseSetNotificationsRequest('session.waiting')).toThrow(
       IpcValidationError,
     );
+  });
+});
+
+/**
+ * The `notifications:act` payload.
+ *
+ * The one guard here that answers `null` instead of throwing, because its
+ * caller is a *click*: the worst honest outcome of an action main cannot read
+ * is that nothing happens, and rejecting the promise would only give the
+ * renderer something to log.
+ */
+describe('parseNotificationAction', () => {
+  it('accepts the data-free actions verbatim', () => {
+    expect(parseNotificationAction({ type: 'none' })).toEqual({ type: 'none' });
+    expect(parseNotificationAction({ type: 'update.download' })).toEqual({
+      type: 'update.download',
+    });
+    expect(parseNotificationAction({ type: 'update.install' })).toEqual({
+      type: 'update.install',
+    });
+  });
+
+  it('requires a non-empty entity id on a session action', () => {
+    expect(parseNotificationAction({ type: 'session', entityId: 't1' })).toEqual({
+      type: 'session',
+      entityId: 't1',
+    });
+    expect(parseNotificationAction({ type: 'session', entityId: '' })).toBeNull();
+    expect(parseNotificationAction({ type: 'session' })).toBeNull();
+    expect(parseNotificationAction({ type: 'session', entityId: 7 })).toBeNull();
+  });
+
+  it('checks a url for shape only — whether it is safe to open is decided at the point of opening', () => {
+    // Deliberately not a second allowlist. `isSafeExternalUrl` owns that
+    // policy, and two copies of it would be two policies that can disagree.
+    expect(
+      parseNotificationAction({ type: 'url', url: 'file:///etc/passwd' }),
+    ).toEqual({ type: 'url', url: 'file:///etc/passwd' });
+    expect(parseNotificationAction({ type: 'url', url: '' })).toBeNull();
+  });
+
+  it('drops anything it does not recognise, including a stray extra field', () => {
+    expect(parseNotificationAction(null)).toBeNull();
+    expect(parseNotificationAction('update.install')).toBeNull();
+    expect(parseNotificationAction([{ type: 'none' }])).toBeNull();
+    expect(parseNotificationAction({ type: 'shell', cmd: 'rm -rf /' })).toBeNull();
+    // A recognised type keeps only what the union declares — the extra field
+    // is not copied through.
+    expect(
+      parseNotificationAction({ type: 'update.install', cmd: 'rm -rf /' }),
+    ).toEqual({ type: 'update.install' });
   });
 });

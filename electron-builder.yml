@@ -1,0 +1,103 @@
+# How The Hive becomes something you can install.
+#
+# `electron-vite` already produces `out/{main,preload,renderer}`; this turns that
+# into a `.app` inside a `.dmg`, plus the `.zip` and `latest-mac.yml` that
+# `electron-updater` needs to find a newer one. See `docs/packaging-and-updates.md`.
+
+appId: dev.yunidbauza.the-hive
+
+# The name macOS shows — in the menu bar, the dock, the About box and the
+# Applications folder. It lands in the bundle's `Info.plist` as `CFBundleName`,
+# which is the *only* thing that fixes the leftmost menu title. `app.setName()`
+# in the main process cannot: macOS reads that title from the running bundle,
+# and under `pnpm desktop:dev` the running bundle is Electron's own.
+productName: The Hive
+
+copyright: Copyright © 2026 Yunid Bauza
+
+directories:
+  # The icons are already here and already named what electron-builder looks
+  # for — `resources/README.md` wrote this block before the packaging existed.
+  buildResources: resources
+  output: dist
+
+# `node_modules` is not listed and does not need to be: electron-builder always
+# bundles production dependencies, and listing files here only narrows what is
+# taken from the project root. Without this it would pack `src/`, `tests/`,
+# `coverage/` and the Playwright reports into the app.
+files:
+  - out/**
+  - package.json
+
+# The one native module in the tree, and it cannot live inside the archive.
+#
+# `node-pty` does not merely load a `.node` binary — it *spawns* a helper
+# executable, `prebuilds/darwin-arm64/spawn-helper`, by path. A path inside
+# `app.asar` is not a path the kernel can exec: asar is a virtual filesystem
+# that Electron's `fs` shims understand and `posix_spawn` does not. Packed, the
+# app launches perfectly and then throws `posix_spawnp failed` the first time
+# anyone opens a terminal — which is to say, the first time anyone uses the app.
+#
+# Unpacking also preserves the file mode, which matters because the published
+# tarball ships `spawn-helper` at 0644. `scripts/check-native-abi.mjs --fix`
+# repairs that at install time, so the bit is already set by the time this runs;
+# `pnpm test:pty` and the packaged smoke check both verify it survived.
+asarUnpack:
+  - '**/node_modules/node-pty/**'
+
+mac:
+  category: public.app-category.developer-tools
+  icon: resources/icon.icns
+  target:
+    - target: dmg
+      arch: [arm64]
+    # Not optional, and not a convenience download.
+    #
+    # `electron-updater` on macOS updates from a **zip**, never from the dmg —
+    # Squirrel.Mac takes an archive it can unpack and swap. A release published
+    # with only a dmg produces an app that can see a new version and cannot
+    # install it, which is the exact failure this project set out to avoid.
+    - target: zip
+      arch: [arm64]
+
+  # No Developer ID exists to sign with, so electron-builder is told not to look
+  # for one — and it then does not sign at all. Verified on the first build:
+  # what survives is Electron's own `linker-signed` stub, reading
+  # `Identifier=Electron` with `Sealed Resources=none`. That is an unsigned app
+  # containing one signed file. `afterPack` below replaces it with a real ad-hoc
+  # bundle signature.
+  identity: null
+  notarize: false
+
+  # Gatekeeper's quarantine flag is set by whatever *downloads* a file, so a dmg
+  # pulled from a browser is quarantined and an unsigned app inside it is
+  # refused with "damaged and can't be opened". An update the app fetches itself
+  # is not quarantined, which is why the in-app path is worth having even
+  # unsigned. `docs/packaging-and-updates.md` records the one-line escape for a
+  # manually downloaded copy.
+  darkModeSupport: true
+
+# Give the bundle a real ad-hoc signature, since `identity: null` leaves it
+# with none. Read `scripts/adhoc-sign.mjs` before removing this: it also records
+# why a correct ad-hoc signature still does not make the app self-updating, and
+# that limitation is the reason `electron/main/updates/capability.ts` exists.
+afterPack: scripts/adhoc-sign.mjs
+
+dmg:
+  # Drag-to-Applications, which is what everyone expects and what avoids people
+  # running the app from inside the mounted image — where an update could not
+  # replace it even with a Developer ID.
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# Where a running app looks for something newer, and where CI pushes it.
+# The repository is public, so the updater needs no token and no auth.
+publish:
+  provider: github
+  owner: yunidbauza
+  repo: the-hive

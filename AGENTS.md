@@ -34,13 +34,13 @@ Zustand · Tailwind v4 · shadcn/ui · pnpm.
 | `pnpm desktop:dev` | electron-vite: the Electron app, renderer HMR included |
 | `pnpm desktop:build` | Type-check, then build `out/{main,preload,renderer}/` |
 | `pnpm desktop:preview` | Run the built Electron app |
+| `pnpm desktop:dist` | Package `.dmg` + `.zip` into `dist/` (macOS arm64); `:publish` uploads them |
 | `pnpm lint` | ESLint across `src/`, `electron/` and config |
 | `pnpm type-check` | `tsc --noEmit` for the app, the Node-side configs, and `electron/` |
 | `pnpm test` | Vitest, single run |
 | `pnpm test:coverage` | Vitest with the 80% coverage gate |
 | `pnpm test:e2e` | Playwright — both the web and electron projects |
-| `pnpm test:e2e:web` | The browser specs — chrome, layout and empty states (story 070) |
-| `pnpm test:e2e:electron` | The built desktop app (story 085) |
+| `pnpm test:e2e:web` · `:electron` | Either half alone — browser specs (070), or the built app (085) |
 | `pnpm test:pty` | PTY conformance — real PTYs, Electron ABI, no UI (098) |
 | `pnpm test:hooks` | Hook conformance — a real `claude`, real hooks, ~3½ min |
 | `pnpm test:statusline` | Status line conformance — the generated script, a real `sh` and `curl` (HIVE-79) |
@@ -55,12 +55,12 @@ done.** Neither is optional, and no rule may be disabled inline to make a task p
 | --- | --- |
 | The terminal, transports, ANSI, xterm config | [`docs/terminal-architecture.md`](docs/terminal-architecture.md) |
 | The project explorer, the editor, the fs IPC surface | [`docs/explorer-and-editor.md`](docs/explorer-and-editor.md) |
-| The main process, IPC, native modules, packaging | [`docs/desktop-architecture.md`](docs/desktop-architecture.md) |
+| The main process, IPC, native modules | [`docs/desktop-architecture.md`](docs/desktop-architecture.md) |
+| Installers, releases, auto-update, the app name | [`docs/packaging-and-updates.md`](docs/packaging-and-updates.md) |
 | Store shape, actions, selectors, fixture data | [`docs/state-and-data.md`](docs/state-and-data.md) |
 | Panels, atoms, rails, the view-state machine | [`docs/component-patterns.md`](docs/component-patterns.md) |
 | Simulation script and the fake clock | [`docs/simulation.md`](docs/simulation.md) |
-| Any UI task — tokens, palette, type scale | [`.claude/DESIGN-SYSTEM.md`](.claude/DESIGN-SYSTEM.md) |
-| Any UI task — atom inventory and props | [`.claude/COMPONENTS.md`](.claude/COMPONENTS.md) |
+| Any UI task — tokens and type scale, then atoms and props | [`.claude/DESIGN-SYSTEM.md`](.claude/DESIGN-SYSTEM.md) · [`.claude/COMPONENTS.md`](.claude/COMPONENTS.md) |
 
 The visual source of truth is [`.claude/DESIGN-SYSTEM.md`](.claude/DESIGN-SYSTEM.md):
 it records what the retired concept mock fixed (`git log -- concept/` still has it).

@@ -1,0 +1,86 @@
+# Cut a release.
+#
+#     pnpm version minor        # bumps package.json and tags v0.2.0
+#     git push --follow-tags
+#
+# The tag is the trigger and `package.json`'s version is the source of truth —
+# electron-builder reads it, and the two cannot disagree because `pnpm version`
+# writes both. See `docs/packaging-and-updates.md`.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # The escape hatch: rebuild a release whose assets went wrong without moving
+  # a tag. Moving a published tag is the one thing that genuinely breaks the
+  # updater, because `latest-mac.yml` pins a SHA-512 of each asset and a client
+  # mid-download would fail the checksum.
+  workflow_dispatch:
+
+# Least privilege, and `contents: write` is the whole of what is needed —
+# electron-builder creates the release and uploads to it with `GH_TOKEN`.
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (arm64)
+    # An Apple Silicon runner, deliberately, not `macos-latest`-whatever-that-is.
+    # The build must produce an arm64 bundle, and `node-pty`'s prebuild is
+    # selected by the *host* architecture during install — cross-building it
+    # from an Intel runner is the slow way to discover that at first launch.
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          # Matches `engines.node` in package.json. `cache: pnpm` needs
+          # pnpm/action-setup to have run first, which is why it is above.
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        # `postinstall` runs `check-native-abi.mjs --fix`, which chmods
+        # `node-pty`'s spawn-helper. That has to happen *before* packaging: the
+        # bit is copied into the bundle as found, and a 0644 helper is an app
+        # whose terminals all fail at spawn.
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify
+        # The same gates AGENTS.md requires of any change. A release is the last
+        # place to find out that type-check was red.
+        run: |
+          pnpm run lint
+          pnpm run type-check
+          pnpm run test
+
+      - name: Build and publish
+        env:
+          # electron-builder creates the GitHub Release and uploads the dmg, the
+          # zip and latest-mac.yml. The default token has `contents: write` from
+          # the permissions block above.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # There is no Developer ID. Told explicitly rather than left to be
+          # inferred, so a runner that happens to have a keychain entry cannot
+          # change what gets built.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm run desktop:publish
+
+      - name: Record what shipped
+        # The signature state of the shipped bundle, in the build log, on every
+        # release. The whole update design turns on whether this says `adhoc`,
+        # and reading it out of a log beats re-deriving it from a local build
+        # that may not match.
+        if: always()
+        run: |
+          echo "--- dist ---"
+          ls -la dist || true
+          echo "--- codesign ---"
+          codesign --display --verbose=2 "dist/mac-arm64/The Hive.app" 2>&1 || true

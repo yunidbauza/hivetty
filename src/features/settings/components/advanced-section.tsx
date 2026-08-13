@@ -1,4 +1,8 @@
-import { ArrowClockwise, FolderOpen } from '@phosphor-icons/react';
+import {
+  ArrowCircleUp,
+  ArrowClockwise,
+  FolderOpen,
+} from '@phosphor-icons/react';
 import { useCallback, useEffect, useState } from 'react';
 
 import { ConfigResetConfirm } from '@features/settings/components/config-reset-confirm';
@@ -11,7 +15,9 @@ import {
   resetConfigToTemplate,
   revealConfigFile,
 } from '@lib/project-config';
+import { checkForUpdates, readUpdateStatus } from '@lib/updates';
 import type { AppInfo, PtyDiagnostics } from '@shared/ipc-contract';
+import type { UpdateStatus } from '@shared/update-contract';
 
 /**
  * Advanced & diagnostics (story 107).
@@ -127,9 +133,36 @@ function PtyCounters({ rows }: { rows: readonly PtyDiagnostics[] }) {
   );
 }
 
+/**
+ * One line describing where the app is in the update cycle.
+ *
+ * A function rather than a map, because two of the seven states need the
+ * version interpolated and a map would either lose that or store a template.
+ */
+function updateLine(status: UpdateStatus): string {
+  switch (status.state) {
+    case 'unsupported':
+      return `Version ${status.currentVersion}.`;
+    case 'checking':
+      return 'Checking…';
+    case 'available':
+      return `Version ${status.availableVersion} is available.`;
+    case 'downloading':
+      return `Downloading ${status.availableVersion}…`;
+    case 'ready':
+      return `Version ${status.availableVersion} is ready — restart to install.`;
+    case 'error':
+      return 'The last check did not complete.';
+    default:
+      return `Version ${status.currentVersion} — up to date.`;
+  }
+}
+
 export function AdvancedSection() {
   const snapshot = useProjectConfig();
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [checking, setChecking] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [reloaded, setReloaded] = useState<string | null>(null);
   /** A reload has landed and its outcome has not been read off yet. */
@@ -156,11 +189,36 @@ export function AdvancedSection() {
     void readAppInfo().then((next) => {
       if (!cancelled) setInfo(next);
     });
+    /**
+     * Re-read on mount, not on a timer.
+     *
+     * The status changes only in response to something the user did — opening
+     * this pane, pressing Check now, clicking an inbox row — and the capability
+     * probe settles within a second of launch, long before any settings pane is
+     * open. Polling would re-render for a value that is almost always identical.
+     */
+    void readUpdateStatus().then((next) => {
+      if (!cancelled) setUpdate(next);
+    });
 
     return () => {
       cancelled = true;
     };
   }, [hasSnapshot]);
+
+  /**
+   * Main raises its own dialog and this resolves once the user has answered it,
+   * so the re-read afterwards reports the state the answer produced.
+   */
+  const onCheck = useCallback(async (): Promise<void> => {
+    setChecking(true);
+    try {
+      await checkForUpdates();
+      setUpdate(await readUpdateStatus());
+    } finally {
+      setChecking(false);
+    }
+  }, []);
 
   /**
    * Report what the reload found, from the snapshot it installed.
@@ -297,6 +355,41 @@ export function AdvancedSection() {
             <Fact label="Node" value={info.node} />
             <Fact label="Platform" value={info.platform} />
           </div>
+        )}
+      </SettingsGroup>
+
+      <SettingsGroup
+        title="Updates"
+        description="Where a new version comes from, and whether this copy can install one."
+      >
+        {update === null ? (
+          <p className="text-[12.5px] text-subtle">
+            Updates are only available in the desktop app.
+          </p>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[12.5px] text-muted">{updateLine(update)}</p>
+              <button
+                type="button"
+                disabled={checking || !update.capability.canCheck}
+                onClick={() => void onCheck()}
+                className="flex shrink-0 items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
+              >
+                <ArrowCircleUp size={12} weight="bold" />
+                {checking ? 'Checking…' : 'Check now'}
+              </button>
+            </div>
+            {/*
+              The capability sentence, always, not only when something is
+              wrong. A user whose app sends them to a web page is owed the
+              reason at the moment they wonder — and on a build that *can*
+              self-install, the same line is the reassurance that it will.
+            */}
+            <p className="text-[11.5px] text-subtle">
+              {update.capability.reason}
+            </p>
+          </>
         )}
       </SettingsGroup>
 

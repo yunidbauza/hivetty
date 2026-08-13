@@ -53,6 +53,35 @@ describe('buildMenuTemplate', () => {
     expect(roles(template)).toEqual(expect.arrayContaining(['copy', 'paste']));
   });
 
+  it('offers "Check for Updates…" under About, and wires it to the handler', () => {
+    const onCheckForUpdates = vi.fn();
+    const submenu = buildMenuTemplate({ ...mac, onCheckForUpdates })[0]
+      ?.submenu as MenuItemConstructorOptions[];
+    const item = submenu.find((entry) => entry.label === 'Check for Updates…');
+
+    expect(item).toBeDefined();
+    // Directly after About, where macOS users look for it.
+    expect(submenu.indexOf(item as MenuItemConstructorOptions)).toBe(2);
+
+    item?.click?.(
+      undefined as never,
+      undefined as never,
+      undefined as never,
+    );
+    expect(onCheckForUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits the update item entirely when nothing can handle it', () => {
+    // Absent rather than inert: a menu item that does nothing is worse than no
+    // menu item, because it looks like a fault.
+    const submenu = buildMenuTemplate(mac)[0]
+      ?.submenu as MenuItemConstructorOptions[];
+
+    expect(submenu.map((entry) => entry.label)).not.toContain(
+      'Check for Updates…',
+    );
+  });
+
   it('keeps zoom and fullscreen available', () => {
     expect(roles(buildMenuTemplate(mac))).toEqual(
       expect.arrayContaining(['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen']),

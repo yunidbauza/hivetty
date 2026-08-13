@@ -55,6 +55,7 @@ import {
   parseSetJiraRequest,
   parseSetJiraTokenRequest,
   parseMarkReadRequest,
+  parseNotificationAction,
   parseSetNotificationsRequest,
   parseSetProjectRuntimeRequest,
   parseSetRuntimeRequest,
@@ -78,6 +79,7 @@ import type {
   JiraStatus,
   JiraTransition,
 } from '@shared/jira-contract';
+import type { UpdateStatus } from '@shared/update-contract';
 
 import { createCloneFlow, type CloneFlow } from '../clone';
 import {
@@ -115,6 +117,13 @@ import { createNotificationHub, createNotifier } from '../notifications';
 import { registerPtyHost } from '../pty-host';
 import { createSessions, type Sessions } from '../sessions';
 import { onShutdown } from '../shutdown';
+import {
+  checkForUpdatesInteractively,
+  downloadUpdate,
+  installUpdate,
+  setUpdateNotificationSink,
+  updateStatus,
+} from '../updates';
 
 import { assertSender } from './sender';
 
@@ -376,6 +385,23 @@ export function registerIpcHandlers(): void {
         return;
       }
 
+      /**
+       * The update actions carry no data at all, which is what makes them safe
+       * to accept from a renderer without validating anything beyond the tag.
+       * The updater already holds the version it found; these say only "do the
+       * thing you offered", and a stale row clicked after the updater has moved
+       * on is answered by whatever the updater's state actually is now.
+       */
+      if (action.type === 'update.download') {
+        void downloadUpdate();
+        return;
+      }
+
+      if (action.type === 'update.install') {
+        void installUpdate();
+        return;
+      }
+
       if (action.type !== 'session') return;
 
       send(CH.notificationsActivate, {
@@ -412,6 +438,33 @@ export function registerIpcHandlers(): void {
     // dismissal into "mark all fifty read", silently and with no error anywhere.
     hub.markRead(parseMarkReadRequest(payload)),
   );
+
+  /**
+   * Now the hub exists, the updater has somewhere to raise into.
+   *
+   * Registered here rather than in `updates/index.ts` because the hub is built
+   * in this function and nothing outside it holds a reference. The updater is
+   * constructed lazily and may exist before this runs; it drops notifications
+   * raised into an empty sink, which can only happen in the moments before the
+   * first check is even scheduled.
+   */
+  setUpdateNotificationSink((input) => {
+    hub.raise(input);
+  });
+
+  /**
+   * Route a clicked row's action, through the same `activate` a desktop toast
+   * uses. `parseNotificationAction` is what keeps this from being a hole: the
+   * payload is renderer-supplied, and an unrecognised shape is dropped rather
+   * than passed along to a switch that might have a permissive default.
+   */
+  handle(CH.notificationsAct, (_event, payload) => {
+    const action = parseNotificationAction(payload);
+    if (action !== null) hub.activate(action);
+  });
+
+  handle(CH.updatesStatus, (): UpdateStatus => updateStatus());
+  handle(CH.updatesCheck, () => checkForUpdatesInteractively());
 
   /**
    * The hook pipeline is constructed here and started by `createSessions`

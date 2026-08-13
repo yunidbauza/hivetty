@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 
 import { installApplicationMenu } from './menu';
 import { runShutdown } from './shutdown';
+import { checkForUpdatesInteractively } from './updates';
 
 /**
  * App lifecycle wiring (story 081).
@@ -48,7 +49,20 @@ export function registerLifecycle({
   });
 
   void app.whenReady().then(() => {
-    if (isMac) installApplicationMenu({ isMac, isDev, appName: app.getName() });
+    if (isMac) {
+      installApplicationMenu({
+        isMac,
+        isDev,
+        appName: app.getName(),
+        /**
+         * Fire-and-forget: a menu `click` handler cannot be awaited, and every
+         * outcome of a check — found, not found, failed — is already reported
+         * to the user by the updater's own dialog. There is nothing left for a
+         * caller here to do with the promise except drop it, so it says so.
+         */
+        onCheckForUpdates: () => void checkForUpdatesInteractively(),
+      });
+    }
     createWindow();
   });
 

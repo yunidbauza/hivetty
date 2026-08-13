@@ -1,7 +1,7 @@
 {
   "name": "the-hive",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.2.1",
   "engines": {
@@ -26,6 +26,8 @@
     "desktop:dev": "electron-vite dev",
     "desktop:build": "pnpm run type-check && electron-vite build",
     "desktop:preview": "electron-vite preview",
+    "desktop:dist": "pnpm run desktop:build && electron-builder --mac --arm64",
+    "desktop:publish": "pnpm run desktop:build && electron-builder --mac --arm64 --publish always",
     "lint": "eslint .",
     "verify:boundaries": "node scripts/verify-boundaries.mjs",
     "type-check": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.electron.json",
@@ -68,6 +70,7 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "electron-updater": "^6.8.9",
     "node-pty": "1.1.0",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
@@ -90,6 +93,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "@vitest/ui": "^4.1.10",
     "electron": "43.2.0",
+    "electron-builder": "^26.15.3",
     "electron-vite": "6.0.0-beta.1",
     "eslint": "^9.39.5",
     "eslint-import-resolver-typescript": "^4.4.5",
