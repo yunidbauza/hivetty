@@ -72,6 +72,18 @@ beforeEach(() => {
   seedDemoProjectConfig();
   useUiStore.getState().reset();
   useEditorStore.getState().reset();
+  /**
+   * A session has to be open for there to be a tree at all (HIVE-93).
+   *
+   * The explorer used to fall back to the last-visited project, and then to the
+   * first mapped one — so these tests got a tree on the overmind tab, which is
+   * exactly the behaviour that was removed: a file tree for a repository no
+   * session on screen was working in. `hero-refresh` is the demo fleet's session
+   * on `apfm-web`, which is the project `seedTree` above describes.
+   *
+   * The no-session state has its own test in the degraded-states block below.
+   */
+  useUiStore.getState().openTab('hero-refresh');
 });
 
 afterEach(() => {
@@ -102,6 +114,35 @@ describe('ExplorerPanel — degraded states', () => {
 
     expect(screen.getByText(/No projects mapped/i)).toBeInTheDocument();
     expect(screen.getByText(/Settings → Projects/)).toBeInTheDocument();
+  });
+
+  /**
+   * The tree follows the session, or shows nothing (HIVE-93).
+   *
+   * This is the behaviour the two fallbacks used to hide. On the overmind tab the
+   * explorer showed the last-visited project — or, on a cold start, the first
+   * mapped one — so every row in it opened a file from a repository nothing on
+   * screen was working in.
+   */
+  it('shows no tree on the overmind tab, and says why', () => {
+    useUiStore.getState().backToOrch();
+    render(<ExplorerPanel />);
+
+    expect(screen.getByText(/No session open/i)).toBeInTheDocument();
+    // The distinction that matters: projects *are* mapped, so this must not be
+    // the setup message that sends the user to Settings.
+    expect(screen.queryByText(/No projects mapped/i)).not.toBeInTheDocument();
+    // And nothing was read from disk for a project nobody is in.
+    expect(readDir).not.toHaveBeenCalled();
+  });
+
+  it('shows no tree on an agent tab either', () => {
+    // Agents name no project, so they are the same case as the overmind tab.
+    useUiStore.getState().openTab('slack-agent');
+    render(<ExplorerPanel />);
+
+    expect(screen.getByText(/No session open/i)).toBeInTheDocument();
+    expect(readDir).not.toHaveBeenCalled();
   });
 
   it("renders the config's own reason when the project folder is unusable", async () => {
@@ -147,6 +188,21 @@ describe('ExplorerPanel — degraded states', () => {
     render(<ExplorerPanel />);
 
     expect(await screen.findByText(/This repository is empty/)).toBeInTheDocument();
+  });
+
+  /**
+   * The browser e2e cannot reach this state — the explorer needs the desktop
+   * fs bridge — so the creature is pinned here instead.
+   */
+  it('leads the empty repository with a hive at rail size', async () => {
+    readDir.mockResolvedValue({ ok: true, value: [] });
+    render(<ExplorerPanel />);
+
+    await screen.findByText(/This repository is empty/);
+    const img = screen.getByRole('presentation', { hidden: true });
+
+    expect(img).toHaveAttribute('data-creature', 'hive');
+    expect(img).toHaveStyle({ height: '44px' });
   });
 });
 
@@ -203,6 +259,22 @@ describe('ExplorerPanel — the tree', () => {
       'README.md',
     ]);
     expect(useEditorStore.getState().activeKey).toBe('apfm-web:README.md');
+  });
+
+  /**
+   * The rail is clickable behind a full-stage overlay now. Without this, the
+   * file opened *behind* settings: the row highlighted, the stage did not
+   * move, and the editor only appeared once the overlay was dismissed by hand.
+   */
+  it('dismisses a covering overlay so the file it opened is visible', async () => {
+    useUiStore.getState().openSettings();
+    render(<ExplorerPanel />);
+    await screen.findByText('README.md');
+
+    await userEvent.click(row('README.md'));
+
+    expect(useEditorStore.getState().activeKey).toBe('apfm-web:README.md');
+    expect(useUiStore.getState()).toMatchObject({ settings: false, picker: false });
   });
 
   it('says when an expanded folder is empty', async () => {

@@ -33,6 +33,47 @@ describe('ui-store — view state', () => {
     expect(useUiStore.getState().picker).toBe(false);
   });
 
+  /**
+   * The other half of `openSettings`, which has always dismissed the picker.
+   *
+   * `resolveView` gives settings precedence, so a picker opened underneath it
+   * changed nothing on screen and then ambushed the user the next time they
+   * closed settings. Unreachable while the header was inert behind an overlay;
+   * reachable now that the chrome is live.
+   */
+  it('openPicker dismisses settings, the way openSettings dismisses the picker', () => {
+    useUiStore.getState().openSettings();
+
+    useUiStore.getState().openPicker();
+
+    expect(useUiStore.getState()).toMatchObject({ picker: true, settings: false });
+  });
+
+  it('openSettings still dismisses the picker', () => {
+    useUiStore.getState().openPicker();
+
+    useUiStore.getState().openSettings();
+
+    expect(useUiStore.getState()).toMatchObject({ picker: false, settings: true });
+  });
+
+  /**
+   * For an action in the chrome whose destination is already correct — opening
+   * a file from the explorer — where only the overlay is in the way.
+   */
+  it('revealStage clears both overlays and moves nothing else', () => {
+    useUiStore.getState().openTab('webhooks');
+    useUiStore.getState().openSettings();
+
+    useUiStore.getState().revealStage();
+
+    expect(useUiStore.getState()).toMatchObject({
+      picker: false,
+      settings: false,
+      activeTab: 'webhooks',
+    });
+  });
+
   it('backToOrch returns to the orchestrator from any tab', () => {
     useUiStore.getState().openTab('webhooks');
 
@@ -230,18 +271,52 @@ describe('the explorer tree', () => {
     expect(useUiStore.getState().explorerExpanded).toEqual({});
   });
 
-  it('remembers the project the tree was rooted at', () => {
-    useUiStore.getState().setExplorerProjectId('referral-api');
-    expect(useUiStore.getState().explorerProjectId).toBe('referral-api');
-  });
-
-  it('starts with nothing expanded and no sticky project', () => {
+  /**
+   * The sticky project is gone (HIVE-93).
+   *
+   * It existed so the tree kept its last repository on the overmind tab. The
+   * explorer now follows the active session or shows nothing, so there is
+   * nothing to remember — see `use-explorer-project.ts` for why showing the
+   * wrong repository is worse than showing none.
+   */
+  it('starts with nothing expanded', () => {
     useUiStore.getState().toggleExplorerDir('apfm-web', 'src');
-    useUiStore.getState().setExplorerProjectId('apfm-web');
 
     useUiStore.getState().reset();
 
     expect(useUiStore.getState().explorerExpanded).toEqual({});
-    expect(useUiStore.getState().explorerProjectId).toBeNull();
+  });
+});
+
+describe('revealRailTab (HIVE-93)', () => {
+  it('selects the tab and opens the rail', () => {
+    useUiStore.setState({ railTab: 'prs', showActivityRail: false });
+
+    useUiStore.getState().revealRailTab('inbox');
+
+    expect(useUiStore.getState().railTab).toBe('inbox');
+    expect(useUiStore.getState().showActivityRail).toBe(true);
+  });
+
+  it('is idempotent, so a second click does not hide the rail', () => {
+    /**
+     * The distinction from `toggleActivityRail`, which is what the header bell
+     * must not do: a user clicking the bell twice is asking for the inbox twice,
+     * not asking for it and then asking for it to go away.
+     */
+    useUiStore.getState().revealRailTab('inbox');
+    useUiStore.getState().revealRailTab('inbox');
+
+    expect(useUiStore.getState().showActivityRail).toBe(true);
+    expect(useUiStore.getState().railTab).toBe('inbox');
+  });
+
+  it('does not disturb the rail when only the tab differs', () => {
+    useUiStore.setState({ railTab: 'explorer', showActivityRail: true });
+
+    useUiStore.getState().revealRailTab('inbox');
+
+    expect(useUiStore.getState().railTab).toBe('inbox');
+    expect(useUiStore.getState().showActivityRail).toBe(true);
   });
 });

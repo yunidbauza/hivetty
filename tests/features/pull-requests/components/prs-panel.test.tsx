@@ -177,6 +177,39 @@ describe('PrsPanel', () => {
       ).toBeInTheDocument();
     });
 
+    /**
+     * The unconfigured state gets the spire too (HIVE-93).
+     *
+     * It was a bare `<p>` while the *no open PRs* state below already had a
+     * phrase and a creature, so the panel contradicted itself depending on **why**
+     * it had nothing to show: an unconfigured setup got a plain sentence on a
+     * blank column, a configured one with no PRs got the full treatment.
+     */
+    it('leads the unconfigured state with a spire, keeping main’s sentence', () => {
+      act(() => {
+        useHiveStore.setState({
+          prs: [],
+          prSource: {
+            kind: 'unconfigured',
+            message: 'No configured project is a GitHub repository.',
+          },
+        });
+      });
+
+      render(<PrsPanel />);
+
+      const img = screen.getByRole('presentation', { hidden: true });
+      expect(img).toHaveAttribute('data-creature', 'spire');
+      /*
+        Main writes this sentence because main is the side that knows which of the
+        three setups happened — no `gh`, a `gh` that is not logged in, or no
+        project that is a repository. The frame is new; the words are not.
+      */
+      expect(
+        screen.getByText('No configured project is a GitHub repository.'),
+      ).toBeInTheDocument();
+    });
+
     it('offers a retry when the first sweep failed', () => {
       act(() => {
         useHiveStore.setState({
@@ -220,6 +253,28 @@ describe('PrsPanel', () => {
       expect(
         screen.getByText('No open pull requests of yours across 4 repositories.'),
       ).toBeInTheDocument();
+    });
+
+    /**
+     * The browser e2e cannot reach this state — it needs `gh` to be live — so
+     * the creature's presence and its rail size are pinned here instead. This
+     * is the panel the absence was first reported on.
+     */
+    it('leads the empty sweep with a spire at rail size', () => {
+      act(() => {
+        useHiveStore.setState({
+          prs: [],
+          prSource: { kind: 'live', stale: false, repos: 4 },
+        });
+      });
+
+      render(<PrsPanel />);
+
+      const img = screen.getByRole('presentation', { hidden: true });
+
+      expect(img).toHaveAttribute('data-creature', 'spire');
+      expect(img).toHaveStyle({ height: '44px' });
+      expect(document.querySelector('[data-swarm-line]')).not.toBeNull();
     });
 
     it('says “1 repository”, not “1 repositories”', () => {

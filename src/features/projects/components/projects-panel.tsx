@@ -31,6 +31,8 @@ export function ProjectsPanel() {
           the thing the rail can say that Settings cannot.
         */}
         <EmptyState
+          phrase="empty.projects"
+          creature="overlord"
           action={
             <>
               Add one in <EmptyStatePath>Settings → Projects</EmptyStatePath>.

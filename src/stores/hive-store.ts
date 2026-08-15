@@ -12,7 +12,15 @@ import type {
   Session,
   SessionStatus,
 } from '@/types/entity';
-import { branchLabel, isEnded, isSession, terminalOf } from '@/types/entity';
+import {
+  branchLabel,
+  endedReason,
+  entityLabel,
+  isEnded,
+  isSession,
+  resolveEntityRef,
+  terminalOf,
+} from '@/types/entity';
 import type { HiveNotification } from '@/types/notification';
 import type { Pr, TicketPr } from '@/types/pull-request';
 import type { TermLine } from '@/types/terminal';
@@ -27,6 +35,7 @@ import {
   projectConfigSnapshot,
   subscribeProjectConfig,
 } from '@lib/project-config';
+import { pickPhrase } from '@lib/swarm/phrases';
 import { requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 import type { PrRecord } from '@shared/github-contract';
@@ -220,6 +229,18 @@ interface HiveState {
   markAllRead: () => void;
   /** Mark one notification read, by id (HIVE-75). */
   markRead: (id: string) => void;
+  /**
+   * Remove a notification the user has acted on (HIVE-93).
+   *
+   * Not the same gesture as {@link markRead}: read means "seen", dismissed means
+   * "dealt with". A card whose click navigated the user somewhere has spent its
+   * whole purpose, and leaving it in the list turns the inbox into a log to prune
+   * by hand instead of a queue that drains.
+   *
+   * Writes through to the hub, because `notifications.list()` is what a mounting
+   * renderer hydrates from — a local-only removal comes straight back.
+   */
+  dismissNotif: (id: string) => void;
   pushNotif: (notif: HiveNotification) => void;
   /**
    * Merge main's buffer into what is already here, newest first (HIVE-75).
@@ -645,7 +666,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ),
         line('● Reading CLAUDE.md, mapping repo…', 'blue'),
         task
-          ? line(`✱ Working… ${task}`, 'amber')
+          ? line(`✱ ${pickPhrase('working.session')} ${task}`, 'amber')
           : line('· Ready — type below to give this session its task', 'dim'),
       ],
     };
@@ -789,7 +810,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      */
     const echo =
       origin === 'orchestrator'
-        ? [line(`❯ [orchestrator] ${msg}`, 'cyan')]
+        ? [line(`❯ [overmind] ${msg}`, 'cyan')]
         : [line(''), line(`❯ ${msg}`, 'cyan')];
 
     get().appendEntityLines(id, echo);
@@ -807,7 +828,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       timer: setTimeout(() => {
         get().appendEntityLines(
           id,
-          [line(ACK_LINE, 'blue'), line('✱ Working…', 'amber')],
+          [line(ACK_LINE, 'blue'), line(`✱ ${pickPhrase('working.session')}`, 'amber')],
           'working',
         );
       }, ACK_DELAY_MS),
@@ -889,6 +910,62 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         orchLines: capLines([...state.orchLines, line(text, color)]),
       }));
 
+    /**
+     * Turn what the user typed into an entity, or print why it could not be
+     * (HIVE-92).
+     *
+     * Shared by `open` and `send` because they failed identically and must go on
+     * doing so — two copies of a three-branch refusal is how one of them ends up
+     * accepting a name the other rejects. Returns `null` once the refusal has
+     * been printed, so each caller's happy path stays a single `if`.
+     *
+     * The label comes back alongside the id because every line the console
+     * prints afterwards should name the session the way the fleet does, not the
+     * way it was typed. See {@link resolveEntityRef} for why an exact id wins and
+     * why ambiguity is reported rather than resolved.
+     *
+     * `ended` rides along for the same reason (HIVE-93): both verbs have to
+     * refuse a finished session, and both have to say *which* ending it was. It
+     * is the finished sentence rather than a boolean so neither caller can
+     * reconstruct it — reconstructing it at two call sites is how `open` came to
+     * report a cleared session as terminated. `null` means the target is live.
+     */
+    const resolve = (
+      ref: string,
+    ): { id: string; label: string; ended: string | null } | null => {
+      const match = resolveEntityRef(ref, get().entities);
+
+      if (match.kind === 'none') {
+        pushOrch(`  no such session: ${ref}`, 'red');
+        return null;
+      }
+
+      if (match.kind === 'ambiguous') {
+        pushOrch(
+          `  ${ref} matches ${match.labels.join(', ')} — use a session id`,
+          'red',
+        );
+        return null;
+      }
+
+      const entity = get().entities[match.id];
+      return {
+        id: match.id,
+        // Non-null in practice: `resolveEntityRef` only reports ids it found in
+        // this same map. Narrowed rather than asserted so a future refactor that
+        // breaks that cannot render `undefined` into the transcript.
+        label: entity === undefined ? match.id : entityLabel(entity),
+        /**
+         * Agents are never "ended" — they have no lifecycle and no pty, so the
+         * gate does not apply to them and they answer `null` like a live session.
+         */
+        ended:
+          entity !== undefined && isSession(entity) && isEnded(entity.status)
+            ? endedReason(entity)
+            : null,
+      };
+    };
+
     pushOrch(`❯ ${command.raw}`, 'green');
 
     switch (command.kind) {
@@ -916,7 +993,17 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
              * the optional field raw printed the literal `undefined` for every
              * session whose branch had not been observed yet.
              */
-            `  ${entity.id.padEnd(16)}${STATUS_WORD[entity.status].padEnd(13)}${entity.project} · ${branchLabel(entity)}`,
+            /**
+             * `entityLabel`, not `entity.id` (HIVE-92).
+             *
+             * This column is what tells the user what to type at `send` and
+             * `open`, so printing the id while every other surface printed the
+             * name made the console disagree with the app *and* with itself —
+             * `status` named `sess-04`, the rails named `INCORP-455`, and only
+             * one of the two was accepted. Now the column and the argument are
+             * the same string.
+             */
+            `  ${entityLabel(entity).padEnd(16)}${STATUS_WORD[entity.status].padEnd(13)}${entity.project} · ${branchLabel(entity)}`,
             STATUS_COLOR[entity.status],
           );
         }
@@ -929,33 +1016,51 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       }
 
       case 'open': {
-        if (!get().entities[command.target]) {
-          pushOrch(`  no such session: ${command.target}`, 'red');
-          return;
-        }
+        const match = resolve(command.target);
+        if (match === null) return;
         /**
          * The refusal is printed, not swallowed (story 108). A console that
          * answered `opened sess-02` and then did not open it would be worse
          * than one that said nothing at all.
+         *
+         * **And it now says which ending it was** (HIVE-93). This branch used to
+         * print the terminated sentence for both, so a *cleared* session — whose
+         * process is alive and busy on someone else's behalf — was reported as
+         * "its process is gone". `endedReason` owns the distinction.
          */
-        if (!get().openEntity(command.target)) {
-          pushOrch(
-            `  ${command.target} has terminated — its process is gone`,
-            'red',
-          );
+        if (!get().openEntity(match.id)) {
+          pushOrch(`  ${match.ended ?? `${match.label} cannot be opened`}`, 'red');
           return;
         }
-        pushOrch(`  opened ${command.target}`, 'dim');
+        pushOrch(`  opened ${match.label}`, 'dim');
         return;
       }
 
       case 'send': {
-        if (!get().entities[command.target]) {
-          pushOrch(`  no such session: ${command.target}`, 'red');
+        const match = resolve(command.target);
+        if (match === null) return;
+
+        /**
+         * An ended session is refused **before** `sendToEntity`, and this is a
+         * correctness gate rather than a nicety (HIVE-93).
+         *
+         * `sendToEntity` routes by `terminalOf(entity)`, and a cleared row's
+         * terminal is inherited by its successor — see `endedReason` and
+         * `isTerminated`. So `send <cleared-row> <message>` did not merely poke a
+         * finished session: it typed the user's message into **a different,
+         * live agent's** prompt, under a row that says `done`. The terminated
+         * case was only wasteful by comparison; this one crosses sessions.
+         *
+         * Refused after resolution rather than before, so the message still
+         * names the row the way every other surface does (HIVE-92) instead of
+         * echoing back whatever was typed.
+         */
+        if (match.ended !== null) {
+          pushOrch(`  not sent — ${match.ended}`, 'red');
           return;
         }
 
-        const outcome = get().sendToEntity(command.target, command.message);
+        const outcome = get().sendToEntity(match.id, command.message);
         if (outcome?.kind === 'refused') {
           /**
            * Verbatim. The console prints failures; it does not translate or
@@ -966,7 +1071,13 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           pushOrch(`  ${outcome.reason}`, 'red');
           return;
         }
-        pushOrch(`  routed → ${command.target}`, 'dim');
+        /**
+         * The **resolved** label, not what was typed. A user who typed
+         * `incorp-455` is told it went to `INCORP-455`, which is the row they
+         * can see — echoing their own casing back would leave them unsure
+         * whether it matched at all.
+         */
+        pushOrch(`  routed → ${match.label}`, 'dim');
         return;
       }
 
@@ -1056,6 +1167,23 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     // update has already happened, and a failed write costs a badge that is
     // right until the next hydration rather than a click that did nothing.
     void window.hive?.notifications.markRead(id);
+  },
+
+  /**
+   * Dropped locally *and* in the hub (HIVE-93).
+   *
+   * Local first so the list reflows immediately — the card has already played
+   * its exit animation by the time this runs, and waiting on IPC would leave a
+   * gap where the row used to be. The hub call is fire-and-forget for the same
+   * reason `markRead`'s is: the visible state is already correct, and the cost of
+   * a failed write is one row that returns on the next reload rather than a
+   * wedged UI.
+   */
+  dismissNotif: (id) => {
+    set((state) => ({
+      notifs: state.notifs.filter((notif) => notif.id !== id),
+    }));
+    void window.hive?.notifications.dismiss(id);
   },
 
   /**
@@ -1512,7 +1640,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     set((state) => ({
       orchLines: capLines([
         ...state.orchLines,
-        line(`  ✓ ${current.name ?? current.id} done — cleared`, 'green'),
+        // `entityLabel`, not a hand-spelled `?? ` — the fallback also has to
+        // catch an *empty* name, which is the one case `??` lets through, and
+        // spelling it here is the duplication that function exists to prevent.
+        line(`  ✓ ${entityLabel(current)} done — cleared`, 'green'),
         line(`  ▸ ${successorId} started in the same terminal`, 'dim'),
       ]),
     }));
@@ -2606,6 +2737,10 @@ export const useRefreshPrs = () => useHiveStore((state) => state.refreshPrs);
 
 /** Mark one notification read, by its id (story 051, HIVE-75). */
 export const useMarkRead = () => useHiveStore((state) => state.markRead);
+
+/** Remove a notification the user has acted on (HIVE-93). */
+export const useDismissNotif = () =>
+  useHiveStore((state) => state.dismissNotif);
 
 /** Push a notification — the stream's entry point (stories 051, 061, HIVE-75). */
 export const usePushNotif = () => useHiveStore((state) => state.pushNotif);

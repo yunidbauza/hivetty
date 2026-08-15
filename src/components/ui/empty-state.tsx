@@ -1,5 +1,42 @@
 import type { ReactNode } from 'react';
 
+import { SwarmCreature, type Creature } from '@components/ui/swarm-creature';
+import { SwarmLine } from '@components/ui/swarm-line';
+import type { PhraseKey } from '@lib/swarm/phrases';
+
+/**
+ * The rail size, named once.
+ *
+ * It is the number the whole "a rail may have a sprite" argument rests on, so
+ * it is a constant rather than six call sites that could drift apart — and one
+ * that drifts upward stops being a mark and becomes the illustration this
+ * component's doc rules out.
+ */
+export const RAIL_CREATURE_SIZE = 44;
+
+/**
+ * A creature without a phrase is a compile error, not a silent no-op.
+ *
+ * The sprite is rendered inside the flavoured branch, so `creature` alone would
+ * type-check, lint, and draw nothing — with no error to explain why. Twenty-odd
+ * call sites still pass neither, and they keep working; what the union removes
+ * is the one combination that looks correct and isn't.
+ */
+type EmptyStateProps = {
+  /** What is missing. One sentence. */
+  children: ReactNode;
+  /** How to fix it. One sentence, or a control. */
+  action?: ReactNode;
+} & (
+  | {
+      /** Which pool to draw a flavour line from. */
+      phrase: PhraseKey;
+      /** The sprite above the flavour line. 44px — see the note above. */
+      creature?: Creature;
+    }
+  | { phrase?: undefined; creature?: never }
+);
+
 /**
  * What a left-rail panel says when it has nothing to list.
  *
@@ -21,24 +58,56 @@ import type { ReactNode } from 'react';
  * the amber register in this app is reserved for things that actually went
  * wrong.
  *
- * No icon and no centred hero block. These sit in a 268px rail beside a
- * terminal the user is trying to read, and a decorative empty state would take
- * more of their attention than the thing it is apologising for.
+ * No centred hero block, and nothing that fills the column. These sit in a
+ * 268px rail beside a terminal the user is trying to read, and an empty state
+ * that took more of their attention than the thing it is apologising for would
+ * be worse than the blank column it replaced.
+ *
+ * ## The flavour line and the creature
+ *
+ * `phrase` opts a panel into a line of swarm above the copy — and *above* is
+ * the whole design. The paragraph below it is untouched: what is missing, then
+ * the way out, exactly as before. Nothing became decorative instead of useful,
+ * which is the only reading under which the paragraph above stays true.
+ *
+ * `creature` adds the sprite that goes with it, at **44px** — a size chosen so
+ * the paragraph above stays true rather than in spite of it. It is shorter than
+ * the two lines of copy beneath it and reads as a mark, not an illustration.
+ * The centred 96–120px block the full-stage surfaces use is exactly what a rail
+ * must not have, and `SwarmCreature` documents the same split from its side.
  */
 export function EmptyState({
   children,
   action,
-}: {
-  /** What is missing. One sentence. */
-  children: ReactNode;
-  /** How to fix it. One sentence, or a control. */
-  action?: ReactNode;
-}) {
-  return (
+  phrase,
+  creature,
+}: EmptyStateProps) {
+  const body = (
     <p className="px-1 py-1 text-[11.5px] leading-[1.45] text-subtle">
       {children}
       {action === undefined ? null : <> {action}</>}
     </p>
+  );
+
+  /**
+   * The un-flavoured case returns the bare paragraph rather than a wrapper
+   * around it. Twenty-odd call sites predate this prop and their layout was
+   * tuned against that exact element; introducing a flex container for all of
+   * them to add nothing would be a silent re-spacing of panels this change has
+   * no business touching.
+   */
+  if (phrase === undefined) return body;
+
+  return (
+    <div className="flex flex-col gap-[3px]">
+      {creature === undefined ? null : (
+        <div className="px-1 pb-0.5">
+          <SwarmCreature creature={creature} size={RAIL_CREATURE_SIZE} />
+        </div>
+      )}
+      <SwarmLine phraseKey={phrase} />
+      {body}
+    </div>
   );
 }
 

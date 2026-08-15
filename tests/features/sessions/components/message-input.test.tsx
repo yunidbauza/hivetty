@@ -4,6 +4,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageInput } from '@features/sessions/components/message-input';
+import { PHRASES } from '@lib/swarm/phrases';
 import { ACK_DELAY_MS, useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
@@ -71,7 +72,7 @@ describe('MessageInput', () => {
 
       expect(input()).toHaveAttribute(
         'placeholder',
-        'message this session — routed by the orchestrator',
+        'message this session — routed by the overmind',
       );
     } finally {
       delete (window as { hive?: unknown }).hive;
@@ -128,7 +129,14 @@ describe('MessageInput', () => {
 
       // The payoff: a blocked session picks the answer up and resumes.
       expect(linesOf('lead-form')).toContain('● Acknowledged — working on it');
-      expect(linesOf('lead-form')).toContain('✱ Working…');
+      /**
+       * The working verb comes from a pool, so this asserts a working line
+       * arrived rather than which one.
+       */
+      const lines = linesOf('lead-form');
+      expect(
+        PHRASES['working.session'].some((verb) => lines.includes(`✱ ${verb}`)),
+      ).toBe(true);
       expect(useHiveStore.getState().entities['lead-form']).toMatchObject({
         status: 'working',
       });

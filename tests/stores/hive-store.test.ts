@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PHRASES } from '@lib/swarm/phrases';
 import { isSession } from '@/types/entity';
 import { isDesktop } from '@config/runtime';
 import { peek, stamp } from '@lib/fake-clock';
@@ -235,7 +236,7 @@ describe('hive-store', () => {
       const entity = useHiveStore.getState().entities['lead-form'];
 
       const last = entity.lines.at(-1);
-      expect(last?.text).toBe('❯ [orchestrator] y');
+      expect(last?.text).toBe('❯ [overmind] y');
       expect(last?.color).toBe('cyan');
     });
 
@@ -250,7 +251,14 @@ describe('hive-store', () => {
 
       const entity = useHiveStore.getState().entities['lead-form'];
       expect(isSession(entity) && entity.status).toBe('working');
-      expect(entity.lines.at(-1)?.text).toBe('✱ Working…');
+      /**
+       * The verb is drawn from a pool now, so the assertion is on the shape of
+       * the line rather than its wording — the marker and the fact that a
+       * working verb is present.
+       */
+      const working = entity.lines.at(-1)?.text ?? '';
+      expect(working.startsWith('✱ ')).toBe(true);
+      expect(PHRASES['working.session']).toContain(working.slice(2));
       // One acknowledgement line for both origins (story 043): the message
       // means the same thing however it arrived.
       expect(entity.lines.at(-2)?.text).toBe('● Acknowledged — working on it');
@@ -265,7 +273,7 @@ describe('hive-store', () => {
 
       // Only the routed message landed; the acknowledgement never fired.
       const entity = useHiveStore.getState().entities['lead-form'];
-      expect(entity.lines.at(-1)?.text).toBe('❯ [orchestrator] y');
+      expect(entity.lines.at(-1)?.text).toBe('❯ [overmind] y');
     });
 
     it('is a no-op for an unknown entity', () => {
@@ -518,7 +526,7 @@ describe('hive-store', () => {
         run('send lead-form y please');
 
         const entity = useHiveStore.getState().entities['lead-form'];
-        expect(entity.lines.at(-1)?.text).toBe('❯ [orchestrator] y please');
+        expect(entity.lines.at(-1)?.text).toBe('❯ [overmind] y please');
         expect(lastLine()).toMatchObject({ text: '  routed → lead-form', color: 'dim' });
         vi.useRealTimers();
       });
@@ -579,6 +587,232 @@ describe('hive-store', () => {
           text: '  no such session: nope',
           color: 'red',
         });
+      });
+    });
+
+    /**
+     * Addressing a session by the identifier on screen (HIVE-92).
+     *
+     * The console indexed `entities` directly, so it accepted only the entity id.
+     * Every other surface renders `entityLabel`, and for a ticket session that is
+     * the Jira key — so the fleet showed `INCORP-455` everywhere and the one
+     * place you can type at it answered `no such session: INCORP-455`.
+     */
+    describe('addressing by name', () => {
+      /** A ticket spawn, which is the only path that names a session up front. */
+      const ticketSession = () =>
+        useHiveStore
+          .getState()
+          .spawnSession('apfm-web', '', 'opus', 'high', 'INCORP-455');
+
+      it('routes to a ticket session by its key', () => {
+        const id = ticketSession();
+
+        run('send INCORP-455 what time is it');
+
+        const entity = useHiveStore.getState().entities[id];
+        expect(entity?.lines.at(-1)?.text).toBe(
+          '❯ [overmind] what time is it',
+        );
+        expect(lastLine()).toMatchObject({
+          text: '  routed → INCORP-455',
+          color: 'dim',
+        });
+      });
+
+      it('accepts the key in any case, and echoes back the real one', () => {
+        // A Jira key is upper-case; a prompt is where people type lower-case.
+        const id = ticketSession();
+
+        run('send incorp-455 hello');
+
+        const entity = useHiveStore.getState().entities[id];
+        expect(entity?.lines.at(-1)?.text).toBe('❯ [overmind] hello');
+        // The resolved label, not what was typed — otherwise the user cannot
+        // tell whether it matched.
+        expect(lastLine()).toMatchObject({ text: '  routed → INCORP-455' });
+      });
+
+      it('still routes by entity id, which is what it always accepted', () => {
+        const id = ticketSession();
+
+        run(`send ${id} hello`);
+
+        expect(lastLine()).toMatchObject({ text: '  routed → INCORP-455' });
+      });
+
+      it('opens a session by name too, not only send', () => {
+        const id = ticketSession();
+
+        run('open INCORP-455');
+
+        expect(useUiStore.getState().activeTab).toBe(id);
+        expect(lastLine()).toMatchObject({
+          text: '  opened INCORP-455',
+          color: 'dim',
+        });
+      });
+
+      it('prefers an exact id over another session’s name', () => {
+        /**
+         * Reachable because an agent can rename itself to anything over the
+         * title stream, including another row's id. The id is the `entities` map
+         * key, so an exact hit is unique by construction — resolving to its owner
+         * is the only answer that does not depend on map order.
+         */
+        // A ticket key that happens to equal a fixture session's id. The spawn
+        // path is the only thing needed — no rename, so no title-stream guards.
+        useHiveStore
+          .getState()
+          .spawnSession('apfm-web', '', 'opus', 'high', 'lead-form');
+
+        run('send lead-form hello');
+
+        expect(useHiveStore.getState().entities['lead-form']?.lines.at(-1)?.text).toBe(
+          '❯ [overmind] hello',
+        );
+        expect(lastLine()).toMatchObject({ text: '  routed → lead-form' });
+      });
+
+      it('refuses an ambiguous target instead of guessing', () => {
+        /**
+         * Two rows answering to one string, which the case-insensitive match
+         * makes reachable even though `ticketSessionName` prevents duplicate
+         * names. Routing a message to a coin flip between two agents is the one
+         * outcome worse than refusing it.
+         */
+        const store = useHiveStore.getState();
+        // `ticketSessionName` de-duplicates case-*sensitively*, so two keys that
+        // differ only in case both keep their name — and both then answer to one
+        // case-insensitive target.
+        const first = store.spawnSession('apfm-web', '', 'opus', 'high', 'Duplicate');
+        const second = store.spawnSession('apfm-web', '', 'opus', 'high', 'duplicate');
+
+        run('send DUPLICATE hello');
+
+        expect(lastLine()).toMatchObject({ color: 'red' });
+        expect(lastLine()?.text).toContain('matches');
+        expect(lastLine()?.text).toContain('use a session id');
+        // Nothing was routed.
+        expect(useHiveStore.getState().entities[first]?.lines.at(-1)?.text).not.toContain(
+          'hello',
+        );
+        expect(useHiveStore.getState().entities[second]?.lines.at(-1)?.text).not.toContain(
+          'hello',
+        );
+      });
+
+      it('still reports a genuinely unknown target', () => {
+        ticketSession();
+        run('send INCORP-999 hello');
+
+        expect(lastLine()).toMatchObject({
+          text: '  no such session: INCORP-999',
+          color: 'red',
+        });
+      });
+
+      it('status prints the name, so the column names what send accepts', () => {
+        ticketSession();
+        run('status');
+
+        const rows = useHiveStore
+          .getState()
+          .orchLines.map((l) => l.text);
+
+        expect(rows.some((row) => row.includes('INCORP-455'))).toBe(true);
+      });
+    });
+
+    /**
+     * An ended session is refused by both verbs, and the refusal says which
+     * ending it was (HIVE-93).
+     *
+     * The `send` half is a **correctness** gate, not a nicety. `sendToEntity`
+     * routes by `terminalOf`, and a cleared row's terminal is inherited by its
+     * successor — so this used to type the user's message into a different, live
+     * agent's prompt, under a row reading `done`.
+     */
+    describe('ended sessions', () => {
+      beforeEach(() => {
+        vi.mocked(isDesktop).mockReturnValue(true);
+      });
+
+      it('refuses to send to a cleared session, and routes nothing at all', () => {
+        useHiveStore.getState().setSessionStatus('webhooks', 'done');
+
+        run('send webhooks what time is it');
+
+        expect(lastLine()).toEqual({
+          text: '  not sent — webhooks was cleared — its terminal continues as a new session',
+          color: 'red',
+        });
+        /**
+         * The assertion the bug actually needed. A line in the transcript proves
+         * the console *said* something; this proves nothing reached a pty — which
+         * is the difference between a cosmetic message and the cross-talk fix.
+         */
+        expect(sendToSession).not.toHaveBeenCalled();
+      });
+
+      it('refuses to send to a terminated session', () => {
+        useHiveStore.getState().setSessionStatus('webhooks', 'terminated');
+
+        run('send webhooks hello');
+
+        expect(lastLine()).toEqual({
+          text: '  not sent — webhooks has terminated — its process is gone',
+          color: 'red',
+        });
+        expect(sendToSession).not.toHaveBeenCalled();
+      });
+
+      it('does not append the message to the retired row either', () => {
+        useHiveStore.getState().setSessionStatus('webhooks', 'done');
+        const before = useHiveStore.getState().entities['webhooks']?.lines.length;
+
+        run('send webhooks hello');
+
+        expect(useHiveStore.getState().entities['webhooks']?.lines).toHaveLength(
+          before ?? 0,
+        );
+      });
+
+      it('reports a cleared session as cleared when opening, not as terminated', () => {
+        /**
+         * The wording bug this fixes: `open` printed the terminated sentence for
+         * both endings, so a cleared session — whose process is alive and busy on
+         * someone else's behalf — was reported as "its process is gone". Both
+         * halves of that were false.
+         */
+        useHiveStore.getState().setSessionStatus('webhooks', 'done');
+
+        run('open webhooks');
+
+        expect(lastLine()).toEqual({
+          text: '  webhooks was cleared — its terminal continues as a new session',
+          color: 'red',
+        });
+        expect(useUiStore.getState().activeTab).toBe('orch');
+      });
+
+      it('still reports a terminated session as terminated when opening', () => {
+        useHiveStore.getState().setSessionStatus('webhooks', 'terminated');
+
+        run('open webhooks');
+
+        expect(lastLine()).toEqual({
+          text: '  webhooks has terminated — its process is gone',
+          color: 'red',
+        });
+      });
+
+      it('leaves a live session alone', () => {
+        // The gate must not catch anything that is still running.
+        run('send webhooks hello');
+
+        expect(lastLine()).toMatchObject({ text: '  routed → webhooks' });
+        expect(sendToSession).toHaveBeenCalled();
       });
     });
 

@@ -2,10 +2,12 @@ import { MagnifyingGlass } from '@phosphor-icons/react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { useRef } from 'react';
 
+import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 import { cn } from '@/lib/utils';
 import type { Effort, Model } from '@/types/entity';
 
 import { Icon } from '@components/ui/icon';
+import { SwarmCreature } from '@components/ui/swarm-creature';
 import { can } from '@config/runtime';
 import { OptionStepper } from '@features/sessions/components/option-stepper';
 import { useProjectAccess, useProjectConfig } from '@hooks/use-project-config';
@@ -37,16 +39,21 @@ const PINNED_COUNT = 4;
  * header stay visible, exactly as the concept shows — so it is composed from
  * the primitive directly and rendered in place.
  *
- * What the story actually asks for is Radix's *behaviour*, and the parts that
- * matter here are kept: the focus trap, Escape, and the `aria-modal` semantics
- * that hide the rest of the tree from assistive tech — all of which live in
- * `Content`.
+ * What the story actually asks for is Radix's *behaviour*, and what is kept is
+ * Escape, the dialog role, and the managed open/close lifecycle — all of which
+ * live in `Content`.
  *
  * Not kept: scroll locking. Radix implements that in `Dialog.Overlay`, which
  * this picker deliberately omits — an overlay would paint a scrim across the
  * whole app and destroy the full-stage look the concept specifies. Nothing is
  * lost: the shell is a fixed-height, non-scrolling layout, so there is no page
  * scroll to lock.
+ *
+ * Also not kept, and this one was a bug rather than a choice: the focus trap
+ * and the `aria-modal` semantics that hide the rest of the tree. Both come
+ * from modality, and modality is wrong for a surface that leaves the header
+ * and rails visible — it made them inert while they still looked live. See the
+ * note on `modal` below.
  */
 export function NewSessionPicker() {
   const projects = useProjects();
@@ -57,6 +64,14 @@ export function NewSessionPicker() {
   const { closePicker, setPickerQuery, setNewModel, setNewEffort } =
     usePickerActions();
   const { openSettings } = useSettingsActions();
+  /**
+   * Two pools, because the two states are not the same thing: first run means
+   * nothing exists yet, and no-match means plenty exists and none of it is what
+   * was typed. Sharing a pool would let "the creep has not yet spread" answer a
+   * search, which is wrong about the world.
+   */
+  const firstRunPhrase = useSwarmPhrase('empty.projects');
+  const noMatchPhrase = useSwarmPhrase('noMatch.picker');
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -87,6 +102,14 @@ export function NewSessionPicker() {
   return (
     <DialogPrimitive.Root
       open
+      /**
+       * Not modal — the same reason the settings overlay is not. This fills the
+       * center stage and leaves the header and rails visible on purpose, and
+       * Radix's modality made that visible chrome `aria-hidden` and
+       * `pointer-events: none`. The theme toggle and the bell looked live and
+       * were not; clicking one dismissed the picker rather than acting.
+       */
+      modal={false}
       onOpenChange={(open) => {
         if (!open) closePicker();
       }}
@@ -98,6 +121,10 @@ export function NewSessionPicker() {
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           searchRef.current?.focus();
+        }}
+        // A header or rail click acts; it does not dismiss. Escape still closes.
+        onInteractOutside={(event) => {
+          event.preventDefault();
         }}
         className="flex min-h-0 flex-1 flex-col items-center gap-7 overflow-y-auto bg-term-bg px-6 py-10 outline-none"
       >
@@ -115,6 +142,24 @@ export function NewSessionPicker() {
           card that scrolled out from under the query still gets a titled
           picker — it simply has no summary line to add.
         */}
+        {/*
+          The spire leads the picker (HIVE-93), and **only when the first-run
+          block below is not showing**.
+
+          That condition is the whole of it: `templateWritten` renders a 120px
+          hive hero a few lines down, and two creatures stacked in one dialog
+          reads as a bug rather than as atmosphere. So this is the ordinary
+          picker's mark and the hive stays the first-run hero — the surface has
+          two states and each gets exactly one sprite.
+
+          96px, not the hero's 120: it sits *above* a title rather than standing
+          in for missing content, so it is the quieter end of the 72–120
+          full-stage register `SwarmCreature` documents.
+        */}
+        {config?.templateWritten ? null : (
+          <SwarmCreature creature="spire" size={96} />
+        )}
+
         <div className="flex flex-col gap-1.5 text-center">
           <DialogPrimitive.Title className="font-display text-[22px] tracking-[-0.02em] text-ink">
             {pickerTicket === null
@@ -138,6 +183,10 @@ export function NewSessionPicker() {
         */}
         {config?.templateWritten ? (
           <div className="flex max-w-[560px] flex-col items-center gap-2.5">
+            <SwarmCreature creature="hive" size={120} />
+            <p className="text-center font-mono text-[11.5px] text-muted">
+              {firstRunPhrase}
+            </p>
             <p className="text-center font-mono text-[11.5px] text-subtle">
               no projects yet — add one of your repositories to open a session in it
             </p>
@@ -205,9 +254,12 @@ export function NewSessionPicker() {
 
           <div className="max-h-[220px] overflow-y-auto">
             {matches.length === 0 ? (
-              <p className="px-1 py-2 font-mono text-xs text-subtle">
-                {`no projects match "${pickerQuery.trim()}"`}
-              </p>
+              <div className="flex flex-col gap-[3px] px-1 py-2">
+                <p className="font-mono text-xs text-muted">{noMatchPhrase}</p>
+                <p className="font-mono text-xs text-subtle">
+                  {`no projects match "${pickerQuery.trim()}"`}
+                </p>
+              </div>
             ) : (
               matches.map((project) => (
                 <ProjectRow

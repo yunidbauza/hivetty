@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { EmptyState, EmptyStatePath } from '@components/ui/empty-state';
+import { PHRASES } from '@lib/swarm/phrases';
 
 /**
  * The atom the rail panels use to say why they have nothing to list.
@@ -42,6 +43,64 @@ describe('EmptyState', () => {
     // Trailing whitespace would be the tell that an absent action still
     // rendered its separator.
     expect(paragraph.textContent).toBe('No agents running.');
+  });
+
+  /**
+   * The flavour line is additive. The whole design rests on this: the sentence
+   * naming what is missing and the sentence naming the way out both survive
+   * verbatim, so nothing became decorative *instead of* useful.
+   */
+  it('adds a flavour line above the copy without disturbing it', () => {
+    render(
+      <EmptyState phrase="empty.inbox" action="Sessions will show up here.">
+        Nothing needs you.
+      </EmptyState>,
+    );
+
+    const paragraph = screen.getByText(/Nothing needs you/);
+
+    expect(paragraph).toHaveTextContent('Nothing needs you. Sessions will show up here.');
+
+    const flavour = document.querySelector('[data-swarm-line]');
+
+    expect(PHRASES['empty.inbox']).toContain(flavour?.textContent);
+  });
+
+  it('holds a creature at rail size when one is cast', () => {
+    render(
+      <EmptyState phrase="empty.inbox" creature="overlord">
+        Nothing needs you.
+      </EmptyState>,
+    );
+
+    const img = screen.getByRole('presentation', { hidden: true });
+
+    expect(img).toHaveAttribute('data-creature', 'overlord');
+    /**
+     * The size is the whole argument for allowing a sprite in a 268px rail at
+     * all, so it is asserted rather than left to a call site.
+     */
+    expect(img).toHaveStyle({ height: '44px' });
+  });
+
+  it('takes the flavour line without a creature', () => {
+    render(<EmptyState phrase="empty.inbox">Nothing needs you.</EmptyState>);
+
+    expect(document.querySelector('[data-swarm-line]')).not.toBeNull();
+    expect(document.querySelector('[data-creature]')).toBeNull();
+  });
+
+  /**
+   * Twenty-odd call sites predate the prop, and their layout was tuned against
+   * a bare paragraph. Wrapping all of them in a flex container to add nothing
+   * would be a silent re-spacing of panels this change has no business
+   * touching.
+   */
+  it('renders the bare paragraph when no phrase is asked for', () => {
+    const { container } = render(<EmptyState>No agents running.</EmptyState>);
+
+    expect(container.firstElementChild?.tagName).toBe('P');
+    expect(document.querySelector('[data-swarm-line]')).toBeNull();
   });
 });
 

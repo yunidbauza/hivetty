@@ -1,7 +1,15 @@
+import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 import { cn } from '@/lib/utils';
-import { branchLabel, entityLabel, isEnded, isSession } from '@/types/entity';
+import {
+  branchLabel,
+  endedReason,
+  entityLabel,
+  isEnded,
+  isSession,
+} from '@/types/entity';
 
 import { STATUS_LABEL, STATUS_TEXT } from '@components/ui/status-dot';
+import { SwarmCreature } from '@components/ui/swarm-creature';
 import { prStateText } from '@features/shared/pr-presentation';
 import {
   useActiveSessions,
@@ -91,6 +99,12 @@ export function SessionTable() {
   const active = useActiveSessions();
   const ended = useEndedSessions();
   const empty = active.length === 0 && ended.length === 0;
+  /**
+   * Drawn unconditionally, though only rendered when the table is empty: a hook
+   * cannot sit behind the `empty` branch. The cost is one array index on a
+   * render that throws it away.
+   */
+  const phrase = useSwarmPhrase('empty.sessions');
 
   return (
     <div className="shrink-0 overflow-y-auto bg-term-bg px-[18px] pt-4 font-mono text-[12.5px]">
@@ -104,12 +118,22 @@ export function SessionTable() {
       </div>
 
       {empty ? (
-        <p
+        /*
+          The one place in the app a creature sits on the terminal ground. It is
+          allowed here for the same reason the table keeps its column header
+          above an empty body: this region owns the whole stage and has nothing
+          else in it, so an illustration competes with nothing.
+        */
+        <div
           data-testid="session-table-empty"
-          className="px-2 py-[3px] text-term-head"
+          className="flex flex-col items-center gap-2 px-2 py-4"
         >
-          No sessions running — start one with New session.
-        </p>
+          <SwarmCreature creature="hive" size={96} />
+          <p className="text-muted">{phrase}</p>
+          <p className="text-term-head">
+            No sessions running — start one with New session.
+          </p>
+        </div>
       ) : null}
 
       {active.map((id) => (
@@ -177,16 +201,15 @@ function SessionTableRow({ id }: { id: string }) {
    * its own any more.
    */
   const ended = isEnded(entity.status);
-  const endedReason =
-    entity.status === 'terminated'
-      ? `${entityLabel(entity)} has terminated — its process is gone`
-      : `${entityLabel(entity)} was cleared — its terminal continues as a new session`;
+  // The sentence itself moved to `types/entity.ts` (HIVE-93) — the console needs
+  // the same one, and the store cannot import from `features/`.
+  const reason = endedReason(entity);
 
   return (
     <button
       type="button"
       disabled={ended}
-      title={ended ? endedReason : undefined}
+      title={ended ? reason : undefined}
       onClick={() => {
         // Click both selects and opens: the caret should follow the user's
         // last action, or the keyboard and the mouse end up disagreeing about

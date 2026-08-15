@@ -26,15 +26,28 @@ export function InboxPanel() {
   if (notifs.length === 0) {
     return (
       <div data-panel="inbox" className="flex flex-col gap-[var(--cc-list-gap-sm)]">
-        <EmptyState action="Sessions and pull requests will show up here.">
+        <EmptyState
+          phrase="empty.inbox"
+          creature="overlord"
+          action="Sessions and pull requests will show up here."
+        >
           Nothing needs you.
         </EmptyState>
       </div>
     );
   }
 
+  /*
+    No `gap` on the list, and the spacing lives on the cards instead (HIVE-93).
+
+    A dismissed card animates its own height, padding and margin to zero so the
+    rows below close over it. A flex `gap` is the parent's, not the child's, so it
+    would survive that collapse — the card would vanish and leave a gap-sized hole
+    that snapped shut only when React unmounted the row. Owning the spacing per
+    card is what lets the last few pixels animate with everything else.
+  */
   return (
-    <div data-panel="inbox" className="flex flex-col gap-[var(--cc-list-gap-sm)]">
+    <div data-panel="inbox" className="flex flex-col">
       {notifs.map((notif) => (
         <NotificationCard key={notif.id} notif={notif} />
       ))}
