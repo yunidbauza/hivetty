@@ -71,6 +71,62 @@ describe('parseCommand', () => {
       });
     });
 
+    it('keeps line breaks, which are not whitespace for this purpose', () => {
+      /**
+       * `⇧↵` puts them there on purpose. The collapse above is deliberate and
+       * long-standing, but applying it across newlines too would fold a
+       * three-line message into one line — silently discarding the thing the
+       * user pressed a key to create. So the collapse runs *within* each line.
+       */
+      expect(parseCommand('send lead-form first\nsecond')).toMatchObject({
+        target: 'lead-form',
+        message: 'first\nsecond',
+      });
+
+      expect(parseCommand('spawn apfm-web do  this\nthen  that')).toMatchObject({
+        repo: 'apfm-web',
+        task: 'do this\nthen that',
+      });
+    });
+
+    it('keeps indentation, so both prompt rows agree about one message', () => {
+      /**
+       * The per-line `.trim()` this replaces flattened a pasted code block —
+       * but only through *this* row. The session's own prompt does not trim per
+       * line, so the same paste arrived indented through one and flat through
+       * the other: two prompts disagreeing about one message, in the change
+       * whose whole point is that the line break survives the trip.
+       *
+       * Interior runs still collapse; that is the long-standing behaviour and
+       * the test above pins it.
+       */
+      expect(
+        parseCommand('send lead-form fix this:\n    if (x)  return;\n    done'),
+      ).toMatchObject({
+        message: 'fix this:\n    if (x) return;\n    done',
+      });
+    });
+
+    it('leaves `raw` as the user typed it, collapsing only the message', () => {
+      /**
+       * `raw` is echoed verbatim into the transcript, so normalising it would
+       * quietly rewrite what the user sees they typed. Only the derived field
+       * is collapsed — which is also how this behaved before the newline work.
+       */
+      expect(parseCommand('send lead-form  yes   go')).toMatchObject({
+        raw: 'send lead-form  yes   go',
+        message: 'yes go',
+      });
+    });
+
+    it('reads the target across a line break, not just a space', () => {
+      // A message begun on its own line is still a message.
+      expect(parseCommand('send lead-form\nthe whole thing')).toMatchObject({
+        target: 'lead-form',
+        message: 'the whole thing',
+      });
+    });
+
     it('reports usage when the message is missing', () => {
       expect(parseCommand('send lead-form')).toEqual({
         kind: 'usage',

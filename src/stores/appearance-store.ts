@@ -9,6 +9,10 @@ import {
   terminalFontStack,
   type TerminalFontId,
 } from '@lib/terminal/fonts';
+import { applyThemeColors } from '@lib/theme/apply';
+import { BUILT_IN_THEME } from '@lib/theme/built-in';
+import { BUILT_IN_THEME_ID, type HiveTheme } from '@lib/theme/contract';
+import { isHiveTheme } from '@lib/theme/validate';
 
 /**
  * Appearance — the first *persisted* state in the app (story 105).
@@ -123,6 +127,22 @@ interface AppearanceState {
   editorTabWidth: number;
 
   /**
+   * The imported theme library (HIVE-80).
+   *
+   * Keyed by an id the app assigns on import, never by the theme's own
+   * `name` — two imports of files both called "Nord" must not collide, and a
+   * theme's author is free to rename it without breaking what is active.
+   */
+  themes: Record<string, HiveTheme>;
+  /**
+   * Which theme paints the app: {@link BUILT_IN_THEME_ID} or a key into
+   * {@link themes}. Read through {@link activeThemeOf}, never indexed
+   * directly — a dangling id (a theme removed elsewhere, a half-restored
+   * store) must resolve to the built-in rather than throw.
+   */
+  activeThemeId: string;
+
+  /**
    * The OS's current answer. **Not persisted** — it is an observation of the
    * environment, not a preference, and restoring a stale answer on a machine
    * that has since changed would be worse than asking again.
@@ -148,6 +168,17 @@ interface AppearanceState {
   setEditorWordWrap: (wrap: boolean) => void;
   setEditorLineNumbers: (show: boolean) => void;
   setEditorTabWidth: (width: number) => void;
+
+  /** Add an imported theme to the library. Does not activate it. */
+  addTheme: (id: string, theme: HiveTheme) => void;
+  /** Make a library theme (or the built-in id) the one that paints the app. */
+  activateTheme: (id: string) => void;
+  /**
+   * Drop a theme from the library. If it was active, `activeThemeId` returns
+   * to {@link BUILT_IN_THEME_ID} in this same call — the app must never be
+   * observable pointing at a theme that is no longer there.
+   */
+  removeTheme: (id: string) => void;
 
   reset: () => void;
 }
@@ -250,10 +281,29 @@ function applyDensity(density: Density) {
   }
 }
 
-/** Push everything that lives on `<body>` at once — rehydration and reset. */
-function applyAll(state: Pick<AppearanceState, 'theme' | 'systemDark' | 'density'>) {
+/**
+ * The theme actually active, resolved from the library.
+ *
+ * A dangling `activeThemeId` — a theme removed elsewhere, a store that only
+ * half-restored — resolves to `null` (the built-in) rather than throwing: a
+ * store in that state still has to paint something.
+ */
+export function activeThemeOf(
+  state: Pick<AppearanceState, 'themes' | 'activeThemeId'>,
+): HiveTheme | null {
+  return state.themes[state.activeThemeId] ?? null;
+}
+
+/** Push everything that lives on `<body>` (and the theme style element) at once — rehydration and reset. */
+function applyAll(
+  state: Pick<
+    AppearanceState,
+    'theme' | 'systemDark' | 'density' | 'themes' | 'activeThemeId'
+  >,
+) {
   applyTheme(resolveTheme(state.theme, state.systemDark));
   applyDensity(state.density);
+  applyThemeColors(activeThemeOf(state));
 }
 
 const initialAppearanceState = {
@@ -296,7 +346,91 @@ const initialAppearanceState = {
   editorWordWrap: true,
   editorLineNumbers: true,
   editorTabWidth: 2,
+
+  themes: {} as Record<string, HiveTheme>,
+  activeThemeId: BUILT_IN_THEME_ID as string,
 };
+
+/** The shape written to `localStorage` — {@link initialAppearanceState}'s fields, persisted. */
+interface PersistedAppearanceState {
+  theme: ThemePreference;
+  terminalFont: TerminalFontId;
+  terminalFontSize: number;
+  terminalScrollback: number;
+  density: Density;
+  teamName: string;
+  editorPlacement: EditorPlacement;
+  editorSplitAxis: EditorSplitAxis;
+  editorSplitRatio: number;
+  editorNav: EditorNav;
+  editorEditable: boolean;
+  editorFont: TerminalFontId;
+  editorFontSize: number;
+  editorWordWrap: boolean;
+  editorLineNumbers: boolean;
+  editorTabWidth: number;
+  themes: Record<string, HiveTheme>;
+  activeThemeId: string;
+}
+
+/**
+ * The theme library, revalidated on its way out of `localStorage`.
+ *
+ * **A user must never be able to reach a state the app cannot boot from**, and
+ * before this it could: `localStorage` is reachable by another tab, a devtools
+ * session, an older build of this app and a write that was interrupted, and a
+ * malformed theme that is still valid *JSON* sails through `JSON.parse`. A
+ * persisted `{ nord: { hiveThemeVersion: 1, name: 'Nord' } }` with
+ * `activeThemeId: 'nord'` then threw inside `applyThemeColors` (swallowed,
+ * because zustand swallows what `onRehydrateStorage` throws) and again in the
+ * terminal-palette selector, which crashed the centre stage on every render —
+ * and the entry stayed in storage, so every restart crashed identically, with
+ * no path back from inside the app.
+ *
+ * So each entry is re-checked against {@link isHiveTheme} — the same shape
+ * `importTheme` demands — and anything that fails is dropped. If the *active*
+ * theme is one of the dropped ones, the id goes back to the built-in rather
+ * than dangling: {@link activeThemeOf} tolerates a dangling id, but the gallery
+ * would still ring a card that is no longer there.
+ */
+export function sanitizeThemeState(state: Record<string, unknown>): {
+  themes: Record<string, HiveTheme>;
+  activeThemeId: string;
+} {
+  const raw = state.themes;
+  const themes: Record<string, HiveTheme> = {};
+  if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+    for (const [id, theme] of Object.entries(raw)) {
+      if (isHiveTheme(theme)) themes[id] = theme;
+    }
+  }
+
+  const requested = state.activeThemeId;
+  const activeThemeId =
+    typeof requested === 'string' && (requested === BUILT_IN_THEME_ID || requested in themes)
+      ? requested
+      : BUILT_IN_THEME_ID;
+
+  return { themes, activeThemeId };
+}
+
+/**
+ * v1 → v2 (HIVE-80): the store gains a theme library.
+ *
+ * Exported for the test. Nobody's saved theme, font, size, scrollback,
+ * density, team name or editor settings resets — the two new fields are simply
+ * added, which is the whole job. From v2 on there is nothing to add, only the
+ * library to re-check ({@link sanitizeThemeState}) — a v2 payload has been
+ * writable by anything with a `localStorage` handle since the day it existed.
+ */
+export function migrateAppearance(
+  persisted: unknown,
+  version: number,
+): Record<string, unknown> {
+  const state = (persisted ?? {}) as Record<string, unknown>;
+  if (version >= 2) return { ...state, ...sanitizeThemeState(state) };
+  return { ...state, themes: {}, activeThemeId: BUILT_IN_THEME_ID };
+}
 
 export const APPEARANCE_STORAGE_KEY = 'hive.appearance';
 
@@ -380,6 +514,28 @@ export const useAppearanceStore = create<AppearanceState>()(
       setEditorLineNumbers: (editorLineNumbers) => set({ editorLineNumbers }),
       setEditorTabWidth: (editorTabWidth) => set({ editorTabWidth }),
 
+      addTheme: (id, theme) =>
+        set((state) => ({ themes: { ...state.themes, [id]: theme } })),
+
+      activateTheme: (id) => {
+        applyThemeColors(get().themes[id] ?? null);
+        set({ activeThemeId: id });
+      },
+
+      removeTheme: (id) => {
+        const { themes, activeThemeId } = get();
+        if (!(id in themes)) return;
+
+        const { [id]: _removed, ...rest } = themes;
+        const wasActive = activeThemeId === id;
+        if (wasActive) applyThemeColors(null);
+
+        set({
+          themes: rest,
+          activeThemeId: wasActive ? BUILT_IN_THEME_ID : activeThemeId,
+        });
+      },
+
       reset: () => {
         const systemDark = prefersDark();
         applyAll({ ...initialAppearanceState, systemDark });
@@ -388,13 +544,38 @@ export const useAppearanceStore = create<AppearanceState>()(
     }),
     {
       name: APPEARANCE_STORAGE_KEY,
-      version: 1,
+      version: 2,
+      /**
+       * `migrateAppearance` is typed loosely (`Record<string, unknown>`) so the
+       * test can hand it a bare v1 payload; the persist option needs the exact
+       * {@link PersistedAppearanceState} shape, which is what that function
+       * actually produces.
+       */
+      migrate: (persistedState, version) =>
+        migrateAppearance(persistedState, version) as unknown as PersistedAppearanceState,
+      /**
+       * Where the theme library is actually re-checked.
+       *
+       * `migrate` only runs when the stored version differs from this one, so
+       * it can never be the gate: the overwhelmingly common case is a v2
+       * payload rehydrating into a v2 store, which skips migration entirely.
+       * `merge` runs on every rehydrate, whichever path got here, which is what
+       * makes {@link sanitizeThemeState} unskippable.
+       */
+      merge: (persistedState, currentState) => {
+        const persisted = (persistedState ?? {}) as Record<string, unknown>;
+        return {
+          ...currentState,
+          ...persisted,
+          ...sanitizeThemeState(persisted),
+        } as AppearanceState;
+      },
       storage: createJSONStorage(() => localStorage),
       /**
        * The whitelist is the point of this store existing. Actions are excluded
        * by zustand already; `systemDark` is excluded deliberately (see above).
        */
-      partialize: (state) => ({
+      partialize: (state): PersistedAppearanceState => ({
         theme: state.theme,
         terminalFont: state.terminalFont,
         terminalFontSize: state.terminalFontSize,
@@ -411,15 +592,22 @@ export const useAppearanceStore = create<AppearanceState>()(
         editorWordWrap: state.editorWordWrap,
         editorLineNumbers: state.editorLineNumbers,
         editorTabWidth: state.editorTabWidth,
+        themes: state.themes,
+        activeThemeId: state.activeThemeId,
       }),
       /**
        * `localStorage` is synchronous, so this runs during module evaluation —
        * before React renders anything. That is what makes the restored theme
        * paint on the first frame instead of flipping on the second.
        *
-       * A corrupt entry arrives here as an `error` and leaves `state` at the
-       * defaults, which is the right outcome and needs no branch of its own:
-       * `applyAll` is called with whatever the store actually holds.
+       * Whatever reaches this point is bootable, and that is a guarantee two
+       * different mechanisms have to make between them. A syntactically corrupt
+       * entry never parses, so it arrives as an `error` and leaves `state` at
+       * the defaults. Valid JSON of the *wrong shape* parses perfectly and used
+       * to arrive intact — so `merge` above re-checks the theme library and
+       * drops what is not a theme. Neither case needs a branch here:
+       * `applyAll` is called with whatever the store actually holds, and what it
+       * holds is now always paintable.
        */
       onRehydrateStorage: () => (state) => {
         if (state) applyAll(state);
@@ -460,10 +648,33 @@ const themeActionsSelector = (state: AppearanceState) => ({
   toggleTheme: state.toggleTheme,
 });
 
+const themeLibraryActionsSelector = (state: AppearanceState) => ({
+  addTheme: state.addTheme,
+  activateTheme: state.activateTheme,
+  removeTheme: state.removeTheme,
+});
+
 const terminalAppearanceSelector = (state: AppearanceState) => ({
   fontFamily: terminalFontStack(state.terminalFont),
   fontSize: state.terminalFontSize,
   scrollback: state.terminalScrollback,
+  /**
+   * The one place colour crosses into the terminal (story 105, extended by
+   * HIVE-80).
+   *
+   * `components/terminal/**` may not import `stores/**`, so the composition
+   * root reads this and passes it as a prop — the terminal is handed colours,
+   * exactly as it is handed a font stack, and never learns that a theme was
+   * picked.
+   *
+   * **A stored reference, never a copy.** `useTerminalAppearance` wraps this in
+   * `useShallow`, which compares one level deep, and the surface's re-theme
+   * effect depends on this object's identity: a spread here would hand every
+   * live terminal a new palette on every render.
+   */
+  palette: (activeThemeOf(state) ?? BUILT_IN_THEME).modes[
+    resolveTheme(state.theme, state.systemDark)
+  ].terminal,
 });
 
 const appearanceActionsSelector = (state: AppearanceState) => ({
@@ -518,12 +729,31 @@ export const useThemePreference = () => useAppearanceStore((state) => state.them
 export const useThemeActions = () =>
   useAppearanceStore(useShallow(themeActionsSelector));
 
+/** The imported theme library, keyed by import id. */
+export const useThemes = (): Record<string, HiveTheme> =>
+  useAppearanceStore((state) => state.themes);
+
+/** The id of the theme currently painting the app — {@link BUILT_IN_THEME_ID} or a library key. */
+export const useActiveThemeId = (): string =>
+  useAppearanceStore((state) => state.activeThemeId);
+
+/** The active theme itself, or `null` when the built-in is active. */
+export const useActiveTheme = (): HiveTheme | null =>
+  useAppearanceStore((state) => activeThemeOf(state));
+
+/** Theme-library actions, referentially stable across unrelated state changes. */
+export const useThemeLibraryActions = () =>
+  useAppearanceStore(useShallow(themeLibraryActionsSelector));
+
 /**
  * Everything the terminal needs, resolved.
  *
  * Returns the font *stack* rather than the id: `components/terminal/**` may not
  * import from `lib` conventions it does not own, and more to the point it should
  * not know that "menlo" is a choice a user made. It takes a font stack.
+ *
+ * `palette` arrives on the same terms (HIVE-80) — eleven resolved colours, not
+ * the name of a mode and not the name of a theme.
  */
 export const useTerminalAppearance = () =>
   useAppearanceStore(useShallow(terminalAppearanceSelector));
