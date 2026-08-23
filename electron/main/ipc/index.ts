@@ -60,6 +60,7 @@ import {
   parseSetNotificationsRequest,
   parseSetProjectRuntimeRequest,
   parseSetRuntimeRequest,
+  parseSessionNoteRequest,
   parseWriteRequest,
 } from '@shared/guards';
 import {
@@ -68,6 +69,7 @@ import {
   type IntegrationsStatus,
   type NotificationActivateEvent,
   type NotificationDeliveryStatus,
+  type NotificationDismissedEvent,
   type NotificationReadEvent,
 } from '@shared/ipc-contract';
 import type {
@@ -80,6 +82,10 @@ import type {
   JiraStatus,
   JiraTransition,
 } from '@shared/jira-contract';
+import {
+  SESSION_HISTORY_FILE,
+  type SessionRecord,
+} from '@shared/session-history-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
 import { createCloneFlow, type CloneFlow } from '../clone';
@@ -118,6 +124,10 @@ import { credentialFile } from '../integrations/jira/auth';
 import { createNotificationHub, createNotifier } from '../notifications';
 import { registerPtyHost } from '../pty-host';
 import { createSessions, type Sessions } from '../sessions';
+import {
+  createSessionLedger,
+  type SessionLedger,
+} from '../sessions/ledger';
 import { onShutdown } from '../shutdown';
 import { parseSaveThemeRequest, pickTheme, saveTheme } from '../theme';
 import {
@@ -195,10 +205,189 @@ function handle<T>(
 let systemNotificationRefusal: string | null = null;
 
 let sessions: Sessions | null = null;
+/**
+ * The session ledger (HIVE-87), or `null` before registration.
+ *
+ * Held here rather than reached through `sessions` because two unrelated things
+ * need it: the session layer writes to it, and `session:history` reads from it.
+ * Routing the read through the session layer would mean widening that layer's
+ * surface with a verb it does not otherwise need.
+ */
+let ledger: SessionLedger | null = null;
 /** The clone flow (story 102), or `null` before registration. */
 let cloneFlow: CloneFlow | null = null;
 /** The single project watcher, or `null` before registration. */
 let fsWatch: FsWatchLayer | null = null;
+
+/** A plain object, for the payload guards below. */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * The terminal on the centre stage, as the renderer last reported it (HIVE-81).
+ *
+ * Module scope for the reason `systemNotificationRefusal` is: it is a fact
+ * about this process's window, not about notifications, and the hub is
+ * deliberately ignorant of what the user is looking at. The hub asks a
+ * predicate; it never holds this.
+ */
+let foregroundTerminalId: string | null = null;
+
+/**
+ * Whether **any** window of this app has focus right now.
+ *
+ * Read from `BrowserWindow` rather than published by the renderer, and that
+ * asymmetry is the whole design. A renderer-published focus boolean goes stale
+ * in exactly the case the feature exists for — the window hidden, the app in
+ * the background — because the renderer stops running to update it.
+ *
+ * ## "Any window", not "the main window", and that is on purpose
+ *
+ * The app creates three (`window.ts`, `splash.ts`, `about.ts`), so with the
+ * About panel focused over the main window this still answers `true` and the
+ * session on the stage still reads as foreground. That is the right answer,
+ * not a leak: About is a small frameless panel, the terminal is visible behind
+ * it, and the user is a keystroke from the window they were already watching.
+ * The question the gate asks is "is this session on the user's screen and in
+ * front of them", and it is.
+ *
+ * The failure mode worth avoiding is the opposite one — going quiet when the
+ * user cannot see anything — and no window of ours being focused is exactly
+ * that. Narrowing this to the main window would instead make the About panel
+ * (or the splash, during startup) turn every foreground session into an
+ * interruption about something on screen.
+ */
+const windowFocused = (): boolean =>
+  BrowserWindow.getAllWindows().some(
+    (window) => !window.isDestroyed() && window.isFocused(),
+  );
+
+/**
+ * Is this terminal the one the user is already looking at?
+ *
+ * Both halves, and neither alone is the question. A matching id with every
+ * window of ours behind another app is precisely when the notification is
+ * worth raising. See {@link windowFocused} for what "focused" counts as.
+ */
+export const isForeground = (terminalId: string): boolean =>
+  windowFocused() && foregroundTerminalId === terminalId;
+
+/** Told when foreground state changes, so the re-arm can run (HIVE-81). */
+const foregroundListeners = new Set<() => void>();
+
+/**
+ * Window focus changed, or the renderer reported a different terminal
+ * (HIVE-81). Called from the `CH.uiForeground` handler below, and — via
+ * {@link scheduleForegroundChange} — from the app-level window focus events.
+ */
+export const notifyForegroundChange = (): void => {
+  for (const listener of foregroundListeners) {
+    try {
+      listener();
+    } catch (cause) {
+      console.error('[hive] foreground listener failed:', cause);
+    }
+  }
+};
+
+/**
+ * Subscribe to foreground changes (HIVE-81's re-arm).
+ *
+ * The only way into `foregroundListeners`, which stays private: the notifier's
+ * subscription in `registerIpcHandlers` goes through here, so the path a test
+ * exercises is the path production runs.
+ *
+ * Answers a disposer. Nothing in the shipped app unsubscribes today — the one
+ * subscription lives as long as the process — but a subscribe with no way out
+ * is a leak waiting for its second caller, and the set was otherwise emptied
+ * only by the test-only `resetIpcHandlers`.
+ */
+export function onForegroundChange(listener: () => void): () => void {
+  foregroundListeners.add(listener);
+  return () => {
+    foregroundListeners.delete(listener);
+  };
+}
+
+/**
+ * A deferred re-evaluation, or `null`.
+ *
+ * See {@link scheduleForegroundChange} for why the deferral exists at all.
+ */
+let foregroundTick: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Re-evaluate foreground state **after the current focus shuffle settles**
+ * (HIVE-81 review).
+ *
+ * ## Why the app-level events, and not the window's own
+ *
+ * This was wired as `focus`/`blur` on the main window, in `window.ts`, while
+ * {@link windowFocused} counts *every* window of ours. The mismatch loses a
+ * real notification: main focused with a gated pending row, the user opens the
+ * About panel (main blurs, About focuses — still foreground, correctly nothing
+ * promoted), then switches to another application. It is **About** that blurs,
+ * and nothing was listening to it, so the re-arm never ran. The still-blocked
+ * session kept its silent, already-read row for as long as the user was away —
+ * exactly the failure the gate exists to prevent.
+ *
+ * `app.on('browser-window-blur' | 'browser-window-focus')` fires for every
+ * window, which is the same set the predicate reads. Wiring the two per-window
+ * instead — About, splash, and whatever comes next — is three sites to
+ * remember and is the mistake `aux-windows.ts` was written about.
+ *
+ * ## Why it is deferred by a tick
+ *
+ * Because the app-level events walk straight into the opposite bug. On macOS
+ * `blur` on the outgoing window fires **before** `focus` on the incoming one,
+ * so switching from the main window to About passes through a moment in which
+ * no window of ours is focused. Evaluating synchronously there promotes a
+ * gated row and shows a toast about a session the user can see behind the
+ * panel — contradicting {@link windowFocused}'s own reason for counting About
+ * as foreground.
+ *
+ * One timer, coalescing every event that lands before it runs, so the burst of
+ * a window switch becomes a single evaluation of the settled state. The re-arm
+ * is a decision about whether to interrupt someone who has walked away; a tick
+ * of latency is not a cost it can notice.
+ *
+ * ## The alternative that was rejected
+ *
+ * Narrowing {@link windowFocused} to `appWindows()` — the non-auxiliary
+ * windows — was the other candidate. It *removes* the ordering hazard, and it
+ * gets the answer wrong: with About focused no app window is focused, so every
+ * gated row would promote with a toast about a terminal visible right behind a
+ * small frameless panel. `isAuxiliary` answers "which windows are the app",
+ * which is the question `activate` and the updater's dialogs ask. It is not
+ * the question "is the app in front of the user", and this is that one.
+ */
+const scheduleForegroundChange = (): void => {
+  if (foregroundTick !== null) return;
+  foregroundTick = setTimeout(() => {
+    foregroundTick = null;
+    notifyForegroundChange();
+  }, 0);
+  // Never a reason to hold the process open; the app's own windows do that.
+  foregroundTick.unref?.();
+};
+
+/** Undo {@link watchWindowFocus}, or a no-op before it has run. */
+let unwatchWindowFocus: (() => void) | null = null;
+
+/**
+ * Wire the app-level focus events. Idempotent: a second call replaces the
+ * first rather than doubling the listeners.
+ */
+function watchWindowFocus(): void {
+  unwatchWindowFocus?.();
+  app.on('browser-window-blur', scheduleForegroundChange);
+  app.on('browser-window-focus', scheduleForegroundChange);
+  unwatchWindowFocus = () => {
+    app.removeListener('browser-window-blur', scheduleForegroundChange);
+    app.removeListener('browser-window-focus', scheduleForegroundChange);
+    unwatchWindowFocus = null;
+  };
+}
 
 /**
  * Guards the env diagnostic against concurrent invokes (story 108's fix
@@ -336,12 +525,21 @@ export function registerIpcHandlers(): void {
         window.webContents.send(CH.notificationsNew, notification);
       }
     },
-    announceRead: (id) => {
+    announceRead: (id, unread) => {
       for (const window of BrowserWindow.getAllWindows()) {
         if (window.isDestroyed()) continue;
         window.webContents.send(CH.notificationsRead, {
           id,
+          unread,
         } satisfies NotificationReadEvent);
+      }
+    },
+    announceDismissed: (id) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (window.isDestroyed()) continue;
+        window.webContents.send(CH.notificationsDismissed, {
+          id,
+        } satisfies NotificationDismissedEvent);
       }
     },
     /**
@@ -412,9 +610,24 @@ export function registerIpcHandlers(): void {
       } satisfies NotificationActivateEvent);
     },
     now: () => Date.now(),
+    isForeground: (action) =>
+      action.type === 'session' && isForeground(action.entityId),
   });
 
-  const notifier = createNotifier({ hub });
+  const notifier = createNotifier({ hub, isForeground });
+
+  // The re-arm (HIVE-81): whatever is still blocked when the user looks away
+  // gets its row promoted back to unread. Through the exported subscriber
+  // rather than the set it wraps — one way in, so the set stays private and
+  // the function tests reach is the one production runs.
+  onForegroundChange(() => {
+    notifier.reevaluateForeground();
+  });
+
+  // The other half of the same signal: OS window focus, which no renderer can
+  // report because a hidden window has stopped running. See
+  // `scheduleForegroundChange`.
+  watchWindowFocus();
 
   /**
    * Two property reads and no subprocess, which is the entire point.
@@ -486,6 +699,17 @@ export function registerIpcHandlers(): void {
    * `app.getPath('userData')` is the app's own directory. Nothing about this
    * touches `~/.claude`.
    */
+  /**
+   * The ledger, beside `window-state.json` in the app's own directory (HIVE-87).
+   *
+   * Constructed before the session layer because that layer takes it as an
+   * option. Nothing about it touches `~/.claude` — it records what The Hive
+   * knows about its own rows, not anything Claude wrote.
+   */
+  ledger = createSessionLedger(
+    join(app.getPath('userData'), SESSION_HISTORY_FILE),
+  );
+
   sessions = createSessions({
     supervisor,
     config: getConfig,
@@ -495,6 +719,7 @@ export function registerIpcHandlers(): void {
       // Read per call, so a config reload is picked up (HIVE-79).
       sessionMetrics: () => getConfig().sessionMetrics,
     }),
+    ledger,
   });
 
   cloneFlow = createCloneFlow({
@@ -539,6 +764,45 @@ export function registerIpcHandlers(): void {
      * only production leaked.
      */
     fsWatch?.dispose();
+    /**
+     * A best-effort flush of anything still inside the debounce (HIVE-87).
+     *
+     * **Correctness does not depend on this running, and it must not.**
+     * `runShutdown` invokes every hook body synchronously and then awaits them
+     * together, so this races the pty teardown above rather than following it;
+     * and a crash, a SIGKILL or a power cut runs no hook at all. Every fact
+     * worth keeping was already written at the moment it was known — this only
+     * saves the last few hundred milliseconds of a quiet quit.
+     */
+    ledger?.flush();
+  });
+
+  /**
+   * The fleet as it was when the app last closed (HIVE-87).
+   *
+   * Answers from memory rather than re-reading the file: the ledger loaded it at
+   * construction and is the only thing that writes to it, so a second read could
+   * only ever return something staler than what is already held.
+   *
+   * `?? []` is not a fallback so much as the browser-shaped case in main's
+   * clothing — a renderer that asks before registration completed gets "no
+   * history", which is exactly what it would get from an empty file.
+   */
+  handle(CH.sessionHistory, (): SessionRecord[] => ledger?.all() ?? []);
+
+  /**
+   * The renderer naming a ticket for a session (HIVE-87).
+   *
+   * Guarded like every other payload that crosses the bridge. It cannot create
+   * a record — `record` merges into whatever is already there, and a note for
+   * an entity main never spawned would create a row for a session that never
+   * existed. Hence the `all()` check: main writes only what it already knows
+   * about.
+   */
+  handle(CH.sessionNote, (_event, raw: unknown): void => {
+    const request = parseSessionNoteRequest(raw);
+    if (!ledger?.all().some((record) => record.id === request.entityId)) return;
+    ledger.record(request.entityId, { ticket: request.ticket });
   });
 
   handle(CH.appInfo, (): AppInfo => {
@@ -1007,6 +1271,28 @@ export function registerIpcHandlers(): void {
   );
 
   /**
+   * What the renderer is showing (HIVE-81). Guarded to reject rather than
+   * sanitise: a malformed payload is dropped and logged (see `on()` above),
+   * never coerced into `null` — a compromised or buggy renderer must not be
+   * able to make a fabricated shape read as "nothing on stage".
+   */
+  on(CH.uiForeground, (_event, payload) => {
+    if (!isRecord(payload)) throw new Error('ui:foreground expects an object');
+    const keys = Object.keys(payload);
+    if (keys.length !== 1 || keys[0] !== 'terminalId') {
+      throw new Error('ui:foreground expects exactly { terminalId }');
+    }
+    const { terminalId } = payload;
+    if (terminalId !== null && typeof terminalId !== 'string') {
+      throw new Error('ui:foreground expects a string terminalId or null');
+    }
+
+    if (foregroundTerminalId === terminalId) return;
+    foregroundTerminalId = terminalId;
+    notifyForegroundChange();
+  });
+
+  /**
    * The PTY channels (story 093).
    *
    * `spawn` and `kill` use `invoke` — both need a result. `write`, `resize`
@@ -1127,6 +1413,28 @@ export function resetIpcHandlers(): void {
   cloneFlow = null;
   fsWatch?.dispose();
   fsWatch = null;
+  /*
+    HIVE-87. Dropped without flushing: a test's ledger points at whatever
+    `app.getPath` was stubbed to return, and writing there on teardown is how a
+    unit test comes to leave a file behind.
+
+    `dispose()` rather than just dropping the reference — the debounce timer
+    closes over the write directly, so an unreferenced ledger still fires one
+    last `writeFileSync` at that stubbed path.
+  */
+  ledger?.dispose();
+  ledger = null;
+  // HIVE-81. Test-only: a fresh registration starts with nothing on stage and
+  // no listeners left over from a previous test — including the app-level
+  // focus wiring and any tick it has already scheduled, which would otherwise
+  // fire into the next test's handlers.
+  foregroundTerminalId = null;
+  foregroundListeners.clear();
+  unwatchWindowFocus?.();
+  if (foregroundTick !== null) {
+    clearTimeout(foregroundTick);
+    foregroundTick = null;
+  }
 }
 
 export { assertSender, isTrustedSender, IpcSenderError } from './sender';

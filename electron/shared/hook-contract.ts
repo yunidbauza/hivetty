@@ -73,6 +73,28 @@ export const HOOK_EVENTS = [
   'UserPromptSubmit',
   'PermissionRequest',
   'Elicitation',
+  /**
+   * The bookkeeping pair (HIVE-83).
+   *
+   * `PreToolUse` carries the `tool_use_id` that `PermissionRequest` does not,
+   * and its `PostToolUse` carries the same one — which is the only way to tell
+   * the blocked tool's completion from a sibling's in a parallel batch.
+   *
+   * The cost is honest: this is the second high-frequency hook subscribed, and
+   * `PreToolUse` is a *blocking* hook — Claude waits for it before running the
+   * tool. Both are loopback POSTs the receiver answers 204 to.
+   */
+  'PreToolUse',
+  'PostToolUse',
+  /**
+   * How a stopped main agent is told apart from a finished session (HIVE-83).
+   *
+   * Both carry `agent_id`. Only agents seen starting are ever removed: Claude
+   * Code emits `SubagentStop` for internal helper agents that never announced a
+   * start.
+   */
+  'SubagentStart',
+  'SubagentStop',
   'Notification',
   'Stop',
   'SessionEnd',
@@ -118,6 +140,9 @@ export const CLEAR_REASON = 'clear';
  */
 export type StatusHookEvent = Exclude<HookEvent, 'SessionEnd'>;
 
+/** What is still running while the main agent is not (HIVE-83). */
+export type IdleDetail = 'agents' | 'script';
+
 /**
  * Status as observed from outside the pty.
  *
@@ -159,8 +184,26 @@ export const HOOK_STATUS: Record<StatusHookEvent, ObservedStatus> = {
    * recognise still means Claude raised something at the user, and `waiting` is
    * the honest reading of that. The receiver refuses to publish an unrecognised
    * type anyway, so this value is reached only if that guard is ever relaxed.
+   *
+   * This floor is unchanged by `NOTIFICATION_TYPE_STATUS` splitting `idle_prompt`
+   * from `permission_prompt`: an unrecognised type has no per-type reading to
+   * fall back to, so `waiting` — Claude raised *something*, unread — is still
+   * the honest default for it.
    */
   Notification: 'waiting',
+  /**
+   * `PreToolUse` and `PostToolUse` are both `working` as a *fallback only*.
+   *
+   * Since HIVE-83 the status the renderer sees is derived by
+   * `hooks/tracker.ts` from what the session is, not looked up here. These
+   * entries survive so the record stays total and so a consumer that has no
+   * tracker still gets a defensible answer.
+   */
+  PreToolUse: 'working',
+  PostToolUse: 'working',
+  /** Bookkeeping only — the tracker decides what a live subagent means. */
+  SubagentStart: 'working',
+  SubagentStop: 'working',
   Stop: 'idle',
 };
 
@@ -195,17 +238,29 @@ export const isHookNotificationType = (
   (NOTIFICATION_TYPES as readonly string[]).includes(value);
 
 /**
- * Both recognised types mean the same thing about the *session*: it is blocked
- * on a human. They mean different things about the **inbox**, and that split is
- * `notifications/index.ts`'s to make — `permission_prompt` arrives behind a
- * `PermissionRequest` that has already raised a row, and must not raise a
- * second.
+ * What each recognised type means for the **status**, which is no longer the
+ * same question as what it means for the **inbox**.
+ *
+ * `permission_prompt` is a session blocked on a human: a tool is waiting for a
+ * yes and nothing proceeds until it gets one. `waiting` is the honest reading.
+ *
+ * `idle_prompt` is **not** that, and calling it `waiting` is what made the dot
+ * lie. It fires sixty seconds after `Stop`, when the turn is already over and
+ * the agent is sitting at an empty prompt — nothing is blocked, and there is no
+ * question outstanding. `Stop` set `idle` a minute earlier and `idle` is what
+ * the session still is.
+ *
+ * The signal is not lost by this: it moves to where it belongs. The inbox row
+ * is raised off the hook *event* in `notifications/index.ts`, independently of
+ * the status, so "you walked away and your agent wants you" still reaches the
+ * user — it just stops painting the fleet view amber for a session nobody is
+ * waiting on.
  */
 export const NOTIFICATION_TYPE_STATUS: Record<
   HookNotificationType,
   ObservedStatus
 > = {
-  idle_prompt: 'waiting',
+  idle_prompt: 'idle',
   permission_prompt: 'waiting',
 };
 
@@ -278,6 +333,23 @@ export interface HookStatusEvent {
    * outcome as a session with no hooks at all.
    */
   cwd?: string;
+  /**
+   * Tool identity, carried since HIVE-83.
+   *
+   * All optional because not every event has them and because a body over
+   * `HOOK_MAX_BODY_BYTES` truncates `tool_use_id` off the end — `tool_input`
+   * precedes it on the wire. `tool_name` precedes `tool_input` in turn, so it
+   * always survives truncation; `tool_use_id` never does. Both `PreToolUse`
+   * and `PostToolUse` lose `tool_use_id` the same way, so the tracker's
+   * bookkeeping stays consistent and only pairing degrades — `tool_name`
+   * recovers by itself, per `receiver.ts`'s truncated-prefix parse.
+   */
+  toolUseId?: string;
+  toolName?: string;
+  /** Present on every event originating inside a subagent, absent on the main agent's. */
+  agentId?: string;
+  /** `tool_input.run_in_background` on a `Bash` call. */
+  runInBackground?: boolean;
 }
 
 /**

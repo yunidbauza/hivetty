@@ -33,7 +33,11 @@ export function TicketSessionRow({ id }: TicketSessionRowProps) {
         Labelled, unlike the projects panel: this row has no visible status
         text, so without it the dot would carry status by colour alone.
       */}
-      <StatusDot status={entity.status} label={`${entityLabel(entity)} status`} />
+      <StatusDot
+        status={entity.status}
+        label={`${entityLabel(entity)} status`}
+        detail={entity.idleDetail}
+      />
 
       <span className="flex-1 truncate text-left font-mono text-[12px] text-muted">
         {entityLabel(entity)}

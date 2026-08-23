@@ -1,6 +1,11 @@
 import { useEffect } from 'react';
 
-import { useApplyRead, useHydrateNotifs, usePushNotif } from '@stores/hive-store';
+import {
+  useApplyDismiss,
+  useApplyRead,
+  useHydrateNotifs,
+  usePushNotif,
+} from '@stores/hive-store';
 
 /**
  * Keep the inbox in step with the hub in main (HIVE-75).
@@ -30,11 +35,17 @@ import { useApplyRead, useHydrateNotifs, usePushNotif } from '@stores/hive-store
  * counting a notification already dealt with, until the next reload silently
  * corrected it: exactly the badge-and-list disagreement this comment used to
  * claim was impossible.
+ *
+ * Dismissal is the same story one gesture further along (HIVE-81): clicking
+ * the **desktop toast** now dismisses rather than merely marks read, so the
+ * `onDismissed` subscription below is what takes the row out of the inbox
+ * without the user having to see it there until the next reload.
  */
 export function useNotificationStream(): void {
   const pushNotif = usePushNotif();
   const hydrate = useHydrateNotifs();
   const applyRead = useApplyRead();
+  const applyDismiss = useApplyDismiss();
 
   useEffect(() => {
     // No bridge is the browser demo, where nothing produces notifications.
@@ -55,8 +66,26 @@ export function useNotificationStream(): void {
       pushNotif(notification);
     });
 
-    const unsubscribeRead = bridge.notifications.onRead(({ id }) => {
-      applyRead(id);
+    const unsubscribeRead = bridge.notifications.onRead(({ id, unread }) => {
+      /**
+       * Split at the boundary, because the wire type is wider than the action.
+       *
+       * `NotificationReadEvent` carries `id: string | null` and a free
+       * `unread`, which spells a combination the store refuses to accept:
+       * `null` means *every row*, and un-reading the whole inbox at once is
+       * something no producer does and nothing would want. `markRead(null)` in
+       * the hub is the only thing that sends a null id, and it only ever marks
+       * read. This is that fact stated where the two types meet.
+       */
+      if (id === null) {
+        applyRead(null, false);
+        return;
+      }
+      applyRead(id, unread);
+    });
+
+    const unsubscribeDismissed = bridge.notifications.onDismissed(({ id }) => {
+      applyDismiss(id);
     });
 
     void bridge.notifications
@@ -73,6 +102,7 @@ export function useNotificationStream(): void {
       live = false;
       unsubscribe();
       unsubscribeRead();
+      unsubscribeDismissed();
     };
-  }, [applyRead, hydrate, pushNotif]);
+  }, [applyDismiss, applyRead, hydrate, pushNotif]);
 }

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AUTH_ENV_KEYS, type ConfigSnapshot } from '@shared/config-contract';
 import type {
   HookNotificationType,
+  IdleDetail,
   ObservedStatus,
   StatusHookEvent,
 } from '@shared/hook-contract';
@@ -30,12 +31,14 @@ import {
 
 import { effectiveRuntime } from '../config/runtime';
 import type { HookRuntime } from '../hooks';
+import { createStatusTracker } from '../hooks/tracker';
 import { createPtyIpc, type PtyIpc } from '../ipc/pty';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
 
 import { createActivityTracker, type ActivityTracker } from './activity';
 import { createBootstrap, sessionCommand, type Bootstrap } from './bootstrap';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
+import type { SessionLedger } from './ledger';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
 
@@ -87,6 +90,21 @@ export interface SessionsOptions {
    * machine and in every checkout. Absent means the real reader.
    */
   branchReader?: BranchReaderOptions;
+  /**
+   * Where the fleet is written down, so it survives a quit (HIVE-87).
+   *
+   * Optional in the same spirit as `hooks`: absent is a supported state rather
+   * than a degraded one. The browser build has no main process at all, and a
+   * unit test that does not care about history passes nothing — every call site
+   * below is `ledger?.record(…)`, so "no ledger" costs exactly the history and
+   * nothing else.
+   *
+   * Injected rather than constructed in here for the reason `newSessionUuid`
+   * and `branchReader` are: the real one writes a file in the user's
+   * `userData`, and a unit test that did so would leave state behind and answer
+   * differently on the second run.
+   */
+  ledger?: SessionLedger;
 }
 
 export interface OpenRequest {
@@ -229,9 +247,18 @@ export function createSessions(options: SessionsOptions): Sessions {
     hooks,
     newSessionUuid = randomUUID,
     branchReader,
+    ledger,
   } = options;
 
   const registry: SessionRegistry = createSessionRegistry();
+  /**
+   * What each session *is*, derived from every hook it has sent (HIVE-83).
+   *
+   * One instance for the life of this module, not one per event: the whole
+   * point is a record that accumulates across a session's hooks, so a sibling
+   * tool's `PostToolUse` does not erase a block the same batch is still holding.
+   */
+  const statusTracker = createStatusTracker();
   /** Resolvers waiting for a specific entity's process to exit. */
   const exitWaiters = new Map<string, (() => void)[]>();
   /**
@@ -417,6 +444,8 @@ export function createSessions(options: SessionsOptions): Sessions {
        * exit and loses whenever the agent is killed rather than quitting.
        */
       if (status !== 'terminated' && hookDriven.has(entityId)) return;
+      // The process is gone; drop its record rather than leak it (HIVE-83).
+      if (status === 'terminated') statusTracker.forget(entityId);
       publishStatus(entityId, status);
     },
   });
@@ -461,11 +490,35 @@ export function createSessions(options: SessionsOptions): Sessions {
   void hooks?.start({
     knowsSession: (entityId) => registry.sessionFor(entityId) !== undefined,
     onEvent: (event) => {
+      /**
+       * The tracker decides, not the event (HIVE-83).
+       *
+       * `event.status` is the per-event fallback the contract still carries;
+       * what reaches the renderer is derived from what the session *is*, which
+       * is the only way a sibling tool's completion stops clearing a live
+       * permission block.
+       */
+      const derived = statusTracker.apply({
+        entityId: event.entityId,
+        event: event.event,
+        ...(event.toolUseId === undefined ? {} : { toolUseId: event.toolUseId }),
+        ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
+        ...(event.agentId === undefined ? {} : { agentId: event.agentId }),
+        ...(event.runInBackground === undefined
+          ? {}
+          : { runInBackground: event.runInBackground }),
+        ...(event.notificationType === undefined
+          ? {}
+          : { notificationType: event.notificationType }),
+      });
+
       publishHookStatus(
         event.entityId,
-        event.status,
+        derived.status,
         event.event,
         event.notificationType,
+        derived.detail,
+        event.toolName,
       );
       /**
        * The branch read is deliberately **after** the status (HIVE-78).
@@ -494,7 +547,17 @@ export function createSessions(options: SessionsOptions): Sessions {
         entityId: event.entityId,
         key: event.key,
       } satisfies SessionTicketIntentEvent),
-    onCleared: (entityId) => publishCleared(entityId),
+    onCleared: (entityId) => {
+      /**
+       * `/clear` keeps the pty and opens a successor row (HIVE-83).
+       *
+       * Without this reset the successor inherits the retired conversation's
+       * live subagents and sits on `idle (agents)` forever with nothing
+       * running.
+       */
+      statusTracker.reset(entityId);
+      publishCleared(entityId);
+    },
     /**
      * Usage, forwarded verbatim (HIVE-79).
      *
@@ -560,12 +623,29 @@ export function createSessions(options: SessionsOptions): Sessions {
      * it and an `idle_prompt` is not, and that judgement has no business here.
      */
     notificationType?: HookNotificationType,
+    /**
+     * What is still running while the main agent is not (HIVE-83).
+     *
+     * Passed through for the same reason `event` is: the session layer says
+     * what a session is doing, and the renderer decides how to draw it.
+     */
+    idleDetail?: IdleDetail,
+    /**
+     * The tool a `PermissionRequest` named, when it named one (HIVE-83).
+     *
+     * Passed through for the same reason `event` is: telling `AskUserQuestion`
+     * apart from any other blocking tool is the notification hub's judgement,
+     * not the session layer's.
+     */
+    toolName?: string,
   ): void {
     send(CH.sessionStatus, {
       entityId,
       status,
       ...(event === undefined ? {} : { event }),
       ...(notificationType === undefined ? {} : { notificationType }),
+      ...(idleDetail === undefined ? {} : { idleDetail }),
+      ...(toolName === undefined ? {} : { toolName }),
     } satisfies SessionStatusEvent);
   }
 
@@ -633,6 +713,14 @@ export function createSessions(options: SessionsOptions): Sessions {
     if (seen !== undefined && seen.branch === branch && seen.cwd === cwd) return;
 
     lastBranch.set(entityId, { branch, cwd });
+    /*
+      HIVE-87. The same fact the renderer is about to be told, kept where it
+      survives a quit. `branch` is nullable here and the record's is optional,
+      so a `null` omits the key rather than storing "known to be nothing" — the
+      store renders an em dash for both, and the ledger should not invent a
+      distinction the app does not draw.
+    */
+    ledger?.record(entityId, { ...(branch === null ? {} : { branch }), cwd });
     send(CH.sessionBranch, { entityId, branch, cwd } satisfies SessionBranchEvent);
   }
 
@@ -648,9 +736,11 @@ export function createSessions(options: SessionsOptions): Sessions {
     status: ObservedStatus,
     event?: StatusHookEvent,
     notificationType?: HookNotificationType,
+    idleDetail?: IdleDetail,
+    toolName?: string,
   ): void {
     hookDriven.add(entityId);
-    publishStatus(entityId, status, event, notificationType);
+    publishStatus(entityId, status, event, notificationType, idleDetail, toolName);
   }
 
   /**
@@ -688,6 +778,9 @@ export function createSessions(options: SessionsOptions): Sessions {
        * what belongs in a rail 130px wide.
        */
       if (name.length > SESSION_NAME_DISPLAY_MAX) continue;
+      // HIVE-87. A restored row should read as whatever the agent last called
+      // itself, not as the `sess-07` it was born as.
+      ledger?.record(entityId, { name });
       send(CH.sessionName, { entityId, name } satisfies SessionNameEvent);
     }
   }
@@ -732,6 +825,17 @@ export function createSessions(options: SessionsOptions): Sessions {
       // Nothing to tell the store about.
     } else {
       activity.exited(entityId);
+      /**
+       * The ending, recorded where it is actually known (HIVE-87).
+       *
+       * Deliberately here and not in a shutdown hook. `runShutdown()` invokes
+       * every hook body synchronously and then awaits them together, so a
+       * flush registered there races the pty teardown instead of following it
+       * — and a crash or a SIGKILL runs no hook at all. This is the one place
+       * that sees an ending however it arrived, `ptyExit` or `ptyLost`, so it
+       * is the only place the fact can be captured rather than inferred.
+       */
+      ledger?.record(entityId, { status: 'terminated', endedAt: Date.now() });
     }
     registry.close(entityId);
 
@@ -943,6 +1047,35 @@ export function createSessions(options: SessionsOptions): Sessions {
     const settingsPath = hooks?.settingsPathFor(request.theme);
 
     /**
+     * Hoisted out of the `sessionCommand` call it used to sit inside (HIVE-87).
+     *
+     * It has to reach two places now — the command line, and the ledger — and
+     * calling `newSessionUuid()` twice would put a different uuid in each. The
+     * ledger's copy would then name a transcript that does not exist, which is
+     * precisely the thing recording it is meant to make possible.
+     */
+    const sessionUuid = newSessionUuid();
+
+    /**
+     * Written down before the process starts, not after (HIVE-87).
+     *
+     * A spawn that throws below still happened as far as the user is concerned
+     * — they asked for a session and something went wrong — and a record of it
+     * is more useful than silence. The uuid especially: it cannot be assigned
+     * retroactively to a session that has already started, so the only moment
+     * it can be captured is this one.
+     */
+    ledger?.begin(request.entityId, {
+      project: request.projectId,
+      task: request.task ?? '',
+      status: 'working',
+      sessionUuid,
+      ...(request.name === undefined ? {} : { name: request.name }),
+      ...(request.model === undefined ? {} : { model: request.model }),
+      ...(request.effort === undefined ? {} : { effort: request.effort }),
+    });
+
+    /**
      * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
      * login shell with it and the session settles to `done`. See its own
      * comment for why that reverses story 096, and why it is `&&`.
@@ -977,7 +1110,7 @@ export function createSessions(options: SessionsOptions): Sessions {
          * keeps every other spawn byte-identical to what HIVE-61 shipped.
          */
         name: request.name ?? request.entityId,
-        sessionUuid: newSessionUuid(),
+        sessionUuid,
         /*
           The theme rides in from the renderer, which is the only side that
           knows it, and picks which of the two settings files this session

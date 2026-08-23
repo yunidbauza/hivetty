@@ -1,4 +1,4 @@
-import { useCounts } from '@stores/hive-store';
+import { useCounts, useIdleDetailCounts } from '@stores/hive-store';
 
 /**
  * Fleet-wide session counts — the one place the whole hive's health is visible
@@ -35,19 +35,42 @@ import { useCounts } from '@stores/hive-store';
  */
 export function StatusCounts() {
   const { working, waiting, idle, done, terminated } = useCounts();
+  const { agents, script } = useIdleDetailCounts();
 
   // Built once and reused for both the spans and the tooltip: two copies of the
   // same sentence drift the moment a separator changes on one of them.
   const workingText = `${working} working`;
   const waitingText = `${waiting} waiting`;
-  const restText = `${idle} idle · ${done + terminated} ended`;
+  const endedText = `${done + terminated} ended`;
+  const restText = `${idle} idle · ${endedText}`;
+
+  /**
+   * The breakdown lives in the tooltip, not on screen (HIVE-83).
+   *
+   * The visible tally stays five numbers — widening it was the thing this
+   * story deliberately did not do — and the detail costs no width here. Unlike
+   * `endedText`, `idleText` is *not* reused for the span: it is the one number
+   * deliberately different in each place, carrying the breakdown only where
+   * there is room for it.
+   */
+  const idleDetailText =
+    agents + script === 0
+      ? ''
+      : ` (${[
+          agents === 0 ? null : `${agents} with agents`,
+          script === 0 ? null : `${script} with a script`,
+        ]
+          .filter((part) => part !== null)
+          .join(', ')})`;
+
+  const idleText = `${idle} idle${idleDetailText}`;
 
   return (
     <p
       /* Named so `chip-alignment.spec.ts` can measure this element's right edge
          against the activity rail's border directly. */
       data-testid="status-counts"
-      title={`${workingText} · ${waitingText} · ${restText}`}
+      title={`${workingText} · ${waitingText} · ${idleText} · ${endedText}`}
       className="min-w-0 truncate font-mono text-xs text-muted"
     >
       <span className="text-green">{workingText}</span>

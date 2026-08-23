@@ -5,14 +5,16 @@ import { isSession } from '@/types/entity';
 import { isDesktop } from '@config/runtime';
 import { peek, stamp } from '@lib/fake-clock';
 import { resetProjectConfig } from '@lib/project-config';
+import { noteSessionTicket } from '@lib/session-history';
 import { requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 
 import { useAppearanceStore } from '@stores/appearance-store';
-import { ACK_DELAY_MS, useHiveStore } from '@stores/hive-store';
+import { ACK_DELAY_MS, statusWord, useHiveStore } from '@stores/hive-store';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { useUiStore } from '@stores/ui-store';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
+import type { SessionRecord } from '@shared/session-history-contract';
 
 import { notif as notif2 } from '../support/notifications';
 import { seedDemoFleet, seedDemoProjectConfig } from '@tests/support/demo-fleet';
@@ -40,6 +42,15 @@ vi.mock('@lib/terminal/pty-transport', () => ({
   requestSpawn: vi.fn(() => Promise.resolve({ ok: true })),
   sessionChannelState: vi.fn(() => 'live'),
   resetPtyChannels: vi.fn(),
+}));
+
+/*
+  HIVE-87. The store tells main a session's ticket so it survives a quit; what
+  matters here is *when* — after the spawn resolves, not before it.
+*/
+vi.mock('@lib/session-history', () => ({
+  noteSessionTicket: vi.fn(),
+  readSessionHistory: vi.fn(() => Promise.resolve([])),
 }));
 
 /**
@@ -164,6 +175,61 @@ describe('hive-store', () => {
 
       const entity = useHiveStore.getState().entities[second];
       expect(isSession(entity) && entity.name).toBe('HIVE-73-2');
+    });
+
+    it('tells main the ticket only after the spawn has resolved', async () => {
+      /**
+       * Ordering, not merely delivery (HIVE-87).
+       *
+       * `session:note` and `pty:spawn` are both `invoke` on one pipe and arrive
+       * in order, and main refuses a note for an entity it has no record of —
+       * a guard that stops a note inventing a row for a session that never
+       * existed. Noting first therefore dropped the ticket every time, silently,
+       * on the ticket-card path that is the whole reason the field exists.
+       */
+      vi.mocked(isDesktop).mockReturnValue(true);
+
+      const id = useHiveStore
+        .getState()
+        .spawnSession('apfm-web', '', 'opus', 'high', 'HIVE-73');
+
+      // Nothing yet: the spawn has been asked for but has not answered.
+      expect(noteSessionTicket).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => {
+        expect(noteSessionTicket).toHaveBeenCalledWith({
+          entityId: id,
+          ticket: 'HIVE-73',
+        });
+      });
+    });
+
+    it('says nothing about a ticket when the spawn was refused', async () => {
+      // A record main never created cannot be annotated, and claiming a ticket
+      // for a session that failed to start would outlive the failure.
+      vi.mocked(isDesktop).mockReturnValue(true);
+      vi.mocked(requestSpawn).mockResolvedValue({
+        ok: false,
+        reason: 'at-capacity',
+      } as never);
+
+      useHiveStore
+        .getState()
+        .spawnSession('apfm-web', '', 'opus', 'high', 'HIVE-73');
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(noteSessionTicket).not.toHaveBeenCalled();
+    });
+
+    it('says nothing at all when no ticket named the session', async () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+
+      useHiveStore.getState().spawnSession('apfm-web');
+
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(noteSessionTicket).not.toHaveBeenCalled();
     });
 
     it('leaves a session with no ticket unnamed', () => {
@@ -453,6 +519,23 @@ describe('hive-store', () => {
         const leadForm = rows.find((l) => l.text.includes('lead-form'));
         expect(leadForm).toMatchObject({ color: 'amber' });
         expect(leadForm?.text).toContain('needs input');
+      });
+
+      /**
+       * Review Fix 3: `statusWord()` had zero production callers, so this
+       * table printed plain `idle` for a session the dot shows hollow. Wired
+       * up at the `status` command's row builder — this is the console's own
+       * evidence that the wiring is live, not just that `statusWord` is
+       * unit-tested in isolation.
+       */
+      it('spells out what a quiet session is still running, not just plain idle', () => {
+        useHiveStore.getState().setSessionStatus('hero-refresh', 'idle', 'agents');
+
+        run('status');
+        const rows = useHiveStore.getState().orchLines.slice(4);
+
+        const heroRefresh = rows.find((l) => l.text.includes('hero-refresh'));
+        expect(heroRefresh?.text).toContain('idle (agents)');
       });
     });
 
@@ -1101,6 +1184,37 @@ describe('hive-store', () => {
       expect(notifs.find((n) => n.id === 'b')?.unread).toBe(true);
     });
 
+    /**
+     * `applyRead` now carries a direction (HIVE-81): the foreground gate
+     * raises a row already-read and promotes it back to unread once the user
+     * looks away, and the renderer has to be told which way it went.
+     */
+    it('applyRead moves read-state in the direction it is given', () => {
+      useHiveStore.getState().hydrateNotifs([notif2({ id: 'a' })]);
+
+      useHiveStore.getState().applyRead('a', false);
+      expect(
+        useHiveStore.getState().notifs.find((n) => n.id === 'a')?.unread,
+      ).toBe(false);
+
+      useHiveStore.getState().applyRead('a', true);
+      expect(
+        useHiveStore.getState().notifs.find((n) => n.id === 'a')?.unread,
+      ).toBe(true);
+    });
+
+    it('applyRead(null, false) clears every notification', () => {
+      useHiveStore
+        .getState()
+        .hydrateNotifs([notif2({ id: 'a' }), notif2({ id: 'b' })]);
+
+      useHiveStore.getState().applyRead(null, false);
+
+      expect(useHiveStore.getState().notifs.every((n) => !n.unread)).toBe(
+        true,
+      );
+    });
+
     it('markAllRead clears every notification', () => {
       useHiveStore
         .getState()
@@ -1109,6 +1223,46 @@ describe('hive-store', () => {
       expect(
         useHiveStore.getState().notifs.every((n) => !n.unread),
       ).toBe(true);
+    });
+
+    /**
+     * HIVE-81: `applyDismiss` is the echo of a dismissal main decided on its
+     * own — a clicked desktop toast — so, unlike `dismissNotif`, it must not
+     * write back to main. Doing so would tell main about the thing it just
+     * told the renderer.
+     */
+    describe('applyDismiss', () => {
+      afterEach(() => {
+        delete window.hive;
+      });
+
+      it('removes the row and does not write back to main', () => {
+        const dismiss = vi.fn();
+        window.hive = {
+          notifications: { dismiss },
+        } as unknown as Window['hive'];
+
+        useHiveStore
+          .getState()
+          .hydrateNotifs([notif2({ id: 'a' }), notif2({ id: 'b' })]);
+
+        useHiveStore.getState().applyDismiss('a');
+
+        expect(
+          useHiveStore.getState().notifs.map((n) => n.id),
+        ).toEqual(['b']);
+        expect(dismiss).not.toHaveBeenCalled();
+      });
+
+      it('is a no-op for an id it does not hold', () => {
+        useHiveStore.getState().hydrateNotifs([notif2({ id: 'a' })]);
+
+        useHiveStore.getState().applyDismiss('nope');
+
+        expect(
+          useHiveStore.getState().notifs.map((n) => n.id),
+        ).toEqual(['a']);
+      });
     });
   });
 
@@ -1272,6 +1426,291 @@ describe('hive-store', () => {
       });
 
       expect(useHiveStore.getState().metrics['slack-agent']).toBeUndefined();
+    });
+  });
+
+  describe('setSessionStatus — idleDetail (HIVE-83)', () => {
+    const detailOf = (id: string) => {
+      const entity = useHiveStore.getState().entities[id];
+      return isSession(entity) ? entity.idleDetail : undefined;
+    };
+
+    it('carries the detail alongside idle', () => {
+      const id = useHiveStore.getState().spawnSession('apfm-web');
+      useHiveStore.getState().setSessionStatus(id, 'idle', 'agents');
+
+      expect(detailOf(id)).toBe('agents');
+    });
+
+    /**
+     * The assertion this describe block exists for.
+     *
+     * A snapshot compares keys, not values, so an explicit `idleDetail:
+     * undefined` is not the same as the key being absent — the reducer must
+     * delete it outright, or `idle (agents) → working` would keep the ring lit
+     * for a session with nothing left running.
+     */
+    it('clears a stale detail when the next event carries none', () => {
+      const id = useHiveStore.getState().spawnSession('apfm-web');
+      useHiveStore.getState().setSessionStatus(id, 'idle', 'agents');
+      expect(detailOf(id)).toBe('agents');
+
+      useHiveStore.getState().setSessionStatus(id, 'working');
+
+      const entity = useHiveStore.getState().entities[id];
+      expect(isSession(entity) && 'idleDetail' in entity).toBe(false);
+    });
+
+    it('clears a stale detail on a same-status update that drops it', () => {
+      const id = useHiveStore.getState().spawnSession('apfm-web');
+      useHiveStore.getState().setSessionStatus(id, 'idle', 'script');
+
+      useHiveStore.getState().setSessionStatus(id, 'idle');
+
+      expect(detailOf(id)).toBeUndefined();
+    });
+
+    it('ignores a report for an id that is not a session', () => {
+      useHiveStore.getState().setSessionStatus('slack-agent', 'idle', 'agents');
+
+      expect(detailOf('slack-agent')).toBeUndefined();
+    });
+  });
+
+  describe('statusWord', () => {
+    it('names what is still running, mirroring the dot label', () => {
+      expect(statusWord('idle', 'agents')).toBe('idle (agents)');
+      expect(statusWord('idle', 'script')).toBe('idle (script)');
+      expect(statusWord('idle')).toBe('idle');
+      expect(statusWord('waiting')).toBe('needs input');
+    });
+  });
+
+  /**
+   * Restoring the fleet from the ledger (HIVE-87).
+   *
+   * The first time this store receives data at boot, which `emptySeeds()`
+   * argues against at length — so most of these are about the restored rows
+   * staying *inert*: they may not overwrite anything live, may not claim to be
+   * running, and may not hand out an id a future spawn would collide with.
+   */
+  describe('hydrateSessions', () => {
+    const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+      id: 'sess-01',
+      project: 'apfm-web',
+      task: '',
+      status: 'working',
+      createdAt: 1,
+      ...over,
+    });
+
+    const statusOf = (id: string) => {
+      const entity = useHiveStore.getState().entities[id];
+      return entity && isSession(entity) ? entity.status : undefined;
+    };
+
+    it('restores a record that was running as closed, not working', () => {
+      // The whole inference: the file says `working`, and it plainly is not.
+      useHiveStore.getState().hydrateSessions([record({ status: 'working' })]);
+
+      expect(statusOf('sess-01')).toBe('closed');
+    });
+
+    it('treats every live status the same way', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'a', status: 'working' }),
+        record({ id: 'b', status: 'waiting' }),
+        record({ id: 'c', status: 'idle' }),
+      ]);
+
+      expect(statusOf('a')).toBe('closed');
+      expect(statusOf('b')).toBe('closed');
+      expect(statusOf('c')).toBe('closed');
+    });
+
+    it('keeps an ending that was actually observed', () => {
+      // `terminated` is never capped precisely because it is the only record a
+      // process existed. Rewriting it to `closed` would forfeit that.
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'a', status: 'terminated' }),
+        record({ id: 'b', status: 'done' }),
+      ]);
+
+      expect(statusOf('a')).toBe('terminated');
+      expect(statusOf('b')).toBe('done');
+    });
+
+    it('drops a record naming a status it does not understand', () => {
+      // The file may have been written by a build that knew a status this one
+      // does not. Guessing would put an unrenderable row in the table.
+      useHiveStore.getState().hydrateSessions([record({ status: 'nonsense' })]);
+
+      expect(useHiveStore.getState().entities['sess-01']).toBeUndefined();
+    });
+
+    it('carries the fields a restored row renders', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({
+          name: 'HIVE-78',
+          ticket: 'HIVE-78',
+          branch: 'feat/hive-78',
+          cwd: '/repos/the-hive',
+          model: 'haiku',
+          effort: 'low',
+        }),
+      ]);
+
+      expect(useHiveStore.getState().entities['sess-01']).toMatchObject({
+        name: 'HIVE-78',
+        ticket: 'HIVE-78',
+        branch: 'feat/hive-78',
+        cwd: '/repos/the-hive',
+        model: 'haiku',
+        effort: 'low',
+        project: 'apfm-web',
+      });
+    });
+
+    it('never clobbers a live row', () => {
+      // A restart reuses entity ids, so this collision is the ordinary case
+      // rather than a corner: the ledger holds `sess-01` from last time and
+      // this run has just spawned one.
+      useHiveStore.getState().spawnSession('the-hive');
+      const live = useHiveStore.getState().order.at(-1)!;
+
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: live, project: 'apfm-web', status: 'done' })]);
+
+      const entity = useHiveStore.getState().entities[live];
+      expect(statusOf(live)).not.toBe('done');
+      expect(entity && isSession(entity) ? entity.project : undefined).toBe(
+        'the-hive',
+      );
+    });
+
+    it('appends restored rows to order without disturbing what is there', () => {
+      const before = [...useHiveStore.getState().order];
+
+      useHiveStore.getState().hydrateSessions([record({ id: 'old-01' })]);
+
+      expect(useHiveStore.getState().order).toEqual([...before, 'old-01']);
+    });
+
+    it('seeds the id counter past every restored id', () => {
+      // Without this the counter restarts at 1 and `nextSessionId`'s collision
+      // guard merely *skips* the taken ids rather than continuing the sequence
+      // — so a fresh session could be handed an id a restored row already
+      // holds the moment the guard is removed or reordered.
+      useHiveStore.getState().hydrateSessions([record({ id: 'sess-05' })]);
+      useHiveStore.getState().spawnSession('the-hive');
+
+      const fresh = useHiveStore
+        .getState()
+        .order.find((id) => id !== 'sess-05');
+      expect(fresh).not.toBe('sess-05');
+      expect(statusOf('sess-05')).toBe('closed');
+    });
+
+    it('marks every restored row as restored, however it ended', () => {
+      // Provenance, not lifecycle. A session that quit normally last run comes
+      // back as `terminated`, which is indistinguishable from one that quit ten
+      // seconds ago in this run — so the group cannot key on the status.
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'a', status: 'working' }),
+        record({ id: 'b', status: 'terminated' }),
+        record({ id: 'c', status: 'done' }),
+      ]);
+
+      const { entities } = useHiveStore.getState();
+      for (const id of ['a', 'b', 'c']) {
+        const entity = entities[id];
+        expect(entity && isSession(entity) ? entity.restored : undefined).toBe(
+          true,
+        );
+      }
+    });
+
+    it('does not mark a session this run started', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const live = useHiveStore.getState().order.at(-1)!;
+
+      const entity = useHiveStore.getState().entities[live];
+      expect(
+        entity && isSession(entity) ? entity.restored : 'missing',
+      ).toBeUndefined();
+    });
+
+    it('drops a model or effort the closed lists do not contain', () => {
+      // `ledger.ts` casts these on the way in and points here for validation.
+      // A hand-edited file must not put an arbitrary string into a union.
+      useHiveStore.getState().hydrateSessions([
+        record({
+          id: 'x',
+          model: 'gpt-9' as never,
+          effort: 'extreme' as never,
+        }),
+      ]);
+
+      const entity = useHiveStore.getState().entities['x'];
+      expect(entity).toBeDefined();
+      expect(entity && isSession(entity) ? entity.model : 'set').toBeUndefined();
+      expect(entity && isSession(entity) ? entity.effort : 'set').toBeUndefined();
+    });
+
+    it('keeps a model and effort that are valid', () => {
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: 'y', model: 'haiku', effort: 'low' })]);
+
+      expect(useHiveStore.getState().entities['y']).toMatchObject({
+        model: 'haiku',
+        effort: 'low',
+      });
+    });
+
+    it('seeds the counter from an id it skipped as a collision', () => {
+      /**
+       * The narrow race the counter has to survive: a spawn lands between boot
+       * and the unawaited hydrate, taking `sess-01`. The ledger's own `sess-01`
+       * is then skipped — and if the counter never heard of it, the next spawn
+       * takes `sess-02`, the id of another record still waiting to be restored.
+       */
+      useHiveStore.getState().reset();
+      useHiveStore.getState().spawnSession('the-hive');
+      const live = useHiveStore.getState().order.at(-1)!;
+
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: live }), record({ id: 'sess-09' })]);
+      useHiveStore.getState().spawnSession('the-hive');
+
+      const fresh = useHiveStore.getState().order.at(-1)!;
+      expect(fresh).not.toBe('sess-09');
+      expect(useHiveStore.getState().entities['sess-09']).toBeDefined();
+    });
+
+    it('is a no-op for an empty ledger', () => {
+      const before = [...useHiveStore.getState().order];
+
+      useHiveStore.getState().hydrateSessions([]);
+
+      expect(useHiveStore.getState().order).toEqual(before);
+    });
+
+    it('leaves the store untouched when every record is unusable', () => {
+      // The `restored === 0` early return: a hydrate that admits nothing must
+      // not hand back new `entities`/`order` objects, or every selector
+      // subscribed to them repaints for no reason at boot.
+      const entitiesBefore = useHiveStore.getState().entities;
+      const orderBefore = useHiveStore.getState().order;
+
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: 'x', status: 'nonsense' })]);
+
+      expect(useHiveStore.getState().entities).toBe(entitiesBefore);
+      expect(useHiveStore.getState().order).toBe(orderBefore);
     });
   });
 });

@@ -5,6 +5,7 @@ import {
   STATUS_LABEL,
   STATUS_TEXT,
   StatusDot,
+  statusLabel,
 } from '@components/ui/status-dot';
 
 describe('StatusDot', () => {
@@ -88,6 +89,21 @@ describe('StatusDot', () => {
     ).toBeInTheDocument();
   });
 
+  /**
+   * The gap Task 6's review found: a labelled, hollow `idle` dot used to
+   * announce plain "idle", dropping the one distinction the ring exists to
+   * carry for the one audience that cannot see the ring at all.
+   */
+  it('folds the idle detail into the announcement, not just plain idle', () => {
+    render(
+      <StatusDot status="idle" label="hero-refresh status" detail="agents" />,
+    );
+
+    expect(
+      screen.getByText('hero-refresh status: idle (agents)'),
+    ).toBeInTheDocument();
+  });
+
   it('forwards a className', () => {
     const { container } = render(
       <StatusDot status="idle" className="mt-0.5" />,
@@ -128,5 +144,42 @@ describe('StatusDot', () => {
     // the work, `terminated` an observation about the process (story 108).
     expect(STATUS_LABEL.terminated).toBe('terminated');
     expect(STATUS_LABEL.online).toBe('online');
+  });
+
+  it('draws a hollow dot when something is still running', () => {
+    const { container } = render(<StatusDot status="idle" detail="agents" />);
+    const dot = container.firstElementChild as HTMLElement;
+
+    expect(dot.className).toContain('border-subtle');
+    expect(dot.className).not.toContain('bg-subtle');
+  });
+
+  it('stays solid for a plain idle session', () => {
+    const { container } = render(<StatusDot status="idle" />);
+
+    expect((container.firstElementChild as HTMLElement).className).toContain('bg-subtle');
+  });
+
+  /**
+   * HIVE-83 review fix: hollowness used to be a caller-computed prop, so a
+   * `done` row that still carried a stale `idleDetail` (the `/clear` bug at
+   * `hive-store.ts`'s retired-row assignment) rendered a hollow ring in the
+   * brand colour instead of the solid fill. Deriving hollow from
+   * `status === 'idle'` inside the atom makes that unrepresentable — a
+   * non-idle status with a `detail` still passed in must stay solid.
+   */
+  it('never hollows a non-idle status, even if a detail is passed', () => {
+    const { container } = render(<StatusDot status="done" detail="agents" />);
+    const dot = container.firstElementChild as HTMLElement;
+
+    expect(dot.className).toContain('bg-brand');
+    expect(dot.className).not.toContain('border-brand');
+  });
+
+  it('names what is still running', () => {
+    expect(statusLabel('idle', 'agents')).toBe('idle (agents)');
+    expect(statusLabel('idle', 'script')).toBe('idle (script)');
+    expect(statusLabel('idle')).toBe('idle');
+    expect(statusLabel('waiting')).toBe('needs input');
   });
 });

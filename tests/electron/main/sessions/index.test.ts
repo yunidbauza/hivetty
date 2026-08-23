@@ -7,13 +7,16 @@ import {
   DEFAULT_NOTIFICATIONS,
   type ConfigSnapshot,
 } from '../../../../electron/shared/config-contract';
+import type { HookStatusEvent } from '../../../../electron/shared/hook-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
 
+import type { RunAsync } from '../../../../electron/main/integrations/github/run';
 import type { PtyHostSupervisor } from '../../../../electron/main/pty-host/supervisor';
 import {
   createSessions,
   type Sessions,
 } from '../../../../electron/main/sessions';
+import { MIN_INTERVAL_MS } from '../../../../electron/main/sessions/git';
 
 /**
  * The sessions layer (story 096).
@@ -615,6 +618,68 @@ describe('identity: the renderer only ever sees entity ids', () => {
   });
 });
 
+/**
+ * A sessions instance whose hook receiver the test drives directly (HIVE-83).
+ *
+ * Built the same way the `hooked` instances further down build theirs —
+ * `hooks.start` captured rather than really started — but hoisted here because
+ * the tracker tests need both `onEvent` and `onCleared` out of that same
+ * capture, and reading status back by entity is exactly what `on()` already
+ * does for the suite's default instance.
+ */
+function harness(): {
+  hook: (
+    event: { entityId: string; event: HookStatusEvent['event'] } & Partial<
+      Omit<HookStatusEvent, 'entityId' | 'event' | 'status'>
+    >,
+  ) => void;
+  cleared: (entityId: string) => void;
+  lastStatus: (entityId: string) => unknown;
+  lastEvent: (entityId: string) => Record<string, unknown>;
+} {
+  let onEvent: ((event: HookStatusEvent) => void) | undefined;
+  let onCleared: ((entityId: string) => void) | undefined;
+  const localSent: Sent[] = [];
+
+  createSessions({
+    supervisor,
+    send: (channel, payload) =>
+      localSent.push({ channel, payload: payload as Record<string, unknown> }),
+    config: () => CONFIG,
+    newSessionUuid: () => TEST_UUID,
+    hooks: {
+      settingsPathFor: () => undefined,
+      envFor: () => ({}),
+      start: (opts: {
+        onEvent: (event: HookStatusEvent) => void;
+        onCleared: (entityId: string) => void;
+      }) => {
+        onEvent = opts.onEvent;
+        onCleared = opts.onCleared;
+        return Promise.resolve();
+      },
+      stop: () => Promise.resolve(),
+    } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+  });
+
+  const statusFor = (entityId: string) =>
+    localSent
+      .filter(
+        (entry) => entry.channel === CH.sessionStatus && entry.payload.entityId === entityId,
+      )
+      .at(-1)!.payload;
+
+  return {
+    // `status` is a required field on the wire contract but unread by
+    // `onEvent` — the tracker derives it — so a fixed fallback here is
+    // never observed downstream.
+    hook: (event) => onEvent!({ status: 'working', ...event } as HookStatusEvent),
+    cleared: (entityId) => onCleared!(entityId),
+    lastStatus: (entityId) => statusFor(entityId).status,
+    lastEvent: (entityId) => statusFor(entityId),
+  };
+}
+
 describe('status', () => {
   it('reports working, then idle, then terminated', () => {
     sessions.open(OPEN);
@@ -656,6 +721,196 @@ describe('status', () => {
     vi.advanceTimersByTime(8);
 
     expect(on(CH.sessionStatus).at(-1)!.payload.entityId).toBe('hero-refresh');
+  });
+
+  /**
+   * HIVE-81: `idle_prompt` reports `idle`, not `waiting` (`NOTIFICATION_TYPE_STATUS`
+   * in `hook-contract.ts`). This layer does not compute that mapping — the
+   * receiver does — but it must pass whatever the receiver decided straight
+   * through rather than reinterpreting it.
+   */
+  it('reports idle, not waiting, for an idle_prompt notification', () => {
+    let onEvent: ((event: HookStatusEvent) => void) | undefined;
+    const hooked = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        start: (opts: { onEvent: (event: HookStatusEvent) => void }) => {
+          onEvent = opts.onEvent;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+    });
+
+    // Drive the hook receiver's onEvent with what it reports for an idle
+    // prompt, and assert the published SessionStatusEvent carries status
+    // 'idle' rather than reinterpreting it as 'waiting'.
+    onEvent!({
+      entityId: 'hero-refresh',
+      status: 'idle',
+      event: 'Notification',
+      notificationType: 'idle_prompt',
+    });
+
+    expect(sent.at(-1)).toEqual({
+      channel: CH.sessionStatus,
+      payload: {
+        entityId: 'hero-refresh',
+        status: 'idle',
+        event: 'Notification',
+        notificationType: 'idle_prompt',
+      },
+    });
+
+    hooked.dispose();
+  });
+
+  /**
+   * `PostToolUse` is the first **per-tool-call** hook this app subscribes
+   * (HIVE-81 review, finding 14).
+   *
+   * `onEvent` reads a branch for any event carrying a `cwd`, so a `git`
+   * spawn is now reachable once per tool call — and Claude routinely runs
+   * tools in parallel batches. The only thing between that and a spawn storm
+   * is the reader's own floor, so this pins the composition rather than
+   * trusting `git.ts`'s unit tests to be wired up the way they are read.
+   *
+   * Two properties, both of which have to hold:
+   *
+   * - Events arriving **together** share one in-flight read, so a batch of
+   *   eight parallel `PostToolUse`s is one `git rev-parse`.
+   * - Events arriving **after** it settles but inside {@link MIN_INTERVAL_MS}
+   *   are served from cache, so a fast serial batch is also one spawn.
+   *
+   * `PostToolUse` deliberately does not pass `fresh` — only `Stop` does, and
+   * `Stop` fires once per turn.
+   */
+  it('spawns git once for a parallel batch of PostToolUse events', async () => {
+    let onEvent: ((event: HookStatusEvent) => void) | undefined;
+    const run = vi.fn<RunAsync>().mockResolvedValue({
+      code: 0,
+      stdout: 'feat/x\n',
+      stderr: '',
+      timedOut: false,
+    });
+    const clock = { t: 0 };
+
+    const hooked = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      branchReader: {
+        run,
+        gitPath: () => '/usr/bin/git',
+        now: () => clock.t,
+      },
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        start: (opts: { onEvent: (event: HookStatusEvent) => void }) => {
+          onEvent = opts.onEvent;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+    });
+
+    /** Let the reader's promise chain settle without leaving fake timers. */
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    };
+
+    const toolFinished = () =>
+      onEvent!({
+        entityId: 'hero-refresh',
+        status: 'working',
+        event: 'PostToolUse',
+        cwd: '/home/dev/repos/hero-refresh',
+      } as HookStatusEvent);
+
+    // Eight tools in one batch, all reporting within the same tick.
+    for (let i = 0; i < 8; i += 1) toolFinished();
+    await flush();
+
+    expect(run).toHaveBeenCalledTimes(1);
+
+    // Another eight, a second later — still inside the two-second floor.
+    clock.t = MIN_INTERVAL_MS - 1;
+    for (let i = 0; i < 8; i += 1) toolFinished();
+    await flush();
+
+    expect(run).toHaveBeenCalledTimes(1);
+
+    // Past the floor, one more read — the ceiling is one spawn per directory
+    // per interval, whatever the tool-call rate above it.
+    clock.t = MIN_INTERVAL_MS;
+    toolFinished();
+    await flush();
+
+    expect(run).toHaveBeenCalledTimes(2);
+
+    hooked.dispose();
+  });
+
+  /**
+   * HIVE-83: the whole reason `hooks/tracker.ts` exists. `Bash` (A) and
+   * `AskUserQuestion` (B) run in parallel; A's `PostToolUse` — a sibling
+   * finishing — must not clear the block B's `PermissionRequest` is holding.
+   * Only B's own `PostToolUse` may release it.
+   */
+  it('holds waiting while a sibling tool finishes, then releases on the blocked one', () => {
+    const h = harness();
+
+    h.hook({ entityId: 'sess-a', event: 'UserPromptSubmit' });
+    h.hook({ entityId: 'sess-a', event: 'PreToolUse', toolUseId: 'A', toolName: 'Bash' });
+    h.hook({
+      entityId: 'sess-a',
+      event: 'PreToolUse',
+      toolUseId: 'B',
+      toolName: 'AskUserQuestion',
+    });
+    h.hook({
+      entityId: 'sess-a',
+      event: 'PermissionRequest',
+      toolName: 'AskUserQuestion',
+    });
+    h.hook({ entityId: 'sess-a', event: 'PostToolUse', toolUseId: 'A', toolName: 'Bash' });
+
+    expect(h.lastStatus('sess-a')).toBe('waiting');
+
+    h.hook({
+      entityId: 'sess-a',
+      event: 'PostToolUse',
+      toolUseId: 'B',
+      toolName: 'AskUserQuestion',
+    });
+    expect(h.lastStatus('sess-a')).toBe('working');
+  });
+
+  /**
+   * HIVE-83: `/clear` keeps the pty and opens a successor row. Without
+   * `statusTracker.reset` on `onCleared`, the successor would inherit the
+   * retired conversation's live subagent and sit on `idle (agents)` forever.
+   */
+  it('clears tracker state when the conversation is cleared', () => {
+    const h = harness();
+
+    h.hook({ entityId: 'sess-b', event: 'UserPromptSubmit' });
+    h.hook({ entityId: 'sess-b', event: 'SubagentStart', agentId: 'X' });
+    h.hook({ entityId: 'sess-b', event: 'Stop' });
+    expect(h.lastEvent('sess-b')).toMatchObject({ idleDetail: 'agents' });
+
+    h.cleared('sess-b');
+    h.hook({ entityId: 'sess-b', event: 'Stop' });
+    expect(h.lastEvent('sess-b').idleDetail).toBeUndefined();
   });
 });
 
@@ -1011,5 +1266,138 @@ describe('session authentication', () => {
     });
 
     expect(spawned[0]!.stripEnv).toBeUndefined();
+  });
+});
+
+/**
+ * What reaches the ledger (HIVE-87).
+ *
+ * The ledger itself is tested against a real file in `ledger.test.ts`; these
+ * pin the *wiring* — that each moment main knows something worth keeping
+ * actually hands it over, and that a build without a ledger is unaffected. A
+ * fake rather than the real one, for the reason the supervisor is faked: a unit
+ * test that wrote into `userData` would leave state behind.
+ */
+describe('the ledger', () => {
+  interface Written {
+    id: string;
+    patch: Record<string, unknown>;
+  }
+
+  const withLedger = (written: Written[]) =>
+    createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      ledger: {
+        /*
+          Both verbs land in one list. What these tests assert is *what main
+          hands over and when*; which of the two carried it is the ledger's own
+          concern and is covered in `ledger.test.ts`.
+        */
+        begin: (id, patch) => {
+          written.push({ id, patch: { ...patch } });
+        },
+        record: (id, patch) => {
+          written.push({ id, patch: { ...patch } });
+        },
+        all: () => [],
+        flush: () => {},
+        dispose: () => {},
+      },
+    });
+
+  /** Every patch written for an entity, in order — records merge. */
+  const patchesFor = (written: Written[], id: string) =>
+    written.filter((entry) => entry.id === id).map((entry) => entry.patch);
+
+  it('records the session at spawn, carrying the uuid it pinned', () => {
+    const written: Written[] = [];
+    withLedger(written).open(OPEN);
+
+    expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
+      project: 'apfm-web',
+      status: 'working',
+      sessionUuid: TEST_UUID,
+    });
+  });
+
+  it('writes the same uuid to the ledger and to the command line', () => {
+    // The whole point of hoisting it out of the sessionCommand call: two calls
+    // to newSessionUuid() would leave the ledger naming a transcript that does
+    // not exist, which is the one thing recording it is meant to make possible.
+    //
+    // The command line is *typed into* the pty rather than passed as spawn
+    // args — `claude` runs inside a login shell — so this reads the bootstrap
+    // write, exactly as the BOOT assertions above do.
+    const written: Written[] = [];
+    const withIt = withLedger(written);
+    withIt.open(OPEN);
+    const sessionId = mintedFor('hero-refresh');
+
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(SUBMIT);
+
+    const recorded = patchesFor(written, 'hero-refresh')[0]?.sessionUuid;
+    expect(supervisor.write).toHaveBeenCalledWith(
+      sessionId,
+      expect.stringContaining(`--session-id ${String(recorded)}`) as unknown as string,
+    );
+  });
+
+  it('records the model and effort a session was started as', () => {
+    const written: Written[] = [];
+    withLedger(written).open({ ...OPEN, model: 'haiku', effort: 'low' });
+
+    expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
+      model: 'haiku',
+      effort: 'low',
+    });
+  });
+
+  it('omits a name nobody supplied rather than storing an empty one', () => {
+    const written: Written[] = [];
+    withLedger(written).open(OPEN);
+
+    expect(patchesFor(written, 'hero-refresh')[0]).not.toHaveProperty('name');
+  });
+
+  it('records the ending when the pty exits', () => {
+    const written: Written[] = [];
+    withLedger(written).open(OPEN);
+
+    emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0 });
+
+    const ending = patchesFor(written, 'hero-refresh').at(-1);
+    expect(ending).toMatchObject({ status: 'terminated' });
+    expect(typeof ending?.endedAt).toBe('number');
+  });
+
+  it('says nothing about a command session, which has no history to keep', () => {
+    // Same reason the activity tracker is not told: a clone's ending is not a
+    // session's, and a `clone-1` row in the fleet list would be a fiction.
+    const written: Written[] = [];
+    withLedger(written).openCommand({
+      entityId: 'clone-1',
+      cwd: '/tmp',
+      file: 'git',
+      args: ['clone'],
+      cols: 80,
+      rows: 24,
+      onExit: () => {},
+    });
+
+    expect(patchesFor(written, 'clone-1')).toEqual([]);
+  });
+
+  it('works with no ledger at all — absent is supported, not degraded', () => {
+    expect(() => {
+      sessions.open(OPEN);
+      emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0 });
+    }).not.toThrow();
   });
 });

@@ -35,13 +35,17 @@ import {
   projectConfigSnapshot,
   subscribeProjectConfig,
 } from '@lib/project-config';
+import { noteSessionTicket } from '@lib/session-history';
 import { pickPhrase } from '@lib/swarm/phrases';
 import { requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 import type { PrRecord } from '@shared/github-contract';
+import type { IdleDetail } from '@shared/hook-contract';
 import type { JiraIssue } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
+import { SESSION_EFFORTS, SESSION_MODELS } from '@shared/session-contract';
+import type { SessionRecord } from '@shared/session-history-contract';
 import { currentTheme } from '@stores/appearance-store';
 import { useUiStore } from '@stores/ui-store';
 
@@ -251,20 +255,59 @@ interface HiveState {
    */
   hydrateNotifs: (notifs: HiveNotification[]) => void;
   /**
+   * Put last run's fleet back on the table (HIVE-87).
+   *
+   * The first time this store receives data at boot, which reverses the
+   * position `emptySeeds()` argues — see the note there. The reversal is
+   * narrow: the seeds are still empty, and this arrives by action, after the
+   * first paint, carrying only rows that are already over.
+   *
+   * A **merge**, never a replacement. A restart reuses entity ids, so a
+   * restored `sess-01` colliding with one this run has already spawned is the
+   * ordinary case rather than a corner, and the live row always wins.
+   */
+  hydrateSessions: (records: SessionRecord[]) => void;
+  /**
    * Apply read-state the hub decided, without writing it back (HIVE-75).
    *
    * Separate from {@link markRead} precisely because it must **not** write
    * through: this is the echo of a decision main already made — most often the
    * user clicking a desktop toast, which the renderer cannot observe any other
    * way.
+   *
+   * `unread` carries the direction (HIVE-81): read-state now moves both ways,
+   * since the foreground gate raises a row already-read and later promotes it
+   * back once the user looks away.
+   *
+   * **The two arguments are one tuple, not two independent values.** Widening
+   * `unread` to a boolean made `applyRead(null, true)` writable, and it would
+   * mark *every* row in the inbox unread — a mass un-read the hub has no verb
+   * for and no caller wants. Nothing produces it today; the union is what keeps
+   * it from being one careless call away. `null` is "all of them", and the only
+   * thing worth doing to all of them is marking them read.
    */
-  applyRead: (id: string | null) => void;
+  applyRead: (
+    ...args: [id: string, unread: boolean] | [id: null, unread: false]
+  ) => void;
+  /**
+   * Remove a row main has already dropped (HIVE-81).
+   *
+   * Separate from {@link HiveState.dismissNotif}, which is the *user's* gesture
+   * and writes through to main. This is the echo of a dismissal main decided on
+   * its own — a clicked desktop toast — so writing back would send main a
+   * message about the thing it just told us.
+   */
+  applyDismiss: (id: string) => void;
   appendEntityLines: (
     id: string,
     lines: TermLine[],
     status?: SessionStatus,
   ) => void;
-  setSessionStatus: (id: string, status: SessionStatus) => void;
+  setSessionStatus: (
+    id: string,
+    status: SessionStatus,
+    idleDetail?: IdleDetail,
+  ) => void;
   /** The agent reported a new display name (HIVE-61). */
   renameSession: (id: string, name: string) => void;
   /**
@@ -377,6 +420,15 @@ const staleTitles = new Map<string, string>();
  */
 let inFlightPrSweep: Promise<void> | null = null;
 
+/**
+ * The Jira sweep in flight, or `null`.
+ *
+ * Module scope for the reason {@link inFlightPrSweep} is, and it exists for the
+ * same reason too — tickets became polled in HIVE-81 and inherited the race the
+ * PR side had already solved. See `refreshTickets` for the specific harm.
+ */
+let inFlightTicketSweep: Promise<void> | null = null;
+
 function currentSessionIn(state: HiveState, terminalId: string): string {
   const direct = state.entities[terminalId];
   if (direct !== undefined && isSession(direct) && !isEnded(direct.status)) {
@@ -430,7 +482,19 @@ const STATUS_WORD: Record<SessionStatus, string> = {
   idle: 'idle',
   done: 'done',
   terminated: 'terminated',
+  closed: 'closed',
 };
+
+/**
+ * The terminal-side word, including what is still running (HIVE-83).
+ *
+ * Deliberately a second mapping rather than a reuse of `statusLabel`:
+ * `stores/` may not import `components/`.
+ */
+export function statusWord(status: SessionStatus, detail?: IdleDetail): string {
+  if (status === 'idle' && detail !== undefined) return `idle (${detail})`;
+  return STATUS_WORD[status];
+}
 
 const STATUS_COLOR: Record<SessionStatus, TermLine['color']> = {
   working: 'green',
@@ -444,6 +508,13 @@ const STATUS_COLOR: Record<SessionStatus, TermLine['color']> = {
    * carries the priority.
    */
   terminated: 'dim',
+  /**
+   * Dim, for the same reason `terminated` is (HIVE-87). A restored row has even
+   * less behind it than a terminated one — the process it describes died with
+   * the app that owned it, a launch ago — so it certainly does not earn the
+   * colour that means "there is something here".
+   */
+  closed: 'dim',
 };
 
 let spawnCounter = 0;
@@ -467,6 +538,68 @@ let spawnCounter = 0;
  * ENDED, and reusing the id of a session the user can still see is the bug in
  * its most confusing form: two rows, one name, different statuses.
  */
+/**
+ * What a stored status becomes on the way back in (HIVE-87).
+ *
+ * Three answers, and the middle one is the feature:
+ *
+ * - An ending that was **observed** — `done`, `terminated` — comes back exactly
+ *   as it was. `terminated` especially: it is never capped, on the grounds that
+ *   it is the only record a process existed, and rewriting it here would forfeit
+ *   that.
+ * - Anything **live** becomes `closed`. A record claiming to be `working` is
+ *   describing a process that died with the app that owned it, a launch ago.
+ * - Anything **unrecognised** is `undefined`, and its record is dropped. The
+ *   file may have been written by a build that knew a status this one does not,
+ *   and a row the table cannot render is worse than a row missing from it.
+ *
+ * `closed` itself is not accepted, deliberately. Nothing writes it — see
+ * `session-history-contract.ts` — so a file containing one was not written by
+ * this app, and honouring it would be trusting a value no code path produces.
+ */
+/**
+ * The closed lists, checked rather than assumed (HIVE-87).
+ *
+ * `session-history-contract.ts` types `model` and `effort` as the unions but the
+ * file they come from is not typed at all, and `ledger.ts` deliberately does not
+ * re-check them — it points here instead. These are what make that pointer
+ * true.
+ */
+const isKnownModel = (value: string | undefined): value is Model =>
+  value !== undefined && (SESSION_MODELS as readonly string[]).includes(value);
+
+const isKnownEffort = (value: string | undefined): value is Effort =>
+  value !== undefined && (SESSION_EFFORTS as readonly string[]).includes(value);
+
+function restoredStatus(stored: string): SessionStatus | undefined {
+  if (stored === 'done' || stored === 'terminated') return stored;
+  if (stored === 'working' || stored === 'waiting' || stored === 'idle') {
+    return 'closed';
+  }
+  return undefined;
+}
+
+/**
+ * Keep the spawn counter ahead of an id that already exists (HIVE-87).
+ *
+ * `nextSessionId`'s `while (id in taken)` guard already prevents a *collision*,
+ * but only by skipping: with the counter at zero and `sess-05` restored, the
+ * next four spawns take `sess-01`…`sess-04` and the fifth silently jumps the
+ * gap. That is a fleet whose ids no longer say anything about order, and it is
+ * the kind of thing that reads as a bug in the ledger long after the ledger has
+ * stopped being involved.
+ *
+ * Parsed base 36 because that is what `nextSessionId` formats with. An id that
+ * does not match the pattern — a fixture, a hand-edited file — is ignored
+ * rather than rejected: it cannot collide with a generated one anyway.
+ */
+function rememberSpawnId(id: string): void {
+  const match = /^sess-([0-9a-z]+)$/.exec(id);
+  if (match?.[1] === undefined) return;
+  const seen = Number.parseInt(match[1], 36);
+  if (Number.isFinite(seen) && seen > spawnCounter) spawnCounter = seen;
+}
+
 function nextSessionId(taken: Readonly<Record<string, Entity>>): string {
   let id: string;
   do {
@@ -544,6 +677,20 @@ const line = (text: string, color: TermLine['color'] = 'ink'): TermLine => ({
  * A factory, for the same reason `createInitialState()` is one — a shared
  * constant would hand every store and every `reset()` the *same* arrays, so one
  * test appending a session would leak into the next.
+ *
+ * ## What HIVE-87 changed here, and what it deliberately did not
+ *
+ * `entities` and `order` are no longer empty for the whole of a launch:
+ * {@link HiveActions.hydrateSessions} puts last run's sessions back shortly
+ * after the first paint. That reads like a reversal of everything above, so the
+ * difference is worth stating — **the seeds are still empty, and the rows still
+ * arrive from a real producer.** The producer is main's ledger rather than a
+ * pty, and every row it supplies is one that has already ended.
+ *
+ * The failure this comment is about is untouched. A seeded fleet claimed
+ * sessions were *running* that were not, and a real read replaced them a frame
+ * later; a restored fleet claims only that some sessions once ran, arrives
+ * after the paint rather than before it, and nothing overwrites it.
  */
 const emptySeeds = (): Pick<
   HiveState,
@@ -592,6 +739,32 @@ function samePrs(next: readonly PrRecord[], previous: readonly PrRecord[]): bool
       pr.findings === before.findings &&
       pr.checks === before.checks &&
       pr.updatedAt === before.updatedAt
+    );
+  });
+}
+
+/**
+ * Whether a sweep found anything the WORK panel would draw differently.
+ *
+ * Every field of the stored ticket is compared, for the reason {@link samePrs}
+ * gives: a comparison narrower than the shape goes quietly wrong the day a
+ * field is added. Order counts — the JQL sorts by `updated`, so a reordering is
+ * a real change even when the set is identical.
+ */
+function sameTickets(
+  next: readonly Ticket[],
+  previous: readonly Ticket[],
+): boolean {
+  if (next.length !== previous.length) return false;
+
+  return next.every((ticket, index) => {
+    const before = previous[index];
+    return (
+      ticket.key === before.key &&
+      ticket.status === before.status &&
+      ticket.statusCategory === before.statusCategory &&
+      ticket.title === before.title &&
+      ticket.url === before.url
     );
   });
 }
@@ -760,6 +933,26 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
          */
         theme: currentTheme(),
       }).then((outcome) => {
+        /*
+          The ticket link, so it survives a quit (HIVE-87) — and **after** the
+          spawn resolves, not before it.
+
+          This used to run above, beside the `requestSpawn` call. Both are
+          `invoke` on one pipe and arrive in order, so main handled the note
+          first, found no record for this entity yet, and dropped it by the
+          guard that stops a note inventing a row for a session that never
+          existed. Deterministic rather than a narrow race: the ticket-card
+          spawn — the reason the field exists — never persisted its ticket, and
+          only the mid-session intent path ever did.
+
+          `SpawnRequest` still does not carry it. A ticket is not a property of
+          *starting* a process, and the other path that establishes the link
+          happens long after any spawn; one verb for both keeps a single answer
+          to "how does main learn a session's ticket".
+        */
+        if (outcome.ok && ticket !== undefined) {
+          noteSessionTicket({ entityId: id, ticket });
+        }
         if (outcome.ok) return;
         set((state) => ({
           orchLines: capLines([
@@ -1040,7 +1233,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
              * one of the two was accepted. Now the column and the argument are
              * the same string.
              */
-            `  ${entityLabel(entity).padEnd(16)}${STATUS_WORD[entity.status].padEnd(13)}${entity.project} · ${branchLabel(entity)}`,
+            `  ${entityLabel(entity).padEnd(16)}${statusWord(entity.status, entity.idleDetail).padEnd(13)}${entity.project} · ${branchLabel(entity)}`,
             STATUS_COLOR[entity.status],
           );
         }
@@ -1237,14 +1430,19 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         : { notifs: [notif, ...state.notifs].slice(0, NOTIF_CAP) },
     ),
 
-  applyRead: (id) =>
+  applyRead: (id, unread) =>
     set((state) => ({
       notifs:
         id === null
-          ? state.notifs.map((notif) => ({ ...notif, unread: false }))
+          ? state.notifs.map((notif) => ({ ...notif, unread }))
           : state.notifs.map((notif) =>
-              notif.id === id ? { ...notif, unread: false } : notif,
+              notif.id === id ? { ...notif, unread } : notif,
             ),
+    })),
+
+  applyDismiss: (id) =>
+    set((state) => ({
+      notifs: state.notifs.filter((notif) => notif.id !== id),
     })),
 
   hydrateNotifs: (notifs) =>
@@ -1265,6 +1463,89 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       return { notifs: merged.slice(0, NOTIF_CAP) };
     }),
 
+  hydrateSessions: (records) =>
+    set((state) => {
+      const entities = { ...state.entities };
+      const order = [...state.order];
+      let restored = 0;
+
+      for (const item of records) {
+        /**
+         * Seeded **before** the collision check, not after it.
+         *
+         * The counter has to learn about an id whether or not the row is kept.
+         * A spawn that lands in the window between boot and this unawaited
+         * hydrate takes `sess-01`; the ledger's own `sess-01` is then skipped
+         * below as a collision, and if the counter never heard of it the next
+         * spawn is handed `sess-02` — the id of another record still waiting to
+         * be restored, which then vanishes the same way. Once past the skip,
+         * this ran only for rows that survived it.
+         */
+        rememberSpawnId(item.id);
+
+        /*
+          A live row always wins. Not a conflict to resolve so much as the
+          ordinary case: entity ids are reused across a restart, so the ledger's
+          `sess-01` and this run's `sess-01` are different sessions wearing the
+          same name, and only one of them has a process behind it.
+        */
+        if (item.id in entities) continue;
+
+        const status = restoredStatus(item.status);
+        /*
+          A status this build does not know is a record written by one that did.
+          Dropped rather than guessed at — an unrenderable row in the fleet
+          table is worse than a row missing from it, and the ledger is a
+          convenience, not a source of truth about anything.
+        */
+        if (status === undefined) continue;
+
+        entities[item.id] = {
+          kind: 'session',
+          id: item.id,
+          project: item.project,
+          status,
+          task: item.task,
+          /*
+            The three required fields the record deliberately does not carry.
+            `lines: []` is the honest one: a restored row has no transcript
+            here — Claude Code owns it — and inventing a line or two of
+            plausible scrollback would be a fiction the user cannot tell from a
+            recording.
+          */
+          lines: [],
+          pr: null,
+          cost: '$0.00',
+          /*
+            Where this row came from, which is what PREVIOUS RUN groups on. It
+            cannot be derived from the status: a session that quit normally last
+            run is restored as `terminated`, which is indistinguishable from one
+            that quit ten seconds ago in this one.
+          */
+          restored: true,
+          ...(item.name === undefined ? {} : { name: item.name }),
+          ...(item.ticket === undefined ? {} : { ticket: item.ticket }),
+          ...(item.branch === undefined ? {} : { branch: item.branch }),
+          ...(item.cwd === undefined ? {} : { cwd: item.cwd }),
+          /*
+            Checked against the closed lists rather than trusted (HIVE-87).
+            `ledger.ts` casts these on the way in and says the store validates
+            them — which was not true until now, so a hand-edited file or one
+            from an older build could put an arbitrary string into a field typed
+            as a union. An unknown value drops the field and keeps the row: the
+            model a finished session ran under is a nice-to-have, and losing the
+            row over it would not be.
+          */
+          ...(isKnownModel(item.model) ? { model: item.model } : {}),
+          ...(isKnownEffort(item.effort) ? { effort: item.effort } : {}),
+        };
+        order.push(item.id);
+        restored += 1;
+      }
+
+      return restored === 0 ? {} : { entities, order };
+    }),
+
   appendEntityLines: (id, lines, status) =>
     set((state) => {
       const entity = state.entities[id];
@@ -1277,6 +1558,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
             status: status ?? entity.status,
           }
         : { ...entity, lines: [...entity.lines, ...lines] };
+
+      /**
+       * This function has no `idleDetail` parameter, so an explicit status
+       * change through here can never legitimately carry one forward —
+       * `idleDetail` is only ever set alongside `idle` by `setSessionStatus`.
+       * Without this, a session on `idle (script)` demo-acked to `working`
+       * would keep the stale detail and draw a hollow ring on a status that
+       * must only ever be solid (HIVE-83).
+       */
+      if (status !== undefined && isSession(updated) && 'idleDetail' in updated) {
+        delete updated.idleDetail;
+      }
 
       return { entities: { ...state.entities, [id]: updated } };
     }),
@@ -1293,8 +1586,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * Agents are ignored rather than rejected. They have no `status` field of this
    * shape and no pty this epic, and a status event for one means main and the
    * fixture set disagree — worth not crashing over, not worth acting on.
+   *
+   * `idleDetail` rides along (HIVE-83) and is compared too, not just `status`:
+   * `idle` with nothing running and `idle (agents)` are the same `status` and a
+   * different dot.
    */
-  setSessionStatus: (id, status) =>
+  setSessionStatus: (id, status, idleDetail) =>
     set((state) => {
       /**
        * Main names the *terminal*; this is the row that owns it now.
@@ -1305,9 +1602,31 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        */
       const target = currentSessionIn(state, id);
       const entity = state.entities[target];
-      if (!entity || !isSession(entity) || entity.status === status) return state;
+      if (
+        !entity ||
+        !isSession(entity) ||
+        (entity.status === status && entity.idleDetail === idleDetail)
+      ) {
+        return state;
+      }
+
+      /**
+       * Spread-to-absent, then an explicit delete: the two are not the same
+       * guard. The spread alone stops a missing `idleDetail` from *overwriting*
+       * a value with `undefined`, but `entity`'s own key is still on the object
+       * afterwards — an `idle (agents) → working` transition would spread over
+       * it and keep the stale detail, because the snapshot compares keys, not
+       * values, and an explicit `undefined` is not the same as absent.
+       */
+      const updated: Session = {
+        ...entity,
+        status,
+        ...(idleDetail === undefined ? {} : { idleDetail }),
+      };
+      if (idleDetail === undefined) delete updated.idleDetail;
+
       return {
-        entities: { ...state.entities, [target]: { ...entity, status } },
+        entities: { ...state.entities, [target]: updated },
       };
     }),
 
@@ -1616,7 +1935,15 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     }
 
     set((state) => {
+      /**
+       * `idleDetail` is only ever set alongside `idle` — a retired row must
+       * not carry one across, or `done` draws a hollow ring instead of the
+       * solid brand dot it owns (HIVE-83). `StatusDot` now derives hollowness
+       * from `status === 'idle'` too, so this is belt and braces rather than
+       * the only guard.
+       */
       const retired: Session = { ...current, status: 'done' };
+      delete retired.idleDetail;
       const entities: Record<string, Entity> = {
         ...state.entities,
         [targetId]: retired,
@@ -1689,24 +2016,40 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
   },
 
   /**
-   * Install real issues (HIVE-69).
+   * Install real issues (HIVE-69), **keeping both slices' identity when the
+   * answer has not changed** (HIVE-81).
    *
-   * Wholesale replacement, and that is safe now in a way it would not have been
-   * while tickets carried a `sessions` array: the ticket→session link lives on
-   * `Session.ticket`, which this never touches. A user can refresh the WORK
-   * panel as often as they like and the sessions on every card survive it,
-   * because they were never stored on the card in the first place (HIVE-73).
+   * The identity guard arrived with the poller. Before it, this ran once on
+   * mount and an unconditional `set` cost nothing; now it runs every minute
+   * whether or not Jira has anything new, and both slices are subscribed to by
+   * name (`useTickets`, `useTicketSource`), so a quiet minute would re-render
+   * the whole WORK panel and re-resolve every card's sessions. Most minutes are
+   * quiet minutes. This is exactly what {@link HiveState.hydratePrs} does, for
+   * exactly the same reason.
+   *
+   * Wholesale replacement is still safe when something *did* change: the
+   * ticket→session link lives on `Session.ticket`, which this never touches.
    */
   hydrateTickets: (issues, capped) =>
-    set({
-      tickets: issues.map((issue) => ({
+    set((state) => {
+      const tickets = issues.map((issue) => ({
         key: issue.key,
         status: issue.status,
         statusCategory: issue.statusCategory,
         title: issue.summary,
         url: issue.url,
-      })),
-      ticketSource: { kind: 'live', stale: false, capped },
+      }));
+
+      const source = state.ticketSource;
+      const settled =
+        source.kind === 'live' && !source.stale && source.capped === capped;
+
+      return {
+        tickets: sameTickets(tickets, state.tickets) ? state.tickets : tickets,
+        ticketSource: settled
+          ? source
+          : { kind: 'live', stale: false, capped },
+      };
     }),
 
   /**
@@ -1719,19 +2062,48 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * useful than nothing at all.
    *
    * With no live tickets there is nothing to keep, so the failure is the state.
+   *
+   * **Already-failed stays put**, exactly as {@link HiveState.reportPrFailure}
+   * does it and now for the same reason: this runs on every sweep, so a Jira
+   * outage re-reports the same failure once a minute for as long as it lasts,
+   * and minting a new `ticketSource` each time would re-render the WORK panel —
+   * and re-resolve every card's sessions — to say precisely what it already
+   * said.
    */
   reportTicketFailure: (message) =>
     set((state) => {
-      if (state.ticketSource.kind === 'live') {
-        return {
-          ticketSource: { ...state.ticketSource, stale: true },
-        };
+      const source = state.ticketSource;
+
+      if (source.kind === 'live') {
+        // `return state` rather than an empty patch: zippering an unchanged
+        // partial still rebuilds the root object and wakes every listener.
+        return source.stale ? state : { ticketSource: { ...source, stale: true } };
       }
-      return { ticketSource: { kind: 'failed', message } };
+
+      return source.kind === 'failed' && source.message === message
+        ? state
+        : { ticketSource: { kind: 'failed', message } };
     }),
 
+  /**
+   * Nothing to read from — and repeating that conclusion changes nothing.
+   *
+   * This is the path that repeats longest of all: a machine with no Jira site
+   * configured reaches it on every sweep, forever. Both slices are held so the
+   * panel's explanation renders once rather than once a minute, which is what
+   * {@link HiveState.reportPrsUnconfigured} already does.
+   */
   reportTicketsUnconfigured: () =>
-    set({ tickets: [], ticketSource: { kind: 'unconfigured' } }),
+    set((state) => {
+      const settled = state.ticketSource.kind === 'unconfigured';
+
+      if (settled && state.tickets.length === 0) return state;
+
+      return {
+        tickets: state.tickets.length === 0 ? state.tickets : [],
+        ticketSource: settled ? state.ticketSource : { kind: 'unconfigured' },
+      };
+    }),
 
   /**
    * Replace one ticket, in place (HIVE-70).
@@ -1791,64 +2163,78 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     }
 
     /**
-     * Announce the read — but only when there is nothing on screen to announce
-     * it *over*.
+     * One sweep at a time, however many callers ask.
      *
-     * A refresh with tickets already listed keeps them listed. Blanking a good
-     * list to a skeleton on every reopen would be the original bug wearing the
-     * opposite mask: content the user was reading, replaced by a placeholder,
-     * for the duration of a network round trip.
+     * The poller dedups its own ticks, but the WORK panel's "Try again" calls
+     * this action directly — so a retry clicked while a slow sweep is out used
+     * to start a second Jira search. The harm is the one `refreshPrs` writes
+     * down: if the retry answered first and the older sweep then failed,
+     * `reportTicketFailure` would mark the just-installed fresh list stale,
+     * putting a "may be out of date" banner over data a second old. Sharing the
+     * promise makes the retry *join* the sweep instead of racing it.
      *
-     * It is also what keeps `reportTicketFailure` able to do its job. That
-     * action marks a *live* list stale rather than discarding it, and it decides
-     * by reading the source it is replacing — so moving an already-live source
-     * to `loading` here would turn every "could not reach Jira, these may be out
-     * of date" into a bare failure with the tickets thrown away.
-     *
-     * Keyed on the *source*, not on `tickets.length`. A successful read that
-     * matched nothing is `live` with an empty array, and the panel says "No
-     * issues matched your query." — a real answer. Counting rows would treat
-     * that answer as "nothing yet" and replace it with three pulsing
-     * placeholders on every reopen, which is the same content-for-placeholder
-     * swap the paragraph above rejects.
+     * Wraps the status read as well as the search, because both hops cost a
+     * round trip and neither is worth doing twice concurrently.
      */
-    if (get().ticketSource.kind !== 'live') {
-      set({ ticketSource: { kind: 'loading' } });
-    }
+    inFlightTicketSweep ??= (async () => {
+      /**
+       * **Nothing here sets `loading`.** That is the boot state, left to the
+       * first answer to clear, permanently — `refreshPrs`'s rule, and tickets
+       * now need it for the same reason.
+       *
+       * This used to announce every sweep that was not already `live`, which
+       * was harmless when it ran once on mount. Now it polls: on a machine with
+       * no Jira configured — or through any Jira outage — the source is
+       * `unconfigured`/`failed` and stays that way, so every sweep replaced the
+       * panel's explanation (and, in the `failed` case, the retry button the
+       * user was reaching for) with three pulsing skeleton rows, once a minute,
+       * forever.
+       *
+       * The case the old guard was protecting is protected by its absence: a
+       * settled `live` list is never blanked, because nothing blanks anything.
+       */
+      const status = await readJiraStatus();
+      if (status === null) {
+        get().reportTicketFailure(
+          'The app could not reach its own main process.',
+        );
+        return;
+      }
+      if (
+        status.site === null ||
+        status.email === null ||
+        status.credential.kind === 'none' ||
+        status.credential.kind === 'unavailable'
+      ) {
+        get().reportTicketsUnconfigured();
+        return;
+      }
 
-    const status = await readJiraStatus();
-    if (status === null) {
-      get().reportTicketFailure('The app could not reach its own main process.');
-      return;
-    }
-    if (
-      status.site === null ||
-      status.email === null ||
-      status.credential.kind === 'none' ||
-      status.credential.kind === 'unavailable'
-    ) {
-      get().reportTicketsUnconfigured();
-      return;
-    }
+      /**
+       * No `jql` here on purpose.
+       *
+       * The configured override is applied in **main**, which already reads the
+       * config on every verb. Passing it from the renderer would mean the store
+       * reading a setting, holding it, and racing a hand-edit of the file — for
+       * a value main has in front of it anyway.
+       */
+      const result = await searchJiraIssues();
+      if (result === null) {
+        get().reportTicketFailure(
+          'The app could not reach its own main process.',
+        );
+        return;
+      }
+      if (!result.ok) {
+        get().reportTicketFailure(result.error.message);
+        return;
+      }
+      get().hydrateTickets(result.value.issues, result.value.capped);
+    })().finally(() => {
+      inFlightTicketSweep = null;
+    });
 
-    /**
-     * No `jql` here on purpose.
-     *
-     * The configured override is applied in **main**, which already reads the
-     * config on every verb. Passing it from the renderer would mean the store
-     * reading a setting, holding it, and racing a hand-edit of the file — for a
-     * value main has in front of it anyway.
-     */
-    const result = await searchJiraIssues();
-    if (result === null) {
-      get().reportTicketFailure('The app could not reach its own main process.');
-      return;
-    }
-    if (!result.ok) {
-      get().reportTicketFailure(result.error.message);
-      return;
-    }
-    get().hydrateTickets(result.value.issues, result.value.capped);
+    return inFlightTicketSweep;
   },
 
   /**
@@ -2021,6 +2407,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     // A sweep from the previous state must not install its answer into the new
     // one — dropping the handle makes the next caller start fresh.
     inFlightPrSweep = null;
+    inFlightTicketSweep = null;
     /**
      * Nothing in this store stamps through the clock any more — the activity
      * feed was its only caller and the project explorer replaced it. The rewind
@@ -2070,6 +2457,7 @@ export const useCounts = () =>
         idle: 0,
         done: 0,
         terminated: 0,
+        closed: 0,
       };
       for (const id of state.order) {
         const entity = state.entities[id];
@@ -2079,18 +2467,56 @@ export const useCounts = () =>
     }),
   );
 
+/**
+ * Idle sessions, broken down by what is still running (HIVE-83).
+ *
+ * A second selector rather than a wider `useCounts()`: the header's visible
+ * tally stays five numbers on purpose (widening it was the thing this story
+ * deliberately did not do), and this feeds the tooltip only. Computed here,
+ * never stored — one source of truth per number on screen, same rule as
+ * `useCounts()`.
+ */
+export const useIdleDetailCounts = () =>
+  useHiveStore(
+    useShallow((state) => {
+      let agents = 0;
+      let script = 0;
+      for (const id of state.order) {
+        const entity = state.entities[id];
+        if (!entity || !isSession(entity) || entity.status !== 'idle') continue;
+        if (entity.idleDetail === 'agents') agents += 1;
+        else if (entity.idleDetail === 'script') script += 1;
+      }
+      return { agents, script };
+    }),
+  );
+
 /** Active sessions first, then ended ones — the keyboard nav order (041, 060). */
 export const useNavOrder = () =>
   useHiveStore(
     useShallow((state) => {
       const active: string[] = [];
+      /**
+       * Three buckets since HIVE-87, and the order of the last two is not
+       * arbitrary — it is the table's.
+       *
+       * `session-table.tsx` renders PREVIOUS RUN *above* ENDED, so the keyboard
+       * order has to as well. This selector exists precisely to keep the caret
+       * and the rows agreeing about where "here" is; a partition that flattened
+       * in a different order from the one on screen would make the down arrow
+       * skip a group and come back to it, which is the exact failure the note
+       * above is about.
+       */
+      const restored: string[] = [];
       const ended: string[] = [];
       for (const id of state.order) {
         const entity = state.entities[id];
         if (!entity || !isSession(entity)) continue;
-        (isEnded(entity.status) ? ended : active).push(id);
+        if (entity.restored === true) restored.push(id);
+        else if (isEnded(entity.status)) ended.push(id);
+        else active.push(id);
       }
-      return [...active, ...ended];
+      return [...active, ...restored, ...ended];
     }),
   );
 
@@ -2122,6 +2548,12 @@ export const useActiveSessions = () =>
  * One group rather than two, because the divider answers "is this still going?"
  * and both answers are no. The row itself says which kind of ended it is, which
  * is where that distinction is actually useful.
+ *
+ * **Excludes `closed` (HIVE-87).** That is a third group with its own divider,
+ * and the reason is the question this one answers. "What did I just finish?" is
+ * about *this* session of the app; a row the app outlived answers a different
+ * question, and a launch or two would leave the honest answer to the first one
+ * buried under rows from previous runs.
  */
 export const useEndedSessions = () =>
   useHiveStore(
@@ -2129,7 +2561,40 @@ export const useEndedSessions = () =>
       state.order.filter((id) => {
         const entity = state.entities[id];
         return (
-          entity !== undefined && isSession(entity) && isEnded(entity.status)
+          entity !== undefined &&
+          isSession(entity) &&
+          isEnded(entity.status) &&
+          entity.restored !== true
+        );
+      }),
+    ),
+  );
+
+/**
+ * Rows the app outlived — last run's fleet (HIVE-87).
+ *
+ * A third group rather than a flag on the ended one, for the reason above: they
+ * are the answer to a different question, and they get their own divider.
+ *
+ * Keyed on `restored`, not on `closed`, and the difference is the whole reason
+ * the flag exists. `settleExit` is the only writer of an ended status, so a
+ * session that quit normally last run comes back as `terminated` —
+ * indistinguishable, by status alone, from one that quit ten seconds ago in
+ * this run. Grouping on `closed` sent every one of those into ENDED.
+ *
+ * Nothing sets `restored` at runtime — only `hydrateSessions` does, once, at
+ * boot — so this list is fixed for the life of the app session. It is capped by
+ * the ledger rather than here: the file it came from holds at most
+ * `HISTORY_CAP` ended records, so there is no second cap to drift out of step
+ * with the first.
+ */
+export const useRestoredSessions = () =>
+  useHiveStore(
+    useShallow((state) =>
+      state.order.filter((id) => {
+        const entity = state.entities[id];
+        return (
+          entity !== undefined && isSession(entity) && entity.restored === true
         );
       }),
     ),
@@ -2788,6 +3253,10 @@ export const useHydrateNotifs = () =>
 
 /** Apply read-state the hub decided — see `use-notification-stream` (HIVE-75). */
 export const useApplyRead = () => useHiveStore((state) => state.applyRead);
+
+/** Apply a dismissal main decided on its own — see `use-notification-stream` (HIVE-81). */
+export const useApplyDismiss = () =>
+  useHiveStore((state) => state.applyDismiss);
 
 /** The entity behind `activeTab`, or null for the orchestrator. */
 export const useActiveEntity = () => {

@@ -1,5 +1,6 @@
 import type {
   HookNotificationType,
+  IdleDetail,
   ObservedStatus,
   StatusHookEvent,
 } from './hook-contract';
@@ -75,6 +76,27 @@ export interface SessionStatusEvent {
    * status alone cannot tell them apart.
    */
   notificationType?: HookNotificationType;
+  /**
+   * What is still running while the main agent is not (HIVE-83).
+   *
+   * Only ever set alongside `idle`. Orthogonal to the status rather than a
+   * sixth member of it, so `SessionStatus` keeps its five values and the dot
+   * keeps its five colours.
+   */
+  idleDetail?: IdleDetail;
+  /**
+   * The tool named by the event that produced this status, when there was one
+   * (HIVE-83).
+   *
+   * The receiver forwards it on every `PreToolUse` and `PostToolUse` too, not
+   * only `PermissionRequest` — it is whatever `tool_name` the hook payload
+   * carried. The renderer ignores it, same as `event` — the notification hub
+   * is the only reader, and only cares about the `PermissionRequest` case: it
+   * is what lets the hub tell `AskUserQuestion` (a real question) apart from
+   * any other tool waiting on a yes, now that both raise the same
+   * `session.blocked` kind and the row's copy is what carries the difference.
+   */
+  toolName?: string;
 }
 
 /**

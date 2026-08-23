@@ -72,11 +72,74 @@ describe('hook receiver', () => {
     ['UserPromptSubmit', 'working'],
     ['PermissionRequest', 'waiting'],
     ['Elicitation', 'waiting'],
+    ['PostToolUse', 'working'],
     ['Stop', 'idle'],
   ])('maps %s to %s', async (event, status) => {
     const response = await post({ hook_event_name: event, session_id: 'uuid' });
     expect(response.status).toBe(204);
     expect(events).toEqual([{ entityId: 'sess-01', event, status }]);
+  });
+
+  /**
+   * Tool and agent identity (HIVE-83): the tracker that pairs a permission
+   * request with the tool call that resolves it needs these carried through
+   * whole, not cherry-picked away with the rest of the body.
+   */
+  describe('tool and agent identity', () => {
+    it('forwards tool identity off a PostToolUse', async () => {
+      const response = await post({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi', run_in_background: true },
+        tool_use_id: 'toolu_01',
+      });
+
+      expect(response.status).toBe(204);
+      expect(events[0]).toMatchObject({
+        event: 'PostToolUse',
+        toolName: 'Bash',
+        toolUseId: 'toolu_01',
+        runInBackground: true,
+      });
+    });
+
+    it('forwards the agent id off a subagent event', async () => {
+      const response = await post({
+        hook_event_name: 'SubagentStart',
+        agent_id: 'a828e337',
+        agent_type: 'general-purpose',
+      });
+
+      expect(response.status).toBe(204);
+      expect(events[0]).toMatchObject({ event: 'SubagentStart', agentId: 'a828e337' });
+    });
+
+    /**
+     * A `Write` or `Edit` needing permission carries the whole file in
+     * `tool_input`, which is exactly what pushes the body past
+     * `HOOK_MAX_BODY_BYTES`. Measured against real Claude Code 2.1.238, the
+     * wire order is `..., tool_name, tool_input, tool_use_id` — so
+     * `tool_name` sits before the field that grows unbounded and survives
+     * truncation, while `tool_use_id` sits after it and never does.
+     */
+    it('recovers tool_name from an oversized PermissionRequest, but not tool_use_id', async () => {
+      const response = await post({
+        hook_event_name: 'PermissionRequest',
+        tool_name: 'Write',
+        tool_input: 'x'.repeat(256 * 1024),
+        tool_use_id: 'toolu_01',
+      });
+
+      expect(response.status).toBe(204);
+      expect(events).toEqual([
+        {
+          entityId: 'sess-01',
+          event: 'PermissionRequest',
+          status: 'waiting',
+          toolName: 'Write',
+        },
+      ]);
+    });
   });
 
   /**
@@ -177,8 +240,11 @@ describe('hook receiver', () => {
      * 204 rather than 4xx: Claude may deliver more than was asked for, and a
      * failing hook prints an error in the user's session for something the app
      * simply does not care about.
+     *
+     * `PreCompact` rather than `PreToolUse` (HIVE-83): the latter is now
+     * subscribed too — see the bookkeeping pair in `HOOK_EVENTS`.
      */
-    const response = await post({ hook_event_name: 'PostToolUse' });
+    const response = await post({ hook_event_name: 'PreCompact' });
     expect(response.status).toBe(204);
     expect(events).toEqual([]);
   });
@@ -193,9 +259,17 @@ describe('hook receiver', () => {
    * blocked on a human; what they mean for the *inbox* is decided downstream.
    */
   describe('the Notification hook', () => {
-    it.each(['idle_prompt', 'permission_prompt'])(
-      'maps %s to waiting, carrying the type through',
-      async (notificationType) => {
+    /**
+     * HIVE-81: the two types no longer share a status. `permission_prompt` is a
+     * session blocked on a human; `idle_prompt` fires a minute after the turn
+     * already ended, and `idle` is what the session already was.
+     */
+    it.each([
+      ['idle_prompt', 'idle'],
+      ['permission_prompt', 'waiting'],
+    ])(
+      'maps %s to %s, carrying the type through',
+      async (notificationType, status) => {
         const response = await post({
           hook_event_name: 'Notification',
           notification_type: notificationType,
@@ -207,7 +281,7 @@ describe('hook receiver', () => {
           {
             entityId: 'sess-01',
             event: 'Notification',
-            status: 'waiting',
+            status,
             notificationType,
           },
         ]);
@@ -254,7 +328,7 @@ describe('hook receiver', () => {
         {
           entityId: 'sess-01',
           event: 'Notification',
-          status: 'waiting',
+          status: 'idle',
           notificationType: 'idle_prompt',
         },
       ]);

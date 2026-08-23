@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   createNotificationHub,
   type NotificationHub,
+  type NotificationHubOptions,
 } from '../../../../electron/main/notifications/hub';
 import {
   NOTIFICATION_CAP,
@@ -17,8 +18,9 @@ let prefs: NotificationPrefs;
 let present: Mock<(options: PresentOptions) => void>;
 let broadcast: Mock<(notification: HiveNotification) => void>;
 let activate: Mock<(action: NotificationAction) => void>;
-let announceRead: Mock<(id: string | null) => void>;
+let announceRead: Mock<(id: string | null, unread: boolean) => void>;
 let announceUnread: Mock<(count: number) => void>;
+let announceDismissed: Mock<(id: string) => void>;
 
 let now: number;
 let hub: NotificationHub;
@@ -30,6 +32,7 @@ beforeEach(() => {
   activate = vi.fn();
   announceRead = vi.fn();
   announceUnread = vi.fn();
+  announceDismissed = vi.fn();
   now = 1_700_000_000_000;
 
   hub = createNotificationHub({
@@ -37,18 +40,37 @@ beforeEach(() => {
     present: (options) => present(options),
     broadcast: (notification) => broadcast(notification),
     activate: (action) => activate(action),
-    announceRead: (id) => announceRead(id),
+    announceRead: (id, unread) => announceRead(id, unread),
     announceUnread: (count) => announceUnread(count),
+    announceDismissed: (id) => announceDismissed(id),
     now: () => now,
   });
 });
+
+/**
+ * A hub built from the shared collaborators above, with room to override or
+ * add options per test — chiefly `present`, `announceUnread` and, for
+ * HIVE-81, `isForeground`.
+ */
+const makeHub = (overrides: Partial<NotificationHubOptions> = {}): NotificationHub =>
+  createNotificationHub({
+    prefs: () => prefs,
+    present: (options) => present(options),
+    broadcast: (notification) => broadcast(notification),
+    activate: (action) => activate(action),
+    announceRead: (id, unread) => announceRead(id, unread),
+    announceUnread: (count) => announceUnread(count),
+    announceDismissed: (id) => announceDismissed(id),
+    now: () => now,
+    ...overrides,
+  });
 
 /** The most recent count pushed at the dock badge. */
 const lastUnread = (): number | undefined =>
   announceUnread.mock.calls.at(-1)?.[0];
 
 const raise = (over: Partial<Parameters<NotificationHub['raise']>[0]> = {}) =>
-  hub.raise({ kind: 'session.waiting', title: 'blocked', ...over });
+  hub.raise({ kind: 'session.blocked', title: 'blocked', ...over });
 
 describe('delivery', () => {
   /** `both` is the default for a blocking kind, so this is the unconfigured path. */
@@ -60,7 +82,7 @@ describe('delivery', () => {
   });
 
   it('broadcasts without presenting when the kind says inbox', () => {
-    prefs = { 'session.waiting': 'inbox' };
+    prefs = { 'session.blocked': 'inbox' };
     raise();
 
     expect(broadcast).toHaveBeenCalledTimes(1);
@@ -68,7 +90,7 @@ describe('delivery', () => {
   });
 
   it('does neither when the kind is off', () => {
-    prefs = { 'session.waiting': 'off' };
+    prefs = { 'session.blocked': 'off' };
 
     expect(raise()).toBeNull();
     expect(broadcast).not.toHaveBeenCalled();
@@ -81,7 +103,7 @@ describe('delivery', () => {
    */
   it('reads the preference at the moment of the event', () => {
     raise();
-    prefs = { 'session.waiting': 'off' };
+    prefs = { 'session.blocked': 'off' };
     raise({ id: 'second' });
 
     expect(broadcast).toHaveBeenCalledTimes(1);
@@ -207,7 +229,30 @@ describe('the buffer', () => {
 });
 
 describe('presentation', () => {
-  it('marks read and activates when the toast is clicked', () => {
+  /**
+   * HIVE-81: clicking the desktop toast now dismisses, not merely marks
+   * read. The user was in another application, chose this notification over
+   * what they were doing, and it took them straight to the session — there
+   * is nothing left for the row to tell them.
+   */
+  it('drops the row when the desktop toast is clicked', () => {
+    const present = vi.fn();
+    const announceDismissed = vi.fn();
+    const hub = makeHub({ present, announceDismissed });
+
+    const raised = hub.raise({
+      kind: 'session.blocked',
+      title: 't',
+      action: { type: 'session', entityId: 'term-9' },
+    })!;
+    const { onClick } = present.mock.calls[0][0];
+    onClick();
+
+    expect(hub.list()).toHaveLength(0);
+    expect(announceDismissed).toHaveBeenCalledWith(raised.id);
+  });
+
+  it('still carries out the action', () => {
     raise({ id: 'a', action: { type: 'session', entityId: 'lead-form' } });
 
     const { onClick } = present.mock.calls[0][0];
@@ -217,24 +262,34 @@ describe('presentation', () => {
       type: 'session',
       entityId: 'lead-form',
     });
-    expect(hub.list()[0].unread).toBe(false);
+  });
+
+  it('keeps the dismissed id in the dedup set', () => {
+    raise({ id: 'a', action: { type: 'session', entityId: 'lead-form' } });
+
+    const { onClick } = present.mock.calls[0][0];
+    onClick();
+
+    // The very next duplicate event must not resurrect what the user just
+    // dealt with.
+    expect(raise({ id: 'a' })).toBeNull();
   });
 });
 
 describe('read-state reaches the renderer', () => {
   /**
-   * The regression: main marked the toast read in its own buffer and told
-   * nobody, so the inbox row stayed filled and the badge went on counting a
-   * notification the user had already dealt with — until a reload silently
-   * corrected it.
+   * HIVE-81: the regression this used to guard against was main marking the
+   * toast read in its own buffer and telling nobody. Clicking the toast now
+   * dismisses rather than merely marks read, so what the renderer cannot
+   * otherwise observe is the dismissal itself.
    */
   it('announces a toast click, which the renderer cannot otherwise observe', () => {
     raise({ id: 'a' });
-    announceRead.mockClear();
+    announceDismissed.mockClear();
 
     present.mock.calls[0][0].onClick();
 
-    expect(announceRead).toHaveBeenCalledWith('a');
+    expect(announceDismissed).toHaveBeenCalledWith('a');
   });
 
   it('announces a mark-all', () => {
@@ -243,7 +298,7 @@ describe('read-state reaches the renderer', () => {
 
     hub.markRead(null);
 
-    expect(announceRead).toHaveBeenCalledWith(null);
+    expect(announceRead).toHaveBeenCalledWith(null, false);
   });
 });
 
@@ -270,7 +325,7 @@ describe('the unread count', () => {
 
     // A duplicate id, and then a kind switched off.
     raise({ id: 'a' });
-    prefs = { 'session.waiting': 'off' };
+    prefs = { 'session.blocked': 'off' };
     raise({ id: 'c' });
 
     expect(announceUnread).not.toHaveBeenCalled();
@@ -329,7 +384,7 @@ describe('robustness', () => {
     const { raise: detached } = hub;
 
     const raised = detached({
-      kind: 'session.waiting',
+      kind: 'session.blocked',
       title: 'blocked',
       id: 'detached',
     });
@@ -338,9 +393,9 @@ describe('robustness', () => {
     expect(broadcast).toHaveBeenCalledTimes(1);
     expect(present).toHaveBeenCalledTimes(1);
 
-    // And the toast's click still marks it read.
+    // And the toast's click still dismisses it.
     present.mock.calls[0][0].onClick();
-    expect(hub.list()[0].unread).toBe(false);
+    expect(hub.list()).toHaveLength(0);
   });
 
   /**
@@ -355,8 +410,9 @@ describe('robustness', () => {
       present: (options) => present(options),
       broadcast: (notification) => broadcast(notification),
       activate: (action) => activate(action),
-      announceRead: (id) => announceRead(id),
+      announceRead: (id, unread) => announceRead(id, unread),
       announceUnread: (count) => announceUnread(count),
+      announceDismissed: (id) => announceDismissed(id),
       now: () => now,
     });
 
@@ -373,5 +429,299 @@ describe('robustness', () => {
       }),
     ).toBeNull();
     expect(broadcast).not.toHaveBeenCalled();
+  });
+});
+
+describe('the foreground gate', () => {
+  it('raises an already-read row and presents nothing', () => {
+    const present = vi.fn();
+    const hub = makeHub({ present, isForeground: () => true });
+
+    const raised = hub.raise({
+      kind: 'session.blocked',
+      title: 'sess-03 needs approval',
+      action: { type: 'session', entityId: 'term-3' },
+    });
+
+    expect(raised?.unread).toBe(false);
+    expect(present).not.toHaveBeenCalled();
+    expect(hub.list()).toHaveLength(1);
+  });
+
+  it('leaves the unread count untouched', () => {
+    const announceUnread = vi.fn();
+    const hub = makeHub({ announceUnread, isForeground: () => true });
+    hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } });
+    expect(announceUnread).toHaveBeenLastCalledWith(0);
+  });
+
+  it('raises normally for a background session', () => {
+    const present = vi.fn();
+    const hub = makeHub({ present, isForeground: () => false });
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-9' } });
+    expect(raised?.unread).toBe(true);
+    expect(present).toHaveBeenCalled();
+  });
+
+  it('remembers a foreground-raised id, so a duplicate still dedups', () => {
+    const hub = makeHub({ isForeground: () => true });
+    const input = { kind: 'session.blocked' as const, id: 'fixed', title: 't', action: { type: 'session' as const, entityId: 'term-3' } };
+    expect(hub.raise(input)).not.toBeNull();
+    expect(hub.raise(input)).toBeNull();
+  });
+
+  it('does not gate a non-session kind', () => {
+    // clone.done: defaultDelivery 'both' and an action that is never
+    // `session`, so this exercises the gate itself rather than an unrelated
+    // delivery default. (`pr.merged`, named in the brief's example, defaults
+    // to `inbox` and would never call `present` regardless of the gate.)
+    //
+    // The predicate below checks `action.type` itself — the "answers false by
+    // construction" shape the real predicate in `ipc/index.ts` has (Step 5:
+    // `action.type === 'session' && isForeground(action.entityId)`). A fake
+    // that ignored the action entirely, always answering `true`, would gate
+    // every kind and could never demonstrate this test's claim.
+    const present = vi.fn();
+    const hub = makeHub({ present, isForeground: (action) => action.type === 'session' });
+    hub.raise({ kind: 'clone.done', title: 't', action: { type: 'url', url: 'https://example.test' } });
+    expect(present).toHaveBeenCalled();
+  });
+});
+
+describe('promote', () => {
+  it('marks the row unread and presents it', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    let foreground = true;
+    const hub = makeHub({ present, announceRead, isForeground: () => foreground });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    foreground = false;
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(hub.list()[0].unread).toBe(true);
+    expect(present).toHaveBeenCalled();
+    expect(announceRead).toHaveBeenLastCalledWith(raised.id, true);
+  });
+
+  it('is a no-op for an unknown or dismissed id', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    const hub = makeHub({ present, announceRead, isForeground: () => false });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    hub.dismiss(raised.id);
+    present.mockClear();
+    announceRead.mockClear();
+
+    // Nothing to promote and nothing wrong — the caller has nothing to retry.
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(present).not.toHaveBeenCalled();
+    expect(announceRead).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for a row that is already unread', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    // Never gated — raised straight to unread, same as any background session.
+    const hub = makeHub({ present, announceRead, isForeground: () => false });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+    announceRead.mockClear();
+
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(hub.list()[0].unread).toBe(true);
+    expect(present).not.toHaveBeenCalled();
+    expect(announceRead).not.toHaveBeenCalled();
+  });
+
+  it('presents nothing when the kind is set to inbox only', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    let foreground = true;
+    const hub = makeHub({ present, announceRead, isForeground: () => foreground });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    // The user turned the kind down to `inbox` between the raise and the
+    // promotion — `promote` re-reads `prefs()` rather than trusting delivery
+    // computed at raise time, so it must honour the new setting.
+    prefs = { 'session.blocked': 'inbox' };
+    foreground = false;
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(hub.list()[0].unread).toBe(true);
+    expect(announceRead).toHaveBeenLastCalledWith(raised.id, true);
+    expect(present).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The regression a code review caught: `promote` had no guard of its own,
+   * unlike `raise`, and it calls `prefs()` — proven throwable by
+   * `robustness > never throws, whatever a collaborator does` above.
+   * Uncaught, that would have propagated up through `reevaluateForeground`
+   * and been swallowed two layers further up by `notifyForegroundChange`'s
+   * own try/catch, silently — with the caller having no way to know the
+   * promotion never actually happened.
+   */
+  it('reports failure without throwing when a collaborator explodes, and can be retried', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    let throwing = false;
+    const hub = makeHub({
+      present,
+      announceRead,
+      prefs: () => {
+        if (throwing) throw new Error('config exploded');
+        return prefs;
+      },
+      isForeground: () => true,
+    });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    throwing = true;
+    let result: boolean | undefined;
+    expect(() => {
+      result = hub.promote(raised.id);
+    }).not.toThrow();
+    expect(result).toBe(false);
+
+    // A second attempt, once the collaborator behaves again, still succeeds —
+    // nothing about the failed attempt left the row unpromotable.
+    throwing = false;
+    expect(hub.promote(raised.id)).toBe(true);
+  });
+
+  /**
+   * The retry has to actually deliver — the review finding this file missed.
+   *
+   * Asserting only that the retry answers `true` let a broken contract pass:
+   * the buffer was flipped to `unread` *before* the throwing collaborator ran,
+   * so the retry hit `if (entry.unread) return true` and reported success
+   * without ever presenting. The re-arm's whole purpose is the toast, and it
+   * was the one thing lost. The retry is only a retry if the toast arrives.
+   */
+  it('presents the toast on the successful retry, not just a truthy answer', () => {
+    const present = vi.fn();
+    let throwing = false;
+    const hub = makeHub({
+      present,
+      prefs: () => {
+        if (throwing) throw new Error('config exploded');
+        return prefs;
+      },
+      isForeground: () => true,
+    });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    throwing = true;
+    expect(hub.promote(raised.id)).toBe(false);
+    // Nothing moved: a failed promotion must leave the row exactly as gated, or
+    // the retry has nothing left to do.
+    expect(hub.list()[0].unread).toBe(false);
+    expect(present).not.toHaveBeenCalled();
+
+    throwing = false;
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(present).toHaveBeenCalledTimes(1);
+    expect(hub.list()[0].unread).toBe(true);
+  });
+
+  /**
+   * `off` means do not raise (HIVE-81 review, finding 7).
+   *
+   * The badge and the inbox row are deliveries too — on a machine where the OS
+   * refuses toasts they are the *only* ones. Moving read-state before reading
+   * `prefs` meant a kind the user had switched off since the gated raise still
+   * got its row promoted and its badge bumped, silently contradicting the
+   * setting.
+   */
+  it('raises nothing at all when the kind has been switched off since the raise', () => {
+    const present = vi.fn();
+    const announceRead = vi.fn();
+    const announceUnread = vi.fn();
+    let foreground = true;
+    const hub = makeHub({
+      present,
+      announceRead,
+      announceUnread,
+      isForeground: () => foreground,
+    });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+    announceRead.mockClear();
+    announceUnread.mockClear();
+
+    prefs = { 'session.blocked': 'off' };
+    foreground = false;
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(hub.list()[0].unread).toBe(false);
+    expect(present).not.toHaveBeenCalled();
+    expect(announceRead).not.toHaveBeenCalled();
+    expect(announceUnread).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The phase boundary, from the other side.
+   *
+   * Once the toast is on screen the promotion has happened as far as the user
+   * is concerned, so a throw in the bookkeeping that follows must not report
+   * failure — a retry would present a second toast about the same question.
+   */
+  it('reports success when the toast landed but the announcement threw', () => {
+    const present = vi.fn();
+    let throwing = false;
+    const hub = makeHub({
+      present,
+      announceRead: () => {
+        if (throwing) throw new Error('renderer gone');
+      },
+      isForeground: () => true,
+    });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    throwing = true;
+    expect(hub.promote(raised.id)).toBe(true);
+
+    expect(present).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * HIVE-81: `promote` presents its own toast, with its own `onClick`. A
+   * re-armed notification that behaved differently from a fresh one on click
+   * — marking read instead of dismissing — is exactly the split nobody would
+   * notice until it bit them.
+   */
+  it('dismisses, not merely marks read, when the re-armed toast is clicked', () => {
+    const present = vi.fn();
+    const announceDismissed = vi.fn();
+    let foreground = true;
+    const hub = makeHub({ present, announceDismissed, isForeground: () => foreground });
+
+    const raised = hub.raise({ kind: 'session.blocked', title: 't', action: { type: 'session', entityId: 'term-3' } })!;
+    present.mockClear();
+
+    foreground = false;
+    hub.promote(raised.id);
+
+    present.mock.calls[0][0].onClick();
+
+    expect(hub.list()).toHaveLength(0);
+    expect(announceDismissed).toHaveBeenCalledWith(raised.id);
   });
 });

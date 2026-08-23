@@ -11,7 +11,9 @@ import {
   BRIDGE_KEYS,
   BRIDGE_NOTIFICATIONS_KEYS,
   BRIDGE_PTY_KEYS,
+  BRIDGE_SESSION_KEYS,
   BRIDGE_THEME_KEYS,
+  BRIDGE_UI_KEYS,
   CH,
 } from '../../../electron/shared/ipc-contract';
 
@@ -76,6 +78,11 @@ const updates = () =>
   exposed.updates as Record<string, (...args: unknown[]) => unknown>;
 const theme = () =>
   exposed.theme as Record<string, (...args: unknown[]) => unknown>;
+const ui = () =>
+  exposed.ui as Record<string, (...args: unknown[]) => unknown>;
+
+const session = () =>
+  exposed.session as Record<string, (...args: unknown[]) => unknown>;
 
 describe('exposed surface', () => {
   it('exposes exactly the documented verbs — widening this is the alarm', () => {
@@ -106,11 +113,34 @@ describe('exposed surface', () => {
     expect(Object.keys(updates()).sort()).toEqual([
       ...BRIDGE_UPDATES_KEYS,
     ].sort());
+    /**
+     * The fifth time, and this one had already happened.
+     *
+     * `BRIDGE_SESSION_KEYS` shipped exported and imported by nothing — the exact
+     * shape the two notes above describe — and it stayed that way through six
+     * listeners being added to it. `security.spec.ts` even records the belief
+     * that this namespace was "covered by the preload surface test", which it
+     * was not. HIVE-87 added that namespace's first two *verbs*, which is what
+     * finally made the gap worth more than the note; the line below is the
+     * alarm the constant has been claiming to be since it was written.
+     */
+    expect(Object.keys(session()).sort()).toEqual([
+      ...BRIDGE_SESSION_KEYS,
+    ].sort());
   });
 
   /** HIVE-80. Two verbs, neither taking a destination path from the renderer. */
   it('exposes exactly the theme verbs', () => {
     expect(Object.keys(theme()).sort()).toEqual([...BRIDGE_THEME_KEYS].sort());
+  });
+
+  /**
+   * HIVE-81. One verb, and it is the first in this bridge that travels out of
+   * the renderer with nothing coming back: the page can report which of its
+   * own tabs is on the centre stage, and nothing else.
+   */
+  it('exposes exactly the ui verbs', () => {
+    expect(Object.keys(ui()).sort()).toEqual([...BRIDGE_UI_KEYS].sort());
   });
 
   /**
@@ -412,6 +442,22 @@ describe('theme verbs route to their channels (HIVE-80)', () => {
     expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.themeSave, {
       suggestedName: 'x.json',
       contents: '{}',
+    });
+  });
+});
+
+describe('ui verb routes to its channel (HIVE-81)', () => {
+  it('reportForeground sends ui:foreground with the terminal id', () => {
+    ui().reportForeground('term-1');
+    expect(ipcRendererMock.send).toHaveBeenCalledWith(CH.uiForeground, {
+      terminalId: 'term-1',
+    });
+
+    // `null` means nothing is on stage, and it is a legal report, not an
+    // absence to be dropped.
+    ui().reportForeground(null);
+    expect(ipcRendererMock.send).toHaveBeenCalledWith(CH.uiForeground, {
+      terminalId: null,
     });
   });
 });

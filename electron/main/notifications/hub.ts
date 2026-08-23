@@ -88,7 +88,16 @@ export interface NotificationHubOptions {
    * which is harmless: applying it is idempotent and the renderer does not
    * write it back again.
    */
-  announceRead: (id: string | null) => void;
+  announceRead: (id: string | null, unread: boolean) => void;
+  /**
+   * Tell the renderer that a notification left the buffer (HIVE-81).
+   *
+   * Called from `dismiss` whenever a row was actually removed. The mirror of
+   * `announceRead`, for the same reason: main can dismiss on its own — a
+   * clicked desktop toast — and the renderer has no way to observe that
+   * without being told.
+   */
+  announceDismissed: (id: string) => void;
   /**
    * How many are still unread, after every change to the buffer.
    *
@@ -104,6 +113,23 @@ export interface NotificationHubOptions {
    */
   announceUnread: (count: number) => void;
   now: () => number;
+  /**
+   * Is the user already looking at what this notification is about (HIVE-81)?
+   *
+   * Read at the moment of the event, never captured — the same rule `prefs` and
+   * `now` state, and for a sharper reason: the answer changes on every tab
+   * switch and every window blur.
+   *
+   * Takes the **action**, so the hub needs no idea which kinds are about a
+   * session. A `session` action names a terminal and can be compared; every
+   * other action type has no foreground to compare against and answers `false`
+   * by construction. That is what keeps `pr.*`, `clone.done` and `app.update_*`
+   * out of the gate without a list to maintain.
+   *
+   * Optional: a hub built without it — every existing test, and the browser
+   * target's absence of one — behaves exactly as it did before.
+   */
+  isForeground?: (action: NotificationAction) => boolean;
 }
 
 export interface NotificationHub {
@@ -116,6 +142,20 @@ export interface NotificationHub {
   list(): HiveNotification[];
   /** Mark one read, or every one when `id` is null. */
   markRead(id: string | null): void;
+  /**
+   * Un-read a row and show it now — the foreground gate's other half
+   * (HIVE-81). No-op — and reported as success — for an id the buffer no
+   * longer holds, or one that is already unread.
+   *
+   * Answers `false` only when the promotion **did not happen at all** —
+   * typically `prefs` or `present` throwing — leaving the row exactly as gated.
+   * The caller, `reevaluateForeground`, treats that as "try again": it keeps
+   * the pending entry instead of dropping it, so the next focus change gets
+   * another chance rather than the session going silently un-rearmed. A throw
+   * after the toast is on screen answers `true`, because a retry would show it
+   * twice; see the implementation for the phase boundary that makes both true.
+   */
+  promote(id: string): boolean;
   /**
    * Drop one notification from the buffer for good (HIVE-93).
    *
@@ -177,8 +217,10 @@ export function createNotificationHub(
     broadcast,
     activate,
     announceRead,
+    announceDismissed,
     announceUnread,
     now,
+    isForeground,
   } = options;
 
   let buffer: HiveNotification[] = [];
@@ -200,7 +242,7 @@ export function createNotificationHub(
   /**
    * A free function, deliberately, rather than a method reached through `this`.
    *
-   * The toast's `onClick` has to mark its notification read, and reaching that
+   * The toast's `onClick` has to dismiss its notification, and reaching that
    * through `this` binds to however `raise` was *invoked* — so a caller who
    * destructured (`const { raise } = hub`) would make `this` undefined.
    *
@@ -213,7 +255,7 @@ export function createNotificationHub(
    * was trying to reach never opens.
    */
   const markRead = (id: string | null): void => {
-    announceRead(id);
+    announceRead(id, false);
     buffer =
       id === null
         ? buffer.map((entry) => ({ ...entry, unread: false }))
@@ -232,6 +274,124 @@ export function createNotificationHub(
   };
 
   /**
+   * Un-read a row and show it now — the foreground gate's other half (HIVE-81).
+   *
+   * A session that blocked while the user was watching it had its notification
+   * downgraded to a silent, already-read row. If the user then walks away while
+   * it is *still* blocked, that decision has expired: the reason not to
+   * interrupt was that they could see it, and they cannot see it any more.
+   *
+   * A promotion rather than a second `raise`, because the row already exists.
+   * Raising again would mint a new id (or be swallowed by `seen`, with the same
+   * id) and leave the inbox holding the same question twice.
+   *
+   * Re-reads `prefs` rather than trusting the delivery computed at raise time:
+   * the user may have turned this kind down to `inbox` in between, and a
+   * promotion is a fresh decision to interrupt.
+   *
+   * Wrapped the way `raise` wraps itself, and for the caller it matters even
+   * more here: `reevaluateForeground` is the only thing that ever calls this,
+   * and it drives the promotion from a pending map it deletes from on success.
+   * A throw that escaped uncaught would still be swallowed one layer up (by
+   * `notifyForegroundChange`'s own try/catch), but by then the entry would
+   * already be gone — a still-blocked session that silently never gets
+   * re-armed, on this or any later focus change. Reporting `false` instead
+   * lets the caller keep the entry and try again next time.
+   *
+   * ## Why the buffer moves last
+   *
+   * The retry contract above is only true if a failed attempt leaves the row
+   * exactly as it found it. It did not: the flip to `unread` came first, so
+   * every realistic thrower — `prefs`, `present` — ran on a row that was
+   * already unread, and the retry the caller dutifully made hit
+   * `if (entry.unread) return true` and reported success without presenting
+   * anything. The toast, which is the entire purpose of the re-arm, was the one
+   * delivery lost, and the code called that a success.
+   *
+   * So the work is split at the **presentation**, which is the only step that
+   * cannot be undone or repeated safely:
+   *
+   * 1. *Decide* — `spec`, `prefs`, delivery. Everything here may throw, and a
+   *    throw costs nothing because nothing has moved. This is also where `off`
+   *    is honoured, and it has to be before the buffer: a badge and an inbox row
+   *    are deliveries too, and on a machine where the OS refuses toasts they are
+   *    the only ones. Raising them for a kind the user switched off would
+   *    contradict the setting in the one place it still shows.
+   * 2. *Present* — the toast. Still ahead of the buffer, so a refusal here is
+   *    also a clean retry.
+   * 3. *Record* — flip to unread, announce the read, announce the count. Past
+   *    the point of no return: the toast is on screen, so a throw in this
+   *    bookkeeping is logged and reported as **success**. Answering `false`
+   *    would earn a retry, and a retry would present a second toast about the
+   *    same question.
+   *
+   * The alternative considered was a separate `presented` flag on the buffer
+   * entry, tracked apart from `unread`. It solves the same problem by
+   * remembering more; this one solves it by doing things in an order that needs
+   * nothing remembered, and `HiveNotification` stays the shape the renderer
+   * hydrates from.
+   */
+  const promote = (id: string): boolean => {
+    try {
+      const entry = buffer.find((notification) => notification.id === id);
+      // Dismissed, or evicted by the cap. Nothing to promote and nothing
+      // wrong — the caller has nothing to retry either.
+      if (entry === undefined) return true;
+      // Already unread: it was never gated, or this ran twice. Also nothing
+      // to retry.
+      if (entry.unread) return true;
+
+      const spec = NOTIFICATION_KIND_SPECS[entry.kind];
+      if (spec === undefined) return true;
+      const delivery = prefs()[entry.kind] ?? spec.defaultDelivery;
+      // `off` means do not raise — not "raise it quietly".
+      if (delivery === 'off') return true;
+
+      if (delivery === 'both') {
+        present({
+          title: entry.title,
+          body: entry.body,
+          onClick: () => {
+            /**
+             * Dismissed, not merely marked read (HIVE-81).
+             *
+             * Clicking a desktop toast is a stronger gesture than opening the
+             * inbox and reading a row. The user was in another application,
+             * chose this notification over what they were doing, and it took
+             * them straight to the session — there is nothing left for the row
+             * to tell them. Leaving it behind turns the inbox into a list of
+             * things already dealt with, which is the state that makes people
+             * stop reading it.
+             *
+             * The id stays in `seen`, so the very next duplicate event cannot
+             * re-raise what the user just dealt with.
+             */
+            dismiss(id);
+            activate(entry.action);
+          },
+        });
+      }
+    } catch (cause) {
+      console.error('[hive] notification failed:', cause);
+      return false;
+    }
+
+    // Step 3. Nothing above this line has touched the buffer, and nothing
+    // below it may be retried.
+    try {
+      buffer = buffer.map((notification) =>
+        notification.id === id ? { ...notification, unread: true } : notification,
+      );
+      announceRead(id, true);
+      announce();
+    } catch (cause) {
+      console.error('[hive] notification failed:', cause);
+    }
+
+    return true;
+  };
+
+  /**
    * Removed from the buffer, but **not** from `seen`.
    *
    * Forgetting it there would let the next duplicate event re-raise the very
@@ -247,7 +407,10 @@ export function createNotificationHub(
     buffer = buffer.filter((entry) => entry.id !== id);
     // An unknown id is a no-op rather than an error: the renderer may be acting
     // on a row from a buffer that has since been trimmed by the cap.
-    if (buffer.length !== before) announce();
+    if (buffer.length !== before) {
+      announceDismissed(id);
+      announce();
+    }
   };
 
   const remember = (id: string): void => {
@@ -286,13 +449,34 @@ export function createNotificationHub(
         if (seen.has(id)) return null;
         remember(id);
 
+        /**
+         * The gate: **downgrade, never drop** (HIVE-81).
+         *
+         * The user is watching this session's terminal in a focused window, so
+         * the app has already told them — a toast, a dock bounce and a bump to
+         * the unread badge about a question they are reading on screen is the
+         * app talking over itself.
+         *
+         * What it does *not* do is suppress. The row is kept and raised
+         * already-read, which matters more than it looks: on this machine macOS
+         * refuses Electron's toasts outright, so the inbox and the badge are the
+         * only delivery there is. Dropping the row would make the app silent on
+         * the exact system this feature was written for.
+         *
+         * Note the position — **after** `remember(id)`, deliberately. A
+         * foreground row is a row that happened, so a genuine duplicate of it
+         * must still dedup. This is the argument for keeping the row rather than
+         * dropping it stated a second way.
+         */
+        const foreground = isForeground?.(input.action ?? { type: 'none' }) ?? false;
+
         const notification: HiveNotification = {
           id,
           kind: input.kind,
           title: input.title,
           body: input.body ?? '',
           createdAt,
-          unread: true,
+          unread: !foreground,
           action: input.action ?? { type: 'none' },
         };
 
@@ -300,20 +484,26 @@ export function createNotificationHub(
         announce();
         broadcast(notification);
 
-        if (delivery === 'both') {
+        if (delivery === 'both' && !foreground) {
           present({
             title: notification.title,
             body: notification.body,
             /**
-             * Marked read here as well as activated.
+             * Dismissed, not merely marked read (HIVE-81).
              *
-             * Clicking a desktop toast is the user attending to it just as much
-             * as clicking the row is. Leaving it unread would make the badge
-             * lie about how much is still waiting, which is the whole reason
-             * the count exists.
+             * Clicking a desktop toast is a stronger gesture than opening the
+             * inbox and reading a row. The user was in another application,
+             * chose this notification over what they were doing, and it took
+             * them straight to the session — there is nothing left for the row
+             * to tell them. Leaving it behind turns the inbox into a list of
+             * things already dealt with, which is the state that makes people
+             * stop reading it.
+             *
+             * The id stays in `seen`, so the very next duplicate event cannot
+             * re-raise what the user just dealt with.
              */
             onClick: () => {
-              markRead(id);
+              dismiss(id);
               activate(notification.action);
             },
           });
@@ -331,6 +521,8 @@ export function createNotificationHub(
     },
 
     markRead,
+
+    promote,
 
     dismiss,
 

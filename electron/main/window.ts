@@ -208,5 +208,17 @@ export function createWindow({
   trackWindowState(win, statePath);
   loadRenderer(win);
 
+  /*
+    No focus wiring here (HIVE-81 review).
+
+    This used to be `win.on('focus'|'blur', notifyForegroundChange)`, which
+    watched the main window while the predicate it feeds counts *every* window
+    of ours. The About panel is the case that breaks: blur it by switching
+    applications and nothing fired, so a still-blocked session kept its silent,
+    already-read row for as long as the user was away. It lives on `app`'s own
+    `browser-window-blur`/`browser-window-focus` now — one wiring, every window
+    — in `ipc/index.ts`, where the state it re-evaluates already lives.
+  */
+
   return win;
 }

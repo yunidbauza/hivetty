@@ -46,10 +46,12 @@ import {
   type AppInfo,
   type DataEvent,
   type ExitEvent,
+  type ForegroundReport,
   type HiveBridge,
   type IntegrationsStatus,
   type NotificationActivateEvent,
   type NotificationDeliveryStatus,
+  type NotificationDismissedEvent,
   type NotificationReadEvent,
   type ResizeRequest,
   type SessionLostEvent,
@@ -78,6 +80,10 @@ import type {
   SessionStatusEvent,
   SessionTicketIntentEvent,
 } from '@shared/session-contract';
+import type {
+  SessionNoteRequest,
+  SessionRecord,
+} from '@shared/session-history-contract';
 import type { PickedTheme, SaveThemeRequest } from '@shared/theme-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -319,6 +325,12 @@ const bridge: HiveBridge = {
     /** The hub marked something read — including from a desktop toast click. */
     onRead: (callback: (event: NotificationReadEvent) => void) =>
       subscribe<NotificationReadEvent>(CH.notificationsRead, callback),
+    /**
+     * A notification left the buffer — including from a desktop toast click
+     * (HIVE-81).
+     */
+    onDismissed: (callback: (event: NotificationDismissedEvent) => void) =>
+      subscribe<NotificationDismissedEvent>(CH.notificationsDismissed, callback),
     /** Whether the OS is accepting notifications. Cheap — safe to poll. */
     delivery: (): Promise<NotificationDeliveryStatus> =>
       ipcRenderer.invoke(
@@ -347,6 +359,13 @@ const bridge: HiveBridge = {
       subscribe<SessionTicketIntentEvent>(CH.sessionTicketIntent, callback),
     onMetrics: (callback: (event: SessionMetricsEvent) => void) =>
       subscribe<SessionMetricsEvent>(CH.sessionMetrics, callback),
+    // HIVE-87. The namespace's first two verbs — everything above is a
+    // subscription. `history` is read once at boot; `note` carries the one fact
+    // about a session that main cannot establish for itself.
+    history: (): Promise<SessionRecord[]> =>
+      ipcRenderer.invoke(CH.sessionHistory),
+    note: (request: SessionNoteRequest): Promise<void> =>
+      ipcRenderer.invoke(CH.sessionNote, request),
   },
   // HIVE-80. Neither verb takes a destination path — the dialog chooses it —
   // so this does not widen the bridge into a general file picker.
@@ -354,6 +373,14 @@ const bridge: HiveBridge = {
     pick: (): Promise<PickedTheme | null> => ipcRenderer.invoke(CH.themePick),
     save: (request: SaveThemeRequest): Promise<string | null> =>
       ipcRenderer.invoke(CH.themeSave, request),
+  },
+  // HIVE-81. `send`, not `invoke`: it fires on every tab switch and overlay
+  // toggle and has no answer worth waiting for.
+  ui: {
+    reportForeground: (terminalId: string | null): void =>
+      ipcRenderer.send(CH.uiForeground, {
+        terminalId,
+      } satisfies ForegroundReport),
   },
 };
 
