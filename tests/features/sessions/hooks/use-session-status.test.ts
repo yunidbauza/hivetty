@@ -6,6 +6,8 @@ import type { SessionMetricsEvent } from '@shared/metrics-contract';
 import type {
   SessionBranchEvent,
   SessionClearedEvent,
+  SessionFinishedEvent,
+  SessionReadyEvent,
   SessionNameEvent,
   SessionStatusEvent,
   SessionTicketIntentEvent,
@@ -14,6 +16,7 @@ import type { SessionNoteRequest } from '@shared/session-history-contract';
 
 import { isSession } from '@/types/entity';
 
+import { READY_SETTLE_MS } from '@features/sessions/hooks/use-session-boot';
 import { useSessionStatus } from '@features/sessions/hooks/use-session-status';
 import { useHiveStore } from '@stores/hive-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
@@ -30,6 +33,8 @@ import { seedDemoFleet } from '@tests/support/demo-fleet';
 let listeners: ((event: SessionStatusEvent) => void)[];
 let nameListeners: ((event: SessionNameEvent) => void)[];
 let clearedListeners: ((event: SessionClearedEvent) => void)[];
+let finishedListeners: ((event: SessionFinishedEvent) => void)[];
+let readyListeners: ((event: SessionReadyEvent) => void)[];
 let branchListeners: ((event: SessionBranchEvent) => void)[];
 let metricsListeners: ((event: SessionMetricsEvent) => void)[];
 let intentListeners: ((event: SessionTicketIntentEvent) => void)[];
@@ -69,6 +74,18 @@ function withBridge() {
       },
       onCleared: (callback: (event: SessionClearedEvent) => void) => {
         clearedListeners.push(callback);
+        return () => {
+          disposals += 1;
+        };
+      },
+      onFinished: (callback: (event: SessionFinishedEvent) => void) => {
+        finishedListeners.push(callback);
+        return () => {
+          disposals += 1;
+        };
+      },
+      onReady: (callback: (event: SessionReadyEvent) => void) => {
+        readyListeners.push(callback);
         return () => {
           disposals += 1;
         };
@@ -115,6 +132,11 @@ const emitName = (event: SessionNameEvent) =>
     for (const listener of nameListeners) listener(event);
   });
 
+const emitReady = (event: SessionReadyEvent) =>
+  act(() => {
+    for (const listener of readyListeners) listener(event);
+  });
+
 const emitBranch = (event: SessionBranchEvent) =>
   act(() => {
     for (const listener of branchListeners) listener(event);
@@ -144,6 +166,8 @@ beforeEach(() => {
   listeners = [];
   nameListeners = [];
   clearedListeners = [];
+  finishedListeners = [];
+  readyListeners = [];
   branchListeners = [];
   metricsListeners = [];
   intentListeners = [];
@@ -189,11 +213,12 @@ describe('useSessionStatus', () => {
 
     unmount();
 
-    // Status, name (HIVE-61), cleared, branch and ticket-intent (HIVE-78) — a
-    // leaked listener on any of the five would keep writing to a store the
-    // unmounted shell no longer renders, and the cleared one would go on
-    // minting sessions.
-    expect(disposals).toBe(6);
+    // Status, name (HIVE-61), cleared, finished (HIVE-93), ready (HIVE-101),
+    // branch, metrics and ticket-intent (HIVE-78) — a leaked listener on any of
+    // them would keep writing to a store the unmounted shell no longer renders,
+    // the cleared one would go on minting sessions, and the finished one would
+    // go on bouncing the user back to the orchestrator.
+    expect(disposals).toBe(8);
   });
 
   it('applies a rename pushed from main', () => {
@@ -439,5 +464,137 @@ describe('renameSession', () => {
     if (!after || !isSession(after)) throw new Error('expected a fixture session');
     expect(after.id).toBe(id);
     expect(after.branch).toBe(before.branch);
+  });
+});
+
+/**
+ * The ready signal, and the beat it waits before acting on it (HIVE-101).
+ *
+ * Fake timers only here. The rest of the file runs on real ones — two of its
+ * listeners await a promise before they write — so switching globally would
+ * make those hang rather than fail, which is the worse of the two.
+ */
+describe('useSessionStatus — the ready signal', () => {
+  /** A session in the state a fresh spawn leaves it in. */
+  const booting = (id: string) => {
+    act(() => {
+      useHiveStore.setState((state) => ({
+        entities: {
+          ...state.entities,
+          [id]: {
+            kind: 'session',
+            id,
+            project: 'apfm-web',
+            status: 'idle',
+            task: '',
+            cost: '$0.00',
+            lines: [],
+            booting: true,
+          },
+        },
+        order: [...state.order, id],
+      }));
+    });
+    return id;
+  };
+
+  const isBooting = (id: string) => {
+    const entity = useHiveStore.getState().entities[id];
+    if (!entity || !isSession(entity)) throw new Error('expected a session');
+    return entity.booting === true;
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('holds the cover for a beat after Claude reports itself up', () => {
+    /**
+     * The defect this delay exists for: a `SessionStart` hook says the
+     * *process* got somewhere, not that the TUI has painted, so uncovering on
+     * arrival showed the tail of the boot output for a frame before Claude's
+     * screen replaced it — a flash of exactly what the cover is for.
+     *
+     * One millisecond short of the settle, because asserting at zero would
+     * pass against an implementation that waited any length of time at all.
+     */
+    withBridge();
+    renderHook(() => useSessionStatus());
+    const id = booting('sess-ready');
+
+    emitReady({ entityId: id });
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS - 1));
+
+    expect(isBooting(id)).toBe(true);
+  });
+
+  it('uncovers once the beat is up', () => {
+    withBridge();
+    renderHook(() => useSessionStatus());
+    const id = booting('sess-ready');
+
+    emitReady({ entityId: id });
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS));
+
+    expect(isBooting(id)).toBe(false);
+  });
+
+  it('never uncovers a session the signal was not about', () => {
+    // The event carries an entity id and nothing else, so getting this wrong
+    // would strip the cover off whichever session happened to be starting too.
+    withBridge();
+    renderHook(() => useSessionStatus());
+    const reported = booting('sess-ready');
+    const other = booting('sess-other');
+
+    emitReady({ entityId: reported });
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS));
+
+    expect(isBooting(other)).toBe(true);
+  });
+
+  it('does not lift a cover after the shell has gone', () => {
+    /**
+     * The reason the timers are tracked at all. This hook mounts once at the
+     * composition root, so a fired-and-forgotten timeout outlives an unmount
+     * and writes to a store nothing is rendering — the leak the file's own
+     * "unsubscribes every channel" test guards for listeners, applied to the
+     * one listener that now defers its write.
+     */
+    withBridge();
+    const { unmount } = renderHook(() => useSessionStatus());
+    const id = booting('sess-ready');
+
+    emitReady({ entityId: id });
+    unmount();
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS));
+
+    expect(isBooting(id)).toBe(true);
+  });
+
+  it('restarts the beat rather than queueing a second one', () => {
+    /**
+     * `/clear` starts a new Claude session in the same pty, so a second signal
+     * for one entity is ordinary. Two timers would both fire, and the first
+     * would uncover a cover the second run had legitimately re-raised.
+     */
+    withBridge();
+    renderHook(() => useSessionStatus());
+    const id = booting('sess-ready');
+
+    emitReady({ entityId: id });
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS - 1));
+    emitReady({ entityId: id });
+    act(() => vi.advanceTimersByTime(READY_SETTLE_MS - 1));
+
+    // The second signal reset the clock: the first timer must not have fired.
+    expect(isBooting(id)).toBe(true);
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(isBooting(id)).toBe(false);
   });
 });

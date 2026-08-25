@@ -28,15 +28,25 @@ import type {
  * that fails silently, and the app's whole attention model is built on this
  * field.
  *
- * `done` is missing because it is not main's to say (story 108). Main sees a
- * process exit and nothing more, which is `terminated`; whether the *work* was
- * finished is a judgement no pty can make. Reporting an exit as `done`, which is
- * what shipped before, quietly asserted that judgement on every `/exit`.
+ * `done` is missing because it is not this module's to *derive* (story 108).
+ * Main sees a process exit and nothing more, which is `terminated`; whether the
+ * *work* was finished is a judgement no pty can make. Reporting an exit as
+ * `done`, which is what shipped before, quietly asserted that judgement on every
+ * `/exit`.
+ *
+ * HIVE-93 gave the judgement a speaker without giving it to this module, or to
+ * the status channel at all: `/done` declares it and `SessionFinishedEvent`
+ * carries it, on its own channel beside `session:cleared`. A deliberate `/exit`
+ * is still `terminated`, because both endings write the *same bytes* into the
+ * same pty — the app's own `/exit\r` and the user's are indistinguishable here
+ * — and the only thing that tells them apart is whether a declaration arrived
+ * first. Which is exactly story 108's point, now with a mechanism.
  *
  * The type is what enforces both. A status main could never honestly produce
  * cannot be produced by a later edit either.
  */
 export type DerivedStatus = 'working' | 'idle' | 'terminated';
+
 
 /**
  * Main telling the renderer what a real session is doing.
@@ -46,6 +56,10 @@ export type DerivedStatus = 'working' | 'idle' | 'terminated';
  * reasoning about what a *pty* can show is unchanged; `waiting` reaches this
  * event only from a Claude Code hook, which is a different observer with a
  * vantage point a pty does not have.
+ *
+ * No `done` member, and none is coming: a finish is announced on
+ * {@link SessionFinishedEvent}'s own channel, because the renderer's response to
+ * it is structural rather than a field assignment.
  */
 export interface SessionStatusEvent {
   /** The *entity* id — the renderer never sees a pty session id. */
@@ -249,6 +263,78 @@ export interface SessionTicketIntentEvent {
  * and it mints the successor itself because ids are its to allocate.
  */
 export interface SessionClearedEvent {
+  entityId: string;
+}
+
+/**
+ * A session finished on purpose and its terminal is gone (HIVE-93).
+ *
+ * The sibling of {@link SessionClearedEvent}, and the pair is worth reading
+ * together because they are the two *deliberate* endings and they differ in
+ * every consequence:
+ *
+ * ```
+ * /clear   row retired, successor minted, pty alive,  uuid dropped  -> no Resume
+ * /done    row ends,    no successor,     pty gone,   uuid kept     -> Resume
+ * ```
+ *
+ * Carries only the entity, like its sibling. Everything else the renderer needs
+ * it already knows or owns: which row this is, whether that row is the tab in
+ * front of the user, and how to draw an ended one.
+ *
+ * Emitted **instead of** a `terminated` status, not alongside one. The pty exit
+ * that follows `/exit` is real and `activity.ts` observes it, but reporting it
+ * would overwrite the ending the user actually asked for with the mechanism
+ * that delivered it.
+ */
+export interface SessionFinishedEvent {
+  entityId: string;
+  /**
+   * Whether this conversation can be reopened — **main's answer, not a guess**.
+   *
+   * `/done` normally keeps its uuid where `/clear` drops it, which is what
+   * makes a finished session resumable. But "normally" is not "always": a
+   * terminal that was cleared and then finished has had its uuid withdrawn and
+   * cannot get another, because the only hook carrying the successor's id never
+   * reaches the receiver. Inferring resumability from the fact of a finish
+   * would offer Resume on exactly that row and start a **brand-new**
+   * conversation under the promise of continuing the old one.
+   *
+   * So the ledger is asked, here, where it can be. See `Session.resumable` in
+   * `src/types/entity.ts`, whose own contract says this must not be derived.
+   */
+  resumable: boolean;
+}
+
+/**
+ * Claude is on screen — the shell's boot is over (HIVE-101).
+ *
+ * A session's first seconds belong to the login shell, not to Claude: `direnv`
+ * loads, a package manager reports, and the command line the app assembled is
+ * echoed back with every flag in it. None of that is the user's work, and on a
+ * real project it can run for a long time — long enough that `direnv` prints
+ * advice about stretching your legs.
+ *
+ * So the renderer covers the terminal until this arrives. The event carries the
+ * entity and nothing else, because there is nothing else to say: the *fact* is
+ * the message, exactly as with {@link SessionFinishedEvent}.
+ *
+ * ## It can arrive more than once
+ *
+ * `/clear` starts a new Claude session inside the same pty, which produces
+ * another `SessionStart` and therefore another one of these. The renderer must
+ * treat it as "is up" rather than "has just come up" — a session that is
+ * already revealed cannot be revealed harder.
+ *
+ * ## It can also never arrive
+ *
+ * A pty whose `claude` is missing, unauthenticated or wedged produces no
+ * `SessionStart` at all, and the error explaining why is sitting in the
+ * terminal underneath the cover. **Nothing in the renderer may wait on this
+ * event alone** — see `useSessionBoot` for the timeout and the keystroke that
+ * lift the cover without it.
+ */
+export interface SessionReadyEvent {
   entityId: string;
 }
 

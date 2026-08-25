@@ -16,10 +16,16 @@ import type {
   SetJiraRequest,
   SetJiraTokenRequest,
   SetNotificationsRequest,
+  SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetRuntimeRequest,
 } from './config-contract';
-import { NOTIFICATION_KEYS, unsafeEnvReason } from './config-contract';
+import {
+  NOTIFICATION_KEYS,
+  PROJECT_KEY_HINT,
+  isProjectKey,
+  unsafeEnvReason,
+} from './config-contract';
 import type {
   ReadDirRequest,
   ReadFileRequest,
@@ -47,6 +53,11 @@ import {
   isSendableSessionName,
 } from './session-contract';
 import type { SessionNoteRequest } from './session-history-contract';
+import { RESERVED_SKILL_NAME, SKILL_NAME_PATTERN } from './skills-contract';
+import type {
+  SkillNameRequest,
+  SkillWriteRequest,
+} from './skills-contract';
 
 /**
  * Payload guards (story 082).
@@ -153,6 +164,25 @@ export function assertId(value: unknown, label: string): string {
   return id;
 }
 
+/**
+ * A project key (HIVE-94) — the alias a user types instead of an id.
+ *
+ * Narrower than {@link assertId} on purpose, and not a relaxation of it: the
+ * pattern is closed to two-to-four lowercase letters, so nothing that reaches a
+ * `cwd`, a lookup table, or a log line can be smuggled through this field. The
+ * pattern itself lives in `config-contract.ts` because the config reader and
+ * the Settings editor need the same rule — see {@link PROJECT_KEY_PATTERN}.
+ *
+ * Trimmed first, like a name is: the inline editor commits on blur, and a key
+ * that arrived with a trailing space would be refused for a reason invisible on
+ * screen.
+ */
+export function assertProjectKey(value: unknown, label: string): string {
+  const key = assertString(value, label).trim();
+  if (!isProjectKey(key)) return fail(`${label}: expected ${PROJECT_KEY_HINT}`);
+  return key;
+}
+
 /** Terminal geometry. Bounded on both ends — a PTY cannot be 0 or 100000 wide. */
 function assertDimension(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isInteger(value)) {
@@ -245,7 +275,7 @@ export function parseSpawnRequest(input: unknown): SpawnRequest {
     input,
     ['sessionId', 'projectId', 'cols', 'rows'],
     'spawn',
-    ['task', 'model', 'effort', 'name', 'theme'],
+    ['task', 'model', 'effort', 'name', 'theme', 'resume'],
   );
   return {
     sessionId: assertId(raw.sessionId, 'spawn.sessionId'),
@@ -298,6 +328,14 @@ export function parseSpawnRequest(input: unknown): SpawnRequest {
     ...(raw.theme === undefined
       ? {}
       : { theme: assertOneOf(raw.theme, SESSION_THEMES, 'spawn.theme') }),
+    /**
+     * A flag, so the only thing to check is that it is one (HIVE-88). It
+     * decides which of two flags a uuid main already holds is placed behind,
+     * and never puts a renderer-supplied value on the command line.
+     */
+    ...(raw.resume === undefined
+      ? {}
+      : { resume: assertBoolean(raw.resume, 'spawn.resume') }),
   };
 }
 
@@ -452,6 +490,23 @@ export function parseRenameProjectRequest(input: unknown): RenameProjectRequest 
   const trimmed = name.trim();
   if (trimmed === '') return fail('renameProject.name: must not be empty');
   return { id: assertId(raw.id, 'renameProject.id'), name: trimmed };
+}
+
+/**
+ * `config:set-project-key` (HIVE-94).
+ *
+ * Shape only. **Uniqueness is not checked here** and could not be: this guard
+ * sees one payload, and whether a key is taken is a fact about the file main is
+ * about to write — which the renderer's snapshot may already be behind. That
+ * check belongs inside the write's mutation, where it can refuse against the
+ * bytes on disk, exactly as `addProject` checks a duplicate path.
+ */
+export function parseSetProjectKeyRequest(input: unknown): SetProjectKeyRequest {
+  const raw = assertShape(input, ['id', 'key'], 'setProjectKey');
+  return {
+    id: assertId(raw.id, 'setProjectKey.id'),
+    key: assertProjectKey(raw.key, 'setProjectKey.key'),
+  };
 }
 
 /**
@@ -1247,6 +1302,53 @@ export function parseWriteFileRequest(input: unknown): WriteFileRequest {
 export function parseWatchRequest(input: unknown): WatchRequest {
   const raw = assertShape(input, ['projectId'], 'watch');
   return { projectId: assertId(raw.projectId, 'watch.projectId') };
+}
+
+/**
+ * A skill name — which is also a folder name and a slash command (HIVE-96).
+ *
+ * Deliberately narrower than {@link assertId} and much narrower than
+ * {@link assertRelPath}. Those two admit a value the caller will *resolve*;
+ * this one admits a value main will `join` onto a directory it owns, so the
+ * job here is to make a path unrepresentable rather than to sanitise one.
+ * Nothing downstream re-checks containment, and nothing downstream needs to.
+ *
+ * {@link RESERVED_SKILL_NAME} is refused here as well as in the reader because
+ * the reservation is part of the contract, not an implementation detail of the
+ * filesystem layer: the built-in must not be shadowed, whichever way in.
+ */
+export function assertSkillName(value: unknown, label: string): string {
+  const name = assertString(value, label);
+
+  if (!SKILL_NAME_PATTERN.test(name)) {
+    return fail(`${label}: must be lowercase letters, digits and dashes`);
+  }
+  if (name === RESERVED_SKILL_NAME) {
+    return fail(`${label}: "${RESERVED_SKILL_NAME}" is reserved`);
+  }
+  return name;
+}
+
+export function parseSkillNameRequest(input: unknown): SkillNameRequest {
+  const raw = assertShape(input, ['name'], 'skillName');
+  return { name: assertSkillName(raw.name, 'skillName.name') };
+}
+
+/**
+ * `skills:write` — the file the user typed, under a name this guard validated.
+ *
+ * `body` gets neither a length cap nor a control-character sweep, and that is a
+ * decision rather than an omission — the same one {@link parseWriteFileRequest}
+ * documents. A SKILL.md legitimately contains tabs and newlines, and what makes
+ * this safe is *where* the bytes land: a directory main chose, under a name
+ * that cannot name anywhere else.
+ */
+export function parseSkillWriteRequest(input: unknown): SkillWriteRequest {
+  const raw = assertShape(input, ['name', 'body'], 'skillWrite');
+  return {
+    name: assertSkillName(raw.name, 'skillWrite.name'),
+    body: assertString(raw.body, 'skillWrite.body'),
+  };
 }
 
 /**

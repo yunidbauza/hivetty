@@ -43,6 +43,7 @@ import {
   parseKillRequest,
   parseRemoveProjectRequest,
   parseRenameProjectRequest,
+  parseSetProjectKeyRequest,
   parseReorderProjectsRequest,
   parseRepointProjectRequest,
   parseResizeRequest,
@@ -61,6 +62,8 @@ import {
   parseSetProjectRuntimeRequest,
   parseSetRuntimeRequest,
   parseSessionNoteRequest,
+  parseSkillNameRequest,
+  parseSkillWriteRequest,
   parseWriteRequest,
 } from '@shared/guards';
 import {
@@ -84,7 +87,7 @@ import type {
 } from '@shared/jira-contract';
 import {
   SESSION_HISTORY_FILE,
-  type SessionRecord,
+  type SessionHistoryEntry,
 } from '@shared/session-history-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -101,6 +104,7 @@ import {
   resetConfig,
   setJira,
   setNotifications,
+  setProjectKey,
   setProjectRuntime,
   setRuntime,
 } from '../config';
@@ -129,6 +133,7 @@ import {
   type SessionLedger,
 } from '../sessions/ledger';
 import { onShutdown } from '../shutdown';
+import { createSkillsRuntime, type SkillsRuntime } from '../skills';
 import { parseSaveThemeRequest, pickTheme, saveTheme } from '../theme';
 import {
   checkForUpdatesInteractively,
@@ -214,6 +219,14 @@ let sessions: Sessions | null = null;
  * surface with a verb it does not otherwise need.
  */
 let ledger: SessionLedger | null = null;
+/**
+ * The custom-skills runtime (HIVE-96), or `null` before registration.
+ *
+ * Held here for the reason `ledger` is: two unrelated callers need it. The
+ * session layer syncs it before every spawn and reads its path, and the four
+ * `skills:*` handlers below read and write the tree it manages.
+ */
+let skills: SkillsRuntime | null = null;
 /** The clone flow (story 102), or `null` before registration. */
 let cloneFlow: CloneFlow | null = null;
 /** The single project watcher, or `null` before registration. */
@@ -710,15 +723,41 @@ export function registerIpcHandlers(): void {
     join(app.getPath('userData'), SESSION_HISTORY_FILE),
   );
 
+  /*
+    Constructed before the session layer, which takes it as an option and syncs
+    it on every spawn (HIVE-96). `app.getVersion()` is read here rather than
+    inside the runtime so that module's tests can run under plain Node — the
+    same reason `userDataPath` is passed in rather than resolved there.
+  */
+  /*
+    Hoisted out of the `createSessions` call it used to be an argument to,
+    because the skills runtime now reads one value off it (HIVE-93). The two
+    stay independent — `doneUrl` is passed as a getter, not as the runtime —
+    and this is the only line where they meet.
+  */
+  const hooks = createHookRuntime({
+    userDataPath: app.getPath('userData'),
+    // Read per call, so a config reload is picked up (HIVE-79).
+    sessionMetrics: () => getConfig().sessionMetrics,
+  });
+
+  skills = createSkillsRuntime({
+    userDataPath: app.getPath('userData'),
+    version: app.getVersion(),
+    /*
+      Read at every regeneration rather than captured here: this runs before the
+      receiver has bound, so a value read now would be `null` for the life of the
+      app. `sync()` happens before every spawn, which is always afterwards.
+    */
+    doneUrl: () => hooks.doneUrl(),
+  });
+
   sessions = createSessions({
     supervisor,
     config: getConfig,
     send,
-    hooks: createHookRuntime({
-      userDataPath: app.getPath('userData'),
-      // Read per call, so a config reload is picked up (HIVE-79).
-      sessionMetrics: () => getConfig().sessionMetrics,
-    }),
+    skills,
+    hooks,
     ledger,
   });
 
@@ -788,7 +827,36 @@ export function registerIpcHandlers(): void {
    * clothing — a renderer that asks before registration completed gets "no
    * history", which is exactly what it would get from an empty file.
    */
-  handle(CH.sessionHistory, (): SessionRecord[] => ledger?.all() ?? []);
+  handle(CH.sessionHistory, (): SessionHistoryEntry[] => {
+    /**
+     * Marked live against the registry, not against `startedThisRun`
+     * (HIVE-88).
+     *
+     * The renderer asking may not be the first of this run: on macOS the
+     * window closes and the app lives on, and a reload or a renderer crash
+     * gives the same fresh store in front of the same running ptys. The ledger
+     * holds those sessions as `working` — true, and exactly the problem — so
+     * the renderer would restore them as last run's fleet and their own hooks
+     * would then prove otherwise. The registry is the one authority on "has a
+     * process now": a session this run began and already lost is history too.
+     */
+    const live = new Set(sessions?.entities() ?? []);
+    return (ledger?.all() ?? []).map((record) => {
+      /*
+        Both marks are computed here rather than stored, because both are only
+        true of this moment (HIVE-93). `resumable` asks the ledger rather than
+        reading `sessionUuid` off the record: a session *this run* started holds
+        a uuid naming a conversation that is already open, and offering Resume
+        for it would start a second `claude` against one transcript.
+      */
+      const marked = live.has(record.id)
+        ? { ...record, live: true as const }
+        : record;
+      return ledger?.resumable(record.id) === undefined
+        ? marked
+        : { ...marked, resumable: true as const };
+    });
+  });
 
   /**
    * The renderer naming a ticket for a session (HIVE-87).
@@ -893,6 +961,17 @@ export function registerIpcHandlers(): void {
     CH.configRepointProject,
     (_event, payload): ConfigSnapshot =>
       repointProject(parseRepointProjectRequest(payload)),
+  );
+
+  /*
+    HIVE-94's key editor. The guard proves the shape — 2–4 lowercase letters —
+    and main proves the value, because whether a key is free is a fact about the
+    file rather than about the payload.
+  */
+  handle(
+    CH.configSetProjectKey,
+    (_event, payload): ConfigSnapshot =>
+      setProjectKey(parseSetProjectKeyRequest(payload)),
   );
 
   handle(
@@ -1257,6 +1336,34 @@ export function registerIpcHandlers(): void {
   });
 
   /**
+   * Custom skills (HIVE-96).
+   *
+   * The `fs` block above validates twice — a string-shape guard here, then real
+   * containment in `fs/paths.ts` — because it accepts a path. These four
+   * validate once, and that is not a weaker design: `assertSkillName` admits
+   * only `[a-z0-9-]+`, which cannot name a directory other than the one main
+   * chooses, so there is no second question to ask. See `skills-contract.ts`.
+   *
+   * `skills` is non-null from registration onward; the optional chaining is for
+   * the window between module load and `registerIpc`, which is the same reason
+   * every `sessions?.` call in this file has it.
+   */
+  handle(CH.skillsList, () => skills?.list());
+
+  handle(CH.skillsRead, (_event, payload) =>
+    skills?.readOne(parseSkillNameRequest(payload).name),
+  );
+
+  handle(CH.skillsWrite, (_event, payload) => {
+    const request = parseSkillWriteRequest(payload);
+    return skills?.write(request.name, request.body);
+  });
+
+  handle(CH.skillsRemove, (_event, payload) =>
+    skills?.remove(parseSkillNameRequest(payload).name),
+  );
+
+  /**
    * Getting a theme file on and off disk (HIVE-80).
    *
    * Neither verb takes a payload that names a destination: `pick` returns
@@ -1328,6 +1435,21 @@ export function registerIpcHandlers(): void {
      * long since resolved by the time anyone opens a session.
      */
     await loginEnvStatus();
+    /**
+     * Regenerate the skills plugin before the session is started (HIVE-96).
+     *
+     * Here rather than inside `spawn` because `spawn` is synchronous on
+     * purpose — its "attach, never respawn" guard and the registration that
+     * satisfies it must not be separated by an await. This handler is already
+     * asynchronous and already waits for the login-shell probe, so the
+     * regeneration is free of that constraint.
+     *
+     * Per spawn rather than at launch: a skill saved from Settings, or written
+     * by hand into `~/.hive/skills` with the app already running, has to be on
+     * *this* command line. A readdir over a handful of small files is cheaper
+     * than any protocol that would tell us the tree changed.
+     */
+    await skills?.sync();
     sessions?.open({
       entityId: request.sessionId,
       projectId: request.projectId,
@@ -1342,6 +1464,8 @@ export function registerIpcHandlers(): void {
        * with and therefore how it paints its own UI inside the terminal.
        */
       theme: request.theme,
+      // HIVE-88. Forwarded only here — a restart is never a resume.
+      resume: request.resume,
     });
   });
 
@@ -1350,6 +1474,9 @@ export function registerIpcHandlers(): void {
     // Same fork race as `ptySpawn` above: a restart can be the call that first
     // brings the host up, so it has to wait for the same reason.
     await loginEnvStatus();
+    // And the same regeneration, for the same reason: a restart builds a fresh
+    // command line, so it must see the skills the user has now (HIVE-96).
+    await skills?.sync();
     /**
      * The task is deliberately **not** forwarded (story 097).
      *

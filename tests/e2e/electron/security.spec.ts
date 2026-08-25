@@ -68,6 +68,7 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     session: Object.keys(window.hive!.session).sort(),
     integrations: Object.keys(window.hive!.integrations).sort(),
     fs: Object.keys(window.hive!.fs).sort(),
+    skills: Object.keys(window.hive!.skills).sort(),
     github: Object.keys(window.hive!.github).sort(),
     notifications: Object.keys(window.hive!.notifications).sort(),
     jira: Object.keys(window.hive!.jira).sort(),
@@ -159,6 +160,25 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * uses it only to decide whether a notification it was already going to
    * raise should be suppressed.
    */
+  /**
+   * HIVE-96 adds `skills` — the second namespace after `fs` that writes to the
+   * user's disk, and the one to check any future verb here against.
+   *
+   * What bounds it, and why it is narrower than `fs` despite doing the same
+   * kind of thing:
+   *
+   * - **No verb takes a path, or anything a path could hide in.** `fs` accepts
+   *   a project-relative path and has to re-check containment after `realpath`
+   *   because a symlink is a fact about the disk rather than about the string.
+   *   Here a request names a **skill**, and `SKILL_NAME_PATTERN` admits only
+   *   `[a-z0-9-]+` — no separator, no dot segment, no drive. Main joins that
+   *   onto a directory it chose, so there is no second question to ask and no
+   *   containment check to forget.
+   * - **One directory, decided in main.** The renderer cannot name where a
+   *   skill lives, only which skill it means.
+   * - **The reserved name is refused at the boundary**, so the built-in
+   *   `/done` cannot be shadowed by a write from the page.
+   */
   expect(surface.top).toEqual([
     'appInfo',
     'config',
@@ -169,10 +189,12 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'notifications',
     'pty',
     'session',
+    'skills',
     'theme',
     'ui',
     'updates',
   ]);
+  expect(surface.skills).toEqual(['list', 'read', 'remove', 'write']);
   expect(surface.theme).toEqual(['pick', 'save']);
   expect(surface.ui).toEqual(['reportForeground']);
   expect(surface.integrations).toEqual(['status']);
@@ -414,6 +436,23 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
       * can write is still exactly one, and it is still not named by the caller.
       */
     'setNotifications',
+    /**
+     * HIVE-94's `setProjectKey`, and it is the *narrowest* capability on this
+     * list.
+     *
+     * Its payload is two fields, and the second has a closed alphabet:
+     * `parseSetProjectKeyRequest` accepts two to four lowercase letters and
+     * refuses everything else — no digits, no separators, no path. So unlike
+     * `setProjectRuntime` below it, nothing this verb carries can name a
+     * destination, reach process control, or be lengthened into one; the worst
+     * a compromised renderer achieves is a project with a different two-letter
+     * alias in the one file the bridge could already write.
+     *
+     * Uniqueness is enforced in main against the file on disk rather than by
+     * the guard, which is a *stronger* position than the guard could take: the
+     * renderer's snapshot may be stale, and the bytes being written may not be.
+     */
+    'setProjectKey',
     'setProjectRuntime',
     'setRuntime',
     'startClone',
@@ -440,6 +479,23 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * HIVE-78 adds the fourth and fifth, and the property still holds — but they
    * are worth naming individually, because each carries something new *out* of
    * main and that is the direction this test is least equipped to notice.
+   *
+   * `onFinished` (HIVE-93) is the same shape as `onCleared`: a `/done` is
+   * something the page is told about, and the renderer still cannot end a
+   * session — only learn that one ended. It does carry one thing out of main
+   * beyond the entity id, `resumable`, and that is deliberately a boolean
+   * rather than the uuid it derives from: the page decides whether to *offer*
+   * Resume, main owns which conversation that reopens, and Claude's session
+   * uuid has never crossed this bridge.
+   *
+   * `onReady` (HIVE-101) is the narrowest listener on the list: it carries the
+   * entity id and *nothing else*, because the fact is the whole message. It is
+   * worth naming anyway for the reason above — what a channel carries out of
+   * main is the direction this test is least equipped to notice, and "nothing"
+   * is a claim that should be written down rather than inferred from a missing
+   * field. In particular it does **not** carry Claude's session uuid, which the
+   * `SessionStart` hook behind it does have and which has never crossed this
+   * bridge.
    *
    * `onBranch` reports a branch and a working directory. Main learned both by
    * running `git rev-parse` in a directory a hook named, so the renderer is
@@ -499,8 +555,10 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'note',
     'onBranch',
     'onCleared',
+    'onFinished',
     'onMetrics',
     'onName',
+    'onReady',
     'onStatus',
     'onTicketIntent',
   ]);

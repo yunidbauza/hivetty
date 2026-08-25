@@ -10,10 +10,16 @@ import {
 } from '@shared/config-contract';
 
 import { NewSessionPicker } from '@features/sessions/components/new-session-picker';
-import { resetProjectConfig, setProjectConfigForTest } from '@lib/project-config';
+import {
+  projectConfigSnapshot,
+  resetProjectConfig,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import { seedDemoFleet, seedDemoProjectConfig } from '@tests/support/demo-fleet';
+
+import { testProjectKey } from '@tests/support/project-key';
 
 const search = () => screen.getByRole('textbox', { name: 'Search all projects' });
 const rowsFor = (name: RegExp) => screen.getAllByRole('button', { name });
@@ -105,11 +111,58 @@ describe('NewSessionPicker', () => {
       await user.type(search(), 'REFERRAL');
 
       // The pinned pills are unfiltered, so scope to the result rows — they are
-      // the ones whose name carries a count.
-      expect(rowsFor(/^referral-api \d+ active$/)).toHaveLength(1);
+      // the ones whose name carries a count. The key chip leads the row since
+      // HIVE-94, so it leads the accessible name too.
+      expect(rowsFor(/^re referral-api \d+ active$/)).toHaveLength(1);
       expect(
-        screen.queryByRole('button', { name: /^design-system \d+ active$/ }),
+        screen.queryByRole('button', { name: /^de design-system \d+ active$/ }),
       ).not.toBeInTheDocument();
+    });
+
+    /**
+     * The key is searchable, not merely displayed (HIVE-94).
+     *
+     * Without this the chip would be decoration: a user who learned `re` off a
+     * row would type it here and be told nothing matches, which is exactly the
+     * confusion an alias is supposed to remove.
+     */
+    it('finds a project by its key', async () => {
+      const user = userEvent.setup();
+      render(<NewSessionPicker />);
+
+      await user.type(search(), 're');
+
+      expect(rowsFor(/^re referral-api \d+ active$/)).toHaveLength(1);
+    });
+
+    it('finds a project by its display name', async () => {
+      const user = userEvent.setup();
+      /*
+        The demo config sets every `name` to the id, which cannot tell a name
+        match apart from an id match — so this one project is given a display
+        name that shares nothing with either of its other two handles.
+      */
+      const current = projectConfigSnapshot()!;
+      setProjectConfigForTest({
+        ...current,
+        projects: [
+          {
+            id: 'the-hive',
+            key: 'th',
+            name: 'Command Centre',
+            path: '/repos/the-hive',
+            icon: 'ph-folder',
+            origin: 'local',
+            status: 'ok',
+            isRepo: true,
+          },
+        ],
+      });
+      render(<NewSessionPicker />);
+
+      await user.type(search(), 'command');
+
+      expect(rowsFor(/^th the-hive \d+ active$/)).toHaveLength(1);
     });
 
     it('matches a substring, not just a prefix', async () => {
@@ -138,10 +191,10 @@ describe('NewSessionPicker', () => {
       // apfm-web: hero-refresh, lead-form, e2e-quote. `tz-fix` is done and does
       // not count, which is what makes this a live number rather than a total.
       expect(
-        screen.getByRole('button', { name: 'apfm-web 3 active' }),
+        screen.getByRole('button', { name: 'ap apfm-web 3 active' }),
       ).toBeInTheDocument();
       expect(
-        screen.getByRole('button', { name: 'advisor-portal 1 active' }),
+        screen.getByRole('button', { name: 'ad advisor-portal 1 active' }),
       ).toBeInTheDocument();
     });
   });
@@ -217,15 +270,20 @@ describe('NewSessionPicker', () => {
       );
     });
 
-    it('records the spawn in the console', async () => {
+    it('does not announce the spawn by id in the console (HIVE-91)', async () => {
       const user = userEvent.setup();
       render(<NewSessionPicker />);
 
       await user.type(search(), 'referral{Enter}');
 
-      expect(
-        useHiveStore.getState().orchLines.map((line) => line.text),
-      ).toContain('  spawned sess-01 on referral-api');
+      // The rail shows the new row; a `spawned sess-01 …` line would be the
+      // one place the user ever meets the bare id.
+      const transcript = useHiveStore
+        .getState()
+        .orchLines.map((line) => line.text)
+        .join('\n');
+      expect(transcript).not.toContain('spawned');
+      expect(transcript).not.toContain('sess-01');
     });
   });
 
@@ -241,14 +299,68 @@ describe('NewSessionPicker', () => {
       const user = userEvent.setup();
       render(<NewSessionPicker />);
 
-      await user.click(screen.getByRole('radio', { name: 'haiku' }));
+      /*
+        `sonnet`, not `haiku`. This test used to pick haiku and then `max`, and
+        that combination stopped being reachable when haiku started disabling
+        the effort scale (HIVE-100) — the click landed on a disabled control and
+        the assertion failed on an effort the user could no longer choose.
+      */
+      await user.click(screen.getByRole('radio', { name: 'sonnet' }));
       await user.click(screen.getByRole('radio', { name: 'max' }));
       await user.type(search(), 'referral{Enter}');
 
       expect(useHiveStore.getState().entities['sess-01']).toMatchObject({
-        model: 'haiku',
+        model: 'sonnet',
         effort: 'max',
       });
+    });
+
+    /**
+     * Haiku does not think, so the scale beside it does not apply (HIVE-100).
+     *
+     * Disabled rather than hidden: a control that vanishes takes the layout
+     * with it and leaves the user wondering what they did.
+     */
+    it('takes the thinking scale out of reach for haiku', async () => {
+      const user = userEvent.setup();
+      render(<NewSessionPicker />);
+
+      await user.click(screen.getByRole('radio', { name: 'haiku' }));
+
+      expect(screen.getByRole('radio', { name: 'low' })).toBeDisabled();
+      expect(screen.getByRole('radio', { name: 'max' })).toBeDisabled();
+      // Announced, not merely faded — opacity is no signal to a screen reader.
+      expect(
+        screen.getByRole('radiogroup', { name: /thinking effort/ }),
+      ).toHaveAttribute('aria-disabled', 'true');
+      expect(screen.getByText(/not for haiku/)).toBeInTheDocument();
+    });
+
+    it('leaves the scale alone for a model that does think', async () => {
+      const user = userEvent.setup();
+      render(<NewSessionPicker />);
+
+      await user.click(screen.getByRole('radio', { name: 'haiku' }));
+      await user.click(screen.getByRole('radio', { name: 'opus' }));
+
+      expect(screen.getByRole('radio', { name: 'max' })).toBeEnabled();
+      expect(screen.queryByText(/not for haiku/)).not.toBeInTheDocument();
+    });
+
+    /**
+     * Disabled, not destructive. A user who tries haiku and changes their mind
+     * finds the effort exactly where they left it, rather than reset to a
+     * default they never chose.
+     */
+    it('remembers the effort across a trip through haiku', async () => {
+      const user = userEvent.setup();
+      render(<NewSessionPicker />);
+
+      await user.click(screen.getByRole('radio', { name: 'max' }));
+      await user.click(screen.getByRole('radio', { name: 'haiku' }));
+      await user.click(screen.getByRole('radio', { name: 'sonnet' }));
+
+      expect(screen.getByRole('radio', { name: 'max' })).toBeChecked();
     });
 
     it('persists the choice across open and close', async () => {
@@ -321,6 +433,7 @@ describe('NewSessionPicker · unmapped projects', () => {
         icon: 'ph-folder',
         origin: 'local' as const,
         status,
+        key: testProjectKey(id),
         isRepo: true,
       })),
       env: {},
@@ -396,7 +509,7 @@ describe('NewSessionPicker · unmapped projects', () => {
 
     await user.type(search(), 'apfm');
 
-    const row = screen.getByRole('button', { name: 'apfm-web unmapped' });
+    const row = screen.getByRole('button', { name: 'ap apfm-web unmapped' });
     expect(row).toBeDisabled();
     expect(row).toHaveAttribute('title', expect.stringContaining('missing'));
   });

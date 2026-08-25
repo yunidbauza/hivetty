@@ -207,6 +207,23 @@ describe('setSessionTicket', () => {
       .join('\n');
     expect(transcript).toContain('HIVE-73');
   });
+
+  it('names the session by its new name in the console, never by id (HIVE-91)', () => {
+    const id = spawn();
+
+    useHiveStore.getState().setSessionTicket(id, 'HIVE-73');
+
+    const transcript = useHiveStore
+      .getState()
+      .orchLines.map((entry) => entry.text)
+      .join('\n');
+    expect(transcript).toContain(sessionAt(id).name);
+    expect(transcript).not.toContain(id);
+    // The generated name already carries the key, so the line says it once —
+    // never `HIVE-73 is working HIVE-73`.
+    expect(transcript).toContain('  renamed → HIVE-73');
+    expect(transcript).not.toMatch(/HIVE-73.*HIVE-73/);
+  });
 });
 
 describe('a pinned name outranks the agent', () => {

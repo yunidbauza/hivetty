@@ -5,6 +5,8 @@ import {
   type SessionRecord,
 } from '@shared/session-history-contract';
 
+import { nameFromTitle } from './title';
+
 /**
  * What the fleet looked like last time (HIVE-87).
  *
@@ -31,15 +33,16 @@ import {
  * app quit. A history feature that can stop the app opening is a far worse bug
  * than one that can lose a page.
  *
- * ## Why nothing here ever writes `closed`
+ * ## Why nothing here ever records an app close
  *
  * Because nothing here can observe it. `runShutdown()` invokes every hook body
  * synchronously and then awaits them together, so a flush registered there
  * *races* the pty teardown rather than following it — and a crash, a SIGKILL or
  * a power loss writes nothing at all. So the ledger stores the last status it
- * was told about, and the renderer infers `closed` at hydrate: a record
- * claiming to be `working` plainly is not. That inference cannot be raced,
- * cannot be interrupted, and needs no quit-time write to be correct.
+ * was told about, and the renderer infers the ending at hydrate: a record
+ * claiming to be `working` plainly is not, and becomes `done` with
+ * `endedBy: 'app-closed'`. That inference cannot be raced, cannot be
+ * interrupted, and needs no quit-time write to be correct.
  */
 
 /**
@@ -54,6 +57,18 @@ const PERSIST_DEBOUNCE_MS = 400;
 
 /** A patch is any part of a record except the identity, which is the key. */
 export type SessionPatch = Partial<Omit<SessionRecord, 'id'>>;
+
+export interface BeginOptions {
+  /**
+   * This `begin` continues a previous run's conversation under its own id
+   * (HIVE-88), so the record is kept the way a restart keeps it — ticket,
+   * branch, cwd, `createdAt` — rather than started over. Only honoured when
+   * {@link SessionLedger.resumable} would have answered for the id: a record
+   * this run began is a restart whether or not the flag is set, and one with
+   * nothing to resume is a new session whatever the caller believed.
+   */
+  resume?: boolean;
+}
 
 export interface SessionLedger {
   /**
@@ -79,7 +94,17 @@ export interface SessionLedger {
    * which is what retention sorts on. A launch later, that row restored
    * advertising a branch and a ticket belonging to a session it never was.
    */
-  begin(id: string, patch: SessionPatch): void;
+  begin(id: string, patch: SessionPatch, options?: BeginOptions): void;
+  /**
+   * The conversation a previous run left under this id, if it can be picked
+   * up again (HIVE-88).
+   *
+   * A uuid, or nothing. Nothing for an id this run has already started — that
+   * record is this run's, and resuming it would hand a fresh session last
+   * run's conversation — and nothing for a record written before uuids were
+   * kept, which names no transcript to resume.
+   */
+  resumable(id: string): string | undefined;
   /** Everything held, ready to answer `session:history`. */
   all(): SessionRecord[];
   /** Write now, synchronously. Safe to call when nothing is pending. */
@@ -105,6 +130,30 @@ const text = (value: unknown): string | undefined =>
 
 const finite = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+/**
+ * A stored name, re-cleaned with **today's** rule rather than the one that was
+ * in force when it was written.
+ *
+ * The ledger holds whatever `title.ts` reported, and `title.ts` has been wrong
+ * twice about which glyphs Claude puts in front of a name — most recently the
+ * `◐`/`◑` spinner, which fixing the reader alone does not remove from the rows
+ * already on disk. Those are exactly the rows PREVIOUS RUN shows at launch, so
+ * without this the reported defect stays on screen until they age out of a
+ * 40-record history.
+ *
+ * Idempotent by construction: it is the same function the reader applies, so a
+ * name written by a fixed build passes through untouched. An entry that cleans
+ * away to nothing — a legacy `Claude Code`, which is the *absence* of a name
+ * spelled out — becomes `undefined`, the same thing `reviveRecord` stores for a
+ * record that never had one.
+ */
+const cleanName = (value: unknown): string | undefined => {
+  const raw = text(value);
+  if (raw === undefined) return undefined;
+  const name = nameFromTitle(raw);
+  return name === '' ? undefined : name;
+};
 
 /**
  * One record, revalidated on the way in.
@@ -136,11 +185,12 @@ function reviveRecord(raw: unknown): SessionRecord | undefined {
   }
 
   const optional = {
-    name: text(raw.name),
+    name: cleanName(raw.name),
     ticket: text(raw.ticket),
     branch: text(raw.branch),
     cwd: text(raw.cwd),
     sessionUuid: text(raw.sessionUuid),
+    ...(raw.endedBy === 'finished' ? { endedBy: 'finished' as const } : {}),
     endedAt: finite(raw.endedAt),
     /*
       `model` and `effort` are closed lists on the renderer side, and this does
@@ -310,8 +360,31 @@ export function createSessionLedger(
     timer.unref?.();
   };
 
+  const resumableUuid = (id: string): string | undefined => {
+    const record = records.get(id);
+    if (record === undefined) return undefined;
+    /**
+     * A session this run started is only unresumable **while it is running**
+     * (HIVE-93).
+     *
+     * The bar was `startedThisRun` alone, and the reasoning was right: resuming
+     * a conversation that is currently open means a second `claude` against one
+     * transcript. But that reasoning is about the process, not about the run —
+     * and `/done` produces a session that started this run and is now over. Its
+     * transcript is closed, its uuid still names it, and offering to reopen it
+     * is the whole point of the feature.
+     *
+     * So the test is "started this run **and** has not ended", which is the
+     * condition the original was standing in for while every ending arrived
+     * after a restart.
+     */
+    if (startedThisRun.has(id) && !hasEnded(record)) return undefined;
+    return record.sessionUuid;
+  };
+
   return {
-    begin(id, patch) {
+    resumable: resumableUuid,
+    begin(id, patch, { resume = false } = {}) {
       /**
        * A restart is not a new session, and a reused id is not the old one.
        *
@@ -325,7 +398,10 @@ export function createSessionLedger(
        * `startedThisRun` is what separates them, and it is the only thing that
        * can: a record's own fields cannot say which run wrote them.
        */
-      const previous = startedThisRun.has(id) ? records.get(id) : undefined;
+      const previous =
+        startedThisRun.has(id) || (resume && resumableUuid(id) !== undefined)
+          ? records.get(id)
+          : undefined;
       const base: SessionRecord = previous ?? {
         id,
         project: '',

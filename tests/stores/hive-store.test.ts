@@ -1,20 +1,34 @@
+import { renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PHRASES } from '@lib/swarm/phrases';
 import { isSession } from '@/types/entity';
 import { isDesktop } from '@config/runtime';
 import { peek, stamp } from '@lib/fake-clock';
-import { resetProjectConfig } from '@lib/project-config';
+import {
+  projectConfigSnapshot,
+  resetProjectConfig,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 import { noteSessionTicket } from '@lib/session-history';
-import { requestSpawn } from '@lib/terminal/pty-transport';
+import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 
 import { useAppearanceStore } from '@stores/appearance-store';
-import { ACK_DELAY_MS, statusWord, useHiveStore } from '@stores/hive-store';
+import {
+  ACK_DELAY_MS,
+  openOrResume,
+  statusWord,
+  useActiveSessions,
+  useEndedSessions,
+  useHiveStore,
+  useNavOrder,
+  useRestoredSessions,
+} from '@stores/hive-store';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { useUiStore } from '@stores/ui-store';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
-import type { SessionRecord } from '@shared/session-history-contract';
+import type { SessionHistoryEntry } from '@shared/session-history-contract';
 
 import { notif as notif2 } from '../support/notifications';
 import { seedDemoFleet, seedDemoProjectConfig } from '@tests/support/demo-fleet';
@@ -42,6 +56,10 @@ vi.mock('@lib/terminal/pty-transport', () => ({
   requestSpawn: vi.fn(() => Promise.resolve({ ok: true })),
   sessionChannelState: vi.fn(() => 'live'),
   resetPtyChannels: vi.fn(),
+  // HIVE-93: `resumeSession` clears the renderer's exit latch before asking
+  // for the new process, so a resume that only updated the store would leave
+  // the surface typing into a pty that had gone.
+  reopenChannel: vi.fn(),
 }));
 
 /*
@@ -928,6 +946,36 @@ describe('hive-store', () => {
     });
 
     describe('spawn', () => {
+      /** The keys the seeded config declares, in file order (HIVE-94). */
+      const projectKeys = (): string[] =>
+        (projectConfigSnapshot()?.projects ?? []).map((project) => project.key);
+
+      /**
+       * A project whose three handles are all different (HIVE-94).
+       *
+       * The demo config sets `name` to the id, which cannot tell a name match
+       * apart from an id match — so the resolver's precedence and its
+       * case-insensitivity get a config built for the purpose.
+       */
+      const seedDistinctProject = () => {
+        const current = projectConfigSnapshot()!;
+        setProjectConfigForTest({
+          ...current,
+          projects: [
+            {
+              id: 'the-hive',
+              key: 'hive',
+              name: 'The Hive',
+              path: '/repos/the-hive',
+              icon: 'ph-folder',
+              origin: 'local',
+              status: 'ok',
+              isRepo: true,
+            },
+          ],
+        });
+      };
+
       it('creates a session on a known project and opens it', () => {
         const before = useHiveStore.getState().order.length;
         run('spawn apfm-web tidy the footer');
@@ -943,15 +991,117 @@ describe('hive-store', () => {
         expect(useUiStore.getState().activeTab).toBe(id);
       });
 
-      it('rejects a repo that is not a project', () => {
+      /**
+       * Key, id or name — all three land on the same project (HIVE-94).
+       *
+       * Table-driven because the point is that the four spellings are
+       * *interchangeable*, and four separate tests would let one quietly start
+       * resolving somewhere else without the shape of the failure saying so.
+       */
+      it.each([
+        ['a key', 'hive'],
+        ['a key in the wrong case', 'HIVE'],
+        ['an id', 'the-hive'],
+        ['a quoted display name', '"The Hive"'],
+      ])('spawns by %s', (_label, reference) => {
+        seedDistinctProject();
+        const before = useHiveStore.getState().order.length;
+
+        run(`spawn ${reference} do the thing`);
+
+        const state = useHiveStore.getState();
+        expect(state.order).toHaveLength(before + 1);
+        /*
+          The **resolved id**, never what was typed. `entity.project` is how
+          every other surface finds this session's project, and a session
+          recorded under an alias would point at nothing the moment that alias
+          was edited.
+        */
+        expect(state.entities[state.order.at(-1)!]).toMatchObject({
+          project: 'the-hive',
+          task: 'do the thing',
+        });
+      });
+
+      /**
+       * Two projects with the same display name refuse rather than race.
+       *
+       * Names are never uniqueness-checked, so this is ordinary — two folders
+       * both called `api`, a monorepo split, a pair of worktrees. Starting an
+       * agent in whichever sat first in the file is the "wrong repository,
+       * discovered later" failure exactness exists to prevent, and the refusal
+       * names the ids so the user can say which one they meant.
+       */
+      it('refuses an ambiguous name and names the candidates', () => {
+        const current = projectConfigSnapshot()!;
+        const entry = (id: string, key: string) => ({
+          id,
+          key,
+          name: 'api',
+          path: `/repos/${id}`,
+          icon: 'ph-folder',
+          origin: 'local' as const,
+          status: 'ok' as const,
+          isRepo: true,
+        });
+        setProjectConfigForTest({
+          ...current,
+          projects: [entry('client-api', 'ca'), entry('server-api', 'sa')],
+        });
+        const before = useHiveStore.getState().order.length;
+
+        run('spawn api do things');
+
+        expect(useHiveStore.getState().order).toHaveLength(before);
+        expect(lastLine()).toMatchObject({
+          text: '  api names 2 projects (client-api, server-api) — use a key',
+          color: 'red',
+        });
+
+        // And the key is the way out, so it must still resolve.
+        run('spawn sa do things');
+        expect(useHiveStore.getState().order).toHaveLength(before + 1);
+      });
+
+      it('does not announce the spawn by id — the rail is where the session is met (HIVE-91)', () => {
+        run('spawn apfm-web tidy the footer');
+
+        const id = useHiveStore.getState().order.at(-1)!;
+        // The name does not exist yet, so the only line possible would carry
+        // `sess-0x` — the one label the user never sees anywhere else.
+        expect(transcript()).not.toContain('spawned');
+        expect(transcript()).not.toContain(id);
+      });
+
+      it('rejects a project reference that matches nothing, listing the keys', () => {
         const before = useHiveStore.getState().order.length;
         run('spawn not-a-repo do things');
 
         expect(useHiveStore.getState().order).toHaveLength(before);
+        /*
+          The **keys**, in config order (HIVE-94). Listing ids here would answer
+          "what could I have typed?" with the long strings the key exists to
+          replace, and the keys are what the Settings row shows.
+        */
         expect(lastLine()).toMatchObject({
-          text: '  unknown repo: not-a-repo — try one from the Projects panel',
+          text: `  unknown project: not-a-repo — try a key from Settings › Projects (${projectKeys().join(', ')})`,
           color: 'red',
         });
+      });
+
+      /**
+       * Exactness is the whole safety property (HIVE-94).
+       *
+       * A spawn lands in a folder and starts an agent in it, so a prefix match
+       * turns a typo into work done in the wrong repository — discovered later,
+       * after it has happened. Refusing costs a retype.
+       */
+      it('refuses a prefix rather than guessing which project was meant', () => {
+        const before = useHiveStore.getState().order.length;
+        run('spawn apfm do things');
+
+        expect(useHiveStore.getState().order).toHaveLength(before);
+        expect(lastLine()?.text).toContain('unknown project: apfm');
       });
 
       /**
@@ -960,7 +1110,7 @@ describe('hive-store', () => {
        * A regression guard with a real failure behind it. `spawn` used to
        * validate against `state.projects`, which was authoritative only because
        * it booted pre-seeded with five demo projects. Emptying that seed left
-       * the slice permanently empty, so the console answered "unknown repo" for
+       * the slice permanently empty, so the console answered "unknown project" for
        * every project the user could see in the Projects panel — a verb that
        * refused everything, on a screen listing the things it was refusing.
        */
@@ -1005,7 +1155,7 @@ describe('hive-store', () => {
        * can ever arrive, and the fabricated row stays in the rails and the
        * header counts. That is the exact lie this branch exists to delete.
        */
-      it('refuses any repo in a browser, where no refusal could ever arrive', () => {
+      it('refuses any project in a browser, where no refusal could ever arrive', () => {
         vi.mocked(isDesktop).mockReturnValue(false);
         resetProjectConfig();
         const before = useHiveStore.getState().order.length;
@@ -1013,7 +1163,11 @@ describe('hive-store', () => {
         run('spawn anything at all');
 
         expect(useHiveStore.getState().order).toHaveLength(before);
-        expect(lastLine()?.text).toContain('unknown repo: anything');
+        // No keys to list, so the refusal points at the only thing that would
+        // help: adding a project in the first place.
+        expect(lastLine()?.text).toContain(
+          'unknown project: anything — add one in Settings › Projects',
+        );
       });
 
       /**
@@ -1132,7 +1286,7 @@ describe('hive-store', () => {
       it('rejects a missing task as a usage error', () => {
         run('spawn apfm-web');
         expect(lastLine()).toMatchObject({
-          text: '  usage: spawn <repo> <task>',
+          text: '  usage: spawn <project> <task>',
           color: 'red',
         });
       });
@@ -1495,7 +1649,7 @@ describe('hive-store', () => {
    * running, and may not hand out an id a future spawn would collide with.
    */
   describe('hydrateSessions', () => {
-    const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+    const record = (over: Partial<SessionHistoryEntry> = {}): SessionHistoryEntry => ({
       id: 'sess-01',
       project: 'apfm-web',
       task: '',
@@ -1513,7 +1667,7 @@ describe('hive-store', () => {
       // The whole inference: the file says `working`, and it plainly is not.
       useHiveStore.getState().hydrateSessions([record({ status: 'working' })]);
 
-      expect(statusOf('sess-01')).toBe('closed');
+      expect(statusOf('sess-01')).toBe('done');
     });
 
     it('treats every live status the same way', () => {
@@ -1523,9 +1677,9 @@ describe('hive-store', () => {
         record({ id: 'c', status: 'idle' }),
       ]);
 
-      expect(statusOf('a')).toBe('closed');
-      expect(statusOf('b')).toBe('closed');
-      expect(statusOf('c')).toBe('closed');
+      expect(statusOf('a')).toBe('done');
+      expect(statusOf('b')).toBe('done');
+      expect(statusOf('c')).toBe('done');
     });
 
     it('keeps an ending that was actually observed', () => {
@@ -1609,7 +1763,7 @@ describe('hive-store', () => {
         .getState()
         .order.find((id) => id !== 'sess-05');
       expect(fresh).not.toBe('sess-05');
-      expect(statusOf('sess-05')).toBe('closed');
+      expect(statusOf('sess-05')).toBe('done');
     });
 
     it('marks every restored row as restored, however it ended', () => {
@@ -1690,6 +1844,38 @@ describe('hive-store', () => {
       expect(useHiveStore.getState().entities['sess-09']).toBeDefined();
     });
 
+    it('puts a session main still runs straight into ACTIVE', () => {
+      /**
+       * The renderer is not always the first of its run (HIVE-88). Close the
+       * window on macOS and reopen it from the dock, reload it, crash it: a
+       * fresh store hydrates in front of the same running ptys, and the ledger
+       * lists them. Main marks those `live`, and a live row is this run's fleet
+       * — not restored, not closed, and reading whatever it was last doing.
+       */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'live-01', status: 'idle', live: true }),
+        record({ id: 'old-01', status: 'idle' }),
+      ]);
+
+      expect(statusOf('live-01')).toBe('idle');
+      expect(statusOf('old-01')).toBe('done');
+      const live = useHiveStore.getState().entities['live-01'];
+      expect(live && isSession(live) ? live.restored : 'missing').toBeUndefined();
+      const old = useHiveStore.getState().entities['old-01'];
+      expect(old && isSession(old) ? old.restored : 'missing').toBe(true);
+    });
+
+    it('keeps an ended status on a live entry, and keeps it restored', () => {
+      // `live` says main holds a pty under this id; it does not say the record
+      // describes a running conversation. A `done` record with a live pty is
+      // a cleared row whose terminal belongs to its successor.
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'x', status: 'done', live: true }),
+      ]);
+
+      expect(statusOf('x')).toBe('done');
+    });
+
     it('is a no-op for an empty ledger', () => {
       const before = [...useHiveStore.getState().order];
 
@@ -1711,6 +1897,470 @@ describe('hive-store', () => {
 
       expect(useHiveStore.getState().entities).toBe(entitiesBefore);
       expect(useHiveStore.getState().order).toBe(orderBefore);
+    });
+  });
+
+  /**
+   * A restored row that comes back to life (HIVE-88).
+   *
+   * `restored` records where a row came from, which is durable; the section it
+   * belongs in depends on whether it is running *now*, which is not. A row
+   * reopened from PREVIOUS RUN gets a live status from its new process, and
+   * that status has to move it — once, to ACTIVE — rather than leave one
+   * entity satisfying both groups' selectors and painting twice.
+   */
+  /**
+   * `/done` in the renderer (HIVE-93).
+   *
+   * The mirror of `clearSession`, and every assertion here is about a way the
+   * two differ: no successor, a conversation kept, and the centre stage getting
+   * out of the way of a terminal that no longer exists.
+   */
+  describe('finishSession', () => {
+    const finished = (id: string) => {
+      const entity = useHiveStore.getState().entities[id];
+      return entity && isSession(entity) ? entity : undefined;
+    };
+
+    it('ends the row without minting a successor', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const id = useHiveStore.getState().order.at(-1)!;
+      const before = useHiveStore.getState().order.length;
+
+      useHiveStore.getState().finishSession(id, true);
+
+      /*
+        The one difference from `/clear` that the user sees immediately: a
+        cleared terminal carries on under a new row, a finished one does not.
+      */
+      expect(useHiveStore.getState().order).toHaveLength(before);
+      expect(finished(id)).toMatchObject({
+        status: 'done',
+        endedBy: 'finished',
+        resumable: true,
+      });
+    });
+
+    it('keeps the conversation, where a clear drops it', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const kept = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().spawnSession('the-hive');
+      const dropped = useHiveStore.getState().order.at(-1)!;
+
+      useHiveStore.getState().finishSession(kept, true);
+      useHiveStore.getState().clearSession(dropped);
+
+      /*
+        Main keeps the uuid on `/done` and drops it on `/clear`, so only one of
+        these has anything to reopen — and `resumable` is also what exempts a
+        row from `DONE_CAP`.
+      */
+      expect(finished(kept)?.resumable).toBe(true);
+      expect(finished(dropped)?.resumable).toBe(false);
+    });
+
+    it('falls back to the orchestrator when it was the visible tab', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const id = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().openEntity(id);
+      expect(useUiStore.getState().activeTab).toBe(id);
+
+      useHiveStore.getState().finishSession(id, true);
+
+      // Its terminal is gone; leaving the user staring at a dead pty would be
+      // the whole feature failing at the last step.
+      expect(useUiStore.getState().activeTab).toBe('orch');
+    });
+
+    it('leaves the visible tab alone when some other session finishes', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const watched = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().spawnSession('the-hive');
+      const other = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().openEntity(watched);
+
+      useHiveStore.getState().finishSession(other, true);
+
+      /*
+        Bouncing unconditionally would throw the user out of whatever they were
+        reading because a background session finished — precisely the attention
+        theft the fleet view exists to prevent.
+      */
+      expect(useUiStore.getState().activeTab).toBe(watched);
+    });
+
+    it('is a no-op on a row that has already ended', () => {
+      useHiveStore.getState().spawnSession('the-hive');
+      const id = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().finishSession(id, true);
+      useHiveStore.getState().openEntity('orch');
+
+      /*
+        The exit that follows `/done` can reach `settleExit` by two routes —
+        `ptyExit` and `ptyLost` — so a second pass must not bounce a user who
+        has since moved on.
+      */
+      useHiveStore.getState().finishSession(id, true);
+
+      expect(finished(id)).toMatchObject({ status: 'done' });
+    });
+
+    it('takes resumability from main rather than inferring it', () => {
+      /*
+        A terminal that was cleared and then finished has had its uuid withdrawn
+        and cannot get another — the only hook carrying the successor's id never
+        reaches the receiver. Inferring `resumable` from the fact of a finish
+        would offer Resume there and start a brand-new conversation under the
+        promise of continuing the old one.
+      */
+      useHiveStore.getState().spawnSession('the-hive');
+      const id = useHiveStore.getState().order.at(-1)!;
+
+      useHiveStore.getState().finishSession(id, false);
+
+      expect(finished(id)).toMatchObject({
+        status: 'done',
+        endedBy: 'finished',
+        resumable: false,
+      });
+
+      // And the row is therefore cappable, like a cleared one.
+      useHiveStore.getState().resumeSession(id);
+      expect(useUiStore.getState().activeTab).not.toBe(id);
+    });
+
+    it('ends the terminal\'s current row, not the id main happens to name', () => {
+      /*
+        Main always names the *terminal*: `HIVE_SESSION_ID` is baked into the
+        pty's environment at spawn and never changes, so after a `/clear` it is
+        still calling the row that was retired. Reading that id directly left
+        the successor `idle` on a pty that had exited — stdin enabled, no
+        "terminal has died" notice, and no ending for any cap to reap.
+      */
+      useHiveStore.getState().spawnSession('the-hive');
+      const original = useHiveStore.getState().order.at(-1)!;
+      const successor = useHiveStore.getState().clearSession(original)!;
+
+      useHiveStore.getState().finishSession(original, true);
+
+      expect(finished(successor)).toMatchObject({
+        status: 'done',
+        endedBy: 'finished',
+      });
+    });
+
+    it('spares a resumable row from the done cap', () => {
+      /*
+        Capping `done` was justified by "a cleared session's successor is right
+        there". A finished row has no successor and keeps a transcript the user
+        can reopen, so dropping it would delete the only visible route back to
+        something that still exists on disk.
+      */
+      useHiveStore.getState().spawnSession('the-hive');
+      const survivor = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().finishSession(survivor, true);
+
+      for (let i = 0; i < 25; i += 1) {
+        useHiveStore.getState().spawnSession('the-hive');
+        const id = useHiveStore.getState().order.at(-1)!;
+        useHiveStore.getState().clearSession(id);
+      }
+
+      expect(useHiveStore.getState().entities[survivor]).toBeDefined();
+    });
+  });
+
+  describe('reviving a restored session', () => {
+    const record = (over: Partial<SessionHistoryEntry> = {}): SessionHistoryEntry => ({
+      id: 'old-01',
+      project: 'apfm-web',
+      task: '',
+      status: 'working',
+      createdAt: 1,
+      ...over,
+    });
+
+    const restoredOf = (id: string) => {
+      const entity = useHiveStore.getState().entities[id];
+      return entity && isSession(entity) ? entity.restored : 'missing';
+    };
+
+    const partition = () => {
+      const { result } = renderHook(() => ({
+        active: useActiveSessions(),
+        restored: useRestoredSessions(),
+        ended: useEndedSessions(),
+        nav: useNavOrder(),
+      }));
+      return result.current;
+    };
+
+    it('leaves PREVIOUS RUN the moment a live status lands', () => {
+      useHiveStore.getState().hydrateSessions([record()]);
+      expect(partition().restored).toEqual(['old-01']);
+
+      useHiveStore.getState().setSessionStatus('old-01', 'working');
+
+      const groups = partition();
+      expect(groups.active).toContain('old-01');
+      expect(groups.restored).not.toContain('old-01');
+      expect(groups.ended).not.toContain('old-01');
+      expect(restoredOf('old-01')).toBeUndefined();
+    });
+
+    it('occupies exactly one slot in the keyboard order', () => {
+      // The partition the caret walks is the one the table draws; both have to
+      // see one row, in the ACTIVE position, and never a second one.
+      useHiveStore.getState().hydrateSessions([record()]);
+      useHiveStore.getState().setSessionStatus('old-01', 'working');
+
+      const { nav, active } = partition();
+      expect(nav.filter((id) => id === 'old-01')).toHaveLength(1);
+      // In the ACTIVE block of the walk — before every ended or restored row.
+      expect(nav.indexOf('old-01')).toBeLessThan(active.length);
+    });
+
+    it('revives on any live status, not only working', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'a' }),
+        record({ id: 'b' }),
+      ]);
+
+      useHiveStore.getState().setSessionStatus('a', 'idle');
+      useHiveStore.getState().setSessionStatus('b', 'waiting');
+
+      expect(restoredOf('a')).toBeUndefined();
+      expect(restoredOf('b')).toBeUndefined();
+    });
+
+    it('stays in PREVIOUS RUN when only an ended status is written', () => {
+      // A process that failed to start settles `terminated` without ever
+      // having been live. That is still last run's row, and it stays put.
+      useHiveStore.getState().hydrateSessions([record()]);
+
+      useHiveStore.getState().setSessionStatus('old-01', 'terminated');
+
+      expect(restoredOf('old-01')).toBe(true);
+      expect(partition().restored).toEqual(['old-01']);
+    });
+
+    it('revives through the transcript path too', () => {
+      // `appendEntityLines` is the other writer that can carry a live status.
+      useHiveStore.getState().hydrateSessions([record()]);
+
+      useHiveStore.getState().appendEntityLines('old-01', [], 'working');
+
+      expect(restoredOf('old-01')).toBeUndefined();
+      expect(partition().active).toContain('old-01');
+    });
+
+    it('ends under ENDED once revived, like any session of this run', () => {
+      useHiveStore.getState().hydrateSessions([record()]);
+      useHiveStore.getState().setSessionStatus('old-01', 'working');
+
+      useHiveStore.getState().setSessionStatus('old-01', 'terminated');
+
+      const groups = partition();
+      expect(groups.ended).toContain('old-01');
+      expect(groups.restored).not.toContain('old-01');
+      expect(groups.active).not.toContain('old-01');
+    });
+
+    it('restores how a session ended, not just that it did', () => {
+      /*
+        `publishStatus` never writes `done` and `onCleared` writes no status, so
+        the only way a record holds `done` is a declared `/done`. Without the
+        recorded `endedBy`, every one of those came back reading "was cleared —
+        its terminal continues as a new session" — the one sentence that is
+        false for all of them, shown beside a Resume button, so the tooltip and
+        the control contradicted each other.
+      */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'fin-01', status: 'done', endedBy: 'finished' }),
+        record({ id: 'clr-01', status: 'done' }),
+        record({ id: 'old-02' }),
+      ]);
+
+      const entities = useHiveStore.getState().entities;
+      expect(entities['fin-01']).toMatchObject({ endedBy: 'finished' });
+      /*
+        A `done` record with no `endedBy` predates the field, and every one of
+        those was a `/clear` — nothing else produced the status then. Main can
+        no longer write `cleared` at all: after a `/clear` that same record goes
+        on describing the successor, so stamping an ending on it would be a lie
+        about a session still running.
+      */
+      expect(entities['clr-01']).not.toHaveProperty('endedBy');
+      // A record still claiming to be live ended when the app did.
+      expect(entities['old-02']).toMatchObject({ endedBy: 'app-closed' });
+    });
+
+    it('refuses to open any ended row, restored ones included', () => {
+      /*
+        A restored row used to be the exception, because clicking it *was* the
+        resume (HIVE-88). Resume is its own control now (HIVE-93), so the gate
+        can say the honest thing about every ending: that terminal is gone, or
+        it belongs to a successor.
+      */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'closed-01', resumable: true }),
+        record({ id: 'term-01', status: 'terminated' }),
+        record({ id: 'done-01', status: 'done' }),
+      ]);
+
+      expect(useHiveStore.getState().openEntity('closed-01')).toBe(false);
+      expect(useHiveStore.getState().openEntity('term-01')).toBe(false);
+      expect(useHiveStore.getState().openEntity('done-01')).toBe(false);
+    });
+
+    it('resumes a restored row instead, and opens it live', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'closed-01', resumable: true }),
+      ]);
+
+      useHiveStore.getState().resumeSession('closed-01');
+
+      /*
+        Live *before* the tab opens, and both halves matter: `center-stage`
+        reads `isTerminated` on mount to decide whether to disable stdin, so a
+        row still marked ended would mount a read-only surface over the very
+        session this was asked to reopen.
+      */
+      const revived = useHiveStore.getState().entities['closed-01'];
+      expect(revived).toMatchObject({ status: 'idle', resumable: true });
+      expect(revived).not.toHaveProperty('endedBy');
+      expect(useUiStore.getState().activeTab).toBe('closed-01');
+    });
+
+    it('actually starts a process — the store update alone is not a resume', () => {
+      /*
+        The bug this exists for: `resumeSession` used to only mutate the row and
+        open the tab. The pty had exited, so the renderer's channel was latched
+        closed and no spawn was ever requested — the surface re-enabled stdin
+        over a dead process and swallowed every keystroke, with the Resume
+        control now gone because it is gated on the row being ended. There was
+        no way back from that state.
+      */
+      vi.mocked(requestSpawn).mockClear();
+      vi.mocked(reopenChannel).mockClear();
+
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'closed-01', resumable: true }),
+      ]);
+      useHiveStore.getState().resumeSession('closed-01');
+
+      // The latch first, or the request below hands back the previous answer.
+      expect(reopenChannel).toHaveBeenCalledWith('closed-01');
+      /*
+        And `resume: true`, which is why this goes through the spawn path rather
+        than `pty.restart` — a restart deliberately never forwards it, so it
+        would begin a new conversation while promising the old one.
+      */
+      expect(requestSpawn).toHaveBeenCalledWith(
+        'closed-01',
+        expect.any(String),
+        expect.objectContaining({ resume: true }),
+      );
+    });
+
+    it('stops being a PREVIOUS RUN row, so it is not drawn twice', () => {
+      /*
+        `useActiveSessions` keys on the status and `useRestoredSessions` on
+        `restored`. A resumed row that kept the flag satisfied both and the
+        table drew it under ACTIVE *and* PREVIOUS RUN, sharing one selection
+        index — the exact double-draw HIVE-88 fixed.
+      */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'closed-01', resumable: true }),
+      ]);
+      useHiveStore.getState().resumeSession('closed-01');
+
+      expect(useHiveStore.getState().entities['closed-01']).not.toHaveProperty(
+        'restored',
+      );
+    });
+
+    it('resumes from the keyboard, not only from the control', () => {
+      /*
+        `openEntity` refuses every ended row now, so routing the keyboard
+        through it alone left a user able to arrow onto a finished session,
+        press Enter and get silence — the resume button reachable only by mouse.
+      */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'closed-01', resumable: true }),
+        record({ id: 'term-01', status: 'terminated' }),
+      ]);
+
+      expect(openOrResume('closed-01')).toBe(true);
+      expect(useUiStore.getState().activeTab).toBe('closed-01');
+
+      // And a row with nothing to resume is still refused.
+      expect(openOrResume('term-01')).toBe(false);
+    });
+
+    it('refuses to resume a row with no conversation behind it', () => {
+      /*
+        A cleared row drops its uuid in main, so there is nothing to reopen.
+        Opening the tab anyway would put the user in front of a terminal this
+        action has not arranged to exist.
+      */
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'done-01', status: 'done' }),
+      ]);
+
+      useHiveStore.getState().resumeSession('done-01');
+
+      expect(useHiveStore.getState().entities['done-01']).toMatchObject({
+        status: 'done',
+      });
+      expect(useUiStore.getState().activeTab).not.toBe('done-01');
+    });
+
+    it('never restores a second row for an id this run already runs', () => {
+      // The identity that survives a restart is the entity id: a reopened row
+      // spawns under its own id, and the ledger is keyed by it. The collision
+      // guard is therefore the dedup, and it has to hold with the live row
+      // under any status.
+      useHiveStore.getState().spawnSession('the-hive');
+      const live = useHiveStore.getState().order.at(-1)!;
+      useHiveStore.getState().setSessionStatus(live, 'working');
+
+      useHiveStore.getState().hydrateSessions([record({ id: live })]);
+
+      const rows = useHiveStore.getState().order.filter((id) => id === live);
+      expect(rows).toHaveLength(1);
+      expect(restoredOf(live)).toBeUndefined();
+      expect(partition().restored).toEqual([]);
+    });
+
+    it('keeps a genuinely previous-run row in PREVIOUS RUN', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'old-01' }),
+        record({ id: 'old-02', status: 'terminated' }),
+      ]);
+      useHiveStore.getState().setSessionStatus('old-01', 'working');
+
+      const groups = partition();
+      expect(groups.restored).toEqual(['old-02']);
+      expect(groups.active).toContain('old-01');
+    });
+
+    it('keeps terminated rows exempt from DONE_CAP, revived or not', () => {
+      useHiveStore.getState().hydrateSessions([
+        record({ id: 'old-term', status: 'terminated' }),
+        record({ id: 'old-live' }),
+      ]);
+      useHiveStore.getState().setSessionStatus('old-live', 'working');
+      useHiveStore.getState().setSessionStatus('old-live', 'terminated');
+
+      // Well past the cap: every `/clear` retires a row as `done`.
+      for (let i = 0; i < 25; i += 1) {
+        const id = useHiveStore.getState().spawnSession('the-hive');
+        useHiveStore.getState().clearSession(id);
+      }
+
+      expect(useHiveStore.getState().entities['old-term']).toBeDefined();
+      expect(useHiveStore.getState().entities['old-live']).toBeDefined();
     });
   });
 });

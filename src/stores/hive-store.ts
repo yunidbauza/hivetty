@@ -22,7 +22,7 @@ import {
   terminalOf,
 } from '@/types/entity';
 import type { HiveNotification } from '@/types/notification';
-import type { Pr, TicketPr } from '@/types/pull-request';
+import type { Pr, SessionPr, TicketPr } from '@/types/pull-request';
 import type { TermLine } from '@/types/terminal';
 import type { Ticket } from '@/types/ticket';
 
@@ -33,11 +33,12 @@ import { readPullRequests } from '@lib/github';
 import { readJiraStatus, searchJiraIssues } from '@lib/jira';
 import {
   projectConfigSnapshot,
+  resolveProjectRef,
   subscribeProjectConfig,
 } from '@lib/project-config';
 import { noteSessionTicket } from '@lib/session-history';
 import { pickPhrase } from '@lib/swarm/phrases';
-import { requestSpawn } from '@lib/terminal/pty-transport';
+import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 import type { PrRecord } from '@shared/github-contract';
 import type { IdleDetail } from '@shared/hook-contract';
@@ -45,7 +46,7 @@ import type { JiraIssue } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
 import { SESSION_EFFORTS, SESSION_MODELS } from '@shared/session-contract';
-import type { SessionRecord } from '@shared/session-history-contract';
+import type { SessionHistoryEntry } from '@shared/session-history-contract';
 import { currentTheme } from '@stores/appearance-store';
 import { useUiStore } from '@stores/ui-store';
 
@@ -216,7 +217,15 @@ interface HiveState {
   refreshPrs: () => Promise<void>;
 
   spawnSession: (
-    repo: string,
+    /**
+     * A project **id**, already resolved — never a key or a display name.
+     *
+     * It lands on the entity as `entity.project`, which is how every other
+     * surface finds this session's project, so an alias stored here would point
+     * at nothing the moment it was edited. `resolveProjectRef` is what callers
+     * put in front of user input (HIVE-94).
+     */
+    projectId: string,
     task?: string,
     model?: Model,
     effort?: Effort,
@@ -266,7 +275,7 @@ interface HiveState {
    * restored `sess-01` colliding with one this run has already spawned is the
    * ordinary case rather than a corner, and the live row always wins.
    */
-  hydrateSessions: (records: SessionRecord[]) => void;
+  hydrateSessions: (records: SessionHistoryEntry[]) => void;
   /**
    * Apply read-state the hub decided, without writing it back (HIVE-75).
    *
@@ -333,6 +342,32 @@ interface HiveState {
    * Answers the successor's id, or `null` if there was nothing to retire.
    */
   clearSession: (id: string) => string | null;
+  /**
+   * `/done` ended this session and its terminal with it (HIVE-93).
+   *
+   * The mirror of {@link HiveState.clearSession}, and the differences are the
+   * point: no successor is minted, the row keeps its conversation so Resume can
+   * offer it, and the centre stage falls back to the orchestrator if this was
+   * the tab in front of the user — its terminal is gone, so there is nothing
+   * left to look at.
+   */
+  finishSession: (id: string, resumable: boolean) => void;
+  /**
+   * Claude is up; stop covering this session's terminal (HIVE-101).
+   *
+   * Idempotent, and safe for an id that has since ended or vanished — see the
+   * implementation for why all three of those are ordinary rather than
+   * exceptional.
+   */
+  markSessionReady: (id: string) => void;
+  /**
+   * Pick an ended session's conversation back up (HIVE-93).
+   *
+   * The affordance `closed` used to carry as a status, now a verb. Puts the row
+   * back in a live state and opens its tab; the transport that mounts reads
+   * {@link Session.resumable} and asks main to `--resume` rather than begin.
+   */
+  resumeSession: (id: string) => void;
   reset: () => void;
 }
 
@@ -464,8 +499,15 @@ const HELP_LINES = [
   '  status                     one line per session',
   '  open <session>             open a session in the center stage',
   '  send <session> <message>   route a message to a session',
-  '  spawn <repo> <task>        start a new session on a project',
+  '  spawn <project> <task>     start a new session on a project',
   '  clear                      empty this transcript',
+  /*
+    One trailing line rather than a fourth column, because it is a footnote and
+    not a verb (HIVE-94). It is the only place the console says out loud that a
+    project answers to three different things, and `help` is where a user goes
+    to find that out.
+  */
+  '  <project> is a key, an id or a name — hive, the-hive, "The Hive"',
 ];
 
 /**
@@ -482,7 +524,6 @@ const STATUS_WORD: Record<SessionStatus, string> = {
   idle: 'idle',
   done: 'done',
   terminated: 'terminated',
-  closed: 'closed',
 };
 
 /**
@@ -508,13 +549,6 @@ const STATUS_COLOR: Record<SessionStatus, TermLine['color']> = {
    * carries the priority.
    */
   terminated: 'dim',
-  /**
-   * Dim, for the same reason `terminated` is (HIVE-87). A restored row has even
-   * less behind it than a terminated one — the process it describes died with
-   * the app that owned it, a launch ago — so it certainly does not earn the
-   * colour that means "there is something here".
-   */
-  closed: 'dim',
 };
 
 let spawnCounter = 0;
@@ -543,19 +577,16 @@ let spawnCounter = 0;
  *
  * Three answers, and the middle one is the feature:
  *
- * - An ending that was **observed** — `done`, `terminated` — comes back exactly
+ * - An ending that was **recorded** — `done`, `terminated` — comes back exactly
  *   as it was. `terminated` especially: it is never capped, on the grounds that
  *   it is the only record a process existed, and rewriting it here would forfeit
  *   that.
- * - Anything **live** becomes `closed`. A record claiming to be `working` is
- *   describing a process that died with the app that owned it, a launch ago.
+ * - Anything **live** becomes `done` with `endedBy: 'app-closed'`. A record
+ *   claiming to be `working` is describing a process that died with the app that
+ *   owned it, a launch ago. The user quit; that is a deliberate ending.
  * - Anything **unrecognised** is `undefined`, and its record is dropped. The
  *   file may have been written by a build that knew a status this one does not,
  *   and a row the table cannot render is worse than a row missing from it.
- *
- * `closed` itself is not accepted, deliberately. Nothing writes it — see
- * `session-history-contract.ts` — so a file containing one was not written by
- * this app, and honouring it would be trusting a value no code path produces.
  */
 /**
  * The closed lists, checked rather than assumed (HIVE-87).
@@ -571,12 +602,74 @@ const isKnownModel = (value: string | undefined): value is Model =>
 const isKnownEffort = (value: string | undefined): value is Effort =>
   value !== undefined && (SESSION_EFFORTS as readonly string[]).includes(value);
 
-function restoredStatus(stored: string): SessionStatus | undefined {
-  if (stored === 'done' || stored === 'terminated') return stored;
+/**
+ * How a stored record reads once the app it described is gone (HIVE-93).
+ *
+ * Returns the ending **and how it was arrived at**, because the two are no
+ * longer the same question. A record that says `working` is not working — the
+ * process died with the app that owned it — and that inference used to be
+ * spelled by mapping it to a `closed` status. With `closed` folded into `done`,
+ * the status alone can no longer distinguish an *inferred* ending from a
+ * *recorded* one, and hydrate genuinely needs to: `live` is exactly "main says
+ * there is a process behind an id whose record claims one".
+ *
+ * `undefined` means a status this build does not know — a record written by a
+ * newer one. The caller drops such a row rather than guessing at it.
+ */
+function restoredStatus(
+  stored: string,
+  recorded?: string,
+): { status: SessionStatus; endedBy?: Session['endedBy'] } | undefined {
+  /*
+    Recorded endings keep whatever they were. `done` here is a `/clear` or a
+    `/done` that main wrote down; which one it was is not recoverable from the
+    file, and `endedReason` treats an absent `endedBy` as the older of the two.
+  */
+  if (stored === 'done') {
+    /*
+      The record's own answer where it has one (HIVE-93). Without it every
+      restored `/done` row is described as "was cleared", which is the one
+      sentence that is false for all of them — and shown beside a Resume button,
+      so the tooltip and the control contradict each other.
+    */
+    return recorded === 'finished'
+      ? { status: 'done', endedBy: 'finished' }
+      : { status: 'done' };
+  }
+  if (stored === 'terminated') return { status: 'terminated' };
+  /*
+    An inferred ending. The record claims to be live and plainly is not, so it
+    ended when the app did — which is a deliberate ending in the user's terms
+    (they quit) and therefore `done`, with `endedBy` carrying the how.
+  */
   if (stored === 'working' || stored === 'waiting' || stored === 'idle') {
-    return 'closed';
+    return { status: 'done', endedBy: 'app-closed' };
   }
   return undefined;
+}
+
+/**
+ * A restored row that has come back to life stops being restored (HIVE-88).
+ *
+ * `restored` records where a row came from, which is durable; the section it
+ * belongs in depends on whether it is running *now*, which is not. Reopening a
+ * PREVIOUS RUN row spawns a process under its own id, and the first live
+ * status that process reports is the moment the row is this run's fleet. Left
+ * in place, the flag put one entity in two groups: `useActiveSessions` keys on
+ * the status and `useRestoredSessions` on the flag, and a `working` row with
+ * `restored: true` satisfied both — two rows, one agent.
+ *
+ * Only a **live** status revives. A spawn that fails settles `terminated`
+ * without the row ever having run, and that is still last run's row.
+ *
+ * Mutates and returns `updated`, which every caller has just spread into a
+ * fresh object — the same shape as the `idleDetail` delete beside it.
+ */
+function reviveIfLive(updated: Session): Session {
+  if (updated.restored === true && !isEnded(updated.status)) {
+    delete updated.restored;
+  }
+  return updated;
 }
 
 /**
@@ -794,7 +887,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * no store subscribes to the other. That keeps the dependency one-way and
    * makes the cross-store effect visible at the call site.
    */
-  spawnSession: (repo, task, model, effort, ticket) => {
+  spawnSession: (projectId, task, model, effort, ticket) => {
     const id = nextSessionId(get().entities);
     // Resolved once: the seed transcript quotes them back, so a default applied
     // in two places could print one model and record another.
@@ -817,7 +910,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     const session: Session = {
       kind: 'session',
       id,
-      project: repo,
+      project: projectId,
       /**
        * Only present when the picker was opened from a ticket card, which is
        * why it is spread conditionally rather than assigned `undefined`: an
@@ -850,13 +943,22 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * the meta bar and the rails claim a task that nobody set.
        */
       task: task ?? '',
-      pr: null,
+      /**
+       * Covered until Claude is on screen (HIVE-101).
+       *
+       * Set here rather than when the pty reports anything, because the wait
+       * this hides *starts* here: the shell is already loading `direnv` before
+       * main has finished answering the spawn. Desktop only — the browser demo
+       * has no process to boot and no `SessionStart` will ever arrive to
+       * uncover it.
+       */
+      ...(isDesktop() ? { booting: true } : {}),
       cost: '$0.02',
       model: resolvedModel,
       effort: resolvedEffort,
       lines: [
         line(
-          `❯ claude --model ${resolvedModel} --effort ${resolvedEffort} — new session on ${repo}`,
+          `❯ claude --model ${resolvedModel} --effort ${resolvedEffort} — new session on ${projectId}`,
           'green',
         ),
         line('● Reading CLAUDE.md, mapping repo…', 'blue'),
@@ -872,16 +974,14 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     }));
 
     /**
-     * The console records every spawn, whoever asked for it — the `spawn`
-     * command, the picker (044), or a future daemon event. Logging here rather
-     * than at each call site is what keeps the transcript complete.
+     * No `spawned sess-0x on <project>` line here (HIVE-91).
+     *
+     * At this moment the session has nothing but its id — its name arrives
+     * later, from the status-line title or a rename — so the only thing the
+     * console could print is the one label the user never sees anywhere else.
+     * The session lists already show what launched; the console keeps only
+     * what they cannot show, which is the refusal below.
      */
-    set((state) => ({
-      orchLines: capLines([
-        ...state.orchLines,
-        line(`  spawned ${id} on ${repo}`, 'dim'),
-      ]),
-    }));
 
     /**
      * Ask for the process **here**, not when a surface mounts (story 097).
@@ -889,9 +989,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * The lazy path works — `PtyTransport` requests a spawn on subscribe — but
      * its refusal reaches only the terminal, asynchronously, and only if a
      * surface mounted at all. The console has to print main's exact message,
-     * so the request is made where the transcript is. That is the same
-     * argument that already puts the `spawned …` line above here rather than
-     * at each call site, and it means the picker (044) gets the refusal too.
+     * so the request is made where the transcript is — whoever asked for the
+     * spawn: the `spawn` command, the picker (044), or a future daemon event.
+     * Logging here rather than at each call site is what makes sure the picker
+     * gets the refusal too.
      *
      * Safe in either order: `requestSpawn` and the transport share one channel,
      * so whoever asks first is the only one who asks, and main's `open()` is
@@ -908,7 +1009,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * arguments would leave those two disagreeing for exactly the sessions
        * nobody chose for.
        */
-      void requestSpawn(id, repo, {
+      void requestSpawn(id, projectId, {
         ...(task === undefined ? {} : { task }),
         model: resolvedModel,
         effort: resolvedEffort,
@@ -1096,8 +1197,27 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * put the *new* session's output on screen under the *old* session's name,
      * and let the user type into work they think they finished.
      */
+    /**
+     * **No ending opens any more** (HIVE-93).
+     *
+     * A restored row used to be the exception: refusing it made resuming
+     * unreachable, because clicking the row *was* the resume. That is no longer
+     * true — Resume is its own control on rows that carry
+     * {@link Session.resumable}, so the affordance has somewhere to live that is
+     * not "the status happens to permit a click".
+     *
+     * Which leaves this gate saying one thing: an ended row is not a terminal
+     * you can walk into. Opening one would show a pty that is gone, or one that
+     * belongs to a successor.
+     */
     const entity = get().entities[id];
-    if (!(entity !== undefined && isSession(entity) && isEnded(entity.status))) {
+    if (
+      !(
+        entity !== undefined &&
+        isSession(entity) &&
+        isEnded(entity.status)
+      )
+    ) {
       useUiStore.getState().openTab(id);
       return true;
     }
@@ -1318,14 +1438,14 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
          * This read `state.projects` — the store's own slice — which worked
          * only because that slice was seeded with five demo projects at boot.
          * Emptying the seed left it always empty, so every `spawn` answered
-         * "unknown repo" for projects sitting right there in the Projects
+         * "unknown project" for projects sitting right there in the Projects
          * panel. One source for "which projects exist", and it is the config.
          *
          * **On desktop, no snapshot means permissive, not empty.** `main.tsx`
          * fires `loadProjectConfig()` without awaiting, and `project-config.ts`
          * leaves the snapshot `null` when that read throws — deliberately, so a
          * broken IPC hop degrades rather than locks the app. Treating `null` as
-         * "no projects" would make this verb refuse every repo during the first
+         * "no projects" would make this verb refuse every project during the first
          * frames of launch, and refuse them *permanently* after a failed read.
          * `can.spawnSessionIn` already answers `true` with no snapshot; this
          * agrees with it, and lets main — which has the file in front of it —
@@ -1341,20 +1461,65 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
          * exists to delete.
          */
         const snapshot = projectConfigSnapshot();
-        const known =
-          (snapshot === null && isDesktop()) ||
-          (snapshot?.projects.some((project) => project.id === command.repo) ??
-            false);
-        if (!known) {
+        /**
+         * A key, an id or a name — resolved once, in `lib/` (HIVE-94).
+         *
+         * The store used to compare `project.id === command.repo` inline, which
+         * made the console the only surface with an opinion about what names a
+         * project. The picker now shares this resolver, so a project reachable
+         * from one is reachable from the other by exactly the same spellings.
+         */
+        const resolved =
+          snapshot === null
+            ? ({ kind: 'none' } as const)
+            : resolveProjectRef(command.project, snapshot.projects);
+
+        /*
+          Ambiguity is its own answer, not a miss (HIVE-94). Display names are
+          never uniqueness-checked — two folders both called `api` is ordinary —
+          and picking whichever sat first in the file would start an agent in the
+          wrong repository, which is the exact failure the exactness rule exists
+          to prevent. Naming the ids is what makes the advice actionable: the key
+          is the way to say which one.
+        */
+        if (resolved.kind === 'ambiguous') {
+          const ids = resolved.projects.map((project) => project.id).join(', ');
           pushOrch(
-            `  unknown repo: ${command.repo} — try one from the Projects panel`,
+            `  ${command.project} names ${resolved.projects.length} projects (${ids}) — use a key`,
             'red',
           );
           return;
         }
+
+        if (resolved.kind === 'none' && !(snapshot === null && isDesktop())) {
+          /*
+            The keys, in config order, because they are the shortest thing that
+            works and the row in Settings shows them. Listing ids instead would
+            answer "what could I have typed?" with the very strings this story
+            exists to stop people typing.
+          */
+          const keys = snapshot?.projects.map((project) => project.key) ?? [];
+          const suffix =
+            keys.length === 0
+              ? ' — add one in Settings › Projects'
+              : ` — try a key from Settings › Projects (${keys.join(', ')})`;
+          pushOrch(`  unknown project: ${command.project}${suffix}`, 'red');
+          return;
+        }
+
+        /*
+          The **resolved id**, never what was typed. `spawnSession` stores it on
+          the entity as `entity.project`, and a session recorded under a key or
+          a display name would be a session pointing at nothing the moment that
+          alias was edited. With no snapshot there is nothing to resolve
+          against, so the input is passed through and main — which has the file
+          — gives the refusal if there is one.
+        */
+        const target =
+          resolved.kind === 'match' ? resolved.project.id : command.project;
         // No confirmation line here: `spawnSession` writes it, so both this
         // command and the picker log exactly once.
-        get().spawnSession(command.repo, command.task);
+        get().spawnSession(target, command.task);
         return;
       }
 
@@ -1488,17 +1653,44 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           ordinary case: entity ids are reused across a restart, so the ledger's
           `sess-01` and this run's `sess-01` are different sessions wearing the
           same name, and only one of them has a process behind it.
+
+          This is also the whole of restore's deduplication (HIVE-88), and the
+          id is the right key for it. It is the one identity that survives a
+          restart: a PREVIOUS RUN row reopened spawns under its own id, the
+          ledger is keyed by it, and `rememberSpawnId` above keeps this run's
+          counter from minting it a second time. Claude's own `sessionUuid`
+          never reaches the renderer, and `cwd` or `ticket` would collapse two
+          genuinely different sessions on one issue into one row.
         */
         if (item.id in entities) continue;
 
-        const status = restoredStatus(item.status);
+        /*
+          `live` is main saying a pty is running under this id right now
+          (HIVE-88). Such a row is this run's fleet, whatever the file says
+          about when it started: it keeps the status it was last seen in
+          rather than being written down to an ending, and it is not `restored`
+          — PREVIOUS RUN is for rows the app outlived, and this one it did not.
+          Only a record in a live status is promoted: main never writes an
+          ended status for a pty it still holds, so a live record claiming
+          one is a file this build did not write, and the status it claims
+          wins over the mark.
+
+          Keyed on `endedBy === 'app-closed'` rather than on the status, because
+          the status can no longer tell the two apart (HIVE-93): an inferred
+          ending and a recorded `/clear` are both `done`, and promoting the
+          latter would resurrect a retired row as live.
+        */
+        const stored = restoredStatus(item.status, item.endedBy);
         /*
           A status this build does not know is a record written by one that did.
           Dropped rather than guessed at — an unrenderable row in the fleet
           table is worse than a row missing from it, and the ledger is a
           convenience, not a source of truth about anything.
         */
-        if (status === undefined) continue;
+        if (stored === undefined) continue;
+
+        const live = item.live === true && stored.endedBy === 'app-closed';
+        const status = live ? (item.status as SessionStatus) : stored.status;
 
         entities[item.id] = {
           kind: 'session',
@@ -1507,6 +1699,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           status,
           task: item.task,
           /*
+            How it ended, and whether it can come back (HIVE-93). A live row is
+            not ended at all, so it carries neither — and `resumable` is main's
+            answer rather than an inference from the record: it holds the uuid
+            and knows whether this run already opened that conversation.
+          */
+          ...(live || stored.endedBy === undefined
+            ? {}
+            : { endedBy: stored.endedBy }),
+          ...(!live && item.resumable === true ? { resumable: true } : {}),
+          /*
             The three required fields the record deliberately does not carry.
             `lines: []` is the honest one: a restored row has no transcript
             here — Claude Code owns it — and inventing a line or two of
@@ -1514,15 +1716,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
             recording.
           */
           lines: [],
-          pr: null,
-          cost: '$0.00',
+              cost: '$0.00',
           /*
             Where this row came from, which is what PREVIOUS RUN groups on. It
             cannot be derived from the status: a session that quit normally last
             run is restored as `terminated`, which is indistinguishable from one
             that quit ten seconds ago in this one.
+
+            Cleared again by `reviveIfLive` the moment the row is reopened and
+            its new process reports a live status (HIVE-88) — and never set on
+            a row main still runs, which was never a previous run at all.
           */
-          restored: true,
+          ...(live ? {} : { restored: true }),
           ...(item.name === undefined ? {} : { name: item.name }),
           ...(item.ticket === undefined ? {} : { ticket: item.ticket }),
           ...(item.branch === undefined ? {} : { branch: item.branch }),
@@ -1570,6 +1775,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (status !== undefined && isSession(updated) && 'idleDetail' in updated) {
         delete updated.idleDetail;
       }
+      if (status !== undefined && isSession(updated)) reviveIfLive(updated);
 
       return { entities: { ...state.entities, [id]: updated } };
     }),
@@ -1602,10 +1808,47 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        */
       const target = currentSessionIn(state, id);
       const entity = state.entities[target];
+      if (!entity || !isSession(entity)) return state;
+
+      /**
+       * **`working` is the only status worth covering** (HIVE-103).
+       *
+       * The boot cover hides output in flight. Any other status says there is
+       * no more output coming — or that something is being asked — and both are
+       * things the user must be allowed to see.
+       *
+       * This is the escape that was missing. A session opened in a folder
+       * Claude Code has not been trusted with never starts: it draws a trust
+       * prompt on the shell's own screen and waits. No `SessionStart` fires,
+       * because Claude never gets that far, so the only way out was the
+       * sixty-second timeout or a keystroke — and the user's first symptom was
+       * a hydralisk that would not go away, with the question hidden behind it.
+       *
+       * Nothing new observes this. Main's activity tracker already derives
+       * `idle` from two seconds of pty silence, and a boot that has stopped
+       * producing output is exactly what that means. Measured against a real
+       * `claude`, the gap between the two readings is wide: a normal boot's
+       * quiet gaps before Claude paints are all under 0.6s, while a trust
+       * prompt goes silent at ~2.5s and stays silent indefinitely.
+       *
+       * The trust prompt itself is deliberately **not** pattern-matched. Its
+       * text does not exist in the byte stream — the TUI positions each word
+       * with cursor moves, so `Is this a project you created…` is never
+       * contiguous — and matching it would need a screen emulator and would
+       * break on the next release's wording. Silence is the observable.
+       */
+      const uncover = entity.booting === true && status !== 'working';
+
+      /*
+        Checked *after* `uncover`, not before. An unchanged status is normally a
+        write to drop — Claude repaints continuously — but a repeat that also
+        has to lift a cover is not a no-op, and returning early on it would be a
+        cover that never lifts, which is the whole class of bug above.
+      */
       if (
-        !entity ||
-        !isSession(entity) ||
-        (entity.status === status && entity.idleDetail === idleDetail)
+        entity.status === status &&
+        entity.idleDetail === idleDetail &&
+        !uncover
       ) {
         return state;
       }
@@ -1624,6 +1867,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ...(idleDetail === undefined ? {} : { idleDetail }),
       };
       if (idleDetail === undefined) delete updated.idleDetail;
+      // Absent, not `false` — `markSessionReady` deletes the key for the same
+      // reason, and the two must leave a session in the same shape.
+      if (uncover) delete updated.booting;
+      reviveIfLive(updated);
 
       return {
         entities: { ...state.entities, [target]: updated },
@@ -1832,7 +2079,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         },
         orchLines: capLines([
           ...state.orchLines,
-          line(`  ${target} is working ${ticket} — renamed ${name}`, 'dim'),
+          // The new name, never the id (HIVE-91) — and only the name: it always
+          // carries the ticket key (`HIVE-73`, `HIVE-73-2`), so spelling the
+          // ticket again would read `HIVE-73 is working HIVE-73`.
+          line(`  renamed → ${name}`, 'dim'),
         ]),
       };
     }),
@@ -1872,6 +2122,177 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * hook can arrive for a row the user removed a moment earlier, and the honest
    * answer to that race is to do nothing.
    */
+  resumeSession: (id) => {
+    const current = get().entities[id];
+    if (current === undefined || !isSession(current)) return;
+    /*
+      Both guards are refusals rather than no-ops with side effects: opening the
+      tab anyway would put the user in front of a terminal this action has not
+      arranged to exist.
+    */
+    if (!isEnded(current.status)) return;
+    if (current.resumable !== true) return;
+
+    set((state) => {
+      /*
+        Live again *before* the tab opens, and that ordering is the whole of
+        this action. `center-stage.tsx` reads `isTerminated` on mount to decide
+        whether to disable stdin, and `resolve-transport` reads the row to build
+        the spawn — so a row still marked ended would mount a read-only surface
+        over the very session it was asked to reopen.
+
+        `idle` rather than `working`: nothing is running yet. The process reports
+        its own status within a turn, and claiming activity we have not observed
+        is the habit `activity.ts` exists to avoid.
+      */
+      const revived: Session = { ...current, status: 'idle' };
+      /*
+        And covered again while it starts (HIVE-101). A resume runs the very
+        same login shell as a spawn — `direnv` reloads, the package manager
+        reports — so the wait it hides is identical and there is no reason the
+        second time through should be noisier than the first.
+      */
+      revived.booting = true;
+      /*
+        The ending is over, so the record of *how* it ended goes with it —
+        otherwise `isTerminated` keeps answering yes and the surface stays
+        read-only. `resumable` deliberately stays: a session resumed once can be
+        finished and resumed again, and it is still what tells the transport to
+        continue rather than begin.
+      */
+      delete revived.endedBy;
+      /*
+        And it is no longer a row the app merely *outlived* (HIVE-88). Left set,
+        `useRestoredSessions` keys on it while `useActiveSessions` keys on the
+        status — so a resumed row satisfies both and the table draws it twice,
+        under ACTIVE and under PREVIOUS RUN, sharing one selection index. That
+        double-draw is the exact bug HIVE-88 fixed; `reviveIfLive` clears the
+        flag when a live status arrives, and this is the other way in.
+      */
+      delete revived.restored;
+      return { entities: { ...state.entities, [id]: revived } };
+    });
+
+    /**
+     * **Actually start a process.** The store update above only changes how the
+     * row reads; without this the surface would re-enable stdin over a pty that
+     * exited and swallow every keystroke, with the Resume control now gone
+     * because it is gated on the row being ended. There is no way back from
+     * that state, which makes it worse than refusing outright.
+     *
+     * Two calls, because two different latches are in the way:
+     *
+     * - `reopenChannel` clears the renderer's per-entity latch. `PtyTransport`
+     *   marks a channel `closed` on exit and never clears it — that is what
+     *   stops a tab switch resurrecting a finished agent — and it also drops
+     *   `spawnResult`, so the request below genuinely asks rather than handing
+     *   back the previous answer.
+     * - `requestSpawn` is the spawn path rather than `pty.restart`, and the
+     *   distinction is load-bearing: `ptyRestart` deliberately does not forward
+     *   `resume` ("a restart is never a resume"), so restarting here would start
+     *   a **new** conversation under the promise of continuing the old one.
+     *
+     * Keyed on the *terminal*, like every other spawn: a successor minted by
+     * `/clear` inherits its predecessor's pty, and the channel is keyed the same
+     * way.
+     */
+    const terminalId = terminalOf(current);
+    reopenChannel(terminalId);
+    void requestSpawn(terminalId, current.project, {
+      ...(current.model === undefined ? {} : { model: current.model }),
+      ...(current.effort === undefined ? {} : { effort: current.effort }),
+      theme: currentTheme(),
+      resume: true,
+    });
+
+    useUiStore.getState().openTab(id);
+  },
+
+  /**
+   * Claude is up — uncover the terminal (HIVE-101).
+   *
+   * Deliberately tolerant, because every one of these is a real path:
+   *
+   * - **called twice** — `/clear` starts a second Claude session in the same
+   *   pty and produces a second `SessionStart`;
+   * - **called for a row that is already uncovered** — the timeout or a
+   *   keystroke got there first;
+   * - **called for an id that has ended or gone** — the report raced a `/done`.
+   *
+   * All three are no-ops rather than errors. Deleting an absent key is free, so
+   * the only thing worth guarding is writing a new object when nothing changed:
+   * `entities` is compared by identity all over this file, and a fresh map on
+   * every duplicate report would re-render the fleet for nothing.
+   */
+  markSessionReady: (id) => {
+    const current = get().entities[id];
+    if (!current || !isSession(current) || current.booting !== true) return;
+
+    set((state) => {
+      const uncovered: Session = { ...current };
+      delete uncovered.booting;
+      return { entities: { ...state.entities, [id]: uncovered } };
+    });
+  },
+
+  finishSession: (id, resumable) => {
+    /**
+     * Resolved to the terminal's **current** row, like every other session
+     * write in this file — see {@link currentSessionIn}.
+     *
+     * Main always names the terminal: `HIVE_SESSION_ID` is baked into the pty's
+     * environment at spawn and never changes, so after a `/clear` it is still
+     * calling the row that was retired. Reading `entities[id]` directly meant
+     * `spawn → /clear → /done` found an already-ended row, returned early, and
+     * left the successor `idle` on a pty that had exited — with no "terminal has
+     * died" notice, stdin enabled, and no ending for any cap to reap. Main takes
+     * the finished branch instead of publishing `terminated`, so nothing else
+     * was coming to correct it either.
+     */
+    const target = currentSessionIn(get(), id);
+    const current = get().entities[target];
+    if (current === undefined || !isSession(current)) return;
+    /*
+      Already ended is a no-op rather than a re-write. `/done` posts once, but
+      the exit that follows can reach `settleExit` by two routes — `ptyExit` and
+      `ptyLost` — and a second pass must not resurrect a row the cap has since
+      dropped, nor bounce the user out of a tab they have moved on to.
+    */
+    if (isEnded(current.status)) return;
+
+    set((state) => {
+      const finished: Session = {
+        ...current,
+        status: 'done',
+        endedBy: 'finished',
+        /*
+          Main's answer, carried on the event — not inferred from the fact of a
+          finish. `/done` usually keeps its uuid where `/clear` drops it, but a
+          terminal that was cleared *and then* finished has no uuid left and no
+          way to get one, so offering Resume there would start a new
+          conversation while promising the old one. This flag is also what
+          exempts the row from `DONE_CAP`.
+        */
+        resumable,
+      };
+      /*
+        `idleDetail` is only ever set alongside `idle`; carrying one across
+        would draw a hollow ring on an ended row (HIVE-83).
+      */
+      delete finished.idleDetail;
+      return { entities: { ...state.entities, [target]: finished } };
+    });
+
+    /*
+      Only when it is the tab actually on screen. Bouncing unconditionally
+      would throw the user out of whatever they were reading because some other
+      session finished in the background — which is precisely the kind of
+      attention theft the fleet view exists to prevent.
+    */
+    const ui = useUiStore.getState();
+    if (ui.activeTab === target) ui.backToOrch();
+  },
+
   clearSession: (id) => {
     /**
      * Resolve to the terminal's live row first.
@@ -1893,7 +2314,6 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       project: current.project,
       status: 'idle',
       task: '',
-      pr: null,
       cost: '$0.00',
       lines: [],
       /**
@@ -1942,7 +2362,23 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * from `status === 'idle'` too, so this is belt and braces rather than
        * the only guard.
        */
-      const retired: Session = { ...current, status: 'done' };
+      /*
+        `endedBy` is what keeps this row distinguishable from a `/done` one now
+        that both are `done` (HIVE-93), and it is what stops the centre stage
+        showing "this terminal has died" over a pty that is very much alive —
+        the successor is using it.
+
+        `resumable: false` is stated rather than omitted. Main drops this
+        conversation's uuid on `/clear` (`sessions/index.ts`), so there is
+        nothing to resume, and an absent field would read as "not yet known"
+        to anything that later learns otherwise.
+      */
+      const retired: Session = {
+        ...current,
+        status: 'done',
+        endedBy: 'cleared',
+        resumable: false,
+      };
       delete retired.idleDetail;
       const entities: Record<string, Entity> = {
         ...state.entities,
@@ -1962,15 +2398,32 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
             ];
 
       /**
-       * Drop the oldest `done` rows past the cap.
+       * Drop the oldest `done` rows past the cap — but never a resumable one.
        *
        * Oldest by position in `order`, which is spawn order — the same
        * definition of "oldest" every other capped list in this store uses.
        * Their entities go with them; an entity nothing lists is a leak.
+       *
+       * **The `resumable` exemption is not a refinement, it is what keeps the
+       * cap honest** (HIVE-93). Capping `done` was justified by one sentence:
+       * "a cleared session's successor is right there", so nothing is lost. The
+       * moment `done` also meant `/done` and an app quit, that stopped being
+       * true — neither has a successor, and both keep a conversation the user
+       * can reopen. Dropping those would delete the row *and* the only visible
+       * route back to a transcript that still exists on disk.
+       *
+       * A cleared row is still capped, and still for the original reason: its
+       * uuid was dropped, so `resumable` is false and there is nothing behind it
+       * that its successor does not already carry.
        */
       const doneIds = order.filter((entityId) => {
         const entity = entities[entityId];
-        return entity !== undefined && isSession(entity) && entity.status === 'done';
+        return (
+          entity !== undefined &&
+          isSession(entity) &&
+          entity.status === 'done' &&
+          entity.resumable !== true
+        );
       });
       const excess = new Set(doneIds.slice(0, Math.max(0, doneIds.length - DONE_CAP)));
       if (excess.size > 0) {
@@ -2008,7 +2461,9 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         // catch an *empty* name, which is the one case `??` lets through, and
         // spelling it here is the duplication that function exists to prevent.
         line(`  ✓ ${entityLabel(current)} done — cleared`, 'green'),
-        line(`  ▸ ${successorId} started in the same terminal`, 'dim'),
+        // No successor id (HIVE-91): it has no name yet, and the row on the rail
+        // is where the user will meet it.
+        line('  ▸ a new session started in the same terminal', 'dim'),
       ]),
     }));
 
@@ -2457,7 +2912,6 @@ export const useCounts = () =>
         idle: 0,
         done: 0,
         terminated: 0,
-        closed: 0,
       };
       for (const id of state.order) {
         const entity = state.entities[id];
@@ -2582,11 +3036,13 @@ export const useEndedSessions = () =>
  * indistinguishable, by status alone, from one that quit ten seconds ago in
  * this run. Grouping on `closed` sent every one of those into ENDED.
  *
- * Nothing sets `restored` at runtime — only `hydrateSessions` does, once, at
- * boot — so this list is fixed for the life of the app session. It is capped by
- * the ledger rather than here: the file it came from holds at most
- * `HISTORY_CAP` ended records, so there is no second cap to drift out of step
- * with the first.
+ * Nothing *sets* `restored` at runtime — only `hydrateSessions` does, once, at
+ * boot — so this list only ever shrinks: a row reopened from here comes back
+ * to life under its own id, and `reviveIfLive` clears the flag on the first
+ * live status so the row moves to ACTIVE rather than appearing in both groups
+ * (HIVE-88). It is capped by the ledger rather than here: the file it came from
+ * holds at most `HISTORY_CAP` ended records, so there is no second cap to drift
+ * out of step with the first.
  */
 export const useRestoredSessions = () =>
   useHiveStore(
@@ -2598,6 +3054,42 @@ export const useRestoredSessions = () =>
         );
       }),
     ),
+  );
+
+/**
+ * Does any row on the fleet table offer Resume? (HIVE-100)
+ *
+ * A **table-level** question, which is what makes it a store selector rather
+ * than something each row works out for itself. Resume is a control beside the
+ * row, outside the button that holds the cells, so it occupies width the
+ * columns do not — and a slot reserved per-row would put the `PR` cell of a
+ * resumable row in a different place from its neighbour's, and both of them
+ * somewhere other than under the header. One answer for the whole table is what
+ * keeps the column a column.
+ *
+ * Reserved only when something needs it, because the width is not free: the
+ * table's floors are measured against a 1100px window (see `COL` in
+ * `session-table.tsx`), and a slot held open on every launch would spend that
+ * headroom on a control most fleets never show.
+ *
+ * The predicate is the row's own — `ended` **and** `resumable` — deliberately
+ * duplicated rather than exported, because these are two different questions
+ * that happen to share an answer: this one asks whether to hold the space open,
+ * the row asks whether to draw the button. Reads `order`, so it sees exactly
+ * the rows the table draws, and returns a boolean rather than a list, so the
+ * header re-renders only when the answer flips.
+ */
+export const useHasResumable = (): boolean =>
+  useHiveStore((state) =>
+    state.order.some((id) => {
+      const entity = state.entities[id];
+      return (
+        entity !== undefined &&
+        isSession(entity) &&
+        isEnded(entity.status) &&
+        entity.resumable === true
+      );
+    }),
   );
 
 /** The long-lived background agents, in fixture order (story 033). */
@@ -2638,6 +3130,56 @@ export const useSetSessionTicket = () =>
 /** `/clear`: main reports the conversation boundary through this. */
 export const useClearSession = () =>
   useHiveStore((state) => state.clearSession);
+
+/**
+ * Open the selected row, or resume it when that is what it needs (HIVE-93).
+ *
+ * The keyboard's half of the Resume control. `openEntity` now refuses every
+ * ended row, so without this a user could arrow onto a finished or restored
+ * session, press Enter, and get nothing — with the only way through being a
+ * mouse. That is the "unreachable from every surface at once" failure the
+ * HIVE-88 comment this story deleted was written about, arriving from the
+ * opposite direction.
+ */
+export const openOrResume = (id: string): boolean => {
+  const entity = useHiveStore.getState().entities[id];
+  if (
+    entity !== undefined &&
+    isSession(entity) &&
+    isEnded(entity.status) &&
+    entity.resumable === true
+  ) {
+    useHiveStore.getState().resumeSession(id);
+    return true;
+  }
+  return useHiveStore.getState().openEntity(id);
+};
+
+/** Pick an ended session's conversation back up (HIVE-93). */
+export const useResumeSession = () =>
+  useHiveStore((state) => state.resumeSession);
+
+/** `/done`: main reports the session's own ending through this (HIVE-93). */
+export const useFinishSession = () =>
+  useHiveStore((state) => state.finishSession);
+
+/** Uncover a session whose Claude has finished starting (HIVE-101). */
+export const useMarkSessionReady = () =>
+  useHiveStore((state) => state.markSessionReady);
+
+/**
+ * Is this session still behind the boot cover? (HIVE-101)
+ *
+ * A boolean rather than the field, so a row that is not a session — or not
+ * there at all — answers `false` rather than `undefined`, and so the subscriber
+ * re-renders only when the answer flips rather than on every write to the
+ * entity.
+ */
+export const useSessionBooting = (id: string): boolean =>
+  useHiveStore((state) => {
+    const entity = state.entities[id];
+    return entity !== undefined && isSession(entity) && entity.booting === true;
+  });
 
 /**
  * Which terminal an id runs in — the id itself for anything that is not a
@@ -2773,6 +3315,7 @@ export const useProjects = (): ProjectRow[] => {
     () =>
       (snapshot?.projects ?? []).map((entry) => ({
         id: entry.id,
+        key: entry.key,
         name: entry.name,
         icon: entry.icon,
       })),
@@ -3038,6 +3581,71 @@ function sessionForPr(
 }
 
 /**
+ * The pull request a session owns, or `null` — {@link sessionForPr} run
+ * backwards (HIVE-100).
+ *
+ * The fleet table's `PR` column read `Session.pr` from the day it was drawn,
+ * and `Session.pr` has never been written by anything. Every row therefore
+ * showed `—` forever, which is indistinguishable from "this branch has no pull
+ * request" and so never looked like a bug. The work panel hit the identical
+ * wall and fixed it the same way (`resolveTicketPrs`): resolve from the live
+ * list at render, because a branch's PR is a fact about GitHub, not about the
+ * session — it can be opened, approved or merged between two sweeps, and a
+ * value frozen onto the row at spawn time would be wrong within the hour.
+ *
+ * ## The same two signals, and the same disambiguation
+ *
+ * Branch is the strong match; repository breaks the cross-repo tie, where one
+ * branch name carries a frontend PR and a backend one. The rule is
+ * {@link sessionForPr}'s exactly — *disambiguate, do not filter* — because
+ * `project` is a config id from a directory name and `repo` is GitHub's, and
+ * requiring equality would blank the column for anyone whose checkout is named
+ * differently from the repository.
+ *
+ * ## Why the newest live PR wins
+ *
+ * A branch can carry more than one record here. The panel keeps PRs merged in
+ * the last 24 hours, so a branch that just landed and was immediately reused
+ * has both — and the merged one is the answer nobody wants in a *fleet* table,
+ * whose subject is the work in front of you. Alive therefore beats merged, and
+ * `updatedAt` breaks the remaining tie: descending ISO 8601 sorts
+ * lexicographically, so the comparison needs no parse.
+ */
+export function resolveSessionPr(
+  branch: string | undefined,
+  project: string | undefined,
+  prs: readonly PrRecord[],
+): SessionPr | null {
+  /*
+    An unobserved branch matches nothing — the same guard `sessionForPr` states
+    for the same reason (HIVE-78). The empty string is excluded too: it is what
+    `branchLabel` already treats as absent, and a `''` here would be a value
+    that compares equal to nothing while looking like it could.
+  */
+  if (branch === undefined || branch === '') return null;
+
+  const candidates = prs.filter((pr) => pr.branch === branch);
+  if (candidates.length === 0) return null;
+
+  const sameProject =
+    project === undefined
+      ? []
+      : candidates.filter(
+          (pr) => pr.repo.toLowerCase() === project.toLowerCase(),
+        );
+  const pool = sameProject.length > 0 ? sameProject : candidates;
+
+  const best = pool.reduce((winner, pr) => {
+    const winnerLanded = winner.state === 'merged';
+    const prLanded = pr.state === 'merged';
+    if (winnerLanded !== prLanded) return winnerLanded ? pr : winner;
+    return pr.updatedAt > winner.updatedAt ? pr : winner;
+  });
+
+  return { n: best.number, state: best.state, url: best.url };
+}
+
+/**
  * PRs reachable from a Jira ticket (story 032, rebuilt for live data).
  *
  * ## Why this stopped reading `Session.pr`
@@ -3227,6 +3835,35 @@ export const usePrs = (): Pr[] => {
         session: sessionForPr(pr, fleet),
       })),
     [prs, fleet],
+  );
+};
+
+/**
+ * One row's pull request, resolved from the live list (HIVE-100).
+ *
+ * Takes an id rather than a branch so it can be called before the caller has
+ * narrowed its entity: the fleet row bails out on a missing or non-session
+ * entity, and a hook cannot sit behind that guard. The two subscriptions it
+ * costs are the two the row already holds — `useEntity(id)` reads the same
+ * slot — so this adds a `prs` subscription and nothing else.
+ *
+ * Memoised over `branch` and `project` rather than over the entity, for the
+ * reason {@link usePrs} gives about freshly-built objects: those two strings are
+ * the entire input, and every other field on a session changes far more often
+ * than they do. A status flip therefore re-renders the row without re-resolving
+ * its PR.
+ */
+export const useSessionPr = (id: string): SessionPr | null => {
+  const prs = useHiveStore((state) => state.prs);
+  const entity = useHiveStore((state) => state.entities[id]);
+
+  const session = entity !== undefined && isSession(entity) ? entity : undefined;
+  const branch = session?.branch;
+  const project = session?.project;
+
+  return useMemo(
+    () => resolveSessionPr(branch, project, prs),
+    [branch, project, prs],
   );
 };
 

@@ -160,6 +160,48 @@ describe('parseConfig — the new entry fields', () => {
     expect(Object.keys(parsed.projects[0])).toEqual(['id', 'path']);
   });
 
+  /**
+   * The key HIVE-94 adds (`[a-z]{2,4}`).
+   *
+   * Rejected the way `origin` is — the whole entry is dropped and the reason
+   * reported — rather than silently regenerated. A key is a thing the user
+   * typed into the file expecting to be able to type it into the console, and
+   * quietly substituting a different one would leave them with a config that
+   * does not do what it says.
+   */
+  it('accepts a well-formed key', () => {
+    const parsed = parseConfig(
+      JSON.stringify({
+        version: 2,
+        projects: [{ id: 'a', path: '~/a', key: 'ix' }],
+      }),
+      'config',
+    );
+
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.projects[0].key).toBe('ix');
+  });
+
+  it.each([
+    ['too short', 'i'],
+    ['too long', 'abcde'],
+    ['uppercase', 'IX'],
+    ['digits', 'ix2'],
+    ['a separator', 'i-x'],
+    ['not a string', 7],
+  ])('rejects a key that is %s, with a readable error', (_label, key) => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, projects: [{ id: 'a', path: '~/a', key }] }),
+      'config',
+    );
+
+    expect(parsed.projects).toEqual([]);
+    expect(parsed.errors[0]).toMatch(/key: expected 2–4 lowercase letters/);
+    // Advisory, exactly as a bad `origin` is: one unusable entry must not stop
+    // the app reading the rest of the file.
+    expect(parsed.fatal).toBe(false);
+  });
+
   it('rejects an entry whose origin is not a known value', () => {
     const parsed = parseConfig(
       JSON.stringify({
@@ -374,7 +416,8 @@ const doc = (extra: object) => JSON.stringify({ version: 2, projects: [], ...ext
  * HIVE-83: a config naming a retired notification kind must keep meaning what
  * it can — `checkKeys` discards the **whole** notifications block on an
  * unrecognised key, so without `LEGACY_NOTIFICATION_KEYS` a file that still
- * names `session.idle` would silently lose every other preference.
+ * names `session.ended` would silently lose every other preference.
+ * (`session.idle` used to be the example; HIVE-89 made it a live key again.)
  */
 describe('parseConfig — notifications naming a retired kind (HIVE-83)', () => {
   it('keeps a notifications block that names a retired kind', () => {
@@ -382,7 +425,7 @@ describe('parseConfig — notifications naming a retired kind (HIVE-83)', () => 
       JSON.stringify({
         version: 2,
         projects: [],
-        notifications: { 'session.idle': 'off', 'session.blocked': 'inbox' },
+        notifications: { 'session.ended': 'off', 'session.blocked': 'inbox' },
       }),
       'config',
     );

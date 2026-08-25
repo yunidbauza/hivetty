@@ -377,6 +377,119 @@ describe('session ledger', () => {
       expect(record?.endedAt).toBeUndefined();
     });
 
+    it('keeps a previous run record when asked to resume it (HIVE-88)', () => {
+      // The opposite of the case above, and deliberately opt-in: this spawn
+      // *is* that conversation, picked up again, so what the row learned last
+      // run is still true of it.
+      writeFileSync(
+        file,
+        JSON.stringify([
+          {
+            id: 'sess-01',
+            project: 'p',
+            task: 'old task',
+            status: 'working',
+            createdAt: 100,
+            branch: 'feat/old',
+            cwd: '/old',
+            ticket: 'HIVE-1',
+            name: 'old-name',
+            sessionUuid: 'old-uuid',
+          },
+        ]),
+        'utf8',
+      );
+
+      const ledger = createSessionLedger(file, () => 5000);
+      expect(ledger.resumable('sess-01')).toBe('old-uuid');
+
+      ledger.begin(
+        'sess-01',
+        { project: 'p', task: '', sessionUuid: 'old-uuid' },
+        { resume: true },
+      );
+      ledger.flush();
+
+      expect(readLedger(file)[0]).toMatchObject({
+        branch: 'feat/old',
+        cwd: '/old',
+        ticket: 'HIVE-1',
+        name: 'old-name',
+        sessionUuid: 'old-uuid',
+        status: 'working',
+        createdAt: 100,
+      });
+      expect(readLedger(file)[0]?.endedAt).toBeUndefined();
+    });
+
+    it('forgets a uuid a patch withdraws, so a cleared terminal cannot resume', () => {
+      writeFileSync(
+        file,
+        JSON.stringify([
+          { id: 'sess-01', project: 'p', task: '', status: 'working', createdAt: 1, sessionUuid: 'old' },
+        ]),
+        'utf8',
+      );
+      const ledger = createSessionLedger(file, () => 5000);
+      expect(ledger.resumable('sess-01')).toBe('old');
+
+      ledger.record('sess-01', { sessionUuid: undefined });
+      ledger.flush();
+
+      expect(ledger.resumable('sess-01')).toBeUndefined();
+      expect(readLedger(file)[0]).not.toHaveProperty('sessionUuid');
+    });
+
+    it('resumes a session this run began once it has ended (HIVE-93)', () => {
+      /*
+        The bar used to be "started this run", full stop, and the reasoning was
+        about the *process*: resuming a conversation that is currently open
+        means a second `claude` against one transcript. `/done` produces a
+        session that started this run and is now over — its transcript is
+        closed, its uuid still names it, and offering to reopen it is the whole
+        point of the feature.
+      */
+      const ledger = createSessionLedger(file, () => 5000);
+      ledger.begin('mine', { project: 'p', task: '', sessionUuid: 'fresh' });
+
+      // While it runs, still refused.
+      expect(ledger.resumable('mine')).toBeUndefined();
+
+      ledger.record('mine', { status: 'done', endedAt: 6000 });
+
+      expect(ledger.resumable('mine')).toBe('fresh');
+    });
+
+    it('has nothing to resume for a record without a uuid, or one this run began', () => {
+      writeFileSync(
+        file,
+        JSON.stringify([
+          { id: 'no-uuid', project: 'p', task: '', status: 'working', createdAt: 1 },
+        ]),
+        'utf8',
+      );
+      const ledger = createSessionLedger(file, () => 5000);
+      ledger.begin('mine', { project: 'p', task: '', sessionUuid: 'fresh' });
+
+      expect(ledger.resumable('no-uuid')).toBeUndefined();
+      expect(ledger.resumable('mine')).toBeUndefined();
+      expect(ledger.resumable('never-heard')).toBeUndefined();
+
+      // `resume` on a record with nothing to resume starts over, as any reused
+      // id does.
+      ledger.begin(
+        'no-uuid',
+        { project: 'q', task: '', sessionUuid: 'new' },
+        { resume: true },
+      );
+      ledger.flush();
+      expect(readLedger(file).find((r) => r.id === 'no-uuid')).toMatchObject({
+        project: 'q',
+        sessionUuid: 'new',
+        createdAt: 5000,
+      });
+    });
+
     it('keeps what a restart has already learned this run', () => {
       // Same session, new process. Its ticket and branch did not change because
       // the agent was restarted.
@@ -525,6 +638,76 @@ describe('session ledger', () => {
       expect(record?.id).toBe('sess-01');
       expect(record?.branch).toBeUndefined();
       expect(record?.sessionUuid).toBeUndefined();
+    });
+
+    /**
+     * A name is re-cleaned with today's rule, not the one that wrote it.
+     *
+     * `title.ts` has twice been wrong about which glyphs Claude puts in front
+     * of a name, and the ledger is where a wrong answer outlives the fix: these
+     * are the records PREVIOUS RUN shows at launch, so a `◐` written by
+     * yesterday's build would still be on screen after the reader stopped
+     * producing them, until it aged out of a 40-record history.
+     */
+    it('cleans a glyph an older build stored in a name', () => {
+      writeFileSync(
+        file,
+        JSON.stringify([
+          {
+            id: 'sess-01',
+            project: 'p',
+            task: '',
+            status: 'done',
+            createdAt: 1,
+            name: '◐ sess-0c',
+          },
+        ]),
+        'utf8',
+      );
+
+      expect(readLedger(file)[0]?.name).toBe('sess-0c');
+    });
+
+    it('leaves a name a fixed build wrote exactly as it is', () => {
+      // The same function the reader applies, so a clean name is a no-op —
+      // interior spaces, punctuation and all.
+      writeFileSync(
+        file,
+        JSON.stringify([
+          {
+            id: 'sess-01',
+            project: 'p',
+            task: '',
+            status: 'done',
+            createdAt: 1,
+            name: 'fix "login" & logout',
+          },
+        ]),
+        'utf8',
+      );
+
+      expect(readLedger(file)[0]?.name).toBe('fix "login" & logout');
+    });
+
+    it('reads a stored default title as no name at all', () => {
+      // `Claude Code` is the absence of a name spelled out. A record carrying
+      // it should restore as unnamed, not as a session called `Claude Code`.
+      writeFileSync(
+        file,
+        JSON.stringify([
+          {
+            id: 'sess-01',
+            project: 'p',
+            task: '',
+            status: 'done',
+            createdAt: 1,
+            name: 'Claude Code',
+          },
+        ]),
+        'utf8',
+      );
+
+      expect(readLedger(file)[0]?.name).toBeUndefined();
     });
   });
 

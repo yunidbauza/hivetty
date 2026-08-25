@@ -151,10 +151,17 @@ export type IdleDetail = 'agents' | 'script';
  * that type is still the right one for `activity.ts`. It becomes observable here
  * because a hook is a different observer with a different vantage point.
  *
- * `done` is absent here too, and for a reason that survives `SessionEnd` being
- * subscribed: it is not a *status* a hook observes moment to moment, it is what
- * a session becomes at a boundary. It travels its own channel — see
- * `SessionClearedEvent` — rather than riding this union.
+ * `done` is absent here too, and stays absent now that `/done` can produce it
+ * (HIVE-93). The reason is unchanged and is the point of the type: no hook
+ * observes `done`. It is *declared* — by the user typing `/done`, or by a skill
+ * handing off to it — and a declaration is not an observation. Keeping it out
+ * of this union is what stops {@link HOOK_STATUS} from being given an entry
+ * that would quietly let some Claude Code event mean "the work is finished".
+ *
+ * What carries it instead is `SessionFinishedEvent` in `session-contract.ts`,
+ * on a channel of its own — the one place main speaks about a session having
+ * been *told* something rather than having seen it. The status channel never
+ * carries `done` at all.
  */
 export type ObservedStatus = 'working' | 'waiting' | 'idle' | 'terminated';
 
@@ -287,6 +294,100 @@ export const HOOK_ENV_TOKEN = 'HIVE_HOOK_TOKEN';
 
 /** The path the receiver serves. */
 export const HOOK_PATH = '/hook';
+
+/**
+ * The path `/done` posts to (HIVE-93).
+ *
+ * Its own route rather than an event on {@link HOOK_PATH}, for the reason
+ * `METRICS_PATH` is separate: nothing about this is a hook. No Claude Code
+ * event produces it, it carries no payload to parse, and the receiver's answer
+ * to it is a *lifecycle* action rather than a status tick. Sharing the hook
+ * route would mean inventing an event name Claude Code never sends.
+ */
+export const DONE_PATH = '/done';
+
+/**
+ * The exact command `/done`'s body runs, and the exact rule its frontmatter
+ * grants (HIVE-93).
+ *
+ * **One builder, two callers, on purpose** — and both of them are
+ * `skills/done-skill.ts`: `active()` spells the command out in the body, and
+ * `frontmatter()` wraps the same string in `allowed-tools`. (An earlier version
+ * put the grant in the app-generated settings file instead; that file merges
+ * above the user's own scope, so the permission was invisible and unrevokable
+ * to them, and it is gone.)
+ *
+ * If the two ever drifted the symptom would be a permission prompt in the middle
+ * of the app's own built-in — a failure the user cannot diagnose and did nothing
+ * to cause. Deriving both from one function makes the drift impossible rather
+ * than unlikely. The grant is the **whole** command, never a prefix: `curl`
+ * takes `-K`, `-o`, `-D` and `--upload-file`, none of which need a shell
+ * operator, so a trailing `:*` would be a silent grant of arbitrary file writes.
+ *
+ * Lives here, in a module that may hold no runtime, because it is neither
+ * runtime nor either caller's business: it is the shape of a request on the
+ * wire, which is what this file is for. No Node APIs, no imports, pure string.
+ *
+ * `-sS` rather than the status line's `-s`: this one has no stdout to protect —
+ * nothing renders its output — so a failure should say so in the transcript
+ * instead of vanishing. `--fail` makes a 4xx a non-zero exit for the same
+ * reason, so a session whose token went stale reports it rather than appearing
+ * to succeed and never closing.
+ */
+export const doneCommand = (url: string): string =>
+  `curl -sS --fail -m 5 -X POST ${url}` +
+  ` -H "${HOOK_HEADER_SESSION}: $${HOOK_ENV_SESSION}"` +
+  ` -H "${HOOK_HEADER_TOKEN}: $${HOOK_ENV_TOKEN}"`;
+
+/**
+ * The path a session posts to the moment Claude is actually up (HIVE-101).
+ *
+ * Its own route for {@link DONE_PATH}'s reason: nothing about it is a status
+ * tick. It carries no payload, names no Claude Code event the app models, and
+ * the receiver's answer to it is a *lifecycle* fact — the shell has finished
+ * whatever it was doing and the thing the user came for is on screen.
+ */
+export const READY_PATH = '/ready';
+
+/**
+ * The command the `SessionStart` hook runs to report that Claude is up.
+ *
+ * ## Why a `command` hook and not an `http` one
+ *
+ * Because the http one does not arrive. That is recorded above against Claude
+ * Code 2.1.227 and was re-measured for this story against a real binary in a
+ * real pty, with all three candidates wired to one server:
+ *
+ * ```
+ * SessionStart  command hook  -> +2050ms
+ * SessionStart  http hook     -> never arrived
+ * status line   (first call)  -> +2163ms
+ * ```
+ *
+ * So the command hook is both the only one that works and the earliest signal
+ * available — it beats the status line by about a tenth of a second, and both
+ * land around two seconds, which is when Claude's UI exists.
+ *
+ * ## Why it must print nothing, ever
+ *
+ * **A `SessionStart` hook's stdout is added to Claude's context.** Anything this
+ * command writes becomes part of the conversation the user is about to have, so
+ * `-s -o /dev/null` is not tidiness, it is correctness — and `2>/dev/null`
+ * covers the case where curl complains about a receiver that has gone away.
+ *
+ * `|| true` for the matching reason on the other side: a non-zero exit from a
+ * hook surfaces in the session as a failure the user did not cause and cannot
+ * act on. A ready signal that fails to send is a slightly longer loading view,
+ * which the timeout already covers. It is not an error worth showing anyone.
+ *
+ * No `--fail`, for the same reason `/done` has one: there, a stale token should
+ * be loud because the session will otherwise never close. Here it should be
+ * silent, because the overlay lifts on a timeout regardless.
+ */
+export const readyCommand = (url: string): string =>
+  `curl -s -m 3 -o /dev/null -X POST ${url}` +
+  ` -H "${HOOK_HEADER_SESSION}: $${HOOK_ENV_SESSION}"` +
+  ` -H "${HOOK_HEADER_TOKEN}: $${HOOK_ENV_TOKEN}" 2>/dev/null || true`;
 
 /**
  * The largest body the receiver will read.

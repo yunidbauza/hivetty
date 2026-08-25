@@ -110,6 +110,16 @@ export interface SessionOptions {
    */
   sessionUuid?: string;
   /**
+   * Continue the conversation {@link SessionOptions.sessionUuid} names rather
+   * than start one under it (HIVE-88).
+   *
+   * `--resume <uuid>` where `--session-id <uuid>` would have gone: the same
+   * identifier, the opposite claim about it. Ignored without a uuid — there is
+   * nothing to resume — so a caller that asked to resume a record written
+   * before uuids were recorded gets the plain spawn it would have got anyway.
+   */
+  resume?: boolean;
+  /**
    * A settings file to merge on top of the user's own (HIVE-62).
    *
    * Carries the hook configuration that reports session status back to the app.
@@ -126,13 +136,30 @@ export interface SessionOptions {
    */
   settingsPath?: string;
   /**
+   * A generated plugin directory whose skills this session may use (HIVE-96).
+   *
+   * The app-only half of custom skills, and the reason it is a **flag** rather
+   * than a key in the settings file above: `--plugin-dir` loads for this
+   * process alone and writes nothing to `~/.claude`, so a `claude` the user
+   * starts in Terminal.app has none of these commands. Checked against the
+   * binary rather than assumed — `--settings` cannot carry skills at all, and
+   * `--add-dir` only finds a `.claude/` *inside* the directory it adds.
+   *
+   * Omitted when main has no directory to offer, which is what a failed
+   * generation looks like: a session with no custom skills starts and works.
+   *
+   * {@link shellQuote}d for exactly the reason `settingsPath` is — it lives
+   * under `app.getPath('userData')`, which contains a space on every Mac.
+   */
+  pluginDir?: string;
+  /**
    * The session's opening instruction, as `claude`'s initial prompt.
    *
    * An **argument**, not a second thing typed into the shell afterwards, and
    * that distinction is the whole of HIVE-91. See {@link sessionCommand} for
    * what the two-stage version did when `claude` failed to start.
    *
-   * Untrusted free text — it comes from the console's `spawn <repo> <task…>` and
+   * Untrusted free text — it comes from the console's `spawn <project> <task…>` and
    * from the picker's message box — so unlike every other value here it is
    * {@link shellQuote}d rather than covered by a closed-list guard. It is the
    * second argument on this command line to need that, for the same reason
@@ -245,7 +272,9 @@ export const sessionCommand = (
     effort,
     name,
     sessionUuid,
+    resume = false,
     settingsPath,
+    pluginDir,
     subscriptionAuth = false,
     task,
   }: SessionOptions = {},
@@ -261,9 +290,10 @@ export const sessionCommand = (
      */
     ...(name !== undefined && isSendableSessionName(name) ? ['--name', name] : []),
     ...(sessionUuid !== undefined && UUID_PATTERN.test(sessionUuid)
-      ? ['--session-id', sessionUuid]
+      ? [resume ? '--resume' : '--session-id', sessionUuid]
       : []),
     ...(settingsPath === undefined ? [] : ['--settings', shellQuote(settingsPath)]),
+    ...(pluginDir === undefined ? [] : ['--plugin-dir', shellQuote(pluginDir)]),
   ];
   /**
    * Unset the API credentials **here**, not only in the spawned environment

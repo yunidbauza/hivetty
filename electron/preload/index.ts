@@ -24,6 +24,7 @@ import type {
   SetJiraRequest,
   SetJiraTokenRequest,
   SetNotificationsRequest,
+  SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetRuntimeRequest,
 } from '@shared/config-contract';
@@ -76,14 +77,22 @@ import type {
 import type {
   SessionBranchEvent,
   SessionClearedEvent,
+  SessionFinishedEvent,
+  SessionReadyEvent,
   SessionNameEvent,
   SessionStatusEvent,
   SessionTicketIntentEvent,
 } from '@shared/session-contract';
 import type {
+  SessionHistoryEntry,
   SessionNoteRequest,
-  SessionRecord,
 } from '@shared/session-history-contract';
+import type {
+  SkillFile,
+  SkillNameRequest,
+  SkillWriteRequest,
+  SkillsSnapshot,
+} from '@shared/skills-contract';
 import type { PickedTheme, SaveThemeRequest } from '@shared/theme-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -160,6 +169,10 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.configRenameProject, request),
     repointProject: (request: RepointProjectRequest): Promise<ConfigSnapshot> =>
       ipcRenderer.invoke(CH.configRepointProject, request),
+    // HIVE-94. The key is an alias, so this is a sibling of `renameProject`
+    // rather than of anything that touches identity.
+    setProjectKey: (request: SetProjectKeyRequest): Promise<ConfigSnapshot> =>
+      ipcRenderer.invoke(CH.configSetProjectKey, request),
     reorderProjects: (
       request: ReorderProjectsRequest,
     ): Promise<ConfigSnapshot> =>
@@ -251,6 +264,21 @@ const bridge: HiveBridge = {
     unwatch: (): Promise<void> => ipcRenderer.invoke(CH.fsUnwatch),
     onChanged: (callback: (event: FsChangedEvent) => void) =>
       subscribe<FsChangedEvent>(CH.fsChanged, callback),
+  },
+  /*
+    HIVE-96. Four verbs, and not one of them names a path — see the contract for
+    why that is the whole security design rather than one layer of it. There is
+    no `onChanged` here on purpose: the pane is the only writer, and both
+    mutating verbs answer with the fresh snapshot.
+  */
+  skills: {
+    list: (): Promise<SkillsSnapshot> => ipcRenderer.invoke(CH.skillsList),
+    read: (request: SkillNameRequest): Promise<SkillFile> =>
+      ipcRenderer.invoke(CH.skillsRead, request),
+    write: (request: SkillWriteRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsWrite, request),
+    remove: (request: SkillNameRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsRemove, request),
   },
   // Story 106. `status` takes no argument — see the contract for why that is
   // the security design and not an oversight.
@@ -353,6 +381,10 @@ const bridge: HiveBridge = {
       subscribe<SessionNameEvent>(CH.sessionName, callback),
     onCleared: (callback: (event: SessionClearedEvent) => void) =>
       subscribe<SessionClearedEvent>(CH.sessionCleared, callback),
+    onFinished: (callback: (event: SessionFinishedEvent) => void) =>
+      subscribe<SessionFinishedEvent>(CH.sessionFinished, callback),
+    onReady: (callback: (event: SessionReadyEvent) => void) =>
+      subscribe<SessionReadyEvent>(CH.sessionReady, callback),
     onBranch: (callback: (event: SessionBranchEvent) => void) =>
       subscribe<SessionBranchEvent>(CH.sessionBranch, callback),
     onTicketIntent: (callback: (event: SessionTicketIntentEvent) => void) =>
@@ -362,7 +394,7 @@ const bridge: HiveBridge = {
     // HIVE-87. The namespace's first two verbs — everything above is a
     // subscription. `history` is read once at boot; `note` carries the one fact
     // about a session that main cannot establish for itself.
-    history: (): Promise<SessionRecord[]> =>
+    history: (): Promise<SessionHistoryEntry[]> =>
       ipcRenderer.invoke(CH.sessionHistory),
     note: (request: SessionNoteRequest): Promise<void> =>
       ipcRenderer.invoke(CH.sessionNote, request),

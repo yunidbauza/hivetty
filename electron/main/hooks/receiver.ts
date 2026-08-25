@@ -6,7 +6,9 @@ import {
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
   HOOK_MAX_BODY_BYTES,
+  DONE_PATH,
   HOOK_PATH,
+  READY_PATH,
   HOOK_STATUS,
   HOOK_EVENTS,
   NOTIFICATION_TYPE_STATUS,
@@ -91,6 +93,29 @@ export interface ReceiverOptions {
    * optional payload on every tick of the busiest event here.
    */
   onMetrics: (entityId: string, metrics: SessionMetrics) => void;
+  /**
+   * The session declared itself finished — `/done` (HIVE-93).
+   *
+   * A separate callback for the reason every other one here is separate, and
+   * more so: this is not an observation at all. Every other path in this file
+   * reports something Claude Code saw; this one reports something a *person*
+   * decided, either by typing `/done` or by writing a skill that hands off to
+   * it. It is the only input the app has that can honestly produce `done`.
+   */
+  onDone: (entityId: string) => void;
+  /**
+   * Claude is up — the shell has finished whatever it was doing (HIVE-101).
+   *
+   * Arrives from a `SessionStart` **command** hook, because the http one on
+   * that event does not arrive; see `readyCommand`. Like `onDone` it carries no
+   * payload: the request itself is the message.
+   *
+   * Fires at most usefully once, but is **not** guaranteed to fire once. A
+   * `/clear` starts a new Claude session inside the same pty and produces
+   * another `SessionStart`, so the handler on the other side has to be
+   * idempotent — a session that is already up cannot become more up.
+   */
+  onReady: (entityId: string) => void;
   /** Whether an entity id is a session this app actually has. */
   knowsSession: (entityId: string) => boolean;
   /** Overridable for tests; `0` asks the OS for any free port. */
@@ -115,6 +140,25 @@ export interface Receiver {
    * because the bodies are unrelated shapes.
    */
   readonly metricsUrl: string | null;
+  /**
+   * The URL `/done`'s body POSTs to, or `null` (HIVE-93).
+   *
+   * Same socket and same token as {@link Receiver.url}. Read by the skills
+   * runtime, which bakes it into the generated skill exactly as the status line
+   * script bakes {@link Receiver.metricsUrl} — see `skills/done-skill.ts` for
+   * why that beats a third environment variable.
+   */
+  readonly doneUrl: string | null;
+  /**
+   * Where a starting session reports that Claude is up (HIVE-101).
+   *
+   * Same socket and same token as {@link Receiver.url}. Baked into the
+   * generated settings file's `SessionStart` command hook, the way
+   * {@link Receiver.metricsUrl} is baked into the status line script — a
+   * session is handed the URL it should call rather than being told to
+   * discover one.
+   */
+  readonly readyUrl: string | null;
   stop(): Promise<void>;
 }
 
@@ -128,6 +172,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     onTicketIntent,
     onCleared,
     onMetrics,
+    onDone,
+    onReady,
     knowsSession,
     port = 0,
   } = options;
@@ -261,6 +307,51 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     if (metrics === null) return 400;
 
     onMetrics(headers[HOOK_HEADER_SESSION] as string, metrics);
+    return 204;
+  }
+
+  /**
+   * A session declared itself finished (HIVE-93).
+   *
+   * The shortest handler here by a wide margin, and that is the design rather
+   * than an omission: there is no body to parse, no event vocabulary, and no
+   * payload the app could disagree with. `reject` has already established that
+   * the token is right, the entity id is well-formed, and the app still has
+   * this session — which is the whole of what `/done` needs to be trusted.
+   *
+   * The **request itself is the message**. Everything the app does next — arm
+   * the finish, write `/exit\r` at the end of the turn, record `done` rather
+   * than `terminated` — is `sessions/index.ts`'s, because that is where the pty
+   * lives. This file's job ends at "a real session said so".
+   */
+  function handleDone(
+    headers: Record<string, string | string[] | undefined>,
+  ): number {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    onDone(headers[HOOK_HEADER_SESSION] as string);
+    return 204;
+  }
+
+  /**
+   * Claude is up (HIVE-101).
+   *
+   * `handleDone`'s twin, and deliberately its equal in brevity: no body, no
+   * event vocabulary, nothing to disagree with. `reject` has already proved the
+   * token and that the app still has this session, which is the whole of what
+   * this needs to be trusted.
+   *
+   * What the app does next — lift the boot overlay, stop the timeout — belongs
+   * to the session layer. This file's job ends at "a real session said so".
+   */
+  function handleReady(
+    headers: Record<string, string | string[] | undefined>,
+  ): number {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    onReady(headers[HOOK_HEADER_SESSION] as string);
     return 204;
   }
 
@@ -426,23 +517,50 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       return origin === null ? null : `${origin}${METRICS_PATH}`;
     },
 
+    get doneUrl() {
+      return origin === null ? null : `${origin}${DONE_PATH}`;
+    },
+
+    get readyUrl() {
+      return origin === null ? null : `${origin}${READY_PATH}`;
+    },
+
     start() {
       return new Promise<string | null>((resolve) => {
         const created = createServer((req, res) => {
           /*
-            Two paths now, and still nothing resembling a general-purpose
-            server: the set is closed, both are POST-only, and each has its own
-            body cap sized to the document it expects. A request that is neither
-            is 404 without reading a byte.
+            Three paths now, and still nothing resembling a general-purpose
+            server: the set is closed, all three are POST-only, and each has its
+            own body cap sized to the document it expects. A request that is
+            none of them is 404 without reading a byte.
           */
           const path = req.url ?? '';
           const isMetrics = path === METRICS_PATH;
-          if (req.method !== 'POST' || (path !== HOOK_PATH && !isMetrics)) {
+          const isDone = path === DONE_PATH;
+          const isReady = path === READY_PATH;
+          if (
+            req.method !== 'POST' ||
+            (path !== HOOK_PATH && !isMetrics && !isDone && !isReady)
+          ) {
             res.writeHead(404).end();
             return;
           }
 
-          const cap = isMetrics ? METRICS_MAX_BODY_BYTES : HOOK_MAX_BODY_BYTES;
+          /*
+            `/done` expects no body at all, so its cap is zero: the first byte
+            of one marks the request truncated and every byte after it is
+            dropped on the floor. `handleDone` reads neither, so a caller that
+            sends something anyway is answered normally rather than refused —
+            the same "drain, do not refuse" discipline the hook path takes, for
+            the same reason. Nothing a session sends here should be able to
+            produce a red line in the user's terminal.
+          */
+          const cap =
+            isDone || isReady
+              ? 0
+              : isMetrics
+                ? METRICS_MAX_BODY_BYTES
+                : HOOK_MAX_BODY_BYTES;
 
           let body = '';
           let bytes = 0;
@@ -475,9 +593,13 @@ export function createReceiver(options: ReceiverOptions): Receiver {
           req.on('end', () => {
             let status: number;
             try {
-              status = isMetrics
-                ? handleMetrics(req.headers, body, truncated)
-                : handle(req.headers, body, truncated);
+              status = isDone
+                ? handleDone(req.headers)
+                : isReady
+                  ? handleReady(req.headers)
+                  : isMetrics
+                    ? handleMetrics(req.headers, body, truncated)
+                    : handle(req.headers, body, truncated);
             } catch {
               /**
                * A throw here must not take the app down. An uncaught exception

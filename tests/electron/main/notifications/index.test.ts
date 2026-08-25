@@ -598,6 +598,25 @@ describe('foreground re-arm', () => {
     expect(promote).toHaveBeenCalledWith('raised-1');
   });
 
+  it('promotes nothing when the session finished with /done (HIVE-93)', () => {
+    /*
+      A declared finish does **not** reach the status channel — it leaves on
+      `session:finished`, and the `terminated` that `activity.ts` observes a
+      moment later is deliberately suppressed. So without a branch for it here
+      the notifier never learns the session ended: the pending row survives, and
+      the next foreground change promotes it into a toast saying a finished
+      session is waiting on the user, whose click opens a session that is gone.
+    */
+    raise.mockReturnValue({ id: 'raised-1', unread: false });
+    const n = makeNotifier();
+
+    n.observe(CH.sessionStatus, idlePrompt('sess-04'));
+    n.observe(CH.sessionFinished, { entityId: 'sess-04', resumable: true });
+    n.reevaluateForeground();
+
+    expect(promote).not.toHaveBeenCalled();
+  });
+
   it('promotes nothing when the user types instead of looking away', () => {
     raise.mockReturnValue({ id: 'raised-1', unread: false });
     const n = makeNotifier();
@@ -842,5 +861,320 @@ describe('everything else', () => {
         status: 'terminated',
       }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * HIVE-89: the notification for the idle that actually means "your turn is
+ * over, come back" — idle with **nothing left running**.
+ *
+ * An edge, not a level. The notifier arms a session on `UserPromptSubmit` and
+ * spends the arm on the first `Stop` that lands `idle` with no `idleDetail`.
+ * The ticket named three ways to reach the moment — `Stop`, a `SubagentStop`
+ * that retires the last agent, and the last background shell finishing — and
+ * the live run showed the last two both arrive as a `Stop`: Claude Code
+ * collects a subagent's result and a finished shell's output alike through an
+ * internal re-invoke (`UserPromptSubmit`) that ends in a `Stop`. Raising at
+ * `SubagentStop` as well was two rows for one fact, so it does not spend the
+ * arm. `terminated` disarms, and a session that never typed (a `SessionStart`
+ * idle, a resumed conversation) is never armed in the first place.
+ */
+describe('session.idle', () => {
+  const prompt = (entityId: string) => ({
+    entityId,
+    status: 'working',
+    event: 'UserPromptSubmit',
+  });
+  const stop = (entityId: string, idleDetail?: string) => ({
+    entityId,
+    status: 'idle',
+    event: 'Stop',
+    ...(idleDetail === undefined ? {} : { idleDetail }),
+  });
+  const idleKinds = () =>
+    raise.mock.calls
+      .map((call) => (call[0] as Record<string, unknown>).kind)
+      .filter((kind) => kind === 'session.idle');
+
+  it('raises once when Stop lands a true idle after a prompt', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(raised().kind).toBe('session.idle');
+    expect(raised().title).toBe('sess-05 is yours again');
+    expect(raised().action).toEqual({ type: 'session', entityId: 'sess-05' });
+  });
+
+  it('raises nothing while a background agent is still running', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05', 'agents'));
+
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('raises nothing while a background shell is still running', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05', 'script'));
+
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Measured (`tests/live/hook-conformance`): `Stop` idle/agents ->
+   * `SubagentStop` idle -> internal `UserPromptSubmit` -> `Stop` idle. The
+   * row lands once, on that last `Stop`, not at `SubagentStop`.
+   */
+  it('raises once when the last subagent finishes after the turn ended', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05', 'agents'));
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-05',
+      status: 'idle',
+      event: 'SubagentStop',
+    });
+    expect(raise).not.toHaveBeenCalled();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    expect(idleKinds()).toHaveLength(1);
+
+    // The phantom `SubagentStop`s Claude Code emits afterwards change nothing.
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-05',
+      status: 'idle',
+      event: 'SubagentStop',
+    });
+    expect(idleKinds()).toHaveLength(1);
+  });
+
+  /**
+   * Claude Code emits no hook when a backgrounded shell dies; its end is only
+   * observable as the re-invoke that collects the result — a
+   * `UserPromptSubmit` that clears `bgShells` — and the `Stop` that follows.
+   * The arm is what makes that `Stop` the one that announces.
+   */
+  it('raises when the last background shell finishes after the turn ended', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05', 'script'));
+    expect(raise).not.toHaveBeenCalled();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(idleKinds()).toHaveLength(1);
+  });
+
+  it('announces once per stretch — an idle → working → idle flicker is one row', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-05',
+      status: 'working',
+      event: 'PostToolUse',
+    });
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(idleKinds()).toHaveLength(1);
+  });
+
+  it('re-arms on engagement and announces the next stretch', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(idleKinds()).toHaveLength(2);
+  });
+
+  it('never announces for a session that has not typed — SessionStart is not a turn', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-05',
+      status: 'idle',
+      event: 'SessionStart',
+    });
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('disarms on terminated, so the next session in the terminal must type first', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, { entityId: 'sess-05', status: 'terminated' });
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-05',
+      status: 'idle',
+      event: 'SessionStart',
+    });
+    n.observe(CH.sessionStatus, stop('sess-05'));
+
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('does not spend the arm on a pty-derived idle', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, { entityId: 'sess-05', status: 'idle' });
+    expect(raise).not.toHaveBeenCalled();
+
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    expect(idleKinds()).toHaveLength(1);
+  });
+
+  it('keeps one session\'s arm separate from another\'s', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-06'));
+    expect(raise).not.toHaveBeenCalled();
+
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    expect(idleKinds()).toHaveLength(1);
+  });
+});
+
+/**
+ * HIVE-89: `session.input_needed` is gated on `idleDetail`. It keeps its
+ * meaning — sixty seconds passed and nothing was typed — and stops firing
+ * while a background agent or script is still working, which was a false
+ * positive regardless of `session.idle`.
+ */
+describe('input_needed under a live idle detail', () => {
+  const idlePrompt = (idleDetail?: string) => ({
+    entityId: 'sess-07',
+    status: 'idle',
+    event: 'Notification',
+    notificationType: 'idle_prompt',
+    ...(idleDetail === undefined ? {} : { idleDetail }),
+  });
+
+  it('raises nothing while a background agent is running', () => {
+    notifier().observe(CH.sessionStatus, idlePrompt('agents'));
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('raises nothing while a background shell is running', () => {
+    notifier().observe(CH.sessionStatus, idlePrompt('script'));
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  /** A suppressed prompt must not spend the once-per-stretch mark. */
+  it('still raises the first true idle prompt after a suppressed one', () => {
+    const n = notifier();
+
+    n.observe(CH.sessionStatus, idlePrompt('agents'));
+    n.observe(CH.sessionStatus, idlePrompt());
+
+    expect(raise).toHaveBeenCalledTimes(1);
+    expect(raised().kind).toBe('session.input_needed');
+  });
+});
+
+/**
+ * HIVE-89: a `session.idle` raised while the user was watching is gated like
+ * an `input_needed`, and promoted by the same rule when they look away.
+ */
+describe('session.idle foreground gating', () => {
+  const gatedHub = () => {
+    const promote = vi.fn(() => true);
+    hub = {
+      raise: raise.mockReturnValue({ id: 'raised-idle', unread: false }),
+      list: () => [],
+      markRead: () => undefined,
+      clear: () => undefined,
+      promote,
+    } as unknown as NotificationHub;
+    return promote;
+  };
+  const prompt = { entityId: 'sess-08', status: 'working', event: 'UserPromptSubmit' };
+  const stop = { entityId: 'sess-08', status: 'idle', event: 'Stop' };
+
+  /**
+   * The nudge a minute later is the same fact again, and it is inbox-only
+   * where the moment toasts. The first pending row stays the one promoted.
+   */
+  it('does not let a later gated input_needed evict the gated idle row', () => {
+    const promote = gatedHub();
+    const n = createNotifier({ hub, isForeground: () => false });
+
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    raise.mockReturnValue({ id: 'raised-nudge', unread: false });
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-08',
+      status: 'idle',
+      event: 'Notification',
+      notificationType: 'idle_prompt',
+    });
+    n.reevaluateForeground();
+
+    expect(promote).toHaveBeenCalledTimes(1);
+    expect(promote).toHaveBeenCalledWith('raised-idle');
+  });
+
+  /** A toast saying "is yours again" about a session back at work would be a lie. */
+  it('drops a gated idle row once the session is no longer idle', () => {
+    const promote = gatedHub();
+    const n = createNotifier({ hub, isForeground: () => false });
+
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-08',
+      status: 'working',
+      event: 'PreToolUse',
+    });
+    n.reevaluateForeground();
+
+    expect(promote).not.toHaveBeenCalled();
+  });
+
+  it('promotes a gated session.idle when the user looks away, and drops it on engagement', () => {
+    const promote = vi.fn(() => true);
+    hub = {
+      raise: raise.mockReturnValue({ id: 'raised-idle', unread: false }),
+      list: () => [],
+      markRead: () => undefined,
+      clear: () => undefined,
+      promote,
+    } as unknown as NotificationHub;
+    const n = createNotifier({ hub, isForeground: () => false });
+
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-08',
+      status: 'working',
+      event: 'UserPromptSubmit',
+    });
+    n.observe(CH.sessionStatus, { entityId: 'sess-08', status: 'idle', event: 'Stop' });
+    n.reevaluateForeground();
+    expect(promote).toHaveBeenCalledWith('raised-idle');
+
+    promote.mockClear();
+    n.observe(CH.sessionStatus, {
+      entityId: 'sess-08',
+      status: 'working',
+      event: 'UserPromptSubmit',
+    });
+    n.reevaluateForeground();
+    expect(promote).not.toHaveBeenCalled();
   });
 });

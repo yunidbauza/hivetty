@@ -69,6 +69,7 @@ const CONFIG: ConfigSnapshot = {
       icon: 'ph-folder',
       origin: 'local',
       status: 'ok',
+      key: 'aw',
       isRepo: true,
     },
     {
@@ -78,6 +79,7 @@ const CONFIG: ConfigSnapshot = {
       icon: 'ph-folder',
       origin: 'local',
       status: 'missing',
+      key: 'ra',
       isRepo: false,
     },
   ],
@@ -900,6 +902,41 @@ describe('status', () => {
    * `statusTracker.reset` on `onCleared`, the successor would inherit the
    * retired conversation's live subagent and sit on `idle (agents)` forever.
    */
+  it('withdraws the ledger uuid when the conversation is cleared (HIVE-88)', () => {
+    const written: { id: string; patch: Record<string, unknown> }[] = [];
+    let clear: ((entityId: string) => void) | undefined;
+    createSessions({
+      supervisor,
+      send: () => {},
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        start: (opts: { onCleared: (entityId: string) => void }) => {
+          clear = opts.onCleared;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+      ledger: {
+        begin: (id, patch) => written.push({ id, patch: { ...patch } }),
+        record: (id, patch) => written.push({ id, patch: { ...patch } }),
+        resumable: () => undefined,
+        all: () => [],
+        flush: () => {},
+        dispose: () => {},
+      },
+    });
+
+    clear!('sess-b');
+
+    const last = written.filter((entry) => entry.id === 'sess-b').at(-1);
+    expect(last).toBeDefined();
+    expect(last!.patch).toHaveProperty('sessionUuid');
+    expect(last!.patch.sessionUuid).toBeUndefined();
+  });
+
   it('clears tracker state when the conversation is cleared', () => {
     const h = harness();
 
@@ -1284,7 +1321,7 @@ describe('the ledger', () => {
     patch: Record<string, unknown>;
   }
 
-  const withLedger = (written: Written[]) =>
+  const withLedger = (written: Written[], resumable?: Record<string, string>) =>
     createSessions({
       supervisor,
       send: (channel, payload) =>
@@ -1297,12 +1334,13 @@ describe('the ledger', () => {
           hands over and when*; which of the two carried it is the ledger's own
           concern and is covered in `ledger.test.ts`.
         */
-        begin: (id, patch) => {
-          written.push({ id, patch: { ...patch } });
+        begin: (id, patch, options) => {
+          written.push({ id, patch: { ...patch, ...(options ?? {}) } });
         },
         record: (id, patch) => {
           written.push({ id, patch: { ...patch } });
         },
+        resumable: (id) => resumable?.[id],
         all: () => [],
         flush: () => {},
         dispose: () => {},
@@ -1394,10 +1432,466 @@ describe('the ledger', () => {
     expect(patchesFor(written, 'clone-1')).toEqual([]);
   });
 
+  /**
+   * Picking a previous run's conversation back up (HIVE-88).
+   *
+   * The renderer asks; the ledger decides whether it can; the command line and
+   * the record both follow that decision. The resumed uuid must reach
+   * `--resume` on the command line, the same uuid must be what the ledger is
+   * told, and the opening instruction must not be delivered again.
+   */
+  describe('resume', () => {
+    const PRIOR = '11111111-1111-4111-8111-111111111111';
+
+    const settle = (sessionId: string) => {
+      emitData({ sessionId, chunk: '$ ' });
+      vi.advanceTimersByTime(8);
+      vi.advanceTimersByTime(150);
+      vi.advanceTimersByTime(SUBMIT);
+    };
+
+    it('resumes the conversation the ledger names, and says nothing twice', () => {
+      const written: Written[] = [];
+      withLedger(written, { 'hero-refresh': PRIOR }).open({
+        ...OPEN,
+        task: 'fix the hero',
+        resume: true,
+      });
+      settle(mintedFor('hero-refresh'));
+
+      expect(supervisor.write).toHaveBeenCalledWith(
+        mintedFor('hero-refresh'),
+        `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name hero-refresh --resume ${PRIOR} && exit`,
+      );
+      expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
+        sessionUuid: PRIOR,
+        resume: true,
+      });
+      expect(patchesFor(written, 'hero-refresh')[0]).not.toHaveProperty('task');
+    });
+
+    it('falls back to a fresh session when there is nothing to resume', () => {
+      // A record older than uuids, or an id this run already began: the
+      // renderer's request is honest but unanswerable, and the spawn is the
+      // one it would have been without the flag.
+      const written: Written[] = [];
+      withLedger(written).open({ ...OPEN, resume: true });
+      settle(mintedFor('hero-refresh'));
+
+      expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
+      expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
+        sessionUuid: TEST_UUID,
+        resume: false,
+        task: '',
+      });
+    });
+
+    it('never resumes unasked, however well the ledger knows the id', () => {
+      const written: Written[] = [];
+      withLedger(written, { 'hero-refresh': PRIOR }).open(OPEN);
+      settle(mintedFor('hero-refresh'));
+
+      expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
+      expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
+        sessionUuid: TEST_UUID,
+      });
+    });
+
+    it('works without a ledger: resume degrades to a plain spawn', () => {
+      sessions.open({ ...OPEN, resume: true });
+      settle(mintedFor('hero-refresh'));
+
+      expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
+    });
+  });
+
+  it('keeps the ledger status current as the session reports it', () => {
+    // `status` is documented as the last known one (HIVE-88). A renderer that
+    // starts in front of a running pty reads it, so it has to be true.
+    const written: Written[] = [];
+    const withIt = withLedger(written);
+    withIt.open(OPEN);
+    const sessionId = mintedFor('hero-refresh');
+    emitData({ sessionId, chunk: 'building' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(2_000);
+
+    const statuses = patchesFor(written, 'hero-refresh')
+      .map((patch) => patch.status)
+      .filter((status) => status !== undefined);
+    expect(statuses.at(-1)).toBe('idle');
+  });
+
   it('works with no ledger at all — absent is supported, not degraded', () => {
     expect(() => {
       sessions.open(OPEN);
       emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0 });
     }).not.toThrow();
+  });
+});
+
+/**
+ * `/done` — a session declaring itself finished (HIVE-93).
+ *
+ * The whole feature is one bit of state and what it changes: whether the app
+ * owes this terminal an exit, and whether the ending is recorded as `done` or
+ * `terminated`. Both are asserted here against the seam that actually decides
+ * them, because after the `/exit` is written **nothing downstream can tell the
+ * two endings apart** — the app's `/exit` and a user's are the same bytes.
+ *
+ * The receiver's half — that a POST is authenticated and correlated before any
+ * of this runs — is `hooks/receiver.test.ts`.
+ */
+describe('/done', () => {
+  interface Written {
+    id: string;
+    patch: Record<string, unknown>;
+  }
+
+  function finished(): {
+    open: () => string;
+    done: (entityId: string) => void;
+    hook: (entityId: string, event: HookStatusEvent['event']) => void;
+    cleared: (entityId: string) => void;
+    restart: () => Promise<void>;
+    patches: (entityId: string) => Record<string, unknown>[];
+    statusOf: (entityId: string) => unknown;
+    finishedFor: (entityId: string) => number;
+    lastFinished: (entityId: string) => Record<string, unknown> | undefined;
+  } {
+    const written: Written[] = [];
+    const local: Sent[] = [];
+    let onEvent!: (event: HookStatusEvent) => void;
+    let onDone!: (entityId: string) => void;
+    let onCleared!: (entityId: string) => void;
+
+    const instance = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        local.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        doneUrl: () => null,
+        start: (opts: {
+          onEvent: (event: HookStatusEvent) => void;
+          onDone: (entityId: string) => void;
+          onCleared: (entityId: string) => void;
+        }) => {
+          onEvent = opts.onEvent;
+          onDone = opts.onDone;
+          onCleared = opts.onCleared;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+      /**
+       * A fake that **reflects what it has been told**, rather than answering a
+       * constant (HIVE-93).
+       *
+       * `resumable: () => undefined` is what let a real bug through a green
+       * suite: `publishFinished` asks the ledger whether the conversation can be
+       * reopened, and it was asking *before* `settleExit` recorded the ending —
+       * so every `/done` shipped `resumable: false` and the Resume control never
+       * appeared. A stub that always says "no" agrees with a broken ordering and
+       * a correct one alike, which makes it worse than no assertion at all.
+       *
+       * So this mirrors the real rule — a record is resumable once it has a uuid
+       * and has ended — and the ordering becomes something a test can see.
+       *
+       * What it deliberately does **not** model is the real ledger's
+       * `startedThisRun` half. That branch only decides an *unended, same-run*
+       * record, which the rule above already refuses, so modelling it would add
+       * nothing here. It would matter to a test that exercised `resumable`
+       * across a restart — this harness has no restart, and a fake that quietly
+       * diverges from the real rule in a case a future test does reach is the
+       * exact shape of the stub this replaced.
+       */
+      ledger: {
+        begin: (id, patch, options) => {
+          written.push({ id, patch: { ...patch, ...(options ?? {}) } });
+        },
+        record: (id, patch) => {
+          written.push({ id, patch: { ...patch } });
+        },
+        resumable: (id) => {
+          const merged = written
+            .filter((entry) => entry.id === id)
+            .reduce<Record<string, unknown>>(
+              (acc, entry) => ({ ...acc, ...entry.patch }),
+              {},
+            );
+          const ended =
+            merged.endedAt !== undefined ||
+            merged.status === 'done' ||
+            merged.status === 'terminated';
+          return ended && typeof merged.sessionUuid === 'string'
+            ? merged.sessionUuid
+            : undefined;
+        },
+        all: () => [],
+        flush: () => {},
+        dispose: () => {},
+      },
+    });
+
+    return {
+      open: () => {
+        instance.open(OPEN);
+        // The bootstrap's own writes are not what these tests are about.
+        vi.mocked(supervisor.write).mockClear();
+        return mintedFor('hero-refresh');
+      },
+      done: (entityId) => onDone(entityId),
+      hook: (entityId, event) =>
+        onEvent({ entityId, event, status: 'working' } as HookStatusEvent),
+      cleared: (entityId) => onCleared(entityId),
+      restart: () => instance.restart(OPEN),
+      patches: (entityId) =>
+        written.filter((entry) => entry.id === entityId).map((entry) => entry.patch),
+      statusOf: (entityId) =>
+        local
+          .filter(
+            (entry) =>
+              entry.channel === CH.sessionStatus && entry.payload.entityId === entityId,
+          )
+          .at(-1)?.payload.status,
+      finishedFor: (entityId) =>
+        local.filter(
+          (entry) =>
+            entry.channel === CH.sessionFinished &&
+            entry.payload.entityId === entityId,
+        ).length,
+      lastFinished: (entityId) =>
+        local
+          .filter(
+            (entry) =>
+              entry.channel === CH.sessionFinished &&
+              entry.payload.entityId === entityId,
+          )
+          .at(-1)?.payload,
+    };
+  }
+
+  /** Every chunk written into the pty since the session opened. */
+  const writes = () => vi.mocked(supervisor.write).mock.calls.map((call) => call[1]);
+
+  it('closes the terminal with /exit rather than a signal', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+
+    /*
+      The assertion is the *mechanism*, not just the effect. `bootstrap.ts`
+      starts sessions as `claude … && exit`, so only a clean exit retires the
+      row — a signal would make `claude` exit non-zero, short-circuit the `&&`,
+      and leave a live login shell wrapped around a dead agent.
+    */
+    expect(writes()).toEqual(['/exit\r']);
+    expect(killed).not.toContain(sessionId);
+  });
+
+  it('waits for the turn to end rather than writing into a working pty', () => {
+    const h = finished();
+    h.open();
+
+    h.done('hero-refresh');
+
+    /*
+      The POST arrives *during* a turn — it is a tool call the agent is in the
+      middle of. Five characters written into a REPL that is still working land
+      somewhere nobody can predict.
+    */
+    expect(writes()).toEqual([]);
+  });
+
+  it('records done where a bare exit records terminated', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    emitExit({ sessionId, exitCode: 0 });
+
+    expect(h.patches('hero-refresh').at(-1)).toMatchObject({ status: 'done' });
+    /*
+      Announced on its own channel, not as a status (HIVE-93). The renderer's
+      answer to a finish is structural — end the row, mint no successor, fall
+      back to the orchestrator — and a `terminated` status arriving beside it
+      would overwrite the ending the user asked for with the mechanism that
+      delivered it.
+    */
+    expect(h.finishedFor('hero-refresh')).toBe(1);
+    expect(h.statusOf('hero-refresh')).not.toBe('terminated');
+  });
+
+  it('reports the finish as resumable, so the row can offer Resume', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    emitExit({ sessionId, exitCode: 0 });
+
+    /*
+      The ordering assertion, and the reason it is worth its own test: the
+      ledger is asked this question *during* `settleExit`, so it has to have
+      been told the session ended before anything asks. Recorded second, it
+      answered "no" for every `/done` — the transcript still on disk, the uuid
+      still in the ledger, and nothing on screen able to reach either.
+    */
+    expect(h.lastFinished('hero-refresh')).toMatchObject({ resumable: true });
+  });
+
+  it('records terminated for an exit nobody declared', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    // The same clean exit, the same bytes, no declaration in front of it.
+    emitExit({ sessionId, exitCode: 0 });
+
+    expect(h.patches('hero-refresh').at(-1)).toMatchObject({
+      status: 'terminated',
+    });
+    expect(h.statusOf('hero-refresh')).toBe('terminated');
+  });
+
+  it('withdraws the declaration when the user goes back to work', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'UserPromptSubmit');
+    h.hook('hero-refresh', 'Stop');
+
+    // Nothing written, and the ending that eventually comes is not `done`.
+    expect(writes()).toEqual([]);
+    emitExit({ sessionId, exitCode: 0 });
+    expect(h.patches('hero-refresh').at(-1)).toMatchObject({
+      status: 'terminated',
+    });
+  });
+
+  it('does not treat a subagent finishing as the end of the turn', () => {
+    const h = finished();
+    h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'SubagentStop');
+
+    expect(writes()).toEqual([]);
+  });
+
+  it('kills the terminal when /exit is ignored', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    expect(killed).not.toContain(sessionId);
+
+    vi.advanceTimersByTime(10_000);
+
+    expect(killed).toContain(sessionId);
+  });
+
+  it('does not kill a terminal that took the /exit', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    emitExit({ sessionId, exitCode: 0 });
+
+    // The timer has to go with the session, or it fires against a closed
+    // registry entry ten seconds later.
+    vi.advanceTimersByTime(10_000);
+
+    expect(killed).not.toContain(sessionId);
+  });
+
+  it('never writes a second /exit however often /done is invoked', () => {
+    const h = finished();
+    h.open();
+
+    h.done('hero-refresh');
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', 'Stop');
+
+    expect(writes()).toEqual(['/exit\r']);
+  });
+
+  it('withdraws the declaration when the conversation is cleared', () => {
+    const h = finished();
+    h.open();
+
+    h.done('hero-refresh');
+    h.cleared('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+
+    /*
+      `/clear` retires the conversation that declared itself finished and opens
+      a successor on the same terminal. Acting on it afterwards would close a
+      session the user has only just started.
+    */
+    expect(writes()).toEqual([]);
+  });
+
+  it('ignores a declaration from a session it does not have', () => {
+    const h = finished();
+    h.open();
+
+    expect(() => h.done('sess-gone')).not.toThrow();
+    expect(writes()).toEqual([]);
+  });
+
+  it('calls off the force-kill when a new turn starts after the /exit', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+    expect(writes()).toEqual(['/exit\r']);
+
+    /*
+      `/exit\r` goes into a pty, not to a REPL that promised to act on it. With
+      a half-typed draft at the prompt those five characters append to it and
+      submit it as an ordinary prompt — so the session goes back to work, and
+      this event is the proof. Left armed, the backstop would destroy the pty
+      ten seconds into that turn and file it as `done`.
+    */
+    h.hook('hero-refresh', 'UserPromptSubmit');
+    vi.advanceTimersByTime(10_000);
+
+    expect(killed).not.toContain(sessionId);
+  });
+
+  it('does not record a restarted generation as done', async () => {
+    const h = finished();
+    const first = h.open();
+
+    h.done('hero-refresh');
+    // Restart before the turn ends, so the declaration is still on file.
+    const restarted = h.restart();
+    await Promise.resolve();
+    emitExit({ sessionId: first, exitCode: 0 });
+    vi.advanceTimersByTime(8);
+    await restarted;
+
+    /*
+      A restart is not an ending. The user interrupted this generation; filing
+      it as `done` would claim it finished, and the row would flash `done` on
+      its way to respawning.
+    */
+    const statuses = h
+      .patches('hero-refresh')
+      .map((patch) => patch.status)
+      .filter((status) => status !== undefined);
+    expect(statuses).not.toContain('done');
   });
 });
