@@ -4,14 +4,17 @@ import {
   LINE_MOTION_SEQUENCE,
   NEWLINE_SEQUENCE,
   backChordLabel,
+  claimBareBack,
   decideTerminalKey,
   isBackChord,
   isBareBack,
   isEmptyClaudePrompt,
   isNewlineChord,
   lineMotion,
+  type CursorContext,
   type KeyEventLike,
 } from '@lib/terminal/keymap';
+import { CLAUDE_FRAMES, asCursorContext } from '@tests/support/claude-frames';
 
 /**
  * The keyboard matrix (story 095).
@@ -364,17 +367,99 @@ describe('decideTerminalKey — Cmd+arrow line motions on macOS', () => {
  * fires exactly then too.
  */
 
-/** The bottom edge of Claude's input frame, as captured. */
-const RULE = '─'.repeat(96);
+/** An edge of Claude's input frame, as captured at 100 columns. */
+const RULE = '─'.repeat(100);
 
-/** The captured input row, empty. Two cells: the marker and one space. */
-const CLAUDE_EMPTY = { line: '❯ ', below: RULE };
+/** The status rows Claude draws under the frame. Present so the window ends. */
+const FOOTER = '  the-hive | main | Opus 5 (1M context) - high | [--------] --%';
 
-/** The same row with `hello` typed into it. */
-const CLAUDE_TYPED = { line: '❯ hello', below: RULE };
+/** A frame, in the shape the surface reports it: rows plus the caret's index. */
+const frame = (
+  rows: readonly string[],
+  caretRow: number,
+  /**
+   * What the *user* typed on the caret's row. Defaults to the raw row, which
+   * is what a terminal reports when Claude is not drawing its faint
+   * placeholder — i.e. almost always. The placeholder case passes `''`.
+   */
+  caretText?: string,
+): CursorContext => ({
+  rows,
+  caretRow,
+  caretText: caretText ?? rows[caretRow] ?? '',
+});
 
-describe('isEmptyClaudePrompt', () => {
-  it('matches an empty prompt inside the rule frame', () => {
+/**
+ * A fresh empty prompt. The frame every version of this rule has matched.
+ *
+ * The ` ` is not a typo and not decoration: Claude separates its marker
+ * from the input with a **no-break space**, which is a real cell rather than
+ * padding, so xterm's right-trim leaves it in place. `PROMPT_PREFIX` has to
+ * strip it, and this fixture is what proves it does.
+ */
+const CLAUDE_EMPTY = frame(['', RULE, '❯ ', RULE, FOOTER], 2);
+
+/** The same frame with a message typed into it. */
+const CLAUDE_TYPED = frame(['', RULE, '❯ hello there', RULE, FOOTER], 2);
+
+/**
+ * The frames that used to fail, captured from a real `claude` 2.1.245 (HIVE-79).
+ *
+ * Each one was driven out of a live session through a real pty and rendered
+ * through a VT emulator, then read exactly as the surface reads xterm's buffer.
+ * They are the point of the ticket: the canonical frame above always worked, so
+ * every one of these is a shape the two-row rule got wrong in production.
+ */
+
+/**
+ * `Shift+Enter` after typing — and the reason the fix could not be a wider
+ * regex.
+ *
+ * The caret drops to an empty second input row with the frame's bottom edge
+ * directly beneath it, so the old two-row test saw an empty caret row above a
+ * rule and **claimed the key**. A user reaching back to edit their first line
+ * was thrown out of the session and lost the message — the regression story 110
+ * and HIVE-65 fixed one surface over, reappearing here.
+ */
+const MULTILINE_CARET_ON_EMPTY_ROW = frame(
+  ['', RULE, '❯ hi there', '', RULE, FOOTER],
+  3,
+);
+
+/**
+ * A two-line message cleared, caught mid-repaint.
+ *
+ * Claude rewrites the first input row before the second, so for a tick the
+ * input is empty while stale text still sits where the bottom edge belongs. The
+ * old test found no rule under the caret and let the key go; the new one finds
+ * the frame, sees text inside it, and **declines** — the honest answer, and the
+ * one the app can now announce.
+ */
+const STALE_SECOND_ROW = frame(
+  ['', RULE, '❯', '  second line', RULE, FOOTER],
+  2,
+);
+
+/**
+ * Bash mode. `!` replaces the `❯` outright rather than joining it.
+ *
+ * The input is empty and Claude would have navigated, but the old marker class
+ * had no `!`, so it read the mode indicator as typed content and gave the key
+ * away.
+ */
+const BASH_MODE = frame(['', RULE, '!', RULE, FOOTER], 2);
+
+/**
+ * An eighteen-column terminal.
+ *
+ * Claude draws the edge the full width, so at eighteen columns the edge is
+ * eighteen rule characters — under the old absolute floor of twenty, which is
+ * why a narrow pane silently stopped claiming the key.
+ */
+const NARROW = frame(['', '─'.repeat(18), '❯', '─'.repeat(18)], 2);
+
+describe('isEmptyClaudePrompt — the frames a real session produces', () => {
+  it('matches an empty prompt inside the frame', () => {
     expect(isEmptyClaudePrompt(CLAUDE_EMPTY)).toBe(true);
   });
 
@@ -390,37 +475,185 @@ describe('isEmptyClaudePrompt', () => {
      * caret's *left*, so a rule that read only the left-hand side would fire
      * and throw the user out of a session they were mid-sentence in — while
      * Claude, which still has text in its input, would not have navigated at
-     * all. Judging the whole row is what closes that gap.
+     * all. Judging whole rows is what closes that gap.
      */
-    expect(isEmptyClaudePrompt(CLAUDE_TYPED)).toBe(false);
-    expect(isEmptyClaudePrompt({ line: '❯ half a message', below: RULE })).toBe(
-      false,
-    );
+    expect(
+      isEmptyClaudePrompt(frame(['', RULE, '❯ half a message', RULE], 2)),
+    ).toBe(false);
+  });
+
+  it('keeps ← for the user on a multi-line message with an empty caret row', () => {
+    /**
+     * HIVE-79's worst case, and the one the old rule got backwards: it claimed
+     * this. The row the caret is on is empty, but the *input* is not, and Claude
+     * would have moved the caret rather than navigating.
+     */
+    expect(isEmptyClaudePrompt(MULTILINE_CARET_ON_EMPTY_ROW)).toBe(false);
+    expect(claimBareBack(MULTILINE_CARET_ON_EMPTY_ROW)).toBe('declined');
+  });
+
+  it('claims an empty bash-mode prompt', () => {
+    expect(isEmptyClaudePrompt(BASH_MODE)).toBe(true);
+  });
+
+  it('claims a prompt showing Claude’s own placeholder', () => {
+    /**
+     * **The root cause of HIVE-79**, and the one candidate mechanism the ticket
+     * named that turned out to be the real one.
+     *
+     * Claude writes `Try "write a test for …"` into its *empty* input as real
+     * cells, and goes on offering `← for agents` in the footer while it is
+     * showing — so it would navigate, and the app has to take the key. Read as
+     * plain text the row is a typed message and the key leaked.
+     *
+     * The row arrives here already blanked: the surface drops faint cells,
+     * because the placeholder is `\x1b[2m` and a typed message never is. See
+     * {@link CursorContext.rows}.
+     */
+    const placeholder = frame(['', RULE, '❯ ', RULE, FOOTER], 2);
+    expect(isEmptyClaudePrompt(placeholder)).toBe(true);
+  });
+
+  it('claims an empty prompt in a very narrow terminal', () => {
+    expect(isEmptyClaudePrompt(NARROW)).toBe(true);
+  });
+
+  it('declines rather than leaks when a repaint hides the evidence', () => {
+    /**
+     * The input really is empty here, so this is still the wrong *answer* — but
+     * it is now a knowable one. `declined` is what the surface turns into an
+     * announcement, which is the difference between losing a key and losing the
+     * user.
+     */
+    expect(claimBareBack(STALE_SECOND_ROW)).toBe('declined');
   });
 
   it('does not match a bare shell prompt, however prompt-shaped', () => {
     /**
      * The login shell survives `claude` ending badly (story 096 and
      * `sessionCommand`), and plenty of shells prompt with `❯` — starship and
-     * pure both do. The rule below the caret is what separates the two; without
-     * it the app would silently steal `←` from a plain terminal.
+     * pure both do. The frame is what separates the two; without it the app
+     * would silently steal `←` from a plain terminal — and, being `foreign`
+     * rather than `declined`, it announces nothing either.
      */
-    expect(isEmptyClaudePrompt({ line: 'app % ', below: '' })).toBe(false);
-    expect(isEmptyClaudePrompt({ line: '❯ ', below: '' })).toBe(false);
-    expect(isEmptyClaudePrompt({ line: '❯ ', below: 'total 48' })).toBe(false);
+    expect(claimBareBack(frame(['$ ls', 'app % '], 1))).toBe('foreign');
+    expect(claimBareBack(frame(['', '❯ ', ''], 1))).toBe('foreign');
+    expect(claimBareBack(frame(['', '❯ ', 'total 48'], 1))).toBe('foreign');
   });
 
   it('tolerates a box-drawn left border and a plain > marker', () => {
     // Not the current rendering, but cheap, and older revisions drew both.
-    expect(isEmptyClaudePrompt({ line: '│ > ', below: RULE })).toBe(true);
-    expect(isEmptyClaudePrompt({ line: '│ > x', below: RULE })).toBe(false);
+    expect(isEmptyClaudePrompt(frame(['', RULE, '│ > ', RULE], 2))).toBe(true);
+    expect(isEmptyClaudePrompt(frame(['', RULE, '│ > x', RULE], 2))).toBe(false);
   });
 
-  it('wants a real rule, not a stray dash or two', () => {
-    // A box-drawn TUI row is not an input frame. Twenty is far below the full
-    // terminal width Claude actually draws and far above incidental matches.
-    expect(isEmptyClaudePrompt({ line: '❯ ', below: '─'.repeat(19) })).toBe(false);
-    expect(isEmptyClaudePrompt({ line: '❯ ', below: '─'.repeat(20) })).toBe(true);
+  it('reads a title written into the top edge as an edge', () => {
+    // Claude writes the worktree name into the upper rule, so an edge is
+    // mostly rule rather than purely rule.
+    const titled = `${'─'.repeat(74)} hive-79-bare-left ──`;
+    expect(isEmptyClaudePrompt(frame(['', titled, '❯ ', RULE], 2))).toBe(true);
+  });
+
+  it('wants a real edge, not a stray dash or two', () => {
+    expect(isEmptyClaudePrompt(frame(['', '───', '❯ ', '───'], 2))).toBe(false);
+  });
+
+  it('is foreign when the caret is on a rule itself', () => {
+    /**
+     * Not an input row at all — a transcript the user has scrolled into. Caught
+     * by the typed-row test rather than by a rule of its own: a row of rule
+     * characters does not survive {@link PROMPT_PREFIX} as empty, so it reads
+     * as "the user typed something" and the app steps aside. An explicit
+     * `isRuleRow(caret)` guard was written here first and removed — it could
+     * not be reached, and an unreachable branch is a claim nothing can check.
+     */
+    expect(claimBareBack(frame([RULE, RULE, RULE], 1))).toBe('foreign');
+  });
+
+  it('is foreign when the caret index is outside the reported rows', () => {
+    expect(claimBareBack(frame([], 0))).toBe('foreign');
+    expect(claimBareBack(frame(['❯'], -1))).toBe('foreign');
+  });
+
+  it('is silent through ordinary editing, not merely declining', () => {
+    /**
+     * The noise this rule exists to avoid. Typing `helo` and pressing `←` three
+     * times to fix it is the single most common thing a user does in a session;
+     * each press must be `foreign`, not `declined`, or the strip appears over
+     * the input on every keystroke saying something that is not true.
+     */
+    for (const typed of ['❯ helo', '❯ h', '  a continuation row']) {
+      expect(claimBareBack(frame(['', RULE, typed, RULE], 2))).toBe('foreign');
+    }
+  });
+
+  it('will not read another program’s panel border as Claude’s frame', () => {
+    /**
+     * `fzf --border`, `atuin`, a lazygit panel: a box whose borders sit several
+     * rows from the caret with a list in between. An earlier revision searched
+     * eight rows either way for *any* edge, found these, and claimed `←` — in
+     * programs where `←` is load-bearing and the user is mid-search.
+     *
+     * Claude's empty input is exactly one row tall, at every width captured
+     * from a real session, so the edges must be touching the caret's row.
+     */
+    const panel = [
+      '┌─────────────────────────────┐',
+      '│ src/lib/terminal/keymap.ts  │',
+      '│ src/lib/terminal/ansi.ts    │',
+      '> ',
+      '└─────────────────────────────┘',
+    ];
+    expect(claimBareBack(frame(panel, 3))).toBe('foreign');
+  });
+
+  it('wants both edges, not just the one below the caret', () => {
+    /**
+     * The half-frame the old two-row rule was: a rule under the caret and
+     * nothing above it. Enough to pass before, and not enough now — without a
+     * top edge there is no *region*, so there is nothing to check for emptiness
+     * and no honest way to call this Claude's input. A shell whose last command
+     * printed a rule lands here.
+     */
+    expect(claimBareBack(frame(['total 48', '❯ ', RULE], 1))).toBe('foreign');
+  });
+
+  it('gives up rather than reaching past the window it was handed', () => {
+    // An input taller than the scan: the top edge is out of reach, so the
+    // answer is "not mine" rather than a guess made on half the evidence.
+    const tall = ['a message', 'that runs', 'to many', 'rows', '', RULE];
+    expect(claimBareBack(frame(tall, 4))).toBe('foreign');
+  });
+});
+
+/**
+ * Every frame a real session produced, against the rule as shipped (HIVE-79).
+ *
+ * The acceptance criterion the ticket leads with — *the frame that fails is
+ * captured from a real session, not inferred* — and the reason it leads with it
+ * is that this codebase has been burned by an inferred mechanism recorded as
+ * fact before. The fixtures above are hand-written for readability, one shape
+ * each; these are the raw recordings, whole caret windows, nothing tidied.
+ *
+ * Eighteen states out of one live `claude` 2.1.245. Three are decided
+ * differently than they were before this change — see
+ * `tests/support/claude-frames.ts` for which, and what each one cost.
+ */
+describe('the frames of a real claude 2.1.245', () => {
+  it('covers the empty prompt, a typed one, and a narrow terminal', () => {
+    // A guard on the fixture itself: a recording that lost its interesting
+    // frames would still pass every assertion below by asserting nothing.
+    const named = CLAUDE_FRAMES.map((captured) => captured.name);
+    expect(named).toContain('bash mode, empty');
+    expect(named).toContain('multi-line, caret on empty second row');
+    expect(named).toContain('empty prompt at 18x12');
+    expect(CLAUDE_FRAMES.filter((f) => f.claim === 'claim').length).toBeGreaterThan(
+      5,
+    );
+  });
+
+  it.each(CLAUDE_FRAMES)('$name -> $claim', (captured) => {
+    expect(claimBareBack(asCursorContext(captured))).toBe(captured.claim);
   });
 });
 
@@ -453,17 +686,47 @@ describe('decideTerminalKey — bare ← at an empty Claude prompt', () => {
     ).toBe('app-chord');
   });
 
-  it('gives it back to the pty the moment something is typed', () => {
+  it('gives it back to the pty the moment something is typed, and stays quiet', () => {
+    /**
+     * `to-pty`, not `back-declined`. Nothing was lost: `←` on a row with a
+     * message on it moves the caret one column, which is what the user asked
+     * for and what Claude would have done anyway.
+     *
+     * This is the common case by a wide margin — every arrow key pressed while
+     * fixing a typo lands here — and an earlier revision announced on all of
+     * them, putting `← went to the session` over the input being edited four
+     * seconds at a time. See {@link claimBareBack}.
+     */
     expect(
       decideTerminalKey(key({ key: 'ArrowLeft' }), { ...MAC, cursor: CLAUDE_TYPED }),
     ).toBe('to-pty');
   });
 
-  it('gives it to the pty in a plain shell', () => {
+  it('announces only the shape it genuinely cannot decide', () => {
+    /**
+     * A blank caret row with the frame's edges not touching it: either another
+     * line of a message begun with `Shift+Enter`, or a repaint that has not
+     * caught up on an input that really is empty. Indistinguishable from the
+     * screen — so the pty gets the key and the app says where it went.
+     */
+    expect(
+      decideTerminalKey(key({ key: 'ArrowLeft' }), {
+        ...MAC,
+        cursor: MULTILINE_CARET_ON_EMPTY_ROW,
+      }),
+    ).toBe('back-declined');
+  });
+
+  it('says nothing at all in a plain shell', () => {
+    /**
+     * `to-pty`, not `back-declined`. Nothing was declined here — the app never
+     * had a claim on `←` outside Claude's input — and announcing one would put
+     * a hint about leaving a session over somebody's `ls` output.
+     */
     expect(
       decideTerminalKey(key({ key: 'ArrowLeft' }), {
         ...PC,
-        cursor: { line: 'app % ', below: '' },
+        cursor: frame(['$ ls', 'app % '], 1),
       }),
     ).toBe('to-pty');
   });

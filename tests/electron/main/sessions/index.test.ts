@@ -63,13 +63,13 @@ const CONFIG: ConfigSnapshot = {
   env: {},
   projects: [
     {
-      id: 'apfm-web',
-      name: 'apfm-web',
-      path: '/repos/apfm-web',
+      id: 'nova-web',
+      name: 'nova-web',
+      path: '/repos/nova-web',
       icon: 'ph-folder',
       origin: 'local',
       status: 'ok',
-      key: 'aw',
+      key: 'nw',
       isRepo: true,
     },
     {
@@ -133,7 +133,7 @@ function fakeSupervisor(): PtyHostSupervisor {
   } as unknown as PtyHostSupervisor;
 }
 
-const OPEN = { entityId: 'hero-refresh', projectId: 'apfm-web', cols: 80, rows: 24 };
+const OPEN = { entityId: 'hero-refresh', projectId: 'nova-web', cols: 80, rows: 24 };
 
 /** Pinned so the command line is a constant rather than a moving target. */
 const TEST_UUID = '00000000-0000-4000-8000-000000000000';
@@ -230,7 +230,7 @@ describe('what a session runs', () => {
      * running `claude`.
      */
     expect(spawned[0]!.args).toEqual(['-l']);
-    expect(spawned[0]!.cwd).toBe('/repos/apfm-web');
+    expect(spawned[0]!.cwd).toBe('/repos/nova-web');
   });
 
   it('writes the bootstrap as input after the shell speaks', () => {
@@ -254,16 +254,19 @@ describe('what a session runs', () => {
   });
 
   /**
-   * The theme picks which settings file the session is started with.
+   * One settings file, asked for without a theme (HIVE-82).
    *
-   * The last link in a chain that starts in `localStorage`: the renderer
-   * resolves the app's theme, the guard admits it, and this is where it becomes
-   * a path on a command line. `claude` paints its own chrome from that file, so
-   * getting it wrong is what drew a user's submitted prompt as a near-black bar
-   * across a light terminal.
+   * The theme used to travel from `localStorage` through the guard to a path on
+   * a command line, and getting it wrong is what drew a user's submitted prompt
+   * as a near-black bar across a light terminal. It no longer travels at all:
+   * Claude is pinned to `dark-ansi`, whose colours are ANSI indices that xterm
+   * resolves against the active palette at paint time.
+   *
+   * What this pins is that the caller stopped passing one. A `settingsPathFor`
+   * still handed an argument would be a caller that thinks the file varies.
    */
-  it('starts a session with the settings file for its theme', () => {
-    const asked: (string | undefined)[] = [];
+  it('starts a session with the one settings file, asking for no theme', () => {
+    let asked = 0;
     const themed = createSessions({
       supervisor,
       send: (channel, payload) =>
@@ -271,9 +274,10 @@ describe('what a session runs', () => {
       config: () => CONFIG,
       newSessionUuid: () => TEST_UUID,
       hooks: {
-        settingsPathFor: (theme?: string) => {
-          asked.push(theme);
-          return `/userData/hive/claude-hooks.settings.${theme ?? 'dark'}.json`;
+        settingsPathFor: (...args: unknown[]) => {
+          asked += 1;
+          expect(args).toEqual([]);
+          return '/userData/hive/claude-hooks.settings.json';
         },
         envFor: () => ({}),
         start: () => Promise.resolve(),
@@ -281,7 +285,7 @@ describe('what a session runs', () => {
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
     });
 
-    themed.open({ ...OPEN, theme: 'light' });
+    themed.open({ ...OPEN });
     const sessionId = mintedFor('hero-refresh');
 
     emitData({ sessionId, chunk: '$ ' });
@@ -289,13 +293,13 @@ describe('what a session runs', () => {
     vi.advanceTimersByTime(150);
     vi.advanceTimersByTime(SUBMIT);
 
-    expect(asked).toEqual(['light']);
+    expect(asked).toBe(1);
     const written = vi
       .mocked(supervisor.write)
       .mock.calls.map(([, data]) => data)
       .join('');
-    expect(written).toContain('claude-hooks.settings.light.json');
-    expect(written).not.toContain('claude-hooks.settings.dark.json');
+    expect(written).toContain('claude-hooks.settings.json');
+    expect(written).not.toContain('settings.light.json');
   });
 
   it('delivers a spawn task as claude’s initial prompt, on the command line', () => {
@@ -1356,7 +1360,7 @@ describe('the ledger', () => {
     withLedger(written).open(OPEN);
 
     expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
-      project: 'apfm-web',
+      project: 'nova-web',
       status: 'working',
       sessionUuid: TEST_UUID,
     });

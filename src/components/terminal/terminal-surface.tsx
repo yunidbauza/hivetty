@@ -1,13 +1,15 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { Terminal } from '@xterm/xterm';
+import { Terminal, type IBufferCell, type IBufferLine } from '@xterm/xterm';
 import { useEffect, useRef, useState } from 'react';
 
 import { isMacPlatform } from '@lib/platform';
 import { xtermThemeFor, type TermPalette } from '@lib/terminal/ansi';
 import { shouldAutoScroll } from '@lib/terminal/auto-scroll';
 import {
+  FRAME_SCAN,
+  isBareBack,
   LINE_MOTION_SEQUENCE,
   NEWLINE_SEQUENCE,
   TERMINAL_CHORD_EVENT,
@@ -21,6 +23,9 @@ import '@xterm/xterm/css/xterm.css';
 
 /** xterm's line-height is a multiple of the font size, not a CSS length. */
 const LINE_HEIGHT = 1.4;
+
+/** WCAG AA for body text. See the note where it is passed to xterm. */
+const MINIMUM_CONTRAST_RATIO = 4.5;
 
 /**
  * Fallbacks for a caller that expresses no preference — the orchestrator
@@ -94,36 +99,85 @@ const atBottom = (terminal: Terminal) =>
   shouldAutoScroll(terminal.buffer.active.viewportY, terminal.buffer.active.baseY);
 
 /**
- * The two rows the bare-`←` decision needs, read straight out of the buffer.
+ * The caret's row, with Claude's own faint text blanked out (HIVE-79).
+ *
+ * The cell-by-cell walk exists for exactly one thing: Claude Code writes a
+ * placeholder into its empty input — `❯ Try "write a test for …"` — as real
+ * cells, and `translateToString` cannot tell it from a message the user typed.
+ * `\x1b[2m` can: the placeholder is faint and typed input never is. Blanking
+ * faint cells leaves the row holding what the *user* put there, which is the
+ * only thing the decision is entitled to ask about.
+ *
+ * **The caret's row and no other.** Applying this to the whole window would put
+ * the frame's edges through it too, and an edge Claude ever drew faint would
+ * read as an all-blank row — the frame would stop being found and the feature
+ * would switch itself off, silently and permanently, exactly as the
+ * alternate-buffer assumption did. Edges are matched on raw text; rendition is
+ * consulted only where the question is "did the user type this?".
+ *
+ * `scratch` is xterm's own reusable cell. Without it `getCell` allocates a
+ * fresh `CellData` per column, and `←` autorepeats when held.
+ *
+ * Falls back to `translateToString` when the buffer will not hand over a cell,
+ * so the row is never lost outright — worst case it reads as it did before.
+ */
+function readTypedRow(line: IBufferLine, scratch: IBufferCell): string {
+  let text = '';
+  for (let column = 0; column < line.length; column += 1) {
+    const cell = line.getCell(column, scratch);
+    if (!cell) return line.translateToString(true);
+    // Width 0 is the trailing half of a wide glyph; it has no character of its
+    // own and the leading half already contributed one.
+    if (cell.getWidth() === 0) continue;
+    const chars = cell.getChars();
+    text += cell.isDim() !== 0 || chars === '' ? ' ' : chars;
+  }
+  return text.replace(/\s+$/u, '');
+}
+
+/**
+ * The rows the bare-`←` decision needs, read straight out of the buffer.
  *
  * This is the closest this component comes to knowing what is *running* inside
  * it, and the line it does not cross is worth being explicit about: it reports
- * **text and a caret position**, exactly what a terminal has. Whether those
- * rows mean "Claude is waiting for a message" is decided in
- * `lib/terminal/keymap.ts`, which is where a rule about a program belongs and
- * where it can be tested without a DOM. The seam is what makes the terminal
- * swappable, and reading its own buffer does not breach it — importing a store
- * to ask which session this is would.
+ * **text, a caret position, and which buffer is on screen** — exactly what a
+ * terminal has. Whether those rows mean "Claude is waiting for a message" is
+ * decided in `lib/terminal/keymap.ts`, which is where a rule about a program
+ * belongs and where it can be tested without a DOM. The seam is what makes the
+ * terminal swappable, and reading its own buffer does not breach it — importing
+ * a store to ask which session this is would.
  *
- * Returns `null` when the row cannot be read, and the decision then falls back
- * to chord-only. Absent information is never treated as a match.
+ * A **window** around the caret rather than two rows (HIVE-79). Two were not
+ * enough to answer the question the decision actually asks — *is anything typed
+ * in the whole input?* — and reading only the caret's row and the one below it
+ * both stole the key from a half-written multi-line message and leaked it at an
+ * input that really was empty. See {@link CursorContext}.
+ *
+ * Returns `null` when the caret's own row cannot be read, and the decision then
+ * falls back to chord-only. Absent information is never treated as a match.
  */
 function readCursorContext(terminal: Terminal): CursorContext | null {
   const buffer = terminal.buffer.active;
-  const row = buffer.baseY + buffer.cursorY;
-  const line = buffer.getLine(row);
-  if (!line) return null;
+  const caret = buffer.baseY + buffer.cursorY;
+  const caretLine = buffer.getLine(caret);
+  if (!caretLine) return null;
 
-  const below = buffer.getLine(row + 1);
-  return {
+  const first = Math.max(0, caret - FRAME_SCAN);
+  const rows: string[] = [];
+  for (let row = first; row <= caret + FRAME_SCAN; row += 1) {
     /**
-     * The whole row, not the part before the caret. A caret sent back to the
-     * start of a half-typed message with `Ctrl-A` has nothing to its left while
-     * the message is still very much there — see {@link isEmptyClaudePrompt}.
-     * Right-trimmed, because a terminal row is padded to the full width.
+     * Right-trimmed, because a terminal row is padded to the full width. A row
+     * the buffer cannot report becomes `''`, which is not a frame edge — so a
+     * window that runs off the end of the buffer declines in the same way an
+     * unrecognised one does, rather than throwing.
      */
-    line: line.translateToString(true),
-    below: below?.translateToString(true) ?? '',
+    rows.push(buffer.getLine(row)?.translateToString(true) ?? '');
+  }
+
+  return {
+    rows,
+    caretRow: caret - first,
+    caretText: readTypedRow(caretLine, buffer.getNullCell()),
   };
 }
 
@@ -299,6 +353,25 @@ export function TerminalSurface({
       fontSize,
       lineHeight: LINE_HEIGHT,
       scrollback,
+      /**
+       * The floor that makes the surface slots safe (HIVE-82).
+       *
+       * `black` and `brightBlack` are panel fills now, not text. That is right
+       * for the programs that paint panels with them, and wrong for the older
+       * convention where a CLI detecting a light terminal picks slot 30 for
+       * body text — against a light `black`, that text would be invisible.
+       *
+       * xterm's answer is to adjust the *foreground* until it clears a ratio
+       * against whatever it is drawn on. At its default of `1` it does nothing,
+       * which is what `ansi.ts` used to record as the reason the old mapping
+       * had to stand. At 4.5 it holds body text to WCAG AA and leaves anything
+       * already legible untouched.
+       *
+       * It cannot rescue a background, which is the asymmetry the whole
+       * inversion rests on: a bad foreground is recoverable, a near-black slab
+       * across a white terminal is not.
+       */
+      minimumContrastRatio: MINIMUM_CONTRAST_RATIO,
       theme: xtermThemeFor(palette),
     });
 
@@ -330,8 +403,14 @@ export function TerminalSurface({
            * Read per keystroke rather than cached. The buffer moves under us
            * constantly — every chunk of agent output rewrites these rows — and
            * a cached answer would decide the *previous* screen's question.
+           *
+           * Read only for the key it is *for*. Nothing else in the matrix
+           * consults it, and since HIVE-79 the read walks every cell of
+           * seventeen rows to find Claude's faint placeholder — work worth
+           * doing once for `←` and not worth doing on every character typed
+           * into a shell.
            */
-          cursor: readCursorContext(terminal),
+          cursor: isBareBack(event) ? readCursorContext(terminal) : null,
         });
 
         switch (action) {
@@ -402,6 +481,29 @@ export function TerminalSurface({
             );
             event.preventDefault();
             return false;
+          }
+          /**
+           * Announced **and** handed on — the one branch that does both
+           * (HIVE-79).
+           *
+           * Every other announcement here is also a claim: the app takes the
+           * key, so the pty must not see it. This one is the opposite. The
+           * claim was declined, so the key belongs to the child process exactly
+           * as it always did — no `preventDefault`, `true` so xterm encodes the
+           * arrow and writes it to stdin — and the event carries no navigation,
+           * only the news that it happened.
+           *
+           * That asymmetry is the whole point of the ticket. The app used to
+           * lose this key without ever learning it had been pressed, which is
+           * why a user who ended up in Claude Code's own agent list had no way
+           * back that the app could offer them. It can offer one now.
+           */
+          case 'back-declined': {
+            const detail: TerminalChordDetail = { chord: 'back-declined' };
+            container.dispatchEvent(
+              new CustomEvent(TERMINAL_CHORD_EVENT, { detail, bubbles: true }),
+            );
+            return true;
           }
           default:
             return true;

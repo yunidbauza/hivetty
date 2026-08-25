@@ -27,7 +27,20 @@ import { testProjectKey } from '@tests/support/project-key';
 
 const CONFIG_PATH = '/home/dev/.hive/config.json';
 
-const PROJECT = { id: 'apfm-web', icon: 'ph-globe-hemisphere-west' };
+/**
+ * `name` disagrees with `id` on purpose (HIVE-104).
+ *
+ * `addProject` derives both from the same directory basename, so an
+ * un-renamed project reads identically either way — which is how the rail drew
+ * `id` this long without anyone noticing. A fixture whose handles agree cannot
+ * tell a name match from an id match, so this one's do not.
+ */
+const PROJECT = {
+  id: 'nova-web',
+  name: 'NOVA Web',
+  key: testProjectKey('nova-web'),
+  icon: 'ph-globe-hemisphere-west',
+};
 
 function snapshot(projects: { id: string; status: ProjectStatus }[]): ConfigSnapshot {
   return {
@@ -67,6 +80,45 @@ afterEach(() => {
 });
 
 describe('ProjectRow', () => {
+  /**
+   * The regression HIVE-104 exists for.
+   *
+   * A rename writes `name` and leaves `id` alone — `id` is the stable key
+   * `entity.project` points at, and rewriting it would strand every session.
+   * So the rename was always correct at every layer and the rail was simply
+   * reading the wrong field, permanently, across restarts.
+   *
+   * Both halves are asserted. "Shows the name" alone would pass a row that
+   * printed both.
+   */
+  describe('the label', () => {
+    it('is the display name', () => {
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
+
+      render(<ProjectRow project={PROJECT} />);
+
+      expect(screen.getByText('NOVA Web')).toBeInTheDocument();
+    });
+
+    it('is not the id', () => {
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
+
+      render(<ProjectRow project={PROJECT} />);
+
+      expect(screen.queryByText('nova-web')).not.toBeInTheDocument();
+    });
+
+    it('carries no key chip — the rail is the quiet surface', () => {
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
+
+      render(<ProjectRow project={PROJECT} />);
+
+      // Settings and the picker both show the alias; the rail deliberately
+      // does not, which is the design call HIVE-104 settled.
+      expect(screen.queryByText(PROJECT.key)).not.toBeInTheDocument();
+    });
+  });
+
   it('shows no badge with no config — the browser demo is unchanged', () => {
     render(<ProjectRow project={PROJECT} />);
 
@@ -74,7 +126,7 @@ describe('ProjectRow', () => {
   });
 
   it('shows no badge for a project that resolves', () => {
-    setProjectConfigForTest(snapshot([{ id: 'apfm-web', status: 'ok' }]));
+    setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
 
     render(<ProjectRow project={PROJECT} />);
 
@@ -93,7 +145,7 @@ describe('ProjectRow', () => {
   });
 
   it('marks a broken entry in amber, with its reason verbatim', () => {
-    setProjectConfigForTest(snapshot([{ id: 'apfm-web', status: 'missing' }]));
+    setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'missing' }]));
 
     render(<ProjectRow project={PROJECT} />);
 
@@ -107,7 +159,7 @@ describe('ProjectRow', () => {
 
     render(<ProjectRow project={PROJECT} />);
 
-    // apfm-web has three live fixture sessions; being unmapped changes what a
+    // nova-web has three live fixture sessions; being unmapped changes what a
     // user can *start*, not what the rail reports about what is running.
     //
     // "unmapped" lands inside the row's accessible name on purpose. The badge
@@ -116,7 +168,7 @@ describe('ProjectRow', () => {
     // surprised when the picker refuses.
     expect(
       screen.getByRole('button', { expanded: true }),
-    ).toHaveAccessibleName('apfm-web unmapped 3 active sessions');
+    ).toHaveAccessibleName('NOVA Web unmapped 3 active sessions');
   });
 
   /**
@@ -128,10 +180,10 @@ describe('ProjectRow', () => {
    * or beside the folder name.
    */
   describe('the new-session link', () => {
-    const LINK = 'New session in apfm-web';
+    const LINK = 'New session in NOVA Web';
 
     it('follows the last session', () => {
-      setProjectConfigForTest(snapshot([{ id: 'apfm-web', status: 'ok' }]));
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
 
       const { container } = render(<ProjectRow project={PROJECT} />);
 
@@ -143,7 +195,7 @@ describe('ProjectRow', () => {
 
     it('sits directly under a project with nothing running', () => {
       useHiveStore.getState().reset();
-      setProjectConfigForTest(snapshot([{ id: 'apfm-web', status: 'ok' }]));
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
 
       const { container } = render(<ProjectRow project={PROJECT} />);
 
@@ -153,7 +205,7 @@ describe('ProjectRow', () => {
     });
 
     it('is gone when the project is collapsed', async () => {
-      setProjectConfigForTest(snapshot([{ id: 'apfm-web', status: 'ok' }]));
+      setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
 
       render(<ProjectRow project={PROJECT} />);
       await userEvent.click(screen.getByRole('button', { expanded: true }));

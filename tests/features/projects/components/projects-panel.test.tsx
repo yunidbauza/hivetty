@@ -11,7 +11,7 @@ import { emptySnapshot } from '@shared/config-contract';
 
 /** The five demo projects, in config order, with their live-session counts. */
 const FIXTURE_PROJECTS = [
-  ['apfm-web', 3],
+  ['nova-web', 3],
   ['referral-api', 3],
   ['advisor-portal', 1],
   ['design-system', 1],
@@ -67,7 +67,7 @@ describe('ProjectsPanel', () => {
   });
 
   /**
-   * The ticket's acceptance criteria say apfm-web has 2 active sessions. The
+   * The ticket's acceptance criteria say nova-web has 2 active sessions. The
    * fixtures give it three — hero-refresh (working), lead-form (waiting), and
    * e2e-quote (idle). The code is the source of truth; see the UPDATED SPECS
    * note on HIVE-17.
@@ -118,10 +118,10 @@ describe('ProjectsPanel', () => {
 
     expect(screen.getByText('hero-refresh')).toBeInTheDocument();
 
-    await userEvent.click(projectToggle('apfm-web'));
+    await userEvent.click(projectToggle('nova-web'));
 
     expect(screen.queryByText('hero-refresh')).not.toBeInTheDocument();
-    expect(projectToggle('apfm-web')).toHaveAttribute('aria-expanded', 'false');
+    expect(projectToggle('nova-web')).toHaveAttribute('aria-expanded', 'false');
     // Its siblings are unaffected.
     expect(screen.getByText('webhooks')).toBeInTheDocument();
   });
@@ -134,11 +134,11 @@ describe('ProjectsPanel', () => {
   it('remembers collapsed projects across an unmount', async () => {
     const { unmount } = render(<ProjectsPanel />);
 
-    await userEvent.click(projectToggle('apfm-web'));
+    await userEvent.click(projectToggle('nova-web'));
     unmount();
     render(<ProjectsPanel />);
 
-    expect(projectToggle('apfm-web')).toHaveAttribute('aria-expanded', 'false');
+    expect(projectToggle('nova-web')).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('hero-refresh')).not.toBeInTheDocument();
   });
 
@@ -169,7 +169,7 @@ describe('ProjectsPanel', () => {
    */
   it('follows the config, and drops projects it no longer declares', () => {
     render(<ProjectsPanel />);
-    expect(projectToggle('apfm-web')).toBeInTheDocument();
+    expect(projectToggle('nova-web')).toBeInTheDocument();
 
     act(() => {
       setProjectConfigForTest({
@@ -190,7 +190,48 @@ describe('ProjectsPanel', () => {
     });
 
     expect(projectToggle('solo')).toBeInTheDocument();
-    expect(screen.queryByText('apfm-web')).not.toBeInTheDocument();
+    expect(screen.queryByText('nova-web')).not.toBeInTheDocument();
+  });
+
+  /**
+   * A renamed project, end to end through the panel (HIVE-104).
+   *
+   * `seedDemoProjectConfig` sets every `name` to its `id`, exactly as
+   * `addProject` does for a freshly mapped directory — which is why this bug
+   * survived so long and why the whole suite above cannot see it. This is the
+   * one test that hands the panel a snapshot where the two disagree.
+   *
+   * Driven by replacing the snapshot rather than by calling `renameProject`,
+   * because that is what a rename *arrives* as: main writes the file and
+   * returns a new snapshot, `mutate` installs it, and `useProjects()`
+   * re-derives. No restart, no remount — the rail simply repaints.
+   */
+  it('repaints a renamed project under its new name', () => {
+    render(<ProjectsPanel />);
+    expect(projectToggle('design-system')).toBeInTheDocument();
+
+    act(() => {
+      setProjectConfigForTest({
+        ...emptySnapshot('/tmp/hive/config.json'),
+        projects: [
+          {
+            id: 'design-system',
+            // The rename writes this and leaves `id` alone, because `id` is
+            // what every live session's `entity.project` points at.
+            name: 'Design System',
+            path: '/repos/design-system',
+            icon: 'ph-cube',
+            origin: 'local',
+            status: 'ok',
+            key: 'ds',
+            isRepo: true,
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByText('Design System')).toBeInTheDocument();
+    expect(screen.queryByText('design-system')).not.toBeInTheDocument();
   });
 
   /*

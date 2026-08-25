@@ -63,6 +63,7 @@ import {
   parseSetRuntimeRequest,
   parseSessionNoteRequest,
   parseSkillNameRequest,
+  parseSkillRenameRequest,
   parseSkillWriteRequest,
   parseWriteRequest,
 } from '@shared/guards';
@@ -1336,10 +1337,10 @@ export function registerIpcHandlers(): void {
   });
 
   /**
-   * Custom skills (HIVE-96).
+   * Custom skills (HIVE-96, HIVE-99).
    *
    * The `fs` block above validates twice — a string-shape guard here, then real
-   * containment in `fs/paths.ts` — because it accepts a path. These four
+   * containment in `fs/paths.ts` — because it accepts a path. These five
    * validate once, and that is not a weaker design: `assertSkillName` admits
    * only `[a-z0-9-]+`, which cannot name a directory other than the one main
    * chooses, so there is no second question to ask. See `skills-contract.ts`.
@@ -1362,6 +1363,11 @@ export function registerIpcHandlers(): void {
   handle(CH.skillsRemove, (_event, payload) =>
     skills?.remove(parseSkillNameRequest(payload).name),
   );
+
+  handle(CH.skillsRename, (_event, payload) => {
+    const request = parseSkillRenameRequest(payload);
+    return skills?.rename(request.from, request.to);
+  });
 
   /**
    * Getting a theme file on and off disk (HIVE-80).
@@ -1459,11 +1465,6 @@ export function registerIpcHandlers(): void {
       model: request.model,
       effort: request.effort,
       name: request.name,
-      /**
-       * The app's theme, which decides which settings file `claude` is started
-       * with and therefore how it paints its own UI inside the terminal.
-       */
-      theme: request.theme,
       // HIVE-88. Forwarded only here — a restart is never a resume.
       resume: request.resume,
     });
@@ -1503,12 +1504,6 @@ export function registerIpcHandlers(): void {
        * back as `sess-07` would rename a row the user has been watching.
        */
       name: request.name,
-      /**
-       * Forwarded too, and a restart is the one moment a *running* session can
-       * change theme: `claude` reads its settings file once, at startup, so a
-       * session started before a theme toggle keeps its old chrome until this.
-       */
-      theme: request.theme,
     });
   });
 
