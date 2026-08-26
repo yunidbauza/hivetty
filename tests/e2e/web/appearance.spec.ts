@@ -127,3 +127,112 @@ test('changing the terminal font resizes the terminal without destroying it', as
   await expect(terminal).toBeVisible();
   await expect(page.locator('[data-testid="terminal-surface"]')).toHaveCount(1);
 });
+
+/**
+ * The shipped theme set.
+ *
+ * A unit test can prove the store resolves an id and that the gallery renders
+ * seven cards. It cannot prove the app actually *repaints* — that lives in a
+ * `<style>` element written at runtime, resolved by the real cascade against
+ * `tokens.css`, and read back off a computed style. happy-dom has no cascade
+ * to lose the fight in, which is exactly the bug `apply.ts` documents.
+ */
+const SHIPPED = ['Honeycomb', 'Graphite', 'Tidewater', 'Terracotta', 'Porcelain', 'Cinder'];
+
+test('every shipped theme has a card, and only the Hive has no style element', async ({
+  page,
+}) => {
+  await openSettings(page);
+
+  for (const name of ['Hive', ...SHIPPED]) {
+    await expect(
+      page.getByRole('button', { name: `${name} Built in` }),
+      name,
+    ).toBeVisible();
+  }
+
+  // The Hive is active on boot, and `tokens.css` already is that palette — so
+  // there is deliberately nothing written to the document.
+  await expect(page.locator('#hive-theme')).toHaveCount(0);
+});
+
+test('activating a shipped theme repaints the app and survives a reload', async ({
+  page,
+}) => {
+  await openSettings(page);
+
+  const bodyBg = () =>
+    page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const before = await bodyBg();
+
+  await page.getByRole('button', { name: 'Cinder Built in' }).click();
+
+  // The style element appears, and the cascade actually resolves in its favour.
+  await expect(page.locator('#hive-theme')).toHaveCount(1);
+  await expect.poll(bodyBg).not.toBe(before);
+  const cinder = await bodyBg();
+
+  await page.reload();
+
+  // Asserted before the overlay is reopened: the restored palette has to be on
+  // the first frame, the same promise the theme preference makes above.
+  expect(await bodyBg()).toBe(cinder);
+
+  await openSettings(page);
+  await expect(page.getByRole('button', { name: 'Cinder Built in' })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});
+
+test('going back to the Hive removes the style element again', async ({ page }) => {
+  await openSettings(page);
+
+  await page.getByRole('button', { name: 'Porcelain Built in' }).click();
+  await expect(page.locator('#hive-theme')).toHaveCount(1);
+
+  await page.getByRole('button', { name: 'Hive Built in' }).click();
+  await expect(page.locator('#hive-theme')).toHaveCount(0);
+});
+
+test('a shipped theme offers no Remove', async ({ page }) => {
+  await openSettings(page);
+
+  await page.getByRole('button', { name: 'Tidewater actions' }).click();
+  await expect(page.getByRole('menuitem', { name: 'Export…' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Remove' })).toHaveCount(0);
+});
+
+/**
+ * The theme grid flows; the tile does not stretch.
+ *
+ * A fixed column count is trivially assertable in a unit test and proves the
+ * wrong thing — what matters is the resolved track width at two real viewport
+ * sizes, which needs layout. It also catches the failure mode this class is
+ * most exposed to: `grid-cols-[repeat(auto-fill,minmax(min(212px,100%),212px))]`
+ * is a nested-function arbitrary value, and if Tailwind ever stops emitting it
+ * the grid silently collapses to one column with everything full-width.
+ */
+test('theme tiles keep their size and flow to fill the row', async ({ page }) => {
+  await openSettings(page);
+
+  const card = page.getByRole('button', { name: 'Hive Built in' });
+  const columns = async () =>
+    page.evaluate(() => {
+      const grid = document.querySelector<HTMLElement>('[class*="auto-fill"]');
+      return getComputedStyle(grid!).gridTemplateColumns.split(' ').length;
+    });
+
+  await page.setViewportSize({ width: 1100, height: 900 });
+  const narrowTile = (await card.boundingBox())!.width;
+  const narrowColumns = await columns();
+
+  await page.setViewportSize({ width: 1900, height: 900 });
+  const wideTile = (await card.boundingBox())!.width;
+  const wideColumns = await columns();
+
+  // More room buys more themes per row...
+  expect(wideColumns).toBeGreaterThan(narrowColumns);
+  // ...and never a bigger tile.
+  expect(wideTile).toBe(narrowTile);
+});

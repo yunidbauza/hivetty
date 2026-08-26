@@ -40,7 +40,15 @@ test('the projects tab explains that nothing is mapped', async ({ page }) => {
     name: 'Projects, work, and agents',
   });
 
-  await expect(page.getByText(/No projects mapped/i)).toBeVisible();
+  /*
+    The prose restatement of the flavour line is gone, so what proves the panel
+    explained itself is the block it leaves: a drawn line, the control that
+    fixes the emptiness, and the one destination the rail cannot route to.
+  */
+  await expect(rail.locator('[data-swarm-line]').first()).toBeVisible();
+  await expect(
+    rail.getByRole('button', { name: 'Add a new project' }),
+  ).toBeVisible();
   await expect(page.getByText('Settings → Projects')).toBeVisible();
 
   await rail.screenshot({ path: 'test-results/evidence/projects-empty.png' });
@@ -117,9 +125,22 @@ test('the work tab opens on a skeleton, not on data', async ({ page }) => {
   const skeleton = page.getByRole('status', { name: 'Loading tickets' });
 
   if (await skeleton.isVisible()) {
-    await skeleton.screenshot({
-      path: 'test-results/evidence/work-skeleton.png',
-    });
+    /**
+     * **Pre-existing flake, fixed here rather than left to fail intermittently.**
+     *
+     * `isVisible()` and `screenshot()` are two round trips, and the thing being
+     * photographed is a placeholder that exists only until the first status read
+     * comes back — so on a fast answer the element is gone between the check and
+     * the shot, and the screenshot throws. Measured at roughly three failures in
+     * six runs on this machine, on `main` as well as on a branch.
+     *
+     * The screenshot is evidence, not an assertion — the note above already
+     * calls it best-effort — so losing the race costs an image, not a verdict.
+     * The two assertions below are the test and they run either way.
+     */
+    await skeleton
+      .screenshot({ path: 'test-results/evidence/work-skeleton.png' })
+      .catch(() => undefined);
 
     await expect(page.getByText(/GRAC-\d+/)).toHaveCount(0);
     /**

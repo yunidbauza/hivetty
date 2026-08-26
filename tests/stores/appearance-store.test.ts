@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
 import { type HiveTheme } from '@lib/theme/contract';
 import {
   APPEARANCE_STORAGE_KEY,
@@ -286,7 +287,7 @@ describe('appearance-store — persistence', () => {
       editorSplitAxis: 'vertical',
       editorSplitRatio: 0.5,
       editorNav: 'tabs',
-      editorEditable: false,
+      editorEditable: true,
       editorFont: 'system',
       editorFontSize: 13,
       editorWordWrap: true,
@@ -389,7 +390,7 @@ describe('appearance-store — the editor', () => {
     expect(state.editorSplitAxis).toBe('vertical');
     expect(state.editorSplitRatio).toBe(0.5);
     expect(state.editorNav).toBe('tabs');
-    expect(state.editorEditable).toBe(false);
+    expect(state.editorEditable).toBe(true);
     expect(state.editorFontSize).toBe(13);
     expect(state.editorWordWrap).toBe(true);
     expect(state.editorLineNumbers).toBe(true);
@@ -447,14 +448,14 @@ describe('appearance-store — the editor', () => {
   it('puts every editor preference back on reset', () => {
     const store = useAppearanceStore.getState();
     store.setEditorPlacement('split');
-    store.setEditorEditable(true);
+    store.setEditorEditable(false);
     store.setEditorTabWidth(8);
 
     useAppearanceStore.getState().reset();
 
     expect(useAppearanceStore.getState()).toMatchObject({
       editorPlacement: 'full',
-      editorEditable: false,
+      editorEditable: true,
       editorTabWidth: 2,
     });
   });
@@ -487,6 +488,76 @@ describe('the theme library', () => {
   it('resolves a dangling activeThemeId to the built-in rather than throwing', () => {
     useAppearanceStore.setState({ activeThemeId: 'gone', themes: {} });
     expect(activeThemeOf(useAppearanceStore.getState())).toBeNull();
+  });
+});
+
+/**
+ * The six that ship beside the Hive.
+ *
+ * The distinction that matters here is which of them `activeThemeOf` answers
+ * `null` for. `null` means *the stylesheet already is this palette* — true of
+ * the Hive and of nothing else — so a shipped theme that resolved to `null`
+ * would activate by removing the style element and leave the Hive on screen
+ * under another theme's name.
+ */
+describe('the shipped themes beside the Hive', () => {
+  const SHIPPED = ['honeycomb', 'graphite', 'tidewater', 'terracotta', 'porcelain', 'cinder'];
+
+  it('resolves the Hive to null — the stylesheet is already that palette', () => {
+    useAppearanceStore.getState().activateTheme('hive');
+    expect(activeThemeOf(useAppearanceStore.getState())).toBeNull();
+    expect(document.getElementById('hive-theme')).toBeNull();
+  });
+
+  it.each(SHIPPED)('resolves %s to its own theme, not to null', (id) => {
+    useAppearanceStore.setState({ activeThemeId: id, themes: {} });
+    expect(activeThemeOf(useAppearanceStore.getState())).toBe(BUILT_IN_THEMES[id]);
+  });
+
+  it.each(SHIPPED)('activating %s writes the style element', (id) => {
+    useAppearanceStore.getState().activateTheme(id);
+
+    expect(useAppearanceStore.getState().activeThemeId).toBe(id);
+    const style = document.getElementById('hive-theme');
+    expect(style).not.toBeNull();
+    expect(style?.textContent).toContain(BUILT_IN_THEMES[id].modes.dark.ui.brand);
+  });
+
+  it('switching from a shipped theme back to the Hive removes the element again', () => {
+    useAppearanceStore.getState().activateTheme('cinder');
+    expect(document.getElementById('hive-theme')).not.toBeNull();
+
+    useAppearanceStore.getState().activateTheme('hive');
+    expect(document.getElementById('hive-theme')).toBeNull();
+  });
+
+  it.each(SHIPPED)('will not let removeTheme drop %s', (id) => {
+    useAppearanceStore.getState().activateTheme(id);
+    useAppearanceStore.getState().removeTheme(id);
+
+    expect(useAppearanceStore.getState().activeThemeId).toBe(id);
+    expect(activeThemeOf(useAppearanceStore.getState())).toBe(BUILT_IN_THEMES[id]);
+  });
+
+  /**
+   * A stored theme must never shadow a shipped id. `localStorage` is reachable
+   * by another tab and an older build, and the library is looked up *second*
+   * for exactly this reason.
+   */
+  it('prefers the shipped theme when a stored one squats on its id', () => {
+    useAppearanceStore.setState({
+      activeThemeId: 'cinder',
+      themes: { cinder: nordFixture },
+    });
+    expect(activeThemeOf(useAppearanceStore.getState())).toBe(BUILT_IN_THEMES.cinder);
+  });
+
+  it('hands the terminal the shipped palette when one is active', () => {
+    useAppearanceStore.getState().activateTheme('honeycomb');
+    useAppearanceStore.setState({ theme: 'dark' });
+
+    const { result } = renderHook(() => useTerminalAppearance());
+    expect(result.current.palette).toBe(BUILT_IN_THEMES.honeycomb.modes.dark.terminal);
   });
 });
 
@@ -606,11 +677,49 @@ describe('the v1 → v2 migration', () => {
   it('re-checks the library even when there is no version to migrate', () => {
     const migrated = migrateAppearance(
       { themes: { nord: { hiveThemeVersion: 1, name: 'Nord' } }, activeThemeId: 'nord' },
-      2,
+      3,
     );
 
     expect(migrated.themes).toEqual({});
     expect(migrated.activeThemeId).toBe('hive');
+  });
+});
+
+/**
+ * The editor becomes editable by default, and the point of the migration is
+ * that a default change alone reaches nobody who already has the app: the
+ * persist middleware writes the whole partialized state on the first save of
+ * anything, so `editorEditable: false` is on disk for almost every install.
+ */
+describe('the v2 → v3 migration', () => {
+  it('drops a stored editorEditable so the new default applies', () => {
+    const migrated = migrateAppearance(
+      { theme: 'light', editorEditable: false, editorTabWidth: 4 },
+      2,
+    );
+
+    // Absent, not `true` — the default lives in `initialAppearanceState` and
+    // this must not become a second copy of it.
+    expect(migrated).not.toHaveProperty('editorEditable');
+    expect(migrated.theme).toBe('light');
+    expect(migrated.editorTabWidth).toBe(4);
+  });
+
+  it('drops it from a v1 payload too, on the way through', () => {
+    const migrated = migrateAppearance(
+      { theme: 'dark', editorEditable: false },
+      1,
+    );
+
+    expect(migrated).not.toHaveProperty('editorEditable');
+    expect(migrated.themes).toEqual({});
+  });
+
+  it('leaves a v3 payload alone, editorEditable included', () => {
+    // Past the migration, the toggle is the user's again — including off.
+    const migrated = migrateAppearance({ editorEditable: false }, 3);
+
+    expect(migrated.editorEditable).toBe(false);
   });
 });
 
@@ -630,5 +739,76 @@ describe('sanitizeThemeState', () => {
 
   it('returns the built-in for a state with no theme fields at all', () => {
     expect(sanitizeThemeState({})).toEqual({ themes: {}, activeThemeId: 'hive' });
+  });
+
+  it.each(['honeycomb', 'graphite', 'tidewater', 'terracotta', 'porcelain', 'cinder'])(
+    'keeps %s, which is shipped rather than imported',
+    (id) => {
+      expect(sanitizeThemeState({ themes: {}, activeThemeId: id })).toEqual({
+        themes: {},
+        activeThemeId: id,
+      });
+    },
+  );
+
+  it('still rejects an id that is neither shipped nor in the library', () => {
+    expect(sanitizeThemeState({ themes: {}, activeThemeId: 'nord' })).toEqual({
+      themes: {},
+      activeThemeId: 'hive',
+    });
+  });
+
+  /**
+   * `localStorage` is reachable by another tab, devtools and an older build,
+   * and `'toString' in BUILT_IN_THEMES` is `true` for any object literal — the
+   * lookup then yields `Object.prototype.toString`, a function, so a `??`
+   * guard never fires. That used to survive sanitising, reach
+   * `applyThemeColors` and the terminal-palette selector, and throw on
+   * `.modes` on every render, with the bad value still in storage.
+   */
+  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])(
+    'refuses %s as an active id',
+    (key) => {
+      expect(sanitizeThemeState({ themes: {}, activeThemeId: key })).toEqual({
+        themes: {},
+        activeThemeId: 'hive',
+      });
+      expect(
+        activeThemeOf({ themes: {}, activeThemeId: key }),
+      ).toBeNull();
+    },
+  );
+
+  /**
+   * Before the shipped set landed, only `hive` was reserved — so a theme
+   * imported as "Graphite" legitimately took the key `graphite`. A built-in
+   * owns that key now, and built-ins resolve first, so without this repair the
+   * person's own theme is unreachable and the gallery rings two cards active.
+   */
+  it('moves a library theme aside when a shipped id took its key', () => {
+    const result = sanitizeThemeState({
+      themes: { graphite: nordFixture },
+      activeThemeId: 'graphite',
+    });
+
+    expect(result.themes).toEqual({ 'graphite-2': nordFixture });
+    // The active pointer follows: that theme is what was on screen, and the
+    // shipped Graphite is not a substitute for it.
+    expect(result.activeThemeId).toBe('graphite-2');
+  });
+
+  it('leaves a non-colliding library theme exactly where it is', () => {
+    const result = sanitizeThemeState({
+      themes: { nord: nordFixture },
+      activeThemeId: 'nord',
+    });
+
+    expect(result.themes).toEqual({ nord: nordFixture });
+    expect(result.activeThemeId).toBe('nord');
+  });
+
+  it('keeps a shipped id active when nothing in the library claims it', () => {
+    const result = sanitizeThemeState({ themes: {}, activeThemeId: 'graphite' });
+    expect(result).toEqual({ themes: {}, activeThemeId: 'graphite' });
   });
 });

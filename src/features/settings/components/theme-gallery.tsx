@@ -2,8 +2,8 @@ import { useState } from 'react';
 
 import { ThemeCard } from '@features/settings/components/theme-card';
 import { ThemeImportResult } from '@features/settings/components/theme-import-result';
-import { BUILT_IN_THEME } from '@lib/theme/built-in';
-import { BUILT_IN_THEME_ID, type HiveTheme } from '@lib/theme/contract';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
+import type { HiveTheme } from '@lib/theme/contract';
 import { PickThemeFailure, pickThemeFile, saveThemeFile } from '@lib/theme/files';
 import { themeTemplateJson, themeToJson, TEMPLATE_FILE_NAME } from '@lib/theme/template';
 import { importTheme, type ImportResult } from '@lib/theme/validate';
@@ -65,10 +65,10 @@ function slugify(name: string): string {
 
 /**
  * `slugify`'d and de-duplicated against every id already in use — the
- * built-in's and every imported theme's. Never resolves to
- * {@link BUILT_IN_THEME_ID} itself: that id is checked into `existingIds`
- * below, so a theme literally named "Hive" collides with it on the first try
- * and is pushed to `hive-2` the same as any other duplicate.
+ * every built-in's and every imported theme's. Never resolves to a shipped id:
+ * all of them are checked into `existingIds` below, so a theme literally named
+ * "Hive" — or "Cinder" — collides on the first try and is pushed to `hive-2`
+ * the same as any other duplicate.
  */
 function uniqueThemeId(name: string, existingIds: ReadonlySet<string>): string {
   const base = slugify(name);
@@ -116,7 +116,10 @@ export function ThemeGallery() {
 
       const imported = importTheme(picked.contents, picked.name);
       if (imported.ok) {
-        const existingIds = new Set([BUILT_IN_THEME_ID, ...Object.keys(themes)]);
+        const existingIds = new Set([
+          ...Object.keys(BUILT_IN_THEMES),
+          ...Object.keys(themes),
+        ]);
         const id = uniqueThemeId(imported.theme.name, existingIds);
         /**
          * `zustand/persist` writes to `localStorage` **synchronously, inside
@@ -201,16 +204,33 @@ export function ThemeGallery() {
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3 max-[860px]:grid-cols-2">
-        <ThemeCard
-          theme={BUILT_IN_THEME}
-          id={BUILT_IN_THEME_ID}
-          isActive={activeThemeId === BUILT_IN_THEME_ID}
-          isBuiltIn
-          onActivate={activateTheme}
-          onExport={(id) => onExport(id, BUILT_IN_THEME)}
-          onRemove={() => {}}
-        />
+      {/*
+        A fixed tile that flows, rather than a fixed count that stretches.
+
+        Four columns capped at 880px meant a wide settings pane left a gap at
+        the right while the rows stayed short — and any narrower pane divided
+        the same 880px into four *smaller* tiles. `auto-fill` at a fixed track
+        width inverts both: the tile is the constant and the column count is
+        what the width buys, so widening the window adds themes to a row
+        instead of inflating the ones already there.
+
+        `minmax(min(212px,100%),212px)` is the one-column escape hatch: below
+        212px of content box the track collapses to the container instead of
+        overflowing it, which a bare `212px` track would do.
+      */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(212px,100%),212px))] gap-2.5">
+        {Object.entries(BUILT_IN_THEMES).map(([id, theme]) => (
+          <ThemeCard
+            key={id}
+            theme={theme}
+            id={id}
+            isActive={activeThemeId === id}
+            isBuiltIn
+            onActivate={activateTheme}
+            onExport={(exportId) => onExport(exportId, theme)}
+            onRemove={() => {}}
+          />
+        ))}
         {Object.entries(themes).map(([id, theme]) => (
           <ThemeCard
             key={id}

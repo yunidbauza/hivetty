@@ -1,11 +1,25 @@
 import { ArrowClockwise } from '@phosphor-icons/react';
+import type { ReactNode } from 'react';
 
 import { usePrRefresh } from '@/hooks/use-pr-refresh';
+import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
+import { isSession } from '@/types/entity';
 
 import { EmptyState } from '@components/ui/empty-state';
+import { PullIndicator } from '@components/ui/pull-indicator';
 import { PrCard } from '@features/pull-requests/components/pr-card';
 import { PrListSkeleton } from '@features/pull-requests/components/pr-card-skeleton';
-import { usePrs, usePrSource, useRefreshPrs, type PrSource } from '@stores/hive-store';
+import { PrSearchRow } from '@features/pull-requests/components/pr-search-row';
+import {
+  useActiveEntity,
+  usePrs,
+  usePrSearch,
+  usePrSearchResults,
+  usePrSource,
+  useRefreshPrs,
+  type PrSource,
+} from '@stores/hive-store';
+import { usePrSearchTerm } from '@stores/ui-store';
 
 /**
  * Every PR the fleet has open — what is shippable, and what is blocked.
@@ -100,10 +114,75 @@ function RetryButton({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/**
+ * The panel's own scroll boundary.
+ *
+ * The rail's `role="tabpanel"` wrapper scrolls whatever panel it holds, which
+ * for this one meant the search row and its repo scope travelling upward with
+ * the results — controls that describe the list scrolling out of reach of the
+ * list they describe.
+ *
+ * Filling the rail's height exactly is what fixes it: the outer scroller then
+ * has nothing to scroll and never engages, and the region below the pinned
+ * header becomes the only thing that moves. That is preferable to `sticky`,
+ * which keeps the row in view but leaves it inside the scrolling flow — so it
+ * still needs an opaque fill to hide the cards passing under it, and the
+ * scrollbar still spans the whole panel including the part that never moves.
+ *
+ * The WORK panel is deliberately left alone: it has no header to pin, so its
+ * cards scrolling in the rail's own container is already the right behaviour.
+ */
+function PrsLayout({
+  header,
+  listRef,
+  children,
+}: {
+  header: ReactNode;
+  /** Goes *inside* the scroller, so `usePullToRefresh` finds it walking up. */
+  listRef?: (node: HTMLElement | null) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      data-panel="prs"
+      className="flex h-full min-h-0 flex-col gap-[var(--cc-list-gap-sm)]"
+    >
+      <div className="shrink-0">{header}</div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          ref={listRef}
+          className="flex flex-col gap-[var(--cc-list-gap-sm)]"
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function PrsPanel() {
   const prs = usePrs();
   const source = usePrSource();
   const refresh = useRefreshPrs();
+  const search = usePrSearch();
+  const results = usePrSearchResults();
+  const term = usePrSearchTerm();
+
+  /**
+   * Which project a narrow search means.
+   *
+   * The active session's, which is the same rule the explorer follows — the
+   * app is organised around "which session am I watching", and a second
+   * selector for the search would be one more thing to keep in step with the
+   * first. `null` when nothing is being watched, which the row renders as a
+   * checked, disabled "All repos".
+   */
+  const entity = useActiveEntity();
+  const projectId = entity && isSession(entity) ? entity.project : null;
+
+  /** A search replaces the list rather than filtering it — see `PrSearchRow`. */
+  const searching = term !== '';
 
   /*
     Subscribes this panel to the shared poller: reads now if nothing else was
@@ -118,20 +197,75 @@ export function PrsPanel() {
   };
 
   /*
+    Overscrolling the top of the list forces a sweep.
+
+    Off during a search and during the first load. A search replaces the list
+    rather than filtering it, so pulling there would refresh a list the user
+    cannot currently see — and the results it *can* see would not move, which
+    reads as the gesture being broken rather than as it having done something
+    elsewhere.
+  */
+  const pull = usePullToRefresh({
+    onRefresh: refresh,
+    disabled: searching || source.kind === 'loading',
+  });
+
+  /*
     The skeleton *replaces* the list rather than sitting above it, and only on
     the first sweep — `loading` is only ever set when the source is not already
     live, so a refresh with rows on screen keeps them.
   */
-  if (source.kind === 'loading') {
+  if (source.kind === 'loading' && !searching) {
     return (
-      <div data-panel="prs" className="flex flex-col gap-[var(--cc-list-gap-sm)]">
+      <PrsLayout header={<PrSearchRow projectId={projectId} />}>
         <PrListSkeleton />
-      </div>
+      </PrsLayout>
+    );
+  }
+
+  /*
+    A search takes the panel over completely: its own results, its own empty
+    state, and none of the sweep's notices. Those notices are about the standing
+    list — "these may be out of date", "no project is a GitHub repository" — and
+    none of them describes what a search just did.
+  */
+  if (searching) {
+    return (
+      <PrsLayout header={<PrSearchRow projectId={projectId} />}>
+        {search.error !== null ? (
+          <p className="px-1 pb-1 text-[11.5px] leading-[1.45] text-amber">
+            {search.error}
+          </p>
+        ) : null}
+
+        {/*
+          The skeleton stands in only for the **first** answer, while `results`
+          is still `null`. A re-search — narrowing, widening, another keystroke —
+          keeps the rows it has, which is the same rule the sweep's skeleton
+          follows: replacing a live list with grey boxes makes the panel blink
+          for something the user can already see.
+
+          Without this the first keystroke left the panel blank for the whole
+          debounce plus the round trip, because the search branch is entered on
+          the term rather than on a request being out.
+        */}
+        {results === null && search.error === null ? <PrListSkeleton /> : null}
+
+        {results?.map((pr) => <PrCard key={pr.url} pr={pr} />)}
+
+        {search.error === null && !search.searching && results?.length === 0 ? (
+          <EmptyState phrase="empty.pullRequests" creature="spire">
+            Nothing matches “{term}”.
+          </EmptyState>
+        ) : null}
+      </PrsLayout>
     );
   }
 
   return (
-    <div data-panel="prs" className="flex flex-col gap-[var(--cc-list-gap-sm)]">
+    <PrsLayout header={<PrSearchRow projectId={projectId} />} listRef={pull.ref}>
+      <PullIndicator distance={pull.distance} phase={pull.phase} />
+
       <SourceNotice source={source} onRetry={retry} />
 
       {/*
@@ -161,6 +295,6 @@ export function PrsPanel() {
           .
         </EmptyState>
       ) : null}
-    </div>
+    </PrsLayout>
   );
 }

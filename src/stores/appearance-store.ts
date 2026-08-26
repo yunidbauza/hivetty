@@ -11,6 +11,7 @@ import {
 } from '@lib/terminal/fonts';
 import { applyThemeColors } from '@lib/theme/apply';
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
 import { BUILT_IN_THEME_ID, type HiveTheme } from '@lib/theme/contract';
 import { isHiveTheme } from '@lib/theme/validate';
 
@@ -111,13 +112,27 @@ interface AppearanceState {
   editorSplitRatio: number;
   editorNav: EditorNav;
   /**
-   * Whether the editor accepts keystrokes and offers a save.
+   * Whether the editor accepts keystrokes and offers a save. **On by default.**
    *
    * **Not a security control.** It lives in `localStorage`, so it gates the UI
-   * and nothing else; the filesystem is gated by containment in main. It is
-   * here because most of the time this app is used, the thing editing the file
-   * is the agent in the terminal, and a second editable buffer over the same
-   * file is a way to lose work rather than a convenience.
+   * and nothing else; the filesystem is gated by containment in main.
+   *
+   * ## Why the default flipped
+   *
+   * It shipped off, arguing that the thing editing the file is the agent in the
+   * terminal and a second editable buffer over the same file is a way to lose
+   * work. The premise was right and the conclusion was not: a read-only editor
+   * does not prevent the conflict, it prevents the *user* from taking part in
+   * it. The agent is already equipped to deal with a file that changed under
+   * it — that is the ordinary condition of working in a repository — and a
+   * one-character fix mid-session should not require leaving the app.
+   *
+   * The staleness machinery this store's sibling (`editor-store.ts`) already
+   * carries is what makes that safe to say out loud: a buffer whose file moved
+   * underneath is marked stale, and a dirty one that moved is a conflict. Those
+   * states exist precisely so both parties can edit.
+   *
+   * The toggle stays, for anyone who wants the old guard back.
    */
   editorEditable: boolean;
   editorFont: TerminalFontId;
@@ -282,16 +297,38 @@ function applyDensity(density: Density) {
 }
 
 /**
- * The theme actually active, resolved from the library.
+ * The theme actually active, resolved from the built-ins and then the library.
+ *
+ * `null` does **not** mean "no theme" — it means *the Hive*, and specifically
+ * that nothing needs to be written: `tokens.css` is already that palette, so
+ * `applyThemeColors(null)` removes the style element and lets the stylesheet
+ * paint. Every other shipped theme resolves to a real theme object and
+ * paints through the same generated `<style>` an imported theme does.
  *
  * A dangling `activeThemeId` — a theme removed elsewhere, a store that only
- * half-restored — resolves to `null` (the built-in) rather than throwing: a
- * store in that state still has to paint something.
+ * half-restored — resolves to `null` rather than throwing: a store in that
+ * state still has to paint something.
+ *
+ * Built-ins are looked up **before** the library so a shipped id can never be
+ * shadowed by a stored one, whatever found its way into `localStorage`.
+ *
+ * Every lookup is `Object.hasOwn`, never `in` or a bare `?? `. `'toString' in
+ * BUILT_IN_THEMES` is `true` for any object literal and the lookup yields
+ * `Object.prototype.toString` — a function rather than `undefined`, so `??`
+ * does not fire and a stored `activeThemeId` of `"toString"` reached
+ * `applyThemeColors` and the terminal-palette selector as a function, throwing
+ * on `.modes` on every render. That is the same unrecoverable boot this
+ * store's rehydrate guard was written to close, arriving through the id
+ * instead of through the theme.
  */
 export function activeThemeOf(
   state: Pick<AppearanceState, 'themes' | 'activeThemeId'>,
 ): HiveTheme | null {
-  return state.themes[state.activeThemeId] ?? null;
+  const { activeThemeId } = state;
+  if (activeThemeId === BUILT_IN_THEME_ID) return null;
+  if (Object.hasOwn(BUILT_IN_THEMES, activeThemeId)) return BUILT_IN_THEMES[activeThemeId];
+  if (Object.hasOwn(state.themes, activeThemeId)) return state.themes[activeThemeId];
+  return null;
 }
 
 /** Push everything that lives on `<body>` (and the theme style element) at once — rehydration and reset. */
@@ -340,7 +377,7 @@ const initialAppearanceState = {
   editorSplitAxis: 'vertical' as EditorSplitAxis,
   editorSplitRatio: 0.5,
   editorNav: 'tabs' as EditorNav,
-  editorEditable: false,
+  editorEditable: true,
   editorFont: DEFAULT_TERMINAL_FONT,
   editorFontSize: 13,
   editorWordWrap: true,
@@ -399,28 +436,78 @@ export function sanitizeThemeState(state: Record<string, unknown>): {
 } {
   const raw = state.themes;
   const themes: Record<string, HiveTheme> = {};
+  /** Old id -> the id it was moved to, so the active pointer can follow it. */
+  const rekeyed = new Map<string, string>();
+
   if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
     for (const [id, theme] of Object.entries(raw)) {
-      if (isHiveTheme(theme)) themes[id] = theme;
+      if (!isHiveTheme(theme)) continue;
+
+      // A library entry that collides with a shipped id is moved aside rather
+      // than dropped. Before the shipped set landed only `hive` was
+      // reserved, so a theme
+      // imported as "Graphite" legitimately took the key `graphite`; now that
+      // a built-in owns it, `activeThemeOf` resolves the shipped one first and
+      // the imported theme becomes unreachable — while the gallery renders two
+      // cards under one name, both ringed active. Re-keying keeps the person's
+      // own theme, which dropping it would not.
+      let key = id;
+      if (Object.hasOwn(BUILT_IN_THEMES, key)) {
+        let suffix = 2;
+        while (
+          Object.hasOwn(BUILT_IN_THEMES, `${id}-${suffix}`) ||
+          Object.hasOwn(themes, `${id}-${suffix}`)
+        ) {
+          suffix += 1;
+        }
+        key = `${id}-${suffix}`;
+        rekeyed.set(id, key);
+      }
+
+      themes[key] = theme;
     }
   }
 
   const requested = state.activeThemeId;
+  // If the active id was the one just moved, follow it: that theme is what was
+  // on screen before the upgrade, and the shipped theme is not a substitute
+  // for it.
+  const followed =
+    typeof requested === 'string' ? (rekeyed.get(requested) ?? requested) : undefined;
   const activeThemeId =
-    typeof requested === 'string' && (requested === BUILT_IN_THEME_ID || requested in themes)
-      ? requested
+    followed !== undefined &&
+    (Object.hasOwn(BUILT_IN_THEMES, followed) || Object.hasOwn(themes, followed))
+      ? followed
       : BUILT_IN_THEME_ID;
 
   return { themes, activeThemeId };
 }
 
 /**
- * v1 → v2 (HIVE-80): the store gains a theme library.
+ * Migrations. Exported for the test.
  *
- * Exported for the test. Nobody's saved theme, font, size, scrollback,
- * density, team name or editor settings resets — the two new fields are simply
- * added, which is the whole job. From v2 on there is nothing to add, only the
- * library to re-check ({@link sanitizeThemeState}) — a v2 payload has been
+ * **v1 → v2 (HIVE-80): the store gains a theme library.** Nobody's saved theme,
+ * font, size, scrollback, density, team name or editor settings resets — the
+ * two new fields are simply added, which is the whole job.
+ *
+ * **v2 → v3: the editor becomes editable by default.** A default change alone
+ * would reach nobody who already has this app installed. The persist middleware
+ * writes the whole partialized state on the first save of *anything* — one
+ * theme flip is enough — so almost every existing install has
+ * `editorEditable: false` on disk, not because the user chose it but because it
+ * was the default when the value was written.
+ *
+ * Dropping the stored key is what lets the new default apply. It cannot
+ * distinguish "never touched it" from "deliberately turned it off", and it does
+ * not try to: the second group loses one toggle they can set again in Settings,
+ * and the first group — everyone else — gets the change the release is for.
+ * Turning it back off is one click; discovering the editor is still read-only
+ * for reasons invisible in the UI is a bug report.
+ *
+ * Every other key is carried across untouched, as in v1 → v2.
+ *
+ * From v3 on there is nothing to add, only the library to re-check
+ * ({@link sanitizeThemeState}) — a payload at the current version has been
  * writable by anything with a `localStorage` handle since the day it existed.
  */
 export function migrateAppearance(
@@ -428,8 +515,20 @@ export function migrateAppearance(
   version: number,
 ): Record<string, unknown> {
   const state = (persisted ?? {}) as Record<string, unknown>;
-  if (version >= 2) return { ...state, ...sanitizeThemeState(state) };
-  return { ...state, themes: {}, activeThemeId: BUILT_IN_THEME_ID };
+
+  if (version >= 3) return { ...state, ...sanitizeThemeState(state) };
+
+  // v1 has no theme library at all; v2 has one that still needs re-checking.
+  const withThemes: Record<string, unknown> =
+    version >= 2
+      ? { ...state, ...sanitizeThemeState(state) }
+      : { ...state, themes: {}, activeThemeId: BUILT_IN_THEME_ID };
+
+  // Deleted rather than set to `true`, so the default is stated in exactly one
+  // place — `initialAppearanceState` — and this stays a migration rather than a
+  // second definition of it.
+  const { editorEditable: _dropped, ...rest } = withThemes;
+  return rest;
 }
 
 export const APPEARANCE_STORAGE_KEY = 'hive.appearance';
@@ -518,13 +617,16 @@ export const useAppearanceStore = create<AppearanceState>()(
         set((state) => ({ themes: { ...state.themes, [id]: theme } })),
 
       activateTheme: (id) => {
-        applyThemeColors(get().themes[id] ?? null);
+        applyThemeColors(activeThemeOf({ themes: get().themes, activeThemeId: id }));
         set({ activeThemeId: id });
       },
 
       removeTheme: (id) => {
         const { themes, activeThemeId } = get();
-        if (!(id in themes)) return;
+        // A built-in is not a key of `themes`, so this is also what makes a
+        // shipped theme unremovable — the gallery hides the control, and this
+        // is the guard behind it.
+        if (!Object.hasOwn(themes, id)) return;
 
         const { [id]: _removed, ...rest } = themes;
         const wasActive = activeThemeId === id;
@@ -544,7 +646,7 @@ export const useAppearanceStore = create<AppearanceState>()(
     }),
     {
       name: APPEARANCE_STORAGE_KEY,
-      version: 2,
+      version: 3,
       /**
        * `migrateAppearance` is typed loosely (`Record<string, unknown>`) so the
        * test can hand it a bare v1 payload; the persist option needs the exact
