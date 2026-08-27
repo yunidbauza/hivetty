@@ -10,6 +10,8 @@ import {
   type ProjectConfig,
 } from '@shared/config-contract';
 
+import type { LoginEnvStatus } from '@shared/ipc-contract';
+
 import { RuntimeSection } from '@features/settings/components/runtime-section';
 import { resetProjectConfig, setProjectConfigForTest } from '@lib/project-config';
 
@@ -19,6 +21,7 @@ const setRuntimeConfig = vi.fn();
 const setProjectRuntimeConfig = vi.fn();
 const diagnoseAgentCommand = vi.fn();
 const diagnoseSessionEnv = vi.fn();
+const readLoginEnvStatus = vi.fn<() => Promise<LoginEnvStatus | null>>();
 
 vi.mock('@/lib/project-config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/project-config')>();
@@ -28,7 +31,26 @@ vi.mock('@/lib/project-config', async (importOriginal) => {
     setProjectRuntimeConfig: (request: unknown) => setProjectRuntimeConfig(request),
     diagnoseAgentCommand: (request: unknown) => diagnoseAgentCommand(request),
     diagnoseSessionEnv: (request: unknown) => diagnoseSessionEnv(request),
+    readLoginEnvStatus: () => readLoginEnvStatus(),
   };
+});
+
+/**
+ * What `integrations.loginEnv()` answers.
+ *
+ * The pane reads this verb and not `integrations.status()`: the status verb
+ * carries the same field behind two `spawnSync` calls looking for `gh`, and
+ * this pane wants the environment, not the binary.
+ */
+const loginEnvStatus = (over: Partial<LoginEnvStatus> = {}): LoginEnvStatus => ({
+  enabled: true,
+  imported: true,
+  shell: '/bin/zsh',
+  inheritedEntries: 4,
+  effectiveEntries: 12,
+  varsImported: ['PATH'],
+  error: null,
+  ...over,
 });
 
 const entry = (over: Partial<ProjectConfig> & { id: string }): ProjectConfig => ({
@@ -57,6 +79,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   diagnoseAgentCommand.mockResolvedValue(null);
   diagnoseSessionEnv.mockResolvedValue(null);
+  readLoginEnvStatus.mockResolvedValue(loginEnvStatus());
   resetProjectConfig();
 });
 
@@ -550,6 +573,103 @@ describe('RuntimeSection — no bridge', () => {
 
     expect(
       screen.getByText(/only available in the desktop app/),
+    ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The group that arrived from Integrations.
+ *
+ * It reports the environment every session spawns into, and the switch that
+ * decides it — "Login shell environment" — has always been in this pane. So the
+ * pane that owned the answer could not own the control, and had to send the
+ * reader here by name. These assert the two facts that fixed that: it is
+ * mounted here, and it reads the environment rather than inventing it.
+ */
+describe('RuntimeSection — PATH source', () => {
+  it('renders the group, under the switch that decides it', async () => {
+    setProjectConfigForTest(snapshot());
+
+    render(<RuntimeSection />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'PATH source' }),
+    ).toBeInTheDocument();
+  });
+
+  it('reports the shell the environment came from', async () => {
+    setProjectConfigForTest(snapshot());
+
+    render(<RuntimeSection />);
+
+    expect(
+      await screen.findByText(/Imported from your login shell/),
+    ).toBeInTheDocument();
+    expect(screen.getByText('/bin/zsh')).toBeInTheDocument();
+  });
+
+  it('reports the launch, so it cannot contradict the switch above it', async () => {
+    readLoginEnvStatus.mockResolvedValue(
+      loginEnvStatus({
+        enabled: false,
+        imported: false,
+        shell: null,
+        varsImported: [],
+        effectiveEntries: 4,
+      }),
+    );
+    setProjectConfigForTest(snapshot());
+
+    render(<RuntimeSection />);
+
+    expect(
+      await screen.findByText(/was off when this app started/),
+    ).toBeInTheDocument();
+    // Never a pointer to the pane the reader is already standing in.
+    expect(screen.queryByText(/Settings → Runtime/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * One read per open, not one per save.
+   *
+   * Every write in this pane installs a fresh `ConfigSnapshot`, and an effect
+   * depending on it would re-read on each committed keystroke.
+   */
+  it('asks main once, however many times the snapshot changes', async () => {
+    setProjectConfigForTest(snapshot());
+
+    const { rerender } = render(<RuntimeSection />);
+    await screen.findByRole('heading', { name: 'PATH source' });
+
+    setProjectConfigForTest(snapshot({ shell: '/bin/bash' }));
+    rerender(<RuntimeSection />);
+
+    expect(readLoginEnvStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks main for nothing when there is no snapshot to ask about', () => {
+    render(<RuntimeSection />);
+
+    expect(readLoginEnvStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The failure the pane could not previously show.
+ *
+ * `readLoginEnvStatus` answers `null` for a failed channel as well as for a
+ * missing bridge, so a pane storing that verbatim would say it was checking
+ * forever. The reader collapses it to an explicit unavailable state.
+ */
+describe('RuntimeSection — PATH source, unavailable', () => {
+  it('reports a failed read instead of checking forever', async () => {
+    readLoginEnvStatus.mockResolvedValue(null);
+    setProjectConfigForTest(snapshot());
+
+    render(<RuntimeSection />);
+
+    expect(
+      await screen.findByText(/could not be asked what environment it is using/),
     ).toBeInTheDocument();
   });
 });

@@ -82,7 +82,7 @@ export function JiraQueryGroup({ jql, canTest }: JiraQueryGroupProps) {
 
   return (
     <SettingsGroup
-      title="Ticket query"
+      title="Query"
       description="Which issues the WORK tab shows."
     >
       <div className="flex flex-col gap-2.5 rounded-[7px] border border-border-soft p-3">

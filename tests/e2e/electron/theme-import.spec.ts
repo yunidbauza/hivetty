@@ -75,6 +75,14 @@ const importNordTheme = async (page: Page): Promise<void> => {
   // The clean-import banner, not the "imported with N notes" one — the
   // fixture is asserted elsewhere to import with zero inherited colours and
   // zero contrast notes, so this is the only banner it can produce.
+  //
+  // Both modes' `brand` moved when the hierarchy pass put `brand` on the
+  // contrast floor against `panel` *and* `panel-2` — the rail's ground and the
+  // settings dialog's. Light went from Nord's `#5e81ac` (4.03:1 on white) to
+  // `#4c6a92`, which is this palette's own `brandFillStrong`; dark went from
+  // `#88c0d0` (4.31:1 on `panel-2`) to a lightened frost `#9fd0dd`. Both now
+  // clear 4.5:1 on both grounds, which is what makes this the clean import the
+  // spec relies on. `syntax.name` follows `brand` in this file, so it moved too.
   await expect(page.getByText(/imported and activated/)).toBeVisible();
 };
 

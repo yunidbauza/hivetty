@@ -27,6 +27,7 @@ import type {
   FsRefusal,
   FsResult,
   RootInfo,
+  SearchResults,
   WriteFileResult,
 } from '@shared/fs-contract';
 import type { GhResult, PrRecord, PrsSnapshot } from '@shared/github-contract';
@@ -38,6 +39,7 @@ import {
   parseReadDirRequest,
   parseReadFileRequest,
   parseRootRequest,
+  parseSearchRequest,
   parseWatchRequest,
   parseWriteFileRequest,
   parseDiagnoseEnvRequest,
@@ -75,6 +77,7 @@ import {
   CH,
   type AppInfo,
   type IntegrationsStatus,
+  type LoginEnvStatus,
   type NotificationActivateEvent,
   type NotificationDeliveryStatus,
   type NotificationDismissedEvent,
@@ -124,6 +127,7 @@ import {
   readFileContent,
   readRoot,
   setSessionCwdLookup,
+  searchProject,
   writeFileContent,
   type FsWatchLayer,
 } from '../fs';
@@ -1217,6 +1221,19 @@ export function registerIpcHandlers(): void {
   });
 
   /**
+   * The environment half, without the binary.
+   *
+   * `integrations:status` above waits on the same memoised promise and then
+   * spends two `spawnSync` calls looking for `gh`. Settings → Runtime wants the
+   * `PATH` this app searched and has no interest in `gh`, so it gets the wait
+   * and none of the subprocesses — which, since the promise was started at
+   * boot, makes this handler a variable read that cannot block main.
+   */
+  handle(CH.integrationsLoginEnv, async (): Promise<LoginEnvStatus> => {
+    return await loginEnvStatus();
+  });
+
+  /**
    * Jira (HIVE-67) — the app's first stored credential, and its first outbound
    * HTTP request.
    *
@@ -1388,6 +1405,17 @@ export function registerIpcHandlers(): void {
     CH.fsWriteFile,
     (_event, payload): Promise<WriteFileResult> =>
       writeFileContent(parseWriteFileRequest(payload)),
+  );
+
+  /**
+   * The recursing verb. Answers `FsResult` like every read here —
+   * a search that failed must render as a failed search, not as a broken app.
+   * Every bound it obeys lives in `fs-contract.ts`, not at this call site.
+   */
+  handle(
+    CH.fsSearch,
+    (_event, payload): Promise<FsResult<SearchResults>> =>
+      searchProject(parseSearchRequest(payload)),
   );
 
   /**

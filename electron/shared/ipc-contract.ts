@@ -55,6 +55,8 @@ import type {
   ReadFileRequest,
   RootInfo,
   RootRequest,
+  SearchRequest,
+  SearchResults,
   WatchRequest,
   WriteFileRequest,
   WriteFileResult,
@@ -175,6 +177,21 @@ export const CH = {
   configReveal: 'config:reveal',
   configReset: 'config:reset',
   integrationsStatus: 'integrations:status',
+  /**
+   * What the login-shell import did — and nothing about `gh`.
+   *
+   * Its own verb for the same reason {@link CH.notificationsSupported} is one:
+   * {@link CH.integrationsStatus} already carries this field, and that handler
+   * **executes `gh`** through `spawnSync`. Settings → Runtime needs the
+   * environment and not the binary, so reading it off the integrations verb
+   * would spend two synchronous subprocesses — and block main for as long as
+   * they take — to hand back a value that was already resolved at boot.
+   *
+   * `loginEnvStatus()` is a memoised promise started during startup, so this
+   * handler is effectively a variable read. No payload, like its neighbours,
+   * which is what makes the surface safe rather than merely small.
+   */
+  integrationsLoginEnv: 'integrations:login-env',
   /**
    * The Jira connection settings (HIVE-67).
    *
@@ -539,7 +556,7 @@ export const CH = {
   /**
    * The project filesystem — the explorer and the editor.
    *
-   * Five verbs and one event. None of them takes a path: each names a
+   * Six verbs and one event. None of them takes a path: each names a
    * `projectId` and a project-relative path, and main resolves it against the
    * directory *it* validated when it loaded the config. See `fs-contract.ts`
    * for why that is the whole security design rather than one layer of it.
@@ -560,6 +577,15 @@ export const CH = {
   fsRoot: 'fs:root',
   fsReadFile: 'fs:read-file',
   fsWriteFile: 'fs:write-file',
+  /**
+   * Find a file by name, or a string inside one.
+   *
+   * The one verb here that *recurses*, and the reason it has to exist in main
+   * at all is in `fs-contract.ts`: the tree is lazy, so a renderer-side filter
+   * can only see folders someone already opened and would answer "no matches"
+   * for a file one collapsed directory away.
+   */
+  fsSearch: 'fs:search',
   fsWatch: 'fs:watch',
   fsUnwatch: 'fs:unwatch',
   fsChanged: 'fs:changed', // main → renderer
@@ -1150,6 +1176,12 @@ export interface HiveBridge {
     /** Write, unless the file moved on. See {@link WriteFileResult}. */
     writeFile(request: WriteFileRequest): Promise<WriteFileResult>;
     /**
+     * Walk the project for a name or a string. Bounded in five directions —
+     * depth, files, matches, lines per file and wall clock — and it says so:
+     * {@link SearchResults.capped} is what the panel renders as "500+".
+     */
+    search(request: SearchRequest): Promise<FsResult<SearchResults>>;
+    /**
      * Watch one project. Replaces the previous watcher rather than adding one.
      *
      * Singular by design: the explorer shows one project at a time, and a
@@ -1200,6 +1232,11 @@ export interface HiveBridge {
    */
   integrations: {
     status(): Promise<IntegrationsStatus>;
+    /**
+     * The environment half alone — see {@link CH.integrationsLoginEnv}. Cheap
+     * where `status()` is not, because it never reaches for `gh`.
+     */
+    loginEnv(): Promise<LoginEnvStatus>;
   };
   /**
    * GitHub, read-only.
@@ -1653,7 +1690,7 @@ export const BRIDGE_SESSION_KEYS = [
 ] as const;
 
 /** The exact key set of `window.hive.integrations`. */
-export const BRIDGE_INTEGRATIONS_KEYS = ['status'] as const;
+export const BRIDGE_INTEGRATIONS_KEYS = ['loginEnv', 'status'] as const;
 
 /**
  * The exact key set of `window.hive.fs`.
@@ -1674,6 +1711,14 @@ export const BRIDGE_FS_KEYS = [
   'root',
   'readFile',
   'writeFile',
+  /*
+    The recursing one, and the only verb here that reads more than
+    it was pointed at. It still takes no path — a `projectId`, a query and a
+    mode — so the sentence above holds; what it adds is a *walk*, which is why
+    every bound it obeys is declared in `fs-contract.ts` rather than chosen at
+    the call site.
+  */
+  'search',
   'watch',
   'unwatch',
   'onChanged',

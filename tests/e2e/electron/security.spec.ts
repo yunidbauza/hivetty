@@ -211,7 +211,15 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
   ]);
   expect(surface.theme).toEqual(['pick', 'save']);
   expect(surface.ui).toEqual(['reportForeground']);
-  expect(surface.integrations).toEqual(['status']);
+  /**
+   * Two, and the second is deliberately the *narrower* of the pair.
+   *
+   * `status` executes `gh`; `loginEnv` reads a promise resolved at boot and
+   * runs nothing. Both take no argument, which is what bounds them — the
+   * renderer contributes nothing to either call, so there is no argv to inject
+   * into. The widening to look at here would be a verb that accepted one.
+   */
+  expect(surface.integrations).toEqual(['loginEnv', 'status']);
   /**
    * Two now, and `searchPrs` is the widening to look at.
    *
@@ -234,12 +242,24 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * the session stream. What it adds is main's *verdict* on which root a read
    * resolves under, which the renderer was previously inferring and getting
    * wrong for any working directory main had refused.
+   *
+   * `search` is the newest, and the only verb here that **recurses**.
+   * It takes no path either — a `projectId`, a query and a mode — so the rule
+   * above still holds for every entry on this list. What it adds is reach: it
+   * reads directories nobody pointed it at, which is why it prunes on
+   * `HIDDEN_ENTRIES` before `stat`, reuses the editor's size and binary
+   * refusals rather than softer ones, and obeys five bounds declared in
+   * `fs-contract.ts` rather than chosen at its call site.
+   *
+   * A verb that took a path, or that walked without a bound, is what this list
+   * exists to make impossible to add quietly.
    */
   expect(surface.fs).toEqual([
     'onChanged',
     'readDir',
     'readFile',
     'root',
+    'search',
     'unwatch',
     'watch',
     'writeFile',

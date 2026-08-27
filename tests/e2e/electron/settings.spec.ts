@@ -86,7 +86,9 @@ test('adds a folder, shows it in the rail, and makes it spawnable', async ({}, t
     await openSettings(page);
 
     // The empty state is the screen a fresh install actually sees.
-    await expect(page.getByText(/no projects yet/i)).toBeVisible();
+    await expect(
+      page.getByText(/add a folder to start a session in it/i),
+    ).toBeVisible();
 
     await page.getByRole('button', { name: /add project/i }).click();
 
@@ -132,7 +134,9 @@ test('a cancelled dialog writes nothing', async ({}, testInfo) => {
     await page.getByRole('button', { name: /add project/i }).click();
 
     // No write, no error, no row: the user closed a dialog they opened.
-    await expect(page.getByText(/no projects yet/i)).toBeVisible();
+    await expect(
+      page.getByText(/add a folder to start a session in it/i),
+    ).toBeVisible();
     expect(readFileSync(configPath, 'utf8')).toBe(EMPTY_CONFIG);
   } finally {
     await app.close();
@@ -155,7 +159,9 @@ test('removing a project leaves every other line of the file intact', async ({},
     await page.getByRole('button', { name: 'Actions for scratch-repo' }).click();
     await page.getByRole('menuitem', { name: /remove/i }).click();
 
-    await expect(page.getByText(/no projects yet/i)).toBeVisible();
+    await expect(
+      page.getByText(/add a folder to start a session in it/i),
+    ).toBeVisible();
 
     const after = JSON.parse(readFileSync(configPath, 'utf8'));
     expect(after.projects).toEqual([]);
@@ -216,8 +222,13 @@ test('creates a skill from Settings, beside the config', async ({}, testInfo) =>
     await openSettings(page);
     await page.getByRole('button', { name: 'Skills' }).click();
 
-    // The screen a fresh install actually sees.
-    await expect(page.getByText(/no skills yet/i)).toBeVisible();
+    // The screen a fresh install actually sees. Anchored on the invitation
+    // rather than a bare "No skills yet." — the creature, the phrase and this
+    // line already report the emptiness, so the label was the one of the four
+    // that said nothing the others did not.
+    await expect(
+      page.getByText(/write one and every session you start will have it/i),
+    ).toBeVisible();
 
     await page.getByRole('button', { name: '+ New skill' }).click();
 

@@ -43,6 +43,7 @@ and bound to Tailwind via `@theme inline` in `src/styles/tokens.css`.
 | `--cc-brand-fill-strong` | `#334fa9` | *(unchanged)* | hive-mark tile (Serenity) |
 | `--cc-on-brand` | `#ffffff` | *(unchanged)* | text/icons on a brand fill |
 | `--cc-danger-solid` | `#d3372f` | *(unchanged)* | notification badge fill |
+| `--cc-on-danger` | `#ffffff` | *(unchanged)* | text/icons on a danger fill |
 | `--cc-code-keyword` | `#b39ff0` | `#6f42c1` | editor: keywords |
 | `--cc-code-string` | `#74b79c` | `#2e6b52` | editor: strings, regexps |
 | `--cc-code-number` | `#ffac47` | `#a1541a` | editor: numbers, booleans, null |
@@ -97,9 +98,18 @@ the concept does (`--blue-600/700/800` and `--color-error`, none of which its
 light theme overrides). Painting the logo tile with `bg-brand` would turn it
 pale blue in dark mode and read as a different logo.
 
-`--cc-danger-solid` is darker than `--cc-red` on purpose: white badge text on
+`--cc-danger-solid` is darker than `--cc-red` on purpose: `--cc-on-danger` on
 `#d3372f` clears WCAG AA at 4.87:1, where `--cc-red`'s dark-mode `#ff8d85` would
 not.
+
+**`--cc-on-danger` is a token of its own, and the reason is worth keeping.** The
+badge used to paint `--cc-on-brand`, which is a different promise — "legible on
+the *brand* fill". Graphite's brand is a light lime, so it correctly answers
+that with a near-black `#141414`, and the badge then rendered black on crimson
+at 3.22:1. No single token can be legible on two fills whose luminance differs
+fourfold, and before this the theme had no way to say so. `validate.ts` now
+checks both fill/on-fill pairs at import time, which is what makes the next one
+fail loudly rather than quietly.
 
 ### Tailwind mapping
 
@@ -119,6 +129,7 @@ working through the same variables:
 --cc-brand-fill → bg-brand-fill    --cc-brand-fill-hover → bg-brand-fill-hover
 --cc-brand-fill-strong → bg-brand-fill-strong
 --cc-on-brand → text-on-brand      --cc-danger-solid → bg-danger-solid
+--cc-on-danger → text-on-danger
 --cc-code-* → text-code-* / bg-code-*   (keyword, string, number, comment,
                                          name, type, operator, constant,
                                          invalid, active-line, selection)
@@ -213,6 +224,50 @@ it; an index stores the slot and resolves at paint time. That is what lets a
 theme toggle repaint scrollback written minutes ago instead of stranding pastel
 text on a white page.
 
+## Hierarchy → colour
+
+One rule, applied wherever a thing on screen contains other things:
+
+| Role | Token | Where |
+| --- | --- | --- |
+| the name of a **container** | `--cc-brand` | a project in the rail, a provider band in Integrations |
+| a thing **inside** it | `--cc-ink` | a session, a settings group, a file |
+| that thing's **metadata** | `--cc-subtle` | a branch, a description, a probe result |
+
+Before this, a project row and a session row in the rail were the same size, the
+same weight and the same colour, and the folder icon beside the project was
+painted *quieter* than the sessions it contained — so the only thing marking a
+project was its indent, and the tree read as one flat column of names. Settings
+had the same problem one level up: Integrations was six equal groups with nothing
+saying three of them were GitHub's and three were Jira's.
+
+**It costs no token.** Every theme ships `brand` in both modes because
+`contract.ts` requires it, so Honeycomb's orange, Graphite's lime and Cinder's
+magenta all arrive without a theme file being touched — and an imported theme
+cannot opt out of having one.
+
+Two limits keep it from spreading into decoration:
+
+- **Brand marks a container among things that are not containers.** In a list
+  where every row *is* a project — Settings → Projects, the new-session picker —
+  only the **icon** takes it. A coloured name there would be a dozen lines of
+  brand with nothing to separate them from.
+- **Status keeps its own vocabulary** (below) and always wins the row it is in.
+  Nothing in this table is allowed to compete with it.
+
+The provider level in Settings is added by *colour*, not by a fourth heading
+size: the type scale is 15 / 13 / 11.5 and has no room above 13px
+(`settings-section-header.tsx` records why), so `SettingsProviderGroup` is an
+11px mono eyebrow in brand over a hairline — the device the explorer already
+uses over the file tree. A group inside such a band draws no rule of its own.
+
+Because `brand` is now body text rather than an accent, `validate.ts` measures
+it: **`brand` below 4.5:1 is a note at import time**, alongside the `ink` checks.
+Against *both* grounds brand text actually sits on — `panel` for the rail,
+`panel-2` for the settings dialog — for the same reason `ink` is checked against
+`panel` and `bg`. All seven built-ins clear both: 5.15:1 at worst on `panel`
+(Graphite light), 4.80:1 at worst on `panel-2` (Graphite light again).
+
 ## Status → colour
 
 | Status | Label | Token | Notes |
@@ -264,3 +319,9 @@ information the label already carries.
 - Interactive controls show a pointer cursor — a base rule in `global.css`, since
   Tailwind v4 dropped the one that used to provide this. Do not add
   `cursor-pointer` per component.
+- **Settings rhythm is asymmetric**: `pb-5` above a group's rule
+  (`settings-group.tsx`), `gap-6` below it (each pane's scroll container). They
+  were `pb-4` / `gap-4`, which put the rule exactly halfway between the group it
+  ends and the group it starts — equidistant reads as belonging to neither, so a
+  floor rendered as a divider between equals. The two numbers live in different
+  files; change them together or the asymmetry inverts.

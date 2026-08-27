@@ -6,16 +6,19 @@ import { TextField } from '@components/ui/text-field';
 import { CommandDiagnosticView } from '@features/settings/components/command-diagnostic-view';
 import { EnvDiagnosticView } from '@features/settings/components/env-diagnostic-view';
 import { EnvEditor } from '@features/settings/components/env-editor';
+import { PathSourceGroup } from '@features/settings/components/path-source-group';
 import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
 import { useProjectConfig } from '@hooks/use-project-config';
 import {
   diagnoseAgentCommand,
   diagnoseSessionEnv,
+  readLoginEnvStatus,
   setProjectRuntimeConfig,
   setRuntimeConfig,
 } from '@lib/project-config';
 import type { CommandDiagnostic, EnvDiagnostic } from '@shared/config-contract';
+import type { LoginEnvStatus } from '@shared/ipc-contract';
 
 /**
  * Runtime settings — shell, agent command, per-project overrides (story 104).
@@ -56,6 +59,17 @@ export function RuntimeSection() {
    * than working.
    */
   const [envDiagnosticPending, setEnvDiagnosticPending] = useState(false);
+  /**
+   * `null` while the read is out, `'unavailable'` once it has failed.
+   *
+   * Three states rather than two, because `readLoginEnvStatus` answers `null`
+   * for both "no bridge" and "the channel threw" — and a component that stores
+   * that verbatim can never leave its loading state. The pane would go on
+   * saying it was checking, forever, with no error and no retry.
+   */
+  const [loginEnv, setLoginEnv] = useState<LoginEnvStatus | 'unavailable' | null>(
+    null,
+  );
 
   useEffect(() => {
     if (!snapshot) return;
@@ -63,9 +77,40 @@ export function RuntimeSection() {
     setCommand(snapshot.claudeCommand);
   }, [snapshot]);
 
+  /**
+   * The environment this app actually searched, for `PathSourceGroup` below.
+   *
+   * `integrations.loginEnv()`, not `integrations.status()`. The status verb
+   * carries this same field, and reaching for it would have spent two
+   * `spawnSync` calls looking for `gh` — blocking main for as long as they take
+   * — to hand back a value resolved at boot. This pane wants the environment
+   * and not the binary, so it asks for exactly that.
+   *
+   * Keyed on *whether* there is a snapshot, never on the snapshot itself: every
+   * write in this pane installs a fresh object, and depending on it would
+   * re-read on each committed keystroke. Nothing here can change the answer
+   * before the next launch anyway — which is what the switch above says about
+   * itself, and what `PathSourceGroup`'s copy is careful to repeat.
+   */
+  const hasSnapshot = snapshot !== null;
+
+  useEffect(() => {
+    if (!hasSnapshot) return;
+
+    let cancelled = false;
+    void readLoginEnvStatus().then((next) => {
+      // `null` is a failure, not a slow answer — see the state's own note.
+      if (!cancelled) setLoginEnv(next ?? 'unavailable');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasSnapshot]);
+
   if (!snapshot) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-5 py-4">
         <SettingsSectionHeader
           title="Runtime"
           description="Runtime settings are only available in the desktop app."
@@ -120,7 +165,7 @@ export function RuntimeSection() {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-5 py-4">
       <SettingsSectionHeader
         title="Runtime"
         description="What a session spawns, and where its agent command comes from."
@@ -283,6 +328,15 @@ export function RuntimeSection() {
           description="Runs your login shell once when the app starts and adopts its PATH, plus GH_TOKEN or GITHUB_TOKEN if this app does not already have them. Off means the app searches only the environment it was launched with — which, opened from Finder, is launchd's four-entry PATH. Takes effect on the next launch."
         />
       </SettingsGroup>
+
+      {/*
+        Directly under the switch that decides it. This group used to sit in
+        Integrations, where it explained a missing `gh` but could not offer the
+        control that would fix it — so the pane owning the answer had to send
+        the reader here by name. Now the answer and the switch are one group
+        apart, and Integrations links this way instead.
+      */}
+      <PathSourceGroup loginEnv={loginEnv} />
 
       <SettingsGroup
         title="Command diagnostic"

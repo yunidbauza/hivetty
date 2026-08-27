@@ -88,6 +88,87 @@ test('reports a gh state without throwing, installed or not', async ({}, testInf
 });
 
 /**
+ * The hierarchy pass, in the shipped renderer (the settings half).
+ *
+ * The pane was six equal groups with nothing saying three were GitHub's and
+ * three were Jira's. Three claims here that the unit suite cannot make: the two
+ * bands are real landmarks a screen reader can jump between, their eyebrows are
+ * painted in the theme's brand rather than in body ink, and the groups inside
+ * them draw no rules — the complaint the bands answer was too many lines, so a
+ * band that kept them would have fixed nothing.
+ */
+test('groups the pane into two provider bands, and draws one line each', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openIntegrations(page);
+  await expect(page.locator('[data-probing]').first()).toBeHidden({
+    timeout: 15_000,
+  });
+
+  // The pane is the scrolling column the section header opens; every band and
+  // group in this test lives inside it.
+  const pane = page
+    .getByRole('heading', { name: 'Integrations', level: 2 })
+    .locator('xpath=ancestor::div[contains(@class,"overflow-y-auto")][1]');
+
+  const github = page.getByRole('region', { name: 'GitHub' });
+  const jira = page.getByRole('region', { name: 'Jira' });
+
+  await expect(github).toBeVisible();
+  await expect(jira).toBeVisible();
+  /*
+    Two bands, and only two — scoped to the pane rather than counted page-wide.
+    A page-global `getByRole('region')` would also fail for any landmark added
+    anywhere else in the shell, reporting "the pane grew a third provider" for a
+    change that had nothing to do with this pane.
+  */
+  await expect(pane.getByRole('region')).toHaveCount(2);
+
+  // Each group sits under the provider that owns it, and says it once.
+  await expect(github.getByRole('heading', { name: 'Token source' })).toBeVisible();
+  await expect(github.getByRole('heading', { name: 'Command line' })).toBeVisible();
+  await expect(jira.getByRole('heading', { name: 'Site' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'PATH source' })).toHaveCount(0);
+
+  /**
+   * The eyebrow is brand, and the body text is not — asserted as painted
+   * colour, which is the only form of the claim jsdom cannot resolve.
+   */
+  const eyebrow = github.getByRole('heading', { name: 'GitHub' });
+  const groupTitle = github.getByRole('heading', { name: 'Token source' });
+  const colourOf = (locator: typeof eyebrow): Promise<string> =>
+    locator.evaluate((node) => getComputedStyle(node).color);
+
+  expect(await colourOf(eyebrow)).not.toBe(await colourOf(groupTitle));
+
+  // The band's own hairline is the only line in it.
+  const rules = github.locator('section.border-b');
+  await expect(rules).toHaveCount(0);
+
+  /*
+    The pane's own scroll container, reached from the band rather than from the
+    title.
+
+    This used to be `ancestor::div[1]` on the `h2`. `ancestor::` is a reverse
+    axis, so position 1 is the *nearest* div — which is the section header's own
+    two-line wrapper holding the title and its description, and nothing else.
+    The evidence file was a screenshot of a heading, under a name promising the
+    bands, and every assertion above it still passed.
+  */
+  await pane.screenshot({
+    path: 'test-results/evidence/integrations-provider-bands.png',
+  });
+
+  await app.close();
+});
+
+/**
  * The notification preferences moved out of this pane in HIVE-75 and the specs
  * below did not follow them.
  *

@@ -79,8 +79,8 @@ describe('inheritance', () => {
    * The bug this closes: a theme that inherits most of its colours from the
    * built-in used to come back with zero notes, which put it in the green
    * "clean import" state instead of amber — and separately let the banner's
-   * "N of 49" sentence go negative, since `inherited` sums across *both*
-   * modes (up to 98) while the sentence only ever had 49 to subtract from.
+   * "N of 50" sentence go negative, since `inherited` sums across *both*
+   * modes (up to 100) while the sentence only ever had 50 to subtract from.
    * A note is the fix at the source: it is what makes `notes.length > 0`
    * true, which is what the banner's tone actually keys off.
    */
@@ -94,8 +94,8 @@ describe('inheritance', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.inherited).toBe(98);
-    expect(result.notes[0]).toBe('98 colours inherited from the built-in theme');
+    expect(result.inherited).toBe(100);
+    expect(result.notes[0]).toBe('100 colours inherited from the built-in theme');
   });
 
   it('is the first note, ahead of unknown-key and contrast notes', () => {
@@ -473,5 +473,36 @@ describe('contrast', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.notes.join(' ')).toMatch(/\d\.\d:1/);
+  });
+
+  /**
+   * `brand` became body text with the hierarchy pass — it names every project
+   * in the rail and every provider in Integrations, on `panel` in both cases —
+   * so it is held to the body-text threshold like `ink`.
+   *
+   * The case this exists for is an imported theme: nothing stops one shipping a
+   * brand that vanishes into its own panel, and before this the format had no
+   * way to say so. All seven built-ins clear it, 5.15:1 at worst.
+   */
+  it('notes a brand that disappears into its own panel', () => {
+    const modes = structuredClone(BUILT_IN_THEME.modes) as Record<string, any>;
+    // A brand one shade off the dark panel it is painted on.
+    modes.dark.ui.brand = '#1a2038';
+
+    const result = importTheme(fullTheme({ modes }), 'invisible.json');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.notes.some((note) => note.includes('brand on panel')),
+    ).toBe(true);
+  });
+
+  it('says nothing about a brand that clears the floor', () => {
+    const result = importTheme(fullTheme(), 'built-in.json');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(
+      result.notes.some((note) => note.includes('brand on panel')),
+    ).toBe(false);
   });
 });

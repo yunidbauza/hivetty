@@ -425,6 +425,63 @@ export function importTheme(raw: string, fileName: string): ImportResult {
     checkContrast(notes, mode, 'ink', ui.ink, 'panel', ui.panel, 4.5);
     checkContrast(notes, mode, 'ink', ui.ink, 'bg', ui.bg, 4.5);
     checkContrast(notes, mode, 'muted', ui.muted, 'panel', ui.panel, 3);
+    /**
+     * `brand` is body text now, so it is held to the body-text threshold.
+     *
+     * It was always a *text* token — `--cc-brand-fill` is the one that paints
+     * shapes — but until the hierarchy pass it appeared only as accents and
+     * short labels, and nothing checked it. It now names every project in the
+     * rail and every provider in Integrations, on `panel` in both cases, which
+     * is a paragraph's worth of reading rather than a highlight.
+     *
+     * All seven built-ins clear it comfortably — 5.15:1 at worst (Graphite
+     * light), 9.72:1 at best — so this cannot fire on the app's own themes, and
+     * unlike the `onBrand`/`brandFill` pair below there is nothing to move
+     * first. An imported theme is the case it exists for: nothing stops one
+     * shipping a brand that vanishes into its own panel, and before this the
+     * format had no way to say so.
+     */
+    checkContrast(notes, mode, 'brand', ui.brand, 'panel', ui.panel, 4.5);
+    /**
+     * And on `panel-2`, because brand text has two grounds, not one.
+     *
+     * The rail is `bg-panel`; the settings dialog is `bg-panel-2`, and the
+     * provider eyebrow is painted there. Checking only `panel` would certify a
+     * theme whose brand is legible in the rail and not in Settings — which is
+     * exactly the shape of the miss this whole rule exists to close, one
+     * surface further along. `ink` is already checked against two grounds for
+     * the same reason.
+     *
+     * Every built-in clears it; the worst is 4.80:1 (Graphite light).
+     */
+    checkContrast(notes, mode, 'brand', ui.brand, 'panel2', ui.panel2, 4.5);
+    /**
+     * Text on a *fill*, which nothing checked until a theme got it wrong.
+     *
+     * Every other rule here checks text against a **surface**. A fill and the
+     * text on it are a pair too, and the gap is what let Graphite ship: its
+     * brand is a light lime, so its `onBrand` is correctly a near-black — and
+     * the badge, which reused `onBrand` over `dangerSolid`, rendered black on
+     * crimson at 3.22:1.
+     *
+     * **`onBrand` on `brandFill` is deliberately not checked yet.** It should
+     * be, and the check is one line; it is left out because the *built-in*
+     * theme fails it at 4.2:1, so turning it on would make the app's own
+     * default theme emit a warning on every import. Fixing that means moving
+     * `--cc-brand-fill`, which repaints every primary button in the app — a
+     * design decision rather than a bug fix, and not this change's to make.
+     * Adding the check with a loosened threshold would be worse than leaving
+     * it out, because it would record 4.2:1 as acceptable.
+     */
+    checkContrast(
+      notes,
+      mode,
+      'onDanger',
+      ui.onDanger,
+      'dangerSolid',
+      ui.dangerSolid,
+      4.5,
+    );
   }
 
   const theme: HiveTheme = {
