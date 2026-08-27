@@ -5,6 +5,7 @@ import {
   entityLabel,
   isEnded,
   isTerminated,
+  recencyOf,
   type Agent,
   type Session,
 } from '@/types/entity';
@@ -172,5 +173,36 @@ describe('isTerminated', () => {
 
   it('is false while the session is still running', () => {
     expect(isTerminated(session({ status: 'working' }))).toBe(false);
+  });
+});
+
+/**
+ * When a row last mattered — the fleet table's sort key, and now the value its
+ * `LAST USED` column reads.
+ *
+ * The fallback chain is the whole function and every link of it was a bug once:
+ * `endedAt` outranks the rest because a finished row's last moment is when it
+ * finished; `resumedAt` outranks `createdAt` because a resume is the row
+ * mattering *again*, and without it a session resumed from this morning sorted
+ * below everything spawned since. Zero last, so a row nobody timestamped never
+ * claims to be the newest thing on the table.
+ */
+describe('recencyOf', () => {
+  it('prefers when a row ended', () => {
+    expect(
+      recencyOf(session({ createdAt: 100, resumedAt: 200, endedAt: 300 })),
+    ).toBe(300);
+  });
+
+  it('prefers a resume over the original start', () => {
+    expect(recencyOf(session({ createdAt: 100, resumedAt: 200 }))).toBe(200);
+  });
+
+  it('falls back to when the row started', () => {
+    expect(recencyOf(session({ createdAt: 100 }))).toBe(100);
+  });
+
+  it('answers zero for a row nobody timestamped', () => {
+    expect(recencyOf(session())).toBe(0);
   });
 });

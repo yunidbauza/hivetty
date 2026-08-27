@@ -2,6 +2,7 @@ import type { TermLine } from '@/types/terminal';
 
 import type { IdleDetail } from '@shared/hook-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
+import type { SessionPrRecord } from '@shared/session-history-contract';
 
 /**
  * Session lifecycle. Agents are always `online` and are tracked separately.
@@ -172,19 +173,90 @@ export interface Session {
    * started (HIVE-87).
    *
    * **Provenance, not lifecycle**, and it has to be both because they are
-   * genuinely different facts. `closed` says *how* a session ended — the app
-   * was closed while it ran — and it earns its place by being cappable where
-   * `terminated` is not. This says *where the row came from*, and it is what
-   * the PREVIOUS RUN group partitions on.
+   * genuinely different facts. `endedBy` says *how* a session ended. This says
+   * *where the row came from*.
    *
-   * Grouping on `closed` alone was wrong, and wrong in the direction that
-   * defeats the group: `settleExit` is the only writer of an ended status, so a
-   * session that quits normally is recorded `terminated` and restores as
-   * `terminated`. Every such row landed in ENDED — the group whose whole job is
-   * answering "what did I just finish?" about *this* run — so the first launch
-   * after a busy day buried today's two endings under yesterday's twenty.
+   * **It no longer decides which group a row is drawn in.** It used to: the
+   * fleet table had a PREVIOUS RUN divider and this is what partitioned on it.
+   * That divider existed to stop today's endings being buried under last
+   * week's, which was a problem insertion order created — the ended list is
+   * sorted by recency now, so last run's rows interleave with this run's by
+   * when they actually ended and the group went with the problem.
+   *
+   * What still reads it, and why it survives:
+   *
+   * - **`endedReason`** — a row the app outlived gets a different sentence from
+   *   one whose process quit while the app watched, and no status can tell the
+   *   two apart. Main's `settleExit` is the only writer of an ended status, so
+   *   a session that quit normally last run comes back as `terminated`,
+   *   indistinguishable from one that quit ten seconds ago in this one.
+   * - **Resume**, indirectly — `reviveIfLive` clears this on the first live
+   *   status, which is what stops a reopened row from still being described as
+   *   something the app outlived.
    */
   restored?: boolean;
+  /**
+   * When this session started, and when it stopped — in epoch milliseconds.
+   *
+   * **What the fleet table sorts on**, and the reason they had to exist at all:
+   * every list in this store was in `order`, which is insertion order, so the
+   * table read oldest-first from the top. For live rows that is spawn order and
+   * merely backwards; for ended rows it was worse than backwards, because
+   * restored rows arrive in the ledger's own oldest-ending-first sequence and a
+   * `/clear` successor takes its predecessor's slot rather than the end. There
+   * was no field anywhere that could answer "which of these two finished more
+   * recently", which is the question a fleet table is for.
+   *
+   * `endedAt` is stamped **once**, by the write that first puts the row in an
+   * ended status, and cleared when a row comes back to life — see
+   * `stampLifecycle` in `hive-store.ts`. Both are absent on a row nobody has
+   * timestamped: a hand-built fixture, or a record from a build before this
+   * existed. Absent sorts last rather than first, so an unknown time never
+   * claims to be the newest thing on the table, and rows that are all unknown
+   * keep the order they were inserted in.
+   *
+   * The ledger has carried both since HIVE-87 (`SessionRecord`), so a restored
+   * row keeps the times it really had rather than being stamped at hydrate.
+   */
+  createdAt?: number;
+  endedAt?: number;
+  /**
+   * When this row was picked back up (HIVE-93's Resume), if it was.
+   *
+   * A third timestamp rather than a rewrite of `createdAt`, because they are
+   * different facts and `createdAt` is one somebody may still want: it is when
+   * the session began, it is what the ledger's retention sorts on, and `begin`
+   * deliberately keeps it across a restart. Overwriting it to fix an ordering
+   * problem would destroy the answer to a different question.
+   *
+   * It exists because `recencyOf` had nothing else to go on. A resumed row's
+   * `endedAt` is cleared — it is not over any more — so it fell back to
+   * `createdAt` and sorted by when it *first* started: resume a session from
+   * this morning and it lands below every session spawned since, which is the
+   * row furthest from the header and the exact failure the newest-first sort
+   * exists to remove.
+   *
+   * **Renderer-only, and not on the ledger.** It describes this run's ordering,
+   * and a resumed row that is still running at the next quit comes back as a
+   * live record whose `createdAt` is the honest thing to sort it by.
+   */
+  resumedAt?: number;
+  /**
+   * The last pull request seen on this session's branch (HIVE-100 follow-up).
+   *
+   * A *memory*, not a resolution — `useSessionPr` still prefers the live sweep
+   * and only falls back to this. It exists because the two facts the live match
+   * is built from both decay: the sweep holds open PRs plus 24 hours of merges,
+   * and `branch` is wherever the agent is *now*, which is back on the default
+   * branch the moment a worktree is torn down. Between them, a session that
+   * raised and landed a PR three days ago matched nothing, and its `PR` cell
+   * read `—` exactly like a branch that never had one.
+   *
+   * Carries **no state**, deliberately. A state remembered here would be a
+   * claim about GitHub that nothing keeps current, and the cell renders a
+   * remembered PR in neutral rather than in a colour it cannot stand behind.
+   */
+  lastPr?: SessionPrRecord;
   status: SessionStatus;
   /**
    * How a `done` session came to be done (HIVE-93).
@@ -323,6 +395,35 @@ export interface ProjectRow extends Project {
  */
 export const isEnded = (status: SessionStatus): boolean =>
   status === 'done' || status === 'terminated';
+
+/**
+ * When a row last mattered — what every fleet list sorts on, descending, and
+ * what its `LAST USED` column reads.
+ *
+ * `endedAt` for a row that is over, and for one that is not, the later of when
+ * it was resumed and when it was created — `0` for a row nobody timestamped.
+ *
+ * `resumedAt` sits between them rather than being folded into `createdAt`,
+ * because a resume is the row mattering *again* and `createdAt` is when it
+ * first started; both are true and the sort wants the more recent one. Without
+ * it, resuming a session from this morning put it below everything spawned
+ * since — the row the user had just acted on, furthest from the header.
+ *
+ * Zero rather than `Infinity` is the whole point of the last fallback: a
+ * fixture or a record from an older build has no claim to being the newest
+ * thing on the table, and sorting unknowns to the *top* would put exactly the
+ * least-known rows in the position the eye reads first. The fleet table reads
+ * the same zero as "nobody knows" and renders an em dash for it, rather than
+ * measuring an age against the epoch.
+ *
+ * **Here rather than in `hive-store.ts`, where it was born.** The store sorts
+ * on it and the fleet table now displays it, and a feature may not import from
+ * a store's internals — the same move `endedReason` made in HIVE-93, for the
+ * same reason. One definition, so the column can never disagree with the order
+ * it is sitting in.
+ */
+export const recencyOf = (session: Session): number =>
+  session.endedAt ?? session.resumedAt ?? session.createdAt ?? 0;
 
 /**
  * Whether this session's process is gone and cannot be typed into.

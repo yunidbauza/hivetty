@@ -2,6 +2,8 @@ import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { Session } from '@/types/entity';
+
 import { SessionTable } from '@features/orchestrator/components/session-table';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
@@ -216,6 +218,51 @@ describe('SessionTable', () => {
     expect(within(shellOf(leadForm!)).queryByRole('link')).toBeNull();
   });
 
+  /**
+   * A PR the app wrote down, offered when the sweep can no longer see it.
+   *
+   * The column was empty for anything older than a day, because it resolves
+   * against a list of open PRs plus 24 hours of merges. `Session.lastPr` is the
+   * memory that fills it — and it must never pass for a live match: no state,
+   * so no `prStateText` colour, and "last seen" in both the title and the
+   * accessible name.
+   */
+  it('renders a remembered PR in neutral, and says it is remembered', () => {
+    act(() => {
+      useHiveStore.setState((state) => ({
+        entities: {
+          ...state.entities,
+          'lead-form': {
+            ...(state.entities['lead-form'] as Session),
+            lastPr: {
+              number: 118,
+              repo: 'nova-web',
+              url: 'https://github.com/demo/nova-web/pull/118',
+            },
+          },
+        },
+      }));
+    });
+    render(<SessionTable />);
+    const leadForm = rows().find((row) => row.textContent?.includes('lead-form'));
+    const link = within(shellOf(leadForm!)).getByRole('link');
+
+    expect(link).toHaveTextContent('#118');
+    expect(link).toHaveAttribute(
+      'href',
+      'https://github.com/demo/nova-web/pull/118',
+    );
+    expect(link).toHaveAttribute(
+      'title',
+      '#118 · last seen on this session — open on GitHub',
+    );
+    expect(link).toHaveAccessibleName(/last seen on this session$/);
+    // Neutral: every colour in `prStateText` asserts something current about
+    // GitHub, and a number written down days ago asserts none of them.
+    expect(link.className).toContain('text-subtle');
+    expect(link.className).not.toContain('text-green');
+  });
+
   it('renames a waiting session to "needs input"', () => {
     render(<SessionTable />);
     const leadForm = rows().find((row) => row.textContent?.includes('lead-form'));
@@ -236,7 +283,9 @@ describe('SessionTable', () => {
       row.textContent?.includes('rails-upgrade'),
     );
 
-    expect(within(railsUpgrade!).getByText('idle (agents)')).toBeInTheDocument();
+    expect(
+      within(railsUpgrade!).getByText('working (agents)'),
+    ).toBeInTheDocument();
   });
 
   it('selects and opens on click', async () => {
@@ -249,7 +298,7 @@ describe('SessionTable', () => {
     // Both, not one: the caret has to follow the user's last action or the
     // keyboard and the mouse disagree about where "here" is.
     expect(useUiStore.getState().activeTab).toBe('webhooks');
-    expect(useUiStore.getState().selIdx).toBe(2);
+    expect(useUiStore.getState().selId).toBe('webhooks');
   });
 
   describe('a terminated session (story 108)', () => {
@@ -327,12 +376,16 @@ describe('SessionTable', () => {
   });
 
   /**
-   * Last run's fleet (HIVE-87).
+   * Last run's fleet (HIVE-87), which no longer has a group of its own.
    *
-   * The group exists to answer a different question from ENDED's, so most of
-   * what matters here is *where* it sits and that its rows stay inert.
+   * PREVIOUS RUN was a layout answer to an ordering problem: while every list
+   * was in insertion order, the top of ENDED was always its *oldest* row, so
+   * today's two endings sat under yesterday's twenty. `useEndedSessions` sorts
+   * by recency now and the divider went with the problem. What these tests hold
+   * on to is everything else about a restored row — that it lands in ENDED, in
+   * the right place by time, and stays inert with Resume beside it.
    */
-  describe('the PREVIOUS RUN group', () => {
+  describe('restored rows', () => {
     const restore = () => {
       act(() => {
         useHiveStore.getState().hydrateSessions([
@@ -349,39 +402,31 @@ describe('SessionTable', () => {
       });
     };
 
-    it('renders restored rows under their own divider', () => {
+    it('renders restored rows under ENDED, with no group of their own', () => {
       restore();
       render(<SessionTable />);
 
-      expect(screen.getByText('PREVIOUS RUN')).toBeInTheDocument();
+      expect(screen.getByText('ENDED')).toBeInTheDocument();
+      expect(screen.queryByText('PREVIOUS RUN')).not.toBeInTheDocument();
       // `closed` folded into `done` (HIVE-93) — the word the user sees for
       // every deliberate ending, with the *how* carried by `endedBy`.
       expect(screen.getAllByText('done').length).toBeGreaterThan(0);
-    });
 
-    it('puts that divider above ENDED, not below it', () => {
-      // The ordering the design turns on: at launch this is the only group on
-      // the table, so it belongs where the eye lands.
-      restore();
-      render(<SessionTable />);
-
-      const previous = screen.getByText('PREVIOUS RUN');
       const ended = screen.getByText('ENDED');
-      expect(previous.compareDocumentPosition(ended)).toBe(
+      const row = screen
+        .getAllByRole('button')
+        .find((button) => within(button).queryByText(/old-01/) !== null)!;
+      expect(ended.compareDocumentPosition(row)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
     });
 
-    it('puts a restored row that ended normally in PREVIOUS RUN, not ENDED', () => {
+    it('files a restored row that ended normally under ENDED too', () => {
       /**
-       * The grouping keys on provenance, not on the status.
-       *
        * `settleExit` is the only writer of an ended status, so a session that
        * quit normally last run is recorded — and restored — as `terminated`.
-       * Grouping on `closed` alone sent every one of those to ENDED, the group
-       * whose job is answering "what did I just finish?" about *this* run, so
-       * the first launch after a busy day buried today's endings under
-       * yesterday's.
+       * That used to be the awkward case for the old grouping, which keyed on
+       * provenance; with one group and a recency sort it is not a case at all.
        */
       act(() => {
         useHiveStore.getState().hydrateSessions([
@@ -396,29 +441,59 @@ describe('SessionTable', () => {
       });
       render(<SessionTable />);
 
-      const previous = screen.getByText('PREVIOUS RUN');
+      const ended = screen.getByText('ENDED');
       const row = screen
         .getAllByRole('button')
         .find((button) => within(button).queryByText(/old-term/) !== null)!;
 
-      // It sits after the PREVIOUS RUN divider, and before ENDED if there is one.
-      expect(previous.compareDocumentPosition(row)).toBe(
+      expect(ended.compareDocumentPosition(row)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
-      const ended = screen.queryByText('ENDED');
-      if (ended) {
-        expect(row.compareDocumentPosition(ended)).toBe(
-          Node.DOCUMENT_POSITION_FOLLOWING,
-        );
-      }
       // And it keeps the ending that was actually observed.
       expect(within(row).getByText('terminated')).toBeInTheDocument();
     });
 
-    it('is absent entirely when nothing was restored', () => {
+    /**
+     * The whole reason the divider could go: a row from last week sorts below
+     * one that ended a minute ago, whichever run each came from.
+     *
+     * The demo fleet's own ended rows carry no timestamps, so they tie and hold
+     * their fixture order below both of these — which is what `byRecency` does
+     * with an absent time rather than guessing at one.
+     */
+    it('interleaves restored rows with this run\u2019s endings by recency', () => {
+      act(() => {
+        useHiveStore.getState().hydrateSessions([
+          {
+            id: 'old-week',
+            project: 'nova-web',
+            task: '',
+            status: 'terminated',
+            createdAt: 1,
+            endedAt: 1_000,
+          },
+          {
+            id: 'old-minute',
+            project: 'nova-web',
+            task: '',
+            status: 'terminated',
+            createdAt: 1,
+            endedAt: 9_000,
+          },
+        ]);
+      });
       render(<SessionTable />);
 
-      expect(screen.queryByText('PREVIOUS RUN')).not.toBeInTheDocument();
+      const recent = screen
+        .getAllByRole('button')
+        .find((button) => within(button).queryByText(/old-minute/) !== null)!;
+      const older = screen
+        .getAllByRole('button')
+        .find((button) => within(button).queryByText(/old-week/) !== null)!;
+
+      expect(recent.compareDocumentPosition(older)).toBe(
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      );
     });
 
     it('does not count restored rows as an empty fleet', () => {
@@ -577,6 +652,98 @@ describe('SessionTable', () => {
         .filter((button) => within(button).queryByText(/live-01/) !== null);
       expect(rows).toHaveLength(1);
       expect(within(rows[0]!).getByText('idle')).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * The `LAST USED` column.
+   *
+   * It reads {@link recencyOf} — the same value `useActiveSessions` and
+   * `useEndedSessions` sort on — so the column is the table explaining its own
+   * order rather than a second opinion about it. That is the break these tests
+   * catch: a cell wired to `createdAt` alone would look right on every live row
+   * and quietly contradict the sort on every ended one.
+   */
+  describe('the LAST USED column', () => {
+    const MIN = 60_000;
+    const HR = 60 * MIN;
+
+    /**
+     * Scoped to the row shell rather than the button: the cell sits inside the
+     * button today, and pinning the assertion to that would fail the day it
+     * moves out for the reason `PR` and Resume did.
+     */
+    const lastUsedOf = (label: string): HTMLElement => {
+      const row = rows().find((r) => r.textContent?.includes(label));
+      const cell = shellOf(row!).querySelector('[data-col="last-used"]');
+      if (!(cell instanceof HTMLElement)) {
+        throw new Error(`no last-used cell on ${label}`);
+      }
+      return cell;
+    };
+
+    /** Timestamps one fixture row, which the demo fleet leaves unstamped. */
+    const stamp = (id: string, over: Partial<Session>): void => {
+      act(() => {
+        useHiveStore.setState((state) => ({
+          entities: {
+            ...state.entities,
+            [id]: { ...(state.entities[id] as Session), ...over },
+          },
+        }));
+      });
+    };
+
+    it('names itself in the header', () => {
+      render(<SessionTable />);
+
+      expect(screen.getByText('LAST USED')).toBeInTheDocument();
+    });
+
+    it('ages a live row from when it started', () => {
+      stamp('hero-refresh', { createdAt: Date.now() - 5 * MIN });
+      render(<SessionTable />);
+
+      expect(lastUsedOf('hero-refresh')).toHaveTextContent('5 min ago');
+    });
+
+    /**
+     * A resumed row is the row mattering again, and the column has to agree with
+     * the sort that puts it back at the top. Reading `createdAt` here would say
+     * `3 hr ago` about the row the user acted on a minute ago.
+     */
+    it('ages a resumed row from the resume, not from its first start', () => {
+      stamp('hero-refresh', {
+        createdAt: Date.now() - 3 * HR,
+        resumedAt: Date.now() - 2 * MIN,
+      });
+      render(<SessionTable />);
+
+      expect(lastUsedOf('hero-refresh')).toHaveTextContent('2 min ago');
+    });
+
+    it('ages an ended row from when it ended', () => {
+      stamp('tz-fix', {
+        createdAt: Date.now() - 6 * HR,
+        endedAt: Date.now() - 2 * HR,
+      });
+      render(<SessionTable />);
+
+      expect(lastUsedOf('tz-fix')).toHaveTextContent('2 hr ago');
+    });
+
+    /**
+     * The case that has no answer, and the one worth protecting: a fixture or a
+     * ledger record from before the timestamps existed has `recencyOf` of `0`.
+     * Measured as an age that reads `56 years ago` — a confident lie about a row
+     * the app knows nothing about. An em dash is the honest cell, and it is the
+     * one `PR` already renders for the same reason.
+     */
+    it('says nothing about a row nobody timestamped', () => {
+      render(<SessionTable />);
+
+      expect(lastUsedOf('webhooks')).toHaveTextContent('—');
+      expect(lastUsedOf('webhooks')).not.toHaveTextContent('ago');
     });
   });
 });
