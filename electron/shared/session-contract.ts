@@ -3,6 +3,7 @@ import type {
   IdleDetail,
   ObservedStatus,
   StatusHookEvent,
+  TicketIntentSource,
 } from './hook-contract';
 
 /**
@@ -46,7 +47,6 @@ import type {
  * cannot be produced by a later edit either.
  */
 export type DerivedStatus = 'working' | 'idle' | 'terminated';
-
 
 /**
  * Main telling the renderer what a real session is doing.
@@ -157,6 +157,198 @@ export const isSendableSessionName = (name: string): boolean =>
   name.length > 0 && name.length <= SESSION_NAME_MAX && SESSION_NAME_PATTERN.test(name);
 
 /**
+ * A ticket key, matched against a **whole word** — `HIVE-53`, `hive-3`, `abc-1234`.
+ *
+ * Anchored, and that is the correction that matters. An unanchored `\b…\b` also
+ * matches *inside* a hyphenated name, and this function's own output is
+ * hyphenated — so `Fix bug 123` normalised to `fix-bug-123`, which on the next
+ * pass contained the "key" `bug-123` and came back as `BUG-123-fix`. The same
+ * went for `React 18 upgrade` → `react-18-upgrade` → `REACT-18-upgrade`. The
+ * separator this function inserts was being read back as a key boundary, which
+ * broke the one property everything here depends on.
+ *
+ * Case-insensitive by character class rather than by flag, because the two
+ * groups are reassembled in different cases: the project part is upper-cased
+ * and the number is left alone.
+ *
+ * A leading letter is required, which is what keeps a date out — `2026-08-27`
+ * cannot match.
+ */
+const TITLE_TICKET_KEY = /^([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,6})$/;
+
+/** Punctuation around a word, so `(hive-53)` and `[HIVE-53]` still read as keys. */
+const TOKEN_EDGES = /^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g;
+
+/**
+ * How many words of an agent's title survive into a session name.
+ *
+ * Four is the point where a name still reads as a label rather than a sentence,
+ * and it is measured against what Claude actually produces: the observed titles
+ * run two to five words (`Mutex explanation`, `session persistence
+ * architecture`, `back key interception hive-53`), so four keeps almost all of
+ * them whole and truncates only the longest.
+ *
+ * A ticket key does **not** count against it. The key is identity, not
+ * description, and spending a quarter of the budget on it would leave
+ * `HIVE-53-back-key` — the half of the name that says nothing, kept at the
+ * expense of the half that does.
+ */
+const NAME_WORD_MAX = 4;
+
+/**
+ * Rewrite an agent's terminal title into the register the rail names sessions in
+ * (HIVE-108).
+ *
+ * ## Why this exists at all
+ *
+ * Claude Code computes a title from the conversation — but **only when no
+ * `--name` was passed at startup**. Measured against a real `claude`, two arms
+ * differing in nothing but that flag:
+ *
+ * ```
+ * --name sess-probe   ai-title: (none)              OSC: "✳ sess-probe"
+ * (no flag)           ai-title: "Mutex explanation" OSC: "✳ Claude Code"
+ *                                                        → "◐ Mutex explanation"
+ * ```
+ *
+ * So the Hive gets context-derived names by *not* naming the session, and the
+ * title arrives on the OSC-0 stream `createTitleReader` already parses. What is
+ * left is spelling: Claude writes `Mutex explanation` and `back key interception
+ * hive-53`, and the rail is a column of `sess-07` and `HIVE-73`.
+ *
+ * ## The shape
+ *
+ * Lower-cased, hyphenated, at most {@link NAME_WORD_MAX} words, with any ticket
+ * key upper-cased and hoisted to the front:
+ *
+ * ```
+ * "Mutex explanation"              -> "mutex-explanation"
+ * "remove jira fixtures loader"    -> "remove-jira-fixtures-loader"
+ * "back key interception hive-53"  -> "HIVE-53-back-key-interception"
+ * ```
+ *
+ * Hoisting rather than leaving the key where it fell is what makes a column of
+ * these sortable and scannable: the key is the first thing the eye needs, and
+ * Claude puts it wherever the sentence happened to end.
+ *
+ * ## Why it must be idempotent, and how it gets there
+ *
+ * Claude repaints its title several times a second, and every repaint runs
+ * through here. A restart re-asserts the stored name as `--name`
+ * (`session-control.ts`), Claude paints *that* as its title, and it returns
+ * through `renameSession` — so this function is routinely fed its own output and
+ * has to be a fixed point on it, or a session renames itself for free.
+ *
+ * Two things make it one, and both are load-bearing:
+ *
+ * 1. **A name already in the register passes straight through.** A title with no
+ *    whitespace that already carries a hyphen and would survive a command line
+ *    is one of ours (or a slug a user typed), and re-deriving it is what went
+ *    wrong: re-splitting `fix-bug-123` cannot tell the hyphens it inserted from
+ *    the ones that were always there.
+ * 2. **A key is matched as a whole word**, never inside one — see
+ *    {@link TITLE_TICKET_KEY}.
+ *
+ * The bare-word case is deliberately *not* a passthrough: `Mutex` still
+ * case-folds to `mutex`, and folding is idempotent on its own.
+ *
+ * ## `prefix`
+ *
+ * The name a pinned session must keep in front (HIVE-78's `namePinned`). Used
+ * verbatim, whatever it is — this function does not parse it, so a caller may
+ * pin `HIVE-73` or `HIVE-73-2` and get back exactly that in front.
+ *
+ * The store passes `ticket`, never the current name: passing the name would
+ * compound it, a word per repaint. `ticketSessionName`'s `-2` disambiguation is
+ * therefore spent once a topic arrives — two sessions on one ticket become
+ * `HIVE-73-<their own topics>`, which are already distinct, and `renameSession`
+ * refuses a name a live session holds if they ever are not.
+ *
+ * Answers `undefined` for a title with nothing nameable in it, which callers
+ * treat the way they already treat an empty title — as no rename at all.
+ */
+export function hiveNameFromTitle(title: string, prefix?: string): string | undefined {
+  const trimmed = title.trim();
+
+  /*
+    Already in the register: hand it back untouched. See "Why it must be
+    idempotent" — this is the branch that stops a second pass from re-reading
+    the separators the first pass inserted.
+
+    A pinned call never takes it, because the pin still has to be applied.
+  */
+  if (
+    prefix === undefined &&
+    !/\s/.test(trimmed) &&
+    trimmed.includes('-') &&
+    isSendableSessionName(trimmed)
+  ) {
+    return trimmed;
+  }
+
+  /*
+    A pinned name already in front is removed before anything else, so that
+    re-reading a name this function produced cannot prepend the prefix twice.
+  */
+  const rest =
+    prefix !== undefined && trimmed.toLowerCase().startsWith(prefix.toLowerCase())
+      ? trimmed.slice(prefix.length)
+      : trimmed;
+
+  let found: string | undefined;
+  const words: string[] = [];
+
+  for (const raw of rest.split(/\s+/)) {
+    const token = raw.replace(TOKEN_EDGES, '');
+    if (token === '') continue;
+
+    const key = TITLE_TICKET_KEY.exec(token);
+    if (key !== null) {
+      // First key wins; later ones are dropped rather than folded into words.
+      found ??= `${key[1].toUpperCase()}-${key[2]}`;
+      continue;
+    }
+
+    for (const word of token.split(/[^A-Za-z0-9]+/)) {
+      if (word !== '') words.push(word.toLowerCase());
+    }
+  }
+
+  /*
+    A pinned prefix outranks any key the agent's title mentions. The pin is the
+    user's own statement about which issue this session is for; the title is a
+    guess made from the conversation, and it is routinely about a *different*
+    ticket the session merely discussed.
+  */
+  const lead = prefix ?? found;
+  const capped = words.slice(0, NAME_WORD_MAX);
+
+  /**
+   * A title that is *only* a key answers with the key, and nothing else.
+   *
+   * The key is hoisted so that it stands in front of a description; with no
+   * description there is nothing to hoist it in front of. Returning the raw
+   * title here instead — an earlier draft — let punctuation through, so
+   * `(hive-53)` became a name no command line would accept and every later
+   * restart silently dropped.
+   */
+  if (capped.length === 0) {
+    return lead === undefined || lead.length > SESSION_NAME_MAX ? undefined : lead;
+  }
+
+  /*
+    Trailing words are dropped rather than the name truncated mid-word, for the
+    reason SESSION_NAME_DISPLAY_MAX gives: a name cut through the middle of a
+    word is a worse label than a shorter one that still reads.
+  */
+  const parts = lead === undefined ? capped : [lead, ...capped];
+  while (parts.length > 1 && parts.join('-').length > SESSION_NAME_MAX) parts.pop();
+
+  const name = parts.join('-');
+  return name === '' || name.length > SESSION_NAME_MAX ? undefined : name;
+}
+
+/**
  * Main telling the renderer what a session now calls itself (HIVE-61).
  *
  * The name arrives from the *agent*, not from the app: Claude Code writes its
@@ -242,8 +434,29 @@ export interface SessionBranchEvent {
  */
 export interface SessionTicketIntentEvent {
   entityId: string;
-  /** A key-shaped candidate. Unconfirmed — the renderer checks it against Jira. */
-  key: string;
+  /**
+   * Key-shaped candidates, best-first. All unconfirmed — the renderer checks
+   * them against Jira and takes the first that is a real issue.
+   *
+   * A list rather than one key because a branch has no grammar to disambiguate
+   * with: `chore/bump-node-22-hive-118` offers `NODE-22` before `HIVE-118`, and
+   * sending only the leftmost let a version number permanently shadow the real
+   * ticket. A prompt sends exactly one — its verb phrase already decided.
+   *
+   * Never empty; main does not publish an event with nothing to confirm.
+   */
+  keys: readonly string[];
+  /**
+   * How the candidate was found, which is what decides whether confirming it
+   * also renames the row — see {@link TicketIntentSource}.
+   *
+   * A `branch` candidate is deliberately the looser of the two: main scans the
+   * branch name case-insensitively and with no grammar to read, so `release-2024`
+   * reaches here as a candidate. That is safe only because this is still a
+   * candidate — Jira is what throws it away, one call later, having renamed and
+   * associated nothing.
+   */
+  source: TicketIntentSource;
 }
 
 /**

@@ -32,6 +32,7 @@ import {
 
 import { effectiveRuntime } from '../config/runtime';
 import type { HookRuntime } from '../hooks';
+import { ticketKeysFromBranch } from '../hooks/ticket-intent';
 import { createStatusTracker } from '../hooks/tracker';
 import { createPtyIpc, type PtyIpc } from '../ipc/pty';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
@@ -658,7 +659,8 @@ export function createSessions(options: SessionsOptions): Sessions {
     onTicketIntent: (event) =>
       send(CH.sessionTicketIntent, {
         entityId: event.entityId,
-        key: event.key,
+        keys: [event.key],
+        source: event.source,
       } satisfies SessionTicketIntentEvent),
     onCleared: (entityId) => {
       /**
@@ -688,6 +690,21 @@ export function createSessions(options: SessionsOptions): Sessions {
        * as a fresh session instead.
        */
       ledger?.record(entityId, { sessionUuid: undefined });
+      /**
+       * The branch dedupe is primed for a row that no longer exists.
+       *
+       * `publishBranch` suppresses a read whose `{branch, cwd}` it has already
+       * published, and `lastBranch` is only ever cleared in `settleExit` — which
+       * `/clear` does not reach, because the pty is still running. The successor
+       * row therefore inherits a dedupe entry it never earned: its branch never
+       * publishes, and so no ticket candidate is ever offered for it.
+       *
+       * That lands squarely on the case the branch signal exists for — a session
+       * cleared and continued on `feat/hive-111-ledger` would never reach the
+       * HIVE-111 card unless the user said the key out loud again. Forgetting
+       * here costs one `git` read on the successor's first hook.
+       */
+      lastBranch.delete(entityId);
       publishCleared(entityId);
     },
     /**
@@ -1038,6 +1055,48 @@ export function createSessions(options: SessionsOptions): Sessions {
     */
     ledger?.record(entityId, { ...(branch === null ? {} : { branch }), cwd });
     send(CH.sessionBranch, { entityId, branch, cwd } satisfies SessionBranchEvent);
+
+    /**
+     * The branch is also a ticket candidate — the second signal.
+     *
+     * A prompt says which ticket a session is for exactly once, and only if the
+     * user phrased it in a way the scanner recognises. A branch says it for as
+     * long as the work lasts, which is what covers the session resumed the next
+     * morning onto `feat/hive-111-ledger` having never spoken the key here.
+     *
+     * ## Why it costs no extra Jira calls to speak of
+     *
+     * This sits after the dedupe above, not before it. `publishBranch` returns
+     * early unless the branch or cwd actually *changed*, so a candidate is
+     * emitted once per distinct branch per session — not once per hook event,
+     * which on a busy turn would be dozens. The renderer confirms each one with
+     * Jira, so that dedupe is the thing standing between this feature and a
+     * network call on every tool call the agent makes.
+     *
+     * ## Why it is still only a candidate
+     *
+     * Same reason the prompt's is: main does not know what is real. The branch
+     * scanner is looser than the prompt's by design — it has no grammar to read
+     * — so `release-2024-11` arrives here as `RELEASE-2024`, and the renderer's
+     * Jira check is what discards it. Nothing is associated or renamed on
+     * main's say-so.
+     */
+    /*
+      A command entity is not a session and can never hold a ticket, so a
+      candidate for one is a Jira read the store is guaranteed to throw away.
+      `openCommand` routes through `startProcess` like everything else, which is
+      the only reason this is reachable at all.
+    */
+    if (commandEntities.has(entityId)) return;
+
+    const candidates = ticketKeysFromBranch(branch);
+    if (candidates.length > 0) {
+      send(CH.sessionTicketIntent, {
+        entityId,
+        keys: candidates,
+        source: 'branch',
+      } satisfies SessionTicketIntentEvent);
+    }
   }
 
   /**
@@ -1488,23 +1547,61 @@ export function createSessions(options: SessionsOptions): Sessions {
         ...(request.model === undefined ? {} : { model: request.model }),
         ...(request.effort === undefined ? {} : { effort: request.effort }),
         /**
-         * The session is named after the row it belongs to (HIVE-61), so the
-         * agent's own prompt box, `/resume` picker and terminal title all agree
-         * with the rail instead of inventing an auto-title from whatever the
-         * first message happened to be.
+         * **Nothing is named here any more, and that is the feature** (HIVE-108).
          *
-         * A rename *inside* Claude is not a conflict with this: the new name
-         * comes straight back out on the title stream and becomes the row's
-         * name. This only decides what the session is called to begin with.
+         * HIVE-61 sent the row's own id — `--name sess-07` — so that the agent's
+         * prompt box, its `/resume` picker and the terminal title all agreed with
+         * the rail. The cost of that agreement turned out to be the name itself:
+         * **`--name` suppresses Claude Code's own titling entirely.** Two arms of
+         * a real `claude`, same prompt, same moment, differing in nothing else:
          *
-         * HIVE-78 lets the renderer say what that name is, and it does so for
-         * exactly one case: a session started from a ticket card, which is
-         * called `HIVE-73` rather than `sess-07`. The **id** is untouched —
-         * it is the entities-map key and appears in every console line — so
-         * this is the display name and nothing more. Falling back to the id
-         * keeps every other spawn byte-identical to what HIVE-61 shipped.
+         * ```
+         * --name sess-probe   ai-title: (none)               OSC: "✳ sess-probe"
+         * (no flag)           ai-title: "Mutex explanation"  OSC: "✳ Claude Code"
+         *                                                    → "◐ Mutex explanation"
+         * ```
+         *
+         * Every session this app has ever spawned carries a `custom-title` and no
+         * `ai-title` for exactly this reason — 25+ transcripts, some 3,000 lines
+         * long, all of them mute. The Hive was not failing to infer names; it was
+         * stopping Claude from inferring them.
+         *
+         * So the id fallback is gone. A session opens unnamed, Claude titles it
+         * from the conversation once there is one, and the title arrives on the
+         * OSC-0 stream `readTitle` has parsed since HIVE-61 — no new transport,
+         * no prompt scraping, no second inference engine. `hiveNameFromTitle`
+         * spells it the way the rail spells names.
+         *
+         * What is given up is the opening frame: until Claude has titled it, the
+         * label on its input box is simply **absent**, where it used to read
+         * `sess-07`. Measured against a real `claude` — the name is drawn into
+         * the box's top border, and with no name the border is unlabelled:
+         *
+         * ```
+         * named    ────────────────────── sess-probe ─
+         * unnamed  ──────────────────────────────────
+         * ```
+         *
+         * (HIVE-108 first recorded this as "the prompt box says `Claude Code`".
+         * It does not. `Claude Code` is the *terminal title* Claude writes while
+         * unnamed, and the splash banner — which prints either way and names the
+         * product, not the session.)
+         *
+         * The row is untouched: `nameFromTitle` maps that title to the *absence*
+         * of a name, so the rail goes on saying `sess-07` until a real one lands.
+         *
+         * **This subsumes HIVE-107.** That fix carved `--resume` out of the id
+         * fallback, because `--name` on a resume renames the stored conversation
+         * rather than labelling a new one. With no fallback left there is nothing
+         * to carve: a resume sends no flag because *no spawn does*.
+         *
+         * An explicit `request.name` still survives, because that is a caller
+         * saying something the transcript cannot: *call it this from now on*.
+         * Nothing asks for it today — a ticket session is named by the store,
+         * which pins `HIVE-73` in front of whatever Claude infers, rather than by
+         * a flag that would cost it the inference.
          */
-        name: request.name ?? request.entityId,
+        ...(request.name === undefined ? {} : { name: request.name }),
         sessionUuid,
         resume,
         /*

@@ -23,9 +23,12 @@ import {
   openOrResume,
   statusWord,
   useActiveSessions,
+  useDisplayName,
   useEndedSessions,
+  currentRowFor,
   useHiveStore,
   useNavOrder,
+  useSessionNameReports,
 } from '@stores/hive-store';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { useUiStore } from '@stores/ui-store';
@@ -217,10 +220,17 @@ describe('hive-store', () => {
       // Nothing yet: the spawn has been asked for but has not answered.
       expect(noteSessionTicket).not.toHaveBeenCalled();
 
+      /*
+        The name rides along since HIVE-108. Main used to learn it from the
+        `--name` on this session's own command line, and there is no longer one —
+        a note carrying a name is what pins it in the ledger, so without it the
+        next launch would restore the agent's title with the key stripped off.
+      */
       await vi.waitFor(() => {
         expect(noteSessionTicket).toHaveBeenCalledWith({
           entityId: id,
           ticket: 'HIVE-73',
+          name: 'HIVE-73',
         });
       });
     });
@@ -1848,6 +1858,41 @@ describe('hive-store', () => {
       ).toBeUndefined();
     });
 
+    /**
+     * The pin comes back with the name it defends (HIVE-107).
+     *
+     * `namePinned` was left out of the record on the grounds that an ended row
+     * has no title stream to defend against. Resume made that false: reopening
+     * a restored row starts a real `claude`, which repaints the only name it
+     * knows — the id — several times a second, and an unpinned row takes it. So
+     * the mid-session `HIVE-104` survived the quit and was lost to the recovery.
+     */
+    it('restores a pinned name, and the pin that defends it', () => {
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: 'p', name: 'HIVE-104', namePinned: true })]);
+
+      expect(useHiveStore.getState().entities['p']).toMatchObject({
+        name: 'HIVE-104',
+        namePinned: true,
+      });
+
+      // And it holds against the resumed agent's own idea of the name.
+      useHiveStore.getState().renameSession('p', 'sess-0i');
+
+      expect(useHiveStore.getState().entities['p']).toMatchObject({
+        name: 'HIVE-104',
+      });
+    });
+
+    it('leaves a row nobody pinned open to its agent', () => {
+      useHiveStore
+        .getState()
+        .hydrateSessions([record({ id: 'q', name: 'troubleshooting-crawling' })]);
+
+      expect(useHiveStore.getState().entities['q']).not.toHaveProperty('namePinned');
+    });
+
     it('drops a model or effort the closed lists do not contain', () => {
       // `ledger.ts` casts these on the way in and points here for validation.
       // A hand-edited file must not put an arbitrary string into a union.
@@ -2810,5 +2855,141 @@ describe('statusWord agrees with statusLabel', () => {
     expect(row).toBeDefined();
     // `dim` is what `STATUS_COLOR.idle` gives, and what this used to print.
     expect(row?.color).toBe('green');
+  });
+});
+
+/**
+ * Names, resolved rather than remembered (HIVE-110).
+ *
+ * Two consumers, one fact. `useDisplayName` is what an inbox row asks so that a
+ * notification stops naming a session by an id the user has never seen;
+ * `useSessionNameReports` is what tells main the same thing, so a desktop toast
+ * about that session says what the rail says.
+ */
+describe('session names for the world outside the rail', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  describe('useDisplayName', () => {
+    it('answers with the id while nothing has named the session', () => {
+      const { result } = renderHook(() => useDisplayName('lead-form'));
+
+      expect(result.current).toBe('lead-form');
+    });
+
+    it('answers with the name once one arrives', () => {
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation');
+
+      const { result } = renderHook(() => useDisplayName('lead-form'));
+
+      expect(result.current).toBe('mutex-explanation');
+    });
+
+    /*
+      A terminal belongs to the successor after a `/clear`, which is the mapping
+      the row's click already uses. The words have to follow it or the row names
+      one session and opens another.
+    */
+    it('follows a /clear to the successor', () => {
+      const successor = useHiveStore.getState().clearSession('lead-form')!;
+      useHiveStore.getState().renameSession(successor, 'Mutex explanation');
+
+      const { result } = renderHook(() => useDisplayName('lead-form'));
+
+      expect(result.current).toBe('mutex-explanation');
+    });
+
+    it('answers with the id it was given for a terminal it knows nothing about', () => {
+      const { result } = renderHook(() => useDisplayName('sess-nowhere'));
+
+      expect(result.current).toBe('sess-nowhere');
+    });
+
+    /*
+      A row about no session at all calls this with `''`, because a hook cannot
+      be conditional. It must answer without walking the fleet, and the card
+      discards the answer either way.
+    */
+    it('answers an empty id with itself, taking no other reading', () => {
+      const { result } = renderHook(() => useDisplayName(''));
+
+      expect(result.current).toBe('');
+    });
+
+    /*
+      Once every session on a terminal has ended, `currentSessionIn` falls back to
+      the id it was given — the original row — so this names the predecessor. The
+      click resolves through the identical function, so words and destination
+      still agree, which is the property that actually matters.
+    */
+    it('names the row the click would open once the lineage has ended', () => {
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation');
+      const successor = useHiveStore.getState().clearSession('lead-form')!;
+      useHiveStore.getState().finishSession(successor, false);
+
+      const { result } = renderHook(() => useDisplayName('lead-form'));
+
+      // The words describe the row the click resolves to — the same row, not
+      // merely a plausible name.
+      const row = useHiveStore.getState().entities[currentRowFor('lead-form')];
+      expect(row && isSession(row) ? row.name : undefined).toBe(result.current);
+      expect(result.current).toBe('mutex-explanation');
+    });
+  });
+
+  describe('useSessionNameReports', () => {
+    const nameFor = (
+      reports: { terminalId: string; name: string }[],
+      terminalId: string,
+    ) => reports.find((entry) => entry.terminalId === terminalId)?.name;
+
+    it('reports the string the rail is showing, id included', () => {
+      const { result } = renderHook(() => useSessionNameReports());
+
+      expect(nameFor(result.current, 'lead-form')).toBe('lead-form');
+    });
+
+    it('reports a renamed session under its new name', () => {
+      const { result, rerender } = renderHook(() => useSessionNameReports());
+
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation');
+      rerender();
+
+      expect(nameFor(result.current, 'lead-form')).toBe('mutex-explanation');
+    });
+
+    /*
+      Live rows only. An ended row keeps its own name and shares its terminal
+      with the successor a `/clear` minted, so including both would report two
+      names for one terminal and let the retired one win by list order.
+    */
+    it('drops a row once it has ended, and keeps its successor', () => {
+      const successor = useHiveStore.getState().clearSession('lead-form')!;
+      useHiveStore.getState().renameSession(successor, 'Mutex explanation');
+
+      const { result } = renderHook(() => useSessionNameReports());
+
+      const forTerminal = result.current.filter(
+        (entry) => entry.terminalId === 'lead-form',
+      );
+      expect(forTerminal).toHaveLength(1);
+      expect(forTerminal[0].name).toBe('mutex-explanation');
+    });
+
+    /*
+      The identity of the array has to survive a store write that changed no
+      name, or the effect that sends these would fire on every transcript line.
+    */
+    it('keeps its identity across a write that renamed nothing', () => {
+      const { result, rerender } = renderHook(() => useSessionNameReports());
+      const before = result.current;
+
+      useHiveStore.getState().setSessionStatus('lead-form', 'working');
+      rerender();
+
+      expect(result.current).toBe(before);
+    });
   });
 });

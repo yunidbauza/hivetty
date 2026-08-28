@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -17,6 +21,7 @@ import {
   type Sessions,
 } from '../../../../electron/main/sessions';
 import { MIN_INTERVAL_MS } from '../../../../electron/main/sessions/git';
+import { createSessionLedger } from '../../../../electron/main/sessions/ledger';
 
 /**
  * The sessions layer (story 096).
@@ -141,10 +146,15 @@ const TEST_UUID = '00000000-0000-4000-8000-000000000000';
 /**
  * The bootstrap command line a plain spawn produces.
  *
- * `--name` is the entity id (HIVE-61), so the agent's prompt box and `/resume`
- * entry agree with the rail. `--session-id` is pinned so the transcript path is
- * deterministic. No `--settings`, because this harness passes no hook runtime —
- * which is itself the "hooks unavailable" case, and it must still spawn.
+ * **There is no `--name` on it, and that is load-bearing** (HIVE-108). HIVE-61
+ * put the entity id there so the agent's prompt box and `/resume` entry agreed
+ * with the rail; the flag also suppresses Claude Code's own titling outright, so
+ * the price of that agreement was every context-derived name the app might have
+ * had. A session now opens unnamed and titles itself.
+ *
+ * `--session-id` is pinned so the transcript path is deterministic. No
+ * `--settings`, because this harness passes no hook runtime — which is itself
+ * the "hooks unavailable" case, and it must still spawn.
  */
 /**
  * The bootstrap line a plain spawn produces.
@@ -154,7 +164,7 @@ const TEST_UUID = '00000000-0000-4000-8000-000000000000';
  * user's profile and re-exports anything they set there. Without this the whole
  * subscription-auth feature is a no-op for the population it exists for.
  */
-const BOOT = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name hero-refresh --session-id ${TEST_UUID} && exit`;
+const BOOT = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --session-id ${TEST_UUID} && exit`;
 
 /**
  * The same command line for a spawn that carries a task (HIVE-91).
@@ -162,7 +172,7 @@ const BOOT = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name hero-r
  * The task is a positional argument on `BOOT`, not a second thing written into
  * the pty after it — which is why there is a constant for it at all.
  */
-const BOOT_WITH_TASK = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name hero-refresh --session-id ${TEST_UUID} 'fix the hero' && exit`;
+const BOOT_WITH_TASK = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --session-id ${TEST_UUID} 'fix the hero' && exit`;
 
 /** How long after a stage's text its submitting `\r` follows (HIVE-63). */
 const SUBMIT = 300;
@@ -300,6 +310,34 @@ describe('what a session runs', () => {
       .join('');
     expect(written).toContain('claude-hooks.settings.json');
     expect(written).not.toContain('settings.light.json');
+  });
+
+  /**
+   * The flag that used to suppress Claude Code's own titling (HIVE-108).
+   *
+   * Asserted on its own, and not merely implied by `BOOT`, because this is the
+   * whole mechanism of the feature and it fails silently: a `--name` restored
+   * here would not break a single other test, and the app would simply stop
+   * inferring names again — the state it was in for its entire history before
+   * this change, which nobody noticed because there was nothing to compare it
+   * against.
+   *
+   * Measured cause, not inference: two arms of a real `claude` differing only in
+   * this flag produced an `ai-title` and no `ai-title` respectively. The live
+   * proof is `pnpm test:title`.
+   */
+  it('names nothing on an ordinary spawn, so the agent titles itself', () => {
+    sessions.open(OPEN);
+    const sessionId = mintedFor('hero-refresh');
+
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(SUBMIT);
+
+    const line = vi.mocked(supervisor.write).mock.calls.at(0)?.[1] ?? '';
+    expect(line).toContain('claude ');
+    expect(line).not.toContain('--name');
   });
 
   it('delivers a spawn task as claude’s initial prompt, on the command line', () => {
@@ -867,6 +905,209 @@ describe('status', () => {
   });
 
   /**
+   * The branch is the second ticket signal.
+   *
+   * A prompt names the ticket once, and only if the user phrased it a way the
+   * scanner recognises. The branch goes on saying it for as long as the work
+   * lasts, which is what covers a session resumed onto `feat/hive-111-ledger`
+   * days later having never said the key here at all.
+   *
+   * The emit sits inside `publishBranch`, **after** its change check — so a
+   * candidate goes out once per distinct branch rather than once per hook
+   * event. That placement is the only thing between this and a Jira read on
+   * every tool call the agent makes, so it is pinned rather than assumed.
+   */
+  const branchHarness = (stdout: string) => {
+    let onEvent: ((event: HookStatusEvent) => void) | undefined;
+    let onCleared: ((entityId: string) => void) | undefined;
+    const clock = { t: 0 };
+    const run = vi.fn<RunAsync>().mockResolvedValue({
+      code: 0,
+      stdout,
+      stderr: '',
+      timedOut: false,
+    });
+
+    const hooked = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      branchReader: { run, gitPath: () => '/usr/bin/git', now: () => clock.t },
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        start: (opts: {
+          onEvent: (event: HookStatusEvent) => void;
+          onCleared: (entityId: string) => void;
+        }) => {
+          onEvent = opts.onEvent;
+          onCleared = opts.onCleared;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+    });
+
+    /*
+      Opened, not merely created. `publishBranch` checks the registry after its
+      await and returns for a row that is gone — so an unopened session reads a
+      branch and then silently publishes nothing, which would make every
+      assertion below pass for the wrong reason.
+    */
+    hooked.open(OPEN);
+
+    const flush = async (): Promise<void> => {
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    };
+
+    const turnEnded = () =>
+      onEvent!({
+        entityId: 'hero-refresh',
+        status: 'idle',
+        event: 'Stop',
+        cwd: '/home/dev/repos/hero-refresh',
+      } as HookStatusEvent);
+
+    const cleared = () => onCleared!('hero-refresh');
+
+    const all = () =>
+      sent
+        .filter((entry) => entry.channel === CH.sessionTicketIntent)
+        .map((entry) => entry.payload);
+
+    /*
+      Opening the session reads a branch of its own, in the project's directory
+      rather than the one the hook names — a different cwd, so a legitimately
+      separate publish. `mark` draws the line under it so each test asserts on
+      what its *own* action produced instead of counting from zero and quietly
+      depending on how many reads `open` happens to do.
+    */
+    let baseline = 0;
+    const mark = () => {
+      baseline = all().length;
+    };
+    const intents = () => all().slice(baseline);
+
+    return { hooked, flush, turnEnded, cleared, intents, mark, clock };
+  };
+
+  it('publishes a ticket candidate read from the branch', async () => {
+    // The shape this app's own worktrees produce, lowercase as git leaves it.
+    const h = branchHarness('worktree-feat+hive-111-ledger\n');
+    await h.flush();
+    h.mark();
+
+    h.turnEnded();
+    await h.flush();
+
+    expect(h.intents()).toEqual([
+      { entityId: 'hero-refresh', keys: ['HIVE-111'], source: 'branch' },
+    ]);
+
+    h.hooked.dispose();
+  });
+
+  it('offers every candidate a branch carries, best-first', async () => {
+    /*
+      The leftmost key-shaped token is routinely not the issue. Sending only it
+      let a node major permanently shadow the real ticket — Jira rejected the
+      shadow, and the branch signal associated nothing.
+    */
+    const h = branchHarness('chore/bump-node-22-hive-118\n');
+    await h.flush();
+    h.mark();
+
+    h.turnEnded();
+    await h.flush();
+
+    expect(h.intents()).toEqual([
+      {
+        entityId: 'hero-refresh',
+        keys: ['NODE-22', 'HIVE-118'],
+        source: 'branch',
+      },
+    ]);
+
+    h.hooked.dispose();
+  });
+
+  it('publishes nothing for a branch carrying no key', async () => {
+    /*
+      The generic session, and the case that must stay quiet: a terminal opened
+      to look around, standing on `main`. No candidate, so no Jira read on the
+      other side, so no association — an empty answer is the right one here, and
+      the common one.
+    */
+    const h = branchHarness('main\n');
+    await h.flush();
+    h.mark();
+
+    h.turnEnded();
+    await h.flush();
+
+    expect(h.intents()).toEqual([]);
+
+    h.hooked.dispose();
+  });
+
+  it('offers the successor its branch again after /clear', async () => {
+    /**
+     * `/clear` retires the conversation and keeps the pty, so `settleExit` —
+     * the only place that forgot a branch — never runs. The dedupe entry stayed
+     * primed for a row that no longer exists, the successor's branch never
+     * republished, and no candidate was ever offered for it.
+     *
+     * That landed exactly on the case this signal is justified by: a session
+     * cleared and continued on `feat/hive-111-ledger` would never reach the
+     * HIVE-111 card unless the user said the key out loud again.
+     */
+    const h = branchHarness('feat/hive-111-ledger\n');
+    await h.flush();
+
+    h.turnEnded();
+    await h.flush();
+    h.mark();
+
+    h.cleared();
+    // Past the reader's floor, so this is a real re-read rather than the cache.
+    h.clock.t = MIN_INTERVAL_MS;
+    h.turnEnded();
+    await h.flush();
+
+    expect(h.intents()).toEqual([
+      { entityId: 'hero-refresh', keys: ['HIVE-111'], source: 'branch' },
+    ]);
+
+    h.hooked.dispose();
+  });
+
+  it('publishes one candidate per branch, not one per event', async () => {
+    /*
+      `publishBranch` returns early when neither branch nor cwd changed, and the
+      emit sits after that check. Without it, every `Stop` in a session on a
+      ticket branch would be one more confirmed Jira read for an association
+      that already exists.
+    */
+    const h = branchHarness('feat/hive-111-ledger\n');
+    await h.flush();
+    h.mark();
+
+    h.turnEnded();
+    await h.flush();
+    // Past the reader's floor, so the second turn genuinely re-reads git rather
+    // than being served the cache — the dedupe under test is the branch one.
+    h.clock.t = MIN_INTERVAL_MS;
+    h.turnEnded();
+    await h.flush();
+
+    expect(h.intents()).toHaveLength(1);
+
+    h.hooked.dispose();
+  });
+
+  /**
    * HIVE-83: the whole reason `hooks/tracker.ts` exists. `Bash` (A) and
    * `AskUserQuestion` (B) run in parallel; A's `PostToolUse` — a sibling
    * finishing — must not clear the block B's `PermissionRequest` is holding.
@@ -1419,6 +1660,71 @@ describe('the ledger', () => {
     expect(typeof ending?.endedAt).toBe('number');
   });
 
+  /**
+   * The title stream against a pinned name, over a **real** ledger (HIVE-107,
+   * relaxed by HIVE-108).
+   *
+   * Both halves are pinned on their own — `ledger.test.ts` owns the merge rule,
+   * and the tests above own the fact that `readTitle` records what it reads —
+   * but the bug lived in the seam, so this is the one place they are composed.
+   * A session renamed mid-conversation goes on painting the name Claude knows it
+   * by, several times a second, and every one of those repaints reaches
+   * `record`. The file underneath the row used to go back to `sess-01` before
+   * the user had finished reading the rename, and the file is what the next
+   * launch restores from.
+   *
+   * What the pin defends is now the **key**, not the whole name: the agent's
+   * title is taken and `HIVE-104` is kept in front of it. The regression this
+   * guards against is the same one either way — the ticket falling off the
+   * front on the next repaint.
+   */
+  it('keeps a pinned key in front of the agent’s own repaints', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hive-pin-'));
+    const file = join(dir, 'sessions.json');
+    try {
+      const ledger = createSessionLedger(file, () => 1000);
+      const withIt = createSessions({
+        supervisor,
+        send: (channel, payload) =>
+          sent.push({ channel, payload: payload as Record<string, unknown> }),
+        config: () => CONFIG,
+        newSessionUuid: () => TEST_UUID,
+        ledger,
+      });
+      withIt.open(OPEN);
+      const sessionId = mintedFor('hero-refresh');
+      // Past the bootstrap, which is the window `readTitle` refuses to read in.
+      emitData({ sessionId, chunk: '$ ' });
+      vi.advanceTimersByTime(158 + SUBMIT);
+
+      // The user names a ticket mid-session; the renderer's note arrives.
+      ledger.record('hero-refresh', { ticket: 'HIVE-104', name: 'HIVE-104', namePinned: true });
+
+      // And Claude, which was never told, goes on painting what it knows.
+      emitData({ sessionId, chunk: '\u001b]0;✳ hero-refresh\u0007' });
+      vi.advanceTimersByTime(8);
+      ledger.flush();
+
+      expect(ledger.all()[0]).toMatchObject({
+        name: 'HIVE-104-hero-refresh',
+        namePinned: true,
+        ticket: 'HIVE-104',
+      });
+      /*
+        The renderer is told the *raw* title and applies the same pin itself —
+        main's job on this channel is to report what the terminal said, not to
+        decide what the row is called. The two arrive at one answer because they
+        run one function, which is what `ledger.ts` and `renameSession` each say
+        in their own words.
+      */
+      expect(on(CH.sessionName).at(-1)?.payload).toMatchObject({
+        name: 'hero-refresh',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('says nothing about a command session, which has no history to keep', () => {
     // Same reason the activity tracker is not told: a clone's ending is not a
     // session's, and a `clone-1` row in the fleet list would be a fiction.
@@ -1465,7 +1771,7 @@ describe('the ledger', () => {
 
       expect(supervisor.write).toHaveBeenCalledWith(
         mintedFor('hero-refresh'),
-        `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name hero-refresh --resume ${PRIOR} && exit`,
+        `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --resume ${PRIOR} && exit`,
       );
       expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
         sessionUuid: PRIOR,
@@ -1474,6 +1780,59 @@ describe('the ledger', () => {
       expect(patchesFor(written, 'hero-refresh')[0]).not.toHaveProperty('task');
     });
 
+    /**
+     * The name the conversation already has is the one it keeps (HIVE-107).
+     *
+     * `--name` on a `--resume` is not a label on a new session, it is a
+     * **rename of the old one**: measured against Claude Code 2.1.247, a resume
+     * carrying `--name probe-beta` reopened a conversation stored as
+     * `probe-alpha` and painted `✳ probe-beta` — and the next resume, with no
+     * flag at all, still said `probe-beta`. The override is written into the
+     * transcript.
+     *
+     * So the entity-id fallback, which is right for a spawn, was the whole bug:
+     * every resumed session was renamed to `sess-0n` on its way back, the title
+     * stream reported that as the agent's own choice, and `readTitle` wrote it
+     * through to the ledger — so `troubleshooting-crawling` became `sess-0n`
+     * permanently, having survived the quit that was supposed to be the risky
+     * part.
+     */
+    it('leaves the resumed conversation the name it already has', () => {
+      const written: Written[] = [];
+      withLedger(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, resume: true });
+      settle(mintedFor('hero-refresh'));
+
+      const line = vi.mocked(supervisor.write).mock.calls.at(0)?.[1] ?? '';
+      expect(line).not.toContain('--name');
+    });
+
+    /**
+     * A caller that *does* name a resume is obeyed, because it is saying
+     * something the ledger cannot: this conversation should now be called this.
+     * Nothing asks for that today — `resumeSession` and `resolveTransport` both
+     * send `resume` and no name — and the flag is dropped only where the
+     * alternative was inventing one.
+     */
+    it('still renames a resume the caller named on purpose', () => {
+      const written: Written[] = [];
+      withLedger(written, { 'hero-refresh': PRIOR }).open({
+        ...OPEN,
+        resume: true,
+        name: 'HIVE-73',
+      });
+      settle(mintedFor('hero-refresh'));
+
+      expect(supervisor.write).toHaveBeenCalledWith(
+        mintedFor('hero-refresh'),
+        `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --name HIVE-73 --resume ${PRIOR} && exit`,
+      );
+    });
+
+    /**
+     * A spawn that degrades to fresh is a beginning, and produces the ordinary
+     * bootstrap line — which since HIVE-108 names nothing, so that Claude can
+     * name the session from the conversation instead.
+     */
     it('falls back to a fresh session when there is nothing to resume', () => {
       // A record older than uuids, or an id this run already began: the
       // renderer's request is honest but unanswerable, and the spawn is the

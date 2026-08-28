@@ -42,10 +42,15 @@ import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 import type { PrRecord } from '@shared/github-contract';
 import type { IdleDetail } from '@shared/hook-contract';
+import type { SessionNameReport } from '@shared/ipc-contract';
 import type { JiraIssue } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
-import { SESSION_EFFORTS, SESSION_MODELS } from '@shared/session-contract';
+import {
+  hiveNameFromTitle,
+  SESSION_EFFORTS,
+  SESSION_MODELS,
+} from '@shared/session-contract';
 import type {
   SessionHistoryEntry,
   SessionPrRequest,
@@ -173,6 +178,35 @@ export type PrSource =
   | { kind: 'live'; stale: boolean; repos: number }
   /** The first read failed, and there is nothing to keep. */
   | { kind: 'failed'; message: string };
+
+/**
+ * How sure the caller is that this session belongs to this ticket.
+ *
+ * There is one association and two ways of arriving at it, and the difference
+ * between them is worth exactly one field. The user *saying* "work on ABC-123"
+ * is a decision, and renaming the row to match is the app acknowledging it.
+ * Reading `ABC-123` out of a branch name is a good inference about a decision
+ * made somewhere else, possibly days ago — right often enough to file the
+ * session on the correct card, not right enough to rewrite what the row is
+ * called while the user is looking at it.
+ */
+export interface SetSessionTicketOptions {
+  /**
+   * How the key was learned. Defaults to `'prompt'`, the spoken-intent
+   * behaviour HIVE-78 shipped.
+   *
+   * One field rather than two, because everything that differs between the two
+   * callers follows from it and must not be settable independently:
+   *
+   * - `'prompt'` pins the session's name to the key, and may **replace** a
+   *   ticket that was merely inferred.
+   * - `'branch'` associates and nothing else — the name, pinned or not, is left
+   *   exactly as it was, an agent-chosen title (HIVE-108) goes on being the
+   *   agent's to change, and it never displaces an existing ticket of either
+   *   kind.
+   */
+  source?: 'prompt' | 'branch';
+}
 
 interface HiveState {
   entities: Record<string, Entity>;
@@ -397,12 +431,19 @@ interface HiveState {
   /** A session reported its context and rate-limit usage (HIVE-79). */
   setSessionMetrics: (id: string, metrics: SessionMetrics) => void;
   /**
-   * The user named the ticket this session is for, in prose (HIVE-78).
+   * The ticket this session is for, however it was learned (HIVE-78).
    *
-   * Associates the session and pins its name to the key. The key must already
-   * have been confirmed against Jira; this action does not check.
+   * Associates the session, and by default pins its name to the key. The key
+   * must already have been confirmed against Jira; this action does not check.
+   *
+   * Pass `{ rename: false }` when the key was **inferred** rather than spoken —
+   * see {@link SetSessionTicketOptions}.
    */
-  setSessionTicket: (id: string, ticket: string) => void;
+  setSessionTicket: (
+    id: string,
+    ticket: string,
+    options?: SetSessionTicketOptions,
+  ) => void;
   /**
    * `/clear` ended this session's conversation; its terminal kept running.
    *
@@ -1075,10 +1116,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * A session started from a ticket card is called after its issue (HIVE-78).
      *
      * Resolved here rather than in the picker because collision-avoidance needs
-     * to see the whole fleet, and the store is what holds it. The name goes two
-     * places from here — onto the entity, and onto the command line as
-     * `--name` — so the row and the agent agree from the first frame instead of
-     * the row saying `HIVE-73` while the agent's prompt box says `sess-07`.
+     * to see the whole fleet, and the store is what holds it.
+     *
+     * **It no longer goes onto the command line** (HIVE-108). Sending it as
+     * `--name` made the row and the agent agree from the first frame, at the
+     * cost of every name after it: the flag suppresses Claude's own titling, so
+     * a ticket session stayed `HIVE-73` for its whole life and never said what
+     * it was *for*. The key is kept in front by pinning it instead, which is
+     * what turns `HIVE-73` into `HIVE-73-back-key-interception` once the agent
+     * has a topic — and pinning is now the *only* thing defending it, which is
+     * why it is set here rather than only by `setSessionTicket`.
      */
     const name = ticket
       ? ticketSessionName(ticket, get().entities)
@@ -1096,11 +1143,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        */
       ...(ticket ? { ticket } : {}),
       /**
-       * Named up front only when a ticket said what to call it. Spread for the
-       * same reason `ticket` is: an explicit `name: undefined` is a different
-       * object shape from an absent key, and these snapshots are compared.
+       * Named up front only when a ticket said what to call it, and **pinned**
+       * with it (HIVE-108). Spread for the same reason `ticket` is: an explicit
+       * `name: undefined` is a different object shape from an absent key, and
+       * these snapshots are compared.
+       *
+       * The pin used to be the mid-session path's alone, on the reasoning that a
+       * ticket-card spawn had a command line to put the name on and did not need
+       * one. It no longer has a command line, so without the pin the agent's
+       * first title would simply replace `HIVE-73` and the ticket would fall off
+       * the row that was opened from its card.
        */
-      ...(name === undefined ? {} : { name }),
+      ...(name === undefined ? {} : { name, namePinned: true as const }),
       /**
        * **No `branch` here, and that is the fix** (HIVE-78).
        *
@@ -1196,12 +1250,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ...(task === undefined ? {} : { task }),
         model: resolvedModel,
         effort: resolvedEffort,
-        /**
-         * Sent only when a ticket named it (HIVE-78). Omitted otherwise, so
-         * main falls back to the entity id and the command line is exactly the
-         * one HIVE-61 shipped.
-         */
-        ...(name === undefined ? {} : { name }),
+        /*
+          No `name` (HIVE-108). It used to be sent here whenever a ticket named
+          the row, which is precisely the case that most wants an inferred name
+          — and `--name` is what stops Claude producing one. The row keeps its
+          key by being pinned, not by telling the agent about it.
+        */
         /**
          * The app's own theme, so `claude` dresses its UI to match the terminal
          * it is drawing into.
@@ -1233,8 +1287,17 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           happens long after any spawn; one verb for both keeps a single answer
           to "how does main learn a session's ticket".
         */
+        /*
+          The name rides along with it (HIVE-108), which it did not have to
+          before: main used to learn this row's name from the `--name` on its
+          own command line, and there is no longer one. A note carrying a name
+          is what sets `namePinned` in the ledger, so without it the file would
+          take the agent's first title unpinned — and the next launch would
+          restore `back-key-interception` for a row the app is showing as
+          `HIVE-73-back-key-interception`.
+        */
         if (outcome.ok && ticket !== undefined) {
-          noteSessionTicket({ entityId: id, ticket });
+          noteSessionTicket({ entityId: id, ticket, ...(name === undefined ? {} : { name }) });
         }
         if (outcome.ok) return;
         set((state) => ({
@@ -1937,6 +2000,15 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           */
           ...(live ? {} : { restored: true }),
           ...(item.name === undefined ? {} : { name: item.name }),
+          /*
+            And whether that name is the app's own (HIVE-107). Restored because
+            a restored row can be *reopened*: resume starts a real `claude`,
+            which repaints the only name it knows — the id — several times a
+            second, so an unpinned row loses the mid-session `HIVE-104` it was
+            carrying. `renameSession` reads this flag; without it the pin
+            survived the quit and was lost to the recovery.
+          */
+          ...(item.namePinned === true ? { namePinned: true } : {}),
           ...(item.ticket === undefined ? {} : { ticket: item.ticket }),
           ...(item.branch === undefined ? {} : { branch: item.branch }),
           ...(item.cwd === undefined ? {} : { cwd: item.cwd }),
@@ -2104,18 +2176,20 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     }),
 
   /**
-   * The agent reported a new display name (HIVE-61).
+   * The agent reported a new display name (HIVE-61, reshaped by HIVE-108).
    *
    * The same shape and the same guards as `setSessionStatus`, and for the same
    * reasons: agents are ignored rather than rejected, and an unchanged value is
    * dropped so a session repeating its title — which Claude does on every
    * repaint — cannot produce a store write, and a re-render, per repaint.
    *
-   * The name is **not** validated against the pattern `--name` is filtered by.
-   * That pattern governs what the app is willing to put on a command line; this
-   * value came off a terminal title and is only ever rendered, so restricting it
-   * would reject the perfectly good "fix the login bug" a user just typed into
-   * `/rename`.
+   * The title is no longer taken verbatim. It is rewritten by
+   * {@link hiveNameFromTitle} into the register the rail spells names in, which
+   * is what makes `Mutex explanation` land as `mutex-explanation` and `back key
+   * interception hive-53` as `HIVE-53-back-key-interception`. That function is a
+   * fixed point on its own output, which is the property this action depends on
+   * most: Claude repaints several times a second, and a normaliser that grew its
+   * input would rename the session on every frame.
    */
   renameSession: (id, name) =>
     set((state) => {
@@ -2127,17 +2201,40 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (!entity || !isSession(entity)) return state;
 
       /**
-       * A pinned name outranks the agent's (HIVE-78).
+       * A pinned session keeps its key in front, rather than refusing the title
+       * outright (HIVE-78, relaxed by HIVE-108).
        *
-       * The app pinned it because the user said which ticket they were working
-       * on, and Claude has no idea that happened — it goes on repainting
-       * `✳ sess-03` several times a second. Without this the rename would be
-       * visible for about one frame.
+       * The pin says the user told the app which issue this session is for, and
+       * that outranks anything Claude infers. It used to be enforced by refusing
+       * *every* title, which was correct while the alternative was `sess-03` —
+       * but the alternative is now a description of the work, and `HIVE-73` plus
+       * that description beats either alone.
        *
-       * Checked before the stale-title guard because it subsumes it: while
-       * pinned, *every* title is refused, whatever its provenance.
+       * **The prefix is `ticket`, never `name`.** Passing the current name would
+       * compound: `HIVE-73-back-key-interception` would become the prefix of the
+       * next frame's name, and the row would grow a word a second. The ticket key
+       * is the one part of the name that is fixed.
+       *
+       * That spends `ticketSessionName`'s `-2`, and deliberately. A second
+       * session on one ticket opens as `HIVE-73-2`, and once each has a topic
+       * they are `HIVE-73-<their own topics>` — already distinct, and more
+       * legible than a counter. The `taken` check below is the backstop for the
+       * case where they are not.
+       *
+       * A pin with no ticket behind it cannot name a prefix, so it keeps the
+       * pre-HIVE-108 behaviour and refuses. Nothing produces that state today —
+       * `setSessionTicket` writes both fields together — and a restored record
+       * that somehow carries one without the other is better left alone than
+       * renamed on a guess.
        */
-      if (entity.namePinned === true) return state;
+      if (entity.namePinned === true && entity.ticket === undefined) return state;
+      const next = hiveNameFromTitle(
+        name,
+        entity.namePinned === true ? entity.ticket : undefined,
+      );
+      // A title with nothing nameable in it is not a rename, the same way an
+      // empty title never was.
+      if (next === undefined) return state;
 
       /**
        * Refuse the title the finished conversation left in the terminal.
@@ -2147,15 +2244,81 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * times a second and a one-shot guard would let the second one through.
        * Anything else means the agent has genuinely renamed itself, and the
        * terminal stops being suspect from then on.
+       *
+       * Compared **after** normalising, because that is the space `staleTitles`
+       * records in — it stores the retired row's `name`, which is already a
+       * normalised value. Comparing the raw title against it would never match,
+       * and the successor would inherit the name this guard exists to withhold.
        */
       const terminal = terminalOf(entity);
       const stale = staleTitles.get(terminal);
-      if (stale === name) return state;
+      if (stale === next) return state;
       if (stale !== undefined) staleTitles.delete(terminal);
 
-      if (entity.name === name) return state;
+      if (entity.name === next) return state;
+
+      /**
+       * One name, one session — **numbered, not refused** (HIVE-109).
+       *
+       * Inferred names collide in a way ids never did: two sessions on one
+       * ticket can reach the same title, and so can two unrelated sessions asked
+       * the same kind of question. Asking two sessions "whats the time now"
+       * produced `Current time` in both transcripts, measured.
+       *
+       * HIVE-108 refused the loser, on the stated grounds that a `-2` "would not
+       * survive the next repaint … a write per frame, forever". **That trace was
+       * wrong**, and the cost of believing it was a row that sat on `sess-0n`
+       * for the rest of its life while its own transcript held a perfectly good
+       * title. Suffixing is stable, for two independent reasons:
+       *
+       * - the comparison below happens *after* disambiguation, so a row already
+       *   called `current-time-2` compares equal to its own recomputed name and
+       *   no write occurs; and
+       * - a name that is already this candidate plus a number is kept as-is, so
+       *   the number does not move when the row that took the bare name ends.
+       *
+       * `ticketSessionName` has spelled a second session on one ticket `-2`
+       * since HIVE-78. This is the same rule for inferred names, and it resolves
+       * the same way: first to arrive keeps the bare name.
+       *
+       * **Only live rows hold a name.** An ended one is a record of work that
+       * finished, and it keeps its name for the ENDED list rather than to reserve
+       * it — most sharply after a `/clear`, where the retired row and its
+       * successor share a terminal and the successor is *expected* to arrive at
+       * the same name once the agent repaints it. Counting the dead here left
+       * that successor unnamed for the life of the app.
+       */
+      const heldByAnother = (candidate: string): boolean =>
+        Object.values(state.entities).some(
+          (other) =>
+            isSession(other) &&
+            other.id !== target &&
+            !isEnded(other.status) &&
+            other.name === candidate,
+        );
+
+      /*
+        Already wearing a number for this very name: keep it. Without this the
+        row would drop back to the bare name the moment the session holding it
+        ended — a rename the user did nothing to cause, on a row they are
+        watching.
+      */
+      const numberedVariant =
+        entity.name !== undefined &&
+        entity.name.startsWith(`${next}-`) &&
+        /^\d+$/.test(entity.name.slice(next.length + 1));
+      if (numberedVariant) return state;
+
+      let unique = next;
+      // Starts at 2, so the second session to reach a name is `-2`, exactly as
+      // `ticketSessionName` numbers a second session on one ticket.
+      for (let suffix = 2; heldByAnother(unique); suffix += 1) {
+        unique = `${next}-${suffix}`;
+      }
+      if (entity.name === unique) return state;
+
       return {
-        entities: { ...state.entities, [target]: { ...entity, name } },
+        entities: { ...state.entities, [target]: { ...entity, name: unique } },
       };
     }),
 
@@ -2273,12 +2436,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * against Jira — this action does no validation of its own, because the check
    * that matters is a network call and a store must stay synchronous.
    *
-   * ## Why it pins the name
+   * ## Why it pins the name — when the user spoke it
    *
    * Associating without renaming would leave a row called `sess-03` sitting on
    * the `ABC-123` card, which is the association the user asked for and none of
    * the recognition. Pinning is what makes the new name survive Claude's next
    * title repaint — see {@link Session.namePinned}.
+   *
+   * That reasoning is about a user who *said* the key, and it does not carry to
+   * a key merely read off a branch. `{ rename: false }` is the caller saying so
+   * — see {@link SetSessionTicketOptions}.
    *
    * ## Why it refuses a session that already has a ticket
    *
@@ -2287,31 +2454,132 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * describe most of its own transcript. A user who genuinely wants that has a
    * better tool: `/clear`, which retires the row and opens a fresh one.
    */
-  setSessionTicket: (id, ticket) =>
-    set((state) => {
-      const target = currentSessionIn(state, id);
-      const entity = state.entities[target];
-      if (!entity || !isSession(entity)) return state;
-      if (entity.ticket !== undefined) return state;
-      // An ended row is history; naming it now would rewrite the record.
-      if (isEnded(entity.status)) return state;
+  setSessionTicket: (id, ticket, { source = 'prompt' } = {}) => {
+    /**
+     * Read, decide, write, *then* tell main (HIVE-107) — rather than the bare
+     * `set(updater)` this was, with the note made separately by its caller.
+     *
+     * Two things follow from the note being made here, and both were bugs
+     * while it was made there:
+     *
+     * - **It carries the name.** The name is settled in this function and
+     *   nowhere else — `ticketSessionName` de-duplicates against the whole
+     *   fleet — so a caller can only send the key, and main had no other way
+     *   to learn what the row is now called: this rename never reaches Claude,
+     *   so it never comes back on the title stream. The ledger kept the id, and
+     *   the next launch restored it over a name the user had been reading all
+     *   afternoon.
+     * - **It only speaks when it acted.** The three refusals below are silent
+     *   from outside, so an unconditional note beside the call wrote a ticket
+     *   into the ledger that the store had just declined — and keyed it on the
+     *   raw id rather than `currentSessionIn`, which after a `/clear` is a
+     *   different row.
+     *
+     * `get()` before `set()` is the shape `resumeSession` uses a few actions
+     * down, and for the same reason: the decision needs the state, and the
+     * effect must not run inside an updater.
+     */
+    const state = get();
+    const target = currentSessionIn(state, id);
+    const entity = state.entities[target];
+    if (!entity || !isSession(entity)) return;
+    /**
+     * An existing ticket refuses a second one — **unless** the first was only
+     * inferred and the second was spoken.
+     *
+     * The plain "already has a ticket" refusal was right while the prompt was
+     * the only signal, and became a bug the moment a branch could associate:
+     * main reads the branch at spawn, so the inference reliably arrives *first*
+     * and the refusal handed every contest to the weaker evidence. See
+     * {@link Session.ticketInferred}.
+     *
+     * Two spoken keys still refuse the second. That is a user changing their
+     * mind mid-conversation, and the row would end up carrying a name that
+     * describes almost none of its own transcript — `/clear` is the honest tool
+     * for it, and it already retires the row and opens a successor.
+     */
+    if (entity.ticket !== undefined) {
+      const displaces = source === 'prompt' && entity.ticketInferred === true;
+      if (!displaces) return;
+    }
+    // An ended row is history; naming it now would rewrite the record.
+    if (isEnded(entity.status)) return;
 
-      const name = ticketSessionName(ticket, state.entities);
+    /**
+     * A branch-inferred link **associates without renaming**.
+     *
+     * The two callers are not equally sure of themselves, and the name is where
+     * that difference has to show. A prompt is the user saying it: they typed
+     * "work on ABC-123", so answering with a row called `ABC-123` is the
+     * recognition they asked for. A branch is an inference *about* them — often
+     * about a checkout they made days ago — and it is strong enough to file the
+     * session on the right card, which is a correction, but not strong enough
+     * to overwrite the name they have been reading all afternoon, which would
+     * be a surprise with no cause on screen.
+     *
+     * It costs the card nothing: `facetsForTicket` matches on `ticket`, never
+     * on the name, so the row appears either way. The only difference is what
+     * it is called when it gets there.
+     */
+    const name =
+      source === 'prompt' ? ticketSessionName(ticket, state.entities) : undefined;
 
-      return {
-        entities: {
-          ...state.entities,
-          [target]: { ...entity, ticket, name, namePinned: true },
-        },
-        orchLines: capLines([
-          ...state.orchLines,
-          // The new name, never the id (HIVE-91) — and only the name: it always
-          // carries the ticket key (`HIVE-73`, `HIVE-73-2`), so spelling the
-          // ticket again would read `HIVE-73 is working HIVE-73`.
-          line(`  renamed → ${name}`, 'dim'),
-        ]),
-      };
-    }),
+    /**
+     * `ticketInferred` is set by the branch path and *removed* by the prompt
+     * one.
+     *
+     * A promoted row must stop being displaceable: leaving the flag on after a
+     * spoken key would let the next branch-shaped guess overwrite it again, one
+     * checkout later. Deleted from a fresh object rather than assigned
+     * `undefined`, because this store's snapshots are compared key-for-key and
+     * an explicit `undefined` is a different shape from an absent key — the
+     * same rule `clearSession` follows a few actions down.
+     */
+    let next: Session;
+    if (name === undefined) {
+      next = { ...entity, ticket, ticketInferred: true };
+    } else {
+      next = { ...entity, ticket, name, namePinned: true };
+      delete next.ticketInferred;
+    }
+
+    set((current) => ({
+      entities: {
+        ...current.entities,
+        [target]: next,
+      },
+      orchLines: capLines([
+        ...current.orchLines,
+        /*
+          The new name, never the id (HIVE-91) — and only the name: it always
+          carries the ticket key (`HIVE-73`, `HIVE-73-2`), so spelling the
+          ticket again would read `HIVE-73 is working HIVE-73`.
+
+          The silent branch has no name to spell, so it says what it did instead
+          — and it does still say something. An association the user did not ask
+          for out loud is exactly the kind that should leave a trace they can
+          find afterwards, because the card changing under them is otherwise the
+          only evidence it happened.
+        */
+        name === undefined
+          ? // Names the row, unlike the rename case: there the new name *is* the
+            // key and identifies itself, whereas `linked → HIVE-111` alone
+            // leaves the reader to guess which of thirteen sessions moved.
+            line(`  ${entityLabel(entity)} linked → ${ticket}`, 'dim')
+          : line(`  renamed → ${name}`, 'dim'),
+      ]),
+    }));
+
+    // So the association *and the name it produced* survive a quit (HIVE-87,
+    // HIVE-107). Fire and forget: `lib/session-history` swallows the failure.
+    // A silent link sends no name because it changed none — main keeps the one
+    // it already had rather than being told `undefined` and clearing it.
+    noteSessionTicket({
+      entityId: target,
+      ticket,
+      ...(name === undefined ? {} : { name }),
+    });
+  },
 
   /**
    * `/clear` — the conversation ended, the terminal did not.
@@ -2576,6 +2844,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       ...(current.branch === undefined ? {} : { branch: current.branch }),
       ...(current.cwd === undefined ? {} : { cwd: current.cwd }),
       ...(current.ticket === undefined ? {} : { ticket: current.ticket }),
+      /*
+        And how it was learned, with it. A successor that inherited the ticket
+        but not the flag would be a row the user never spoke for that could no
+        longer be corrected by speaking — the displacement rule reads this.
+      */
+      ...(current.ticketInferred === true ? { ticketInferred: true } : {}),
       /**
        * A pinned name **does** carry over, unlike a name the agent chose.
        *
@@ -3241,6 +3515,128 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 /** One entity, or undefined. */
 export const useEntity = (id: string) =>
   useHiveStore((state) => state.entities[id]);
+
+/**
+ * NUL, because it is the one byte neither an entity id nor a
+ * `hiveNameFromTitle` output can contain — so it can never appear inside either
+ * half of an encoded pair.
+ */
+const SESSION_NAME_SEPARATOR = '\u0000';
+
+const sessionNameFieldsSelector = (state: HiveState): string[] =>
+  state.order.flatMap((id) => {
+    const entity = state.entities[id];
+    if (entity === undefined || !isSession(entity) || isEnded(entity.status)) {
+      return [];
+    }
+    /*
+      `name ?? id` — the string the rail is actually showing, so main's toast and
+      the rail agree even before Claude has titled the session (HIVE-108).
+    */
+    return [
+      `${terminalOf(entity)}${SESSION_NAME_SEPARATOR}${entity.name ?? id}`,
+    ];
+  });
+
+/**
+ * Every live session, as `{ terminalId, name }` (HIVE-110).
+ *
+ * Encoded as strings and parsed back, for the reason `editor-store`'s
+ * `tabFieldsSelector` spells out: `useShallow` compares one level deep, so a
+ * selector returning freshly-built objects compares unequal on every render and
+ * tears the subscriber down with "Maximum update depth exceeded". Strings it
+ * can compare, so this re-renders when a session is opened, renamed or ended —
+ * and not on a keystroke, a status change or a transcript line.
+ *
+ * **Live rows only.** An ended row keeps its own name and shares its terminal
+ * with the successor a `/clear` minted, so including both would report two
+ * names for one terminal and let the retired one win by list order.
+ */
+export const useSessionNameReports = (): SessionNameReport[] => {
+  const encoded = useHiveStore(useShallow(sessionNameFieldsSelector));
+
+  return useMemo(
+    () =>
+      encoded.map((entry) => {
+        /*
+          `-1` cannot happen — the encoder above always writes the separator —
+          but it would decode silently and wrongly if it ever did (`slice(0, -1)`
+          truncates the id, `slice(0)` returns the whole pair as the name). The
+          fallback keeps the invariant in the code rather than only in a comment.
+        */
+        const at = entry.indexOf(SESSION_NAME_SEPARATOR);
+        if (at === -1) return { terminalId: entry, name: entry };
+        return {
+          terminalId: entry.slice(0, at),
+          name: entry.slice(at + SESSION_NAME_SEPARATOR.length),
+        };
+      }),
+    [encoded],
+  );
+};
+
+/**
+ * What to call the session a **terminal** id names, right now (HIVE-110).
+ *
+ * The inbox's answer to a notification that outlives the name it was raised
+ * under. Main raises a row carrying the terminal and the predicate alone
+ * (`HiveNotification.subject`), and this resolves the words in front of it on
+ * every render — so a session that titles itself an hour after the row landed
+ * renames the row too, and a `sess-11` the user has never seen anywhere else
+ * never appears.
+ *
+ * Resolved through `currentSessionIn`, the same mapping `currentRowFor` applies
+ * to the click. That identity is the load-bearing part: whatever this hook names,
+ * the click goes to, so the two can never describe different sessions — including
+ * in the awkward case below, where the answer is debatable but is at least the
+ * *same* debatable answer at both ends.
+ *
+ * ## What it answers once a terminal's whole lineage has ended
+ *
+ * `currentSessionIn` looks for a **live** row on the terminal and falls back to
+ * the id it was given. For a terminal whose sessions have all ended, that id is
+ * the original session — the pre-`/clear` predecessor, where there was a
+ * `/clear` — and its entity is still in the store, so this renders the
+ * *predecessor's* name rather than the successor's. Left as it is rather than
+ * made to hunt for the most recently ended row: it names a session that really
+ * did run on that terminal, `currentRowFor` sends the click to exactly that row,
+ * and a notification about a lineage that is entirely over is a row on its way
+ * out.
+ *
+ * The terminal id is the fallback for a terminal the store knows nothing about,
+ * and `name ?? id` for a session Claude has not titled yet (HIVE-108) — which is
+ * what the rail itself shows, so the row and the rail agree even while neither
+ * has a name.
+ *
+ * Returns a **string**, so a subscriber re-renders when the name changes and
+ * not when anything else about the entity does.
+ */
+export const useDisplayName = (terminalId: string): string =>
+  useHiveStore((state) => {
+    /*
+      A row about no session at all — `pr.*`, `clone.done`, `app.update_*` —
+      calls this with `''`, because a hook cannot be conditional. Answered before
+      `currentSessionIn`, which would otherwise miss its `entities[terminalId]`
+      fast path and walk the whole fleet on every store write, for a value the
+      card then discards.
+    */
+    if (terminalId === '') return terminalId;
+
+    /*
+      Narrowed to a session rather than reading `name` off `Entity`, because an
+      `Agent` has no name.
+    */
+    const id = currentSessionIn(state, terminalId);
+    const entity = state.entities[id];
+    /*
+      The **row** id rather than the terminal, because that is what every other
+      surface shows: after a `/clear` the two differ and the rail is naming the
+      successor.
+    */
+    return entity !== undefined && isSession(entity)
+      ? (entity.name ?? id)
+      : terminalId;
+  });
 
 /** Session counts by status — drives the header (story 021). */
 export const useCounts = () =>
