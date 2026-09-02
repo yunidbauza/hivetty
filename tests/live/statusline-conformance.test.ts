@@ -14,6 +14,25 @@ import {
 } from '../../electron/shared/hook-contract';
 import type { SessionMetrics } from '../../electron/shared/metrics-contract';
 
+/** Not exercised by this suite — the status line path, not the ledger. */
+const noLedger = {
+  onLedgerRead: () => ({ entries: [], openAsks: [], claims: {} }),
+  onLedgerPost: () => ({ ok: false as const, status: 503, reason: 'not exercised by this test' }),
+};
+
+/**
+ * The agent half of the id space, closed (HIVE-115).
+ *
+ * A status line is a session's: `claude -p` does not run one, so an agent has
+ * no business on this route and `knowsAgent` answering `false` is what says so.
+ */
+const noAgents = {
+  knowsAgent: () => false,
+  onAgentEvent: () => {},
+  // And no peer directory either (HIVE-127).
+  onAgentsList: () => Promise.resolve({ agents: [] }),
+};
+
 /**
  * Run the script with a payload on stdin and collect everything it emitted.
  *
@@ -98,10 +117,13 @@ describe.skipIf(!enabled)('status line conformance', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
+      onPromptName: () => {},
       onMetrics: (entityId, metrics) => reported.push({ entityId, metrics }),
       onDone: () => {},
       onReady: () => {},
       knowsSession: (entityId) => entityId === 'sess-live',
+      ...noLedger,
+      ...noAgents,
     });
 
     const started = await receiver.start();
@@ -119,7 +141,7 @@ describe.skipIf(!enabled)('status line conformance', () => {
         {
           ...process.env,
           [HOOK_ENV_SESSION]: 'sess-live',
-          [HOOK_ENV_TOKEN]: receiver.token,
+          [HOOK_ENV_TOKEN]: receiver.tokenFor('sess-live'),
         },
         JSON.stringify(PAYLOAD),
       );
@@ -167,10 +189,13 @@ describe.skipIf(!enabled)('status line conformance', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
+      onPromptName: () => {},
       onMetrics: () => {},
       onDone: () => {},
       onReady: () => {},
       knowsSession: () => true,
+      ...noLedger,
+      ...noAgents,
     });
     await receiver.start();
     const url = receiver.metricsUrl as string;
@@ -185,7 +210,7 @@ describe.skipIf(!enabled)('status line conformance', () => {
       {
         ...process.env,
         [HOOK_ENV_SESSION]: 'sess-live',
-        [HOOK_ENV_TOKEN]: receiver.token,
+        [HOOK_ENV_TOKEN]: receiver.tokenFor('sess-live'),
       },
       JSON.stringify(PAYLOAD),
     );
@@ -205,10 +230,13 @@ describe.skipIf(!enabled)('status line conformance', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
+      onPromptName: () => {},
       onMetrics: (entityId) => reported.push(entityId),
       onDone: () => {},
       onReady: () => {},
       knowsSession: () => true,
+      ...noLedger,
+      ...noAgents,
     });
     await receiver.start();
 

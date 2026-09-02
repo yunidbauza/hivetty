@@ -11,6 +11,7 @@ import {
   RAIL_MAX_FRACTION,
   RAIL_MAX_PX,
   RAIL_MIN,
+  RAIL_STRIP,
   railFloorWindowWidth,
   railMaxWidth,
   railWidthConstantsHold,
@@ -37,7 +38,8 @@ const clamp = (over: Partial<RailWidthInput> = {}) =>
     storedRight: null,
     min: COMFORTABLE,
     windowWidth: 1920,
-    showActivityRail: true,
+    left: 'expanded',
+    right: 'expanded',
     ...over,
   });
 
@@ -98,6 +100,15 @@ describe('RAIL_MIN', () => {
       railFloorWindowWidth(COMFORTABLE),
     );
     expect(MIN_WINDOW_SIZE.width).toBeGreaterThanOrEqual(railFloorWindowWidth(COMPACT));
+
+    /*
+      And the left handle still has somewhere to go there. `railMaxWidth` is
+      30% of the window, so at 1100px the ceiling is 330 against a 320 floor —
+      a single arrow step, but a range. Widen the rail's minimum past
+      `0.3 × 1100` and the handle at the minimum window becomes a point
+      (`min === max`), which `split-handle.tsx` treats as "no room to move".
+    */
+    expect(railMaxWidth(MIN_WINDOW_SIZE.width)).toBeGreaterThan(COMFORTABLE.left);
 
     const widths = clamp({ windowWidth: MIN_WINDOW_SIZE.width });
     expect(widths).toEqual({ left: COMFORTABLE.left, right: COMFORTABLE.right });
@@ -213,7 +224,7 @@ describe('clampRailWidths', () => {
     });
 
     /**
-     * Below ~730px even the two minimums breach the floor. The floor wins and
+     * Below ~795px even the two minimums breach the floor. The floor wins and
      * the minimums compress — unreachable in the desktop app, which is what the
      * `MIN_WINDOW_SIZE` assertion above proves, but reachable in `pnpm dev`.
      */
@@ -243,7 +254,8 @@ describe('clampRailWidths', () => {
                 storedRight: stored,
                 min,
                 windowWidth,
-                showActivityRail,
+                left: 'expanded',
+                right: showActivityRail ? 'expanded' : 'hidden',
               });
 
               expect(stageShare(widths, windowWidth)).toBeGreaterThanOrEqual(
@@ -258,7 +270,7 @@ describe('clampRailWidths', () => {
 
   describe('the hidden activity rail', () => {
     it('claims no width at all', () => {
-      expect(clamp({ showActivityRail: false }).right).toBe(0);
+      expect(clamp({ right: 'hidden' }).right).toBe(0);
     });
 
     /**
@@ -269,8 +281,8 @@ describe('clampRailWidths', () => {
     it('returns its budget when the window is too narrow for both', () => {
       const windowWidth = 700;
 
-      const shown = clamp({ windowWidth, showActivityRail: true });
-      const hidden = clamp({ windowWidth, showActivityRail: false });
+      const shown = clamp({ windowWidth, right: 'expanded' });
+      const hidden = clamp({ windowWidth, right: 'hidden' });
 
       expect(shown.left).toBeLessThan(COMFORTABLE.left);
       expect(hidden.left).toBe(COMFORTABLE.left);
@@ -278,7 +290,7 @@ describe('clampRailWidths', () => {
     });
 
     it('ignores a stored width for a rail that is not mounted', () => {
-      expect(clamp({ storedRight: 500, showActivityRail: false }).right).toBe(0);
+      expect(clamp({ storedRight: 500, right: 'hidden' }).right).toBe(0);
     });
   });
 
@@ -297,6 +309,60 @@ describe('clampRailWidths', () => {
       expect(Number.isInteger(widths.left)).toBe(true);
       expect(Number.isInteger(widths.right)).toBe(true);
     });
+  });
+});
+
+describe('a collapsed rail', () => {
+  it('is exactly RAIL_STRIP, at both densities', () => {
+    expect(clamp({ left: 'collapsed' }).left).toBe(RAIL_STRIP);
+    expect(clamp({ left: 'collapsed', min: COMPACT }).left).toBe(RAIL_STRIP);
+  });
+
+  it('is not floored back up to its minimum', () => {
+    // The bug this ordering exists to prevent: the per-rail
+    // `Math.max(min.left, …)` would turn 44 into 320.
+    expect(clamp({ left: 'collapsed' }).left).toBeLessThan(COMFORTABLE.left);
+  });
+
+  it('ignores a stored width rather than consuming it', () => {
+    // Collapse is not a resize. The stored width must survive to be
+    // restored on expand, so it must not leak into the painted number.
+    expect(clamp({ left: 'collapsed', storedLeft: 400 }).left).toBe(RAIL_STRIP);
+  });
+
+  it('leaves the other rail at its stored width', () => {
+    expect(clamp({ left: 'collapsed', storedRight: 400 }).right).toBe(400);
+  });
+
+  it('leaves the stage everything but the two strips when both collapse', () => {
+    const widths = clamp({ left: 'collapsed', right: 'collapsed' });
+    expect(widths.left + widths.right).toBe(RAIL_STRIP * 2);
+  });
+
+  it('is still RAIL_STRIP at a width that fits without reducing', () => {
+    // At 600px the two rails (44 + 316 = 360) already fit the 480px budget,
+    // so this is the early-return path, not the reducing branch — it still
+    // proves a strip survives a narrow-ish window untouched.
+    expect(clamp({ left: 'collapsed', windowWidth: 600 }).left).toBe(RAIL_STRIP);
+  });
+
+  it('is exempt from the reducing branch that scales the other rail down', () => {
+    // At 400px the budget is 320, but left (44, fixed) + right (316) = 360 >
+    // 320, so this genuinely reaches rule 3 — unlike the 600px case above.
+    const widths = clamp({ left: 'collapsed', windowWidth: 400 });
+
+    // Proves the exemption: the strip was not scaled...
+    expect(widths.left).toBe(RAIL_STRIP);
+    // ...while the negotiable rail was — proving the branch actually ran.
+    expect(widths.right).toBeLessThan(COMFORTABLE.right);
+    // The stage floor still holds even with a fixed rail in the mix.
+    expect(widths.left + widths.right).toBeLessThanOrEqual(400 * (1 - STAGE_MIN_FRACTION));
+  });
+
+  it('lowers the window width at which the stage floor binds', () => {
+    expect(railFloorWindowWidth(COMFORTABLE, 'collapsed', 'expanded')).toBeLessThan(
+      railFloorWindowWidth(COMFORTABLE, 'expanded', 'expanded'),
+    );
   });
 });
 

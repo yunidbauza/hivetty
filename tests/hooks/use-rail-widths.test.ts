@@ -150,4 +150,37 @@ describe('useRailWidths', () => {
       expect(result.current.left.max).toBe(result.current.left.value);
     });
   });
+
+  describe('a collapsed rail', () => {
+    it('paints the strip width', () => {
+      useAppearanceStore.getState().setRailCollapsed('left', true);
+
+      renderHook(() => useRailWidths());
+
+      expect(document.body.style.getPropertyValue('--cc-rail-w-left')).toBe('44px');
+    });
+
+    it('leaves the other rail following the stylesheet', () => {
+      // The expanded rail is at its default, so its property is *removed* and
+      // `tokens.css` — density rules included — takes back over.
+      useAppearanceStore.getState().setRailCollapsed('left', true);
+
+      renderHook(() => useRailWidths());
+
+      expect(document.body.style.getPropertyValue('--cc-rail-w-right')).toBe('');
+    });
+
+    it('reports handle bounds a slider can legally announce', () => {
+      // aria-valuemin above aria-valuenow is invalid to announce and wrong to
+      // drive. `bounds` already guards this via Math.min(floor, value); this
+      // locks that in for the collapsed case.
+      useAppearanceStore.getState().setRailCollapsed('left', true);
+
+      const { result } = renderHook(() => useRailWidths());
+
+      expect(result.current.left.value).toBe(44);
+      expect(result.current.left.min).toBeLessThanOrEqual(result.current.left.value);
+      expect(result.current.left.max).toBeGreaterThanOrEqual(result.current.left.value);
+    });
+  });
 });

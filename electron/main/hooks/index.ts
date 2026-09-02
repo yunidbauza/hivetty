@@ -1,13 +1,18 @@
+import type { AgentsDirectory } from '@shared/agent-contract';
 import {
+  HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,
+  type HookAgentEvent,
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '@shared/hook-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
 
+import type { Ledger } from '../ledger';
+
 import { createReceiver, type Receiver } from './receiver';
-import { writeHookSettings } from './settings';
+import { writeAgentSettings, writeHookSettings } from './settings';
 
 /**
  * The hook pipeline, as one thing the session layer can hold (HIVE-62).
@@ -28,6 +33,16 @@ import { writeHookSettings } from './settings';
 export interface HookRuntimeOptions {
   /** Where the settings file is written. Electron's `app.getPath('userData')`. */
   userDataPath: string;
+  /**
+   * The ledger (HIVE-111), threaded through rather than constructed here.
+   *
+   * This runtime has no opinion about where `~/.hive/ledger` lives or who
+   * counts as a known party — `ipc/index.ts` is where both of those facts are
+   * already reachable, from `configPath()` and the session registry. Handing
+   * over a constructed `Ledger` keeps this module's only job the receiver's
+   * lifecycle, the same division `HookHandlers` draws for everything else.
+   */
+  ledger: Ledger;
   /**
    * Whether to inject the status line that reports usage (HIVE-79).
    *
@@ -57,9 +72,42 @@ export interface HookRuntimeOptions {
 export interface HookHandlers {
   /** Whether an entity id is a session this app actually has. */
   knowsSession: (entityId: string) => boolean;
+  /**
+   * Whether an entity id is an agent this app has a definition for (HIVE-115).
+   *
+   * Its own question rather than a wider {@link HookHandlers.knowsSession}, so
+   * that "an agent gets hook events, and never a `session:status` push or a
+   * history record" is decided by which callback matched. See
+   * `ReceiverOptions.knowsAgent` for the argument in full.
+   */
+  knowsAgent: (entityId: string) => boolean;
+  /**
+   * Who else is on this machine (HIVE-127).
+   *
+   * Injected from the composition root rather than reached for here, because
+   * that is the only place the agent registry and the run-state file are both
+   * in scope — and because the receiver serving this must not learn to import
+   * either of them.
+   */
+  onAgentsList: (caller: string) => Promise<AgentsDirectory>;
   onEvent: (event: HookStatusEvent) => void;
+  /**
+   * A hook event from an agent's headless turn (HIVE-115).
+   *
+   * {@link HookHandlers.onEvent}'s agent-space twin. Both required, because a
+   * composition that supplied only one would be answering an id space it then
+   * had nowhere to report — a shape worth failing to compile.
+   */
+  onAgentEvent: (event: HookAgentEvent) => void;
   /** A prompt named a ticket (HIVE-78). Unconfirmed — see the contract. */
   onTicketIntent: (event: HookTicketIntentEvent) => void;
+  /**
+   * A session's **first** prompt yielded a name for it (first-prompt naming).
+   *
+   * Already a session name, not a prompt: the receiver derives it and drops the
+   * text. See `ReceiverOptions.onPromptName`.
+   */
+  onPromptName: (entityId: string, name: string) => void;
   onCleared: (entityId: string) => void;
   /** A session reported its context and rate-limit usage (HIVE-79). */
   onMetrics: (entityId: string, metrics: SessionMetrics) => void;
@@ -85,6 +133,17 @@ export interface HookRuntime {
    * a theme until HIVE-82, when the file stopped varying by one.
    */
   settingsPathFor(): string | null;
+  /**
+   * The `--settings` argument for an agent's headless turn (HIVE-119).
+   *
+   * {@link settingsPathFor}'s agent-space twin, `null` on the same terms —
+   * hooks unavailable, or the write itself failing. Kept separate rather than
+   * a parameter on `settingsPathFor` because the two files answer different
+   * questions: a session asks "what am I handed", an agent's wake asks
+   * "what fences every tool call", and conflating them would let a future edit
+   * hand a session the agent's `permissions` block by accident.
+   */
+  agentSettingsPathFor(): string | null;
   /**
    * The environment a session's pty needs for its hooks to be attributable.
    *
@@ -112,20 +171,29 @@ export interface HookRuntime {
 }
 
 export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
-  const { userDataPath, port, sessionMetrics = () => true } = options;
+  const { userDataPath, port, sessionMetrics = () => true, ledger } = options;
 
   let receiver: Receiver | null = null;
   let settingsPath: string | null = null;
+  let agentSettingsPath: string | null = null;
 
   return {
     settingsPathFor() {
       return settingsPath;
     },
 
+    agentSettingsPathFor() {
+      return agentSettingsPath;
+    },
+
     async start({
       knowsSession,
+      knowsAgent,
+      onAgentsList,
       onEvent,
+      onAgentEvent,
       onTicketIntent,
+      onPromptName,
       onCleared,
       onMetrics,
       onDone,
@@ -133,12 +201,30 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
     }) {
       const created = createReceiver({
         onEvent,
+        onAgentEvent,
         onTicketIntent,
+        onPromptName,
         onCleared,
         onMetrics,
         onDone,
         onReady,
+        /*
+          `caller` is the session id off `x-hive-session` (HIVE-111) — never
+          trusted from the body, which is what `parseLedgerPostBody` already
+          drops it from.
+
+          The query goes down **unmodified**: `visibleTo` in the receiver
+          narrows the result to "addressed to me, or broadcast, or from me",
+          and defaulting `to: caller` here is strictly narrower than that —
+          it would drop a caller's own ask, which is `from: sess-a,
+          to: overmind`, and so leave no query at all by which a session could
+          read back its own correspondence.
+        */
+        onLedgerRead: (_caller, query) => ledger.read(query),
+        onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
+        onAgentsList,
         knowsSession,
+        knowsAgent,
         ...(port === undefined ? {} : { port }),
       });
 
@@ -157,8 +243,19 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           what this runtime offers or neither. `metricsUrl` is non-null here by
           construction — the bind succeeded — but it is read rather than rebuilt
           so the path lives in exactly one place.
+
+          Both writes land in **local** variables first, and `settingsPath` /
+          `agentSettingsPath` are assigned only once both have resolved — see
+          the doc comment above this type: "two moving parts that are useless
+          apart… start together, fail together". Assigning `settingsPath`
+          straight from the first `await` (as this once did) let a failure in
+          the second write strand a real, correctly-written session file with
+          no receiver behind it — `settingsPathFor()` would answer a path that
+          looked valid while every hook POST it named went nowhere. Holding
+          both in locals until the second `await` resolves is what keeps that
+          window from opening.
         */
-        settingsPath = await writeHookSettings(
+        const newSettingsPath = await writeHookSettings(
           userDataPath,
           url,
           /*
@@ -176,14 +273,33 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           */
           created.readyUrl ?? undefined,
         );
+        /*
+          Written right after its sibling, with the same `url`/`readyUrl` — the
+          only two values an agent's turn needs from this bind, since it gets no
+          status line (HIVE-119). Unlike `settingsPath`, this file's content is
+          fixed once the receiver is up: no wake ever calls this again, so
+          there is nothing here to keep in sync on a later re-bind.
+        */
+        const newAgentSettingsPath = await writeAgentSettings(
+          userDataPath,
+          url,
+          created.readyUrl ?? undefined,
+        );
+        settingsPath = newSettingsPath;
+        agentSettingsPath = newAgentSettingsPath;
         receiver = created;
       } catch (cause) {
         /**
          * A receiver nobody can be told about is worse than none: it holds a
          * port for the life of the app and reports nothing. So the failure to
-         * write the file takes the socket down with it.
+         * write either file takes the socket down with it — and resets both
+         * paths to `null`, in case the first write had already resolved before
+         * the second one threw. Neither is ever left pointing at a file that
+         * is, in fact, real and correctly written, with no receiver behind it.
          */
         await created.stop();
+        settingsPath = null;
+        agentSettingsPath = null;
         console.info(
           `[hive] hook settings could not be written — session status falls back to pty activity (${String(cause)})`,
         );
@@ -208,7 +324,22 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       if (running === null || settingsPath === null) return {};
       return {
         [HOOK_ENV_SESSION]: entityId,
-        [HOOK_ENV_TOKEN]: running.token,
+        [HOOK_ENV_TOKEN]: running.tokenFor(entityId),
+        /*
+          The third variable, for the MCP host (HIVE-112). A hook is handed its
+          URL baked into the generated settings file, but the MCP host is
+          started by `claude` from a config file written before this socket had
+          bound — so it is told at spawn, the way its identity is.
+
+          `running.origin` rather than `running.url`: the host builds its own
+          request paths from `@shared/ledger-contract`, so it needs the bare
+          scheme-and-authority, not `url`'s `/hook` suffix — see
+          {@link Receiver.origin}.
+
+          `running.origin` is non-null here: `settingsPath` is only set after a
+          successful `start()`, which is also what assigns it.
+        */
+        ...(running.origin === null ? {} : { [HOOK_ENV_RECEIVER_URL]: running.origin }),
       };
     },
 
@@ -216,6 +347,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       const running = receiver;
       receiver = null;
       settingsPath = null;
+      agentSettingsPath = null;
       if (running !== null) await running.stop();
     },
   };

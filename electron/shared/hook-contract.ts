@@ -283,14 +283,43 @@ export const NOTIFICATION_TYPE_STATUS: Record<
  */
 export const HOOK_HEADER_SESSION = 'x-hive-session';
 
-/** The header carrying the per-launch shared secret. */
+/** The header carrying the caller's own session-bound token (HIVE-112). */
 export const HOOK_HEADER_TOKEN = 'x-hive-token';
 
 /** The environment variable each session's pty carries its Hive id in. */
 export const HOOK_ENV_SESSION = 'HIVE_SESSION_ID';
 
-/** The environment variable carrying the per-launch token into the hook. */
+/** The run a headless agent process belongs to (HIVE-128). */
+export const HOOK_ENV_RUN = 'HIVE_RUN_ID';
+/** `standing` or `task` — `RunKind` in `agent-contract.ts` (HIVE-128). */
+export const HOOK_ENV_RUN_KIND = 'HIVE_RUN_KIND';
+
+/**
+ * The environment variable carrying a session's grants, as a JSON array of
+ * rule strings the `approve` tool matches calls against (HIVE-119).
+ *
+ * Missing or unparseable is read as an empty list, never as "allow" —
+ * default-deny is the whole point of the fence.
+ */
+export const HOOK_ENV_GRANTS = 'HIVE_GRANTS';
+
+/**
+ * The environment variable carrying a session's own token into the hook.
+ *
+ * A derivation of the receiver's launch secret and this one session's id
+ * (HIVE-112) — not the launch secret itself, which never leaves the receiver.
+ */
 export const HOOK_ENV_TOKEN = 'HIVE_HOOK_TOKEN';
+
+/**
+ * The environment variable carrying the receiver's base URL (HIVE-112).
+ *
+ * The third of the three the MCP host needs, and the one the hooks never
+ * wanted: a hook is handed its URL baked into the generated settings file, but
+ * the MCP host is started by `claude`, from a config file written before the
+ * receiver had bound. So it is told at spawn instead, the way its identity is.
+ */
+export const HOOK_ENV_RECEIVER_URL = 'HIVE_RECEIVER_URL';
 
 /** The path the receiver serves. */
 export const HOOK_PATH = '/hook';
@@ -435,6 +464,23 @@ export interface HookStatusEvent {
    */
   cwd?: string;
   /**
+   * Claude's own id for the conversation this event fired in (first-prompt naming).
+   *
+   * The uuid the Hive pins at spawn answers the same question for the *first*
+   * conversation in a pty and stops being true after a `/clear`, which starts a
+   * new one under an id nothing tells main about. This does not: the payload is
+   * written by the conversation that is actually running.
+   *
+   * It is what names the transcript, `~/.claude/projects/<escaped-cwd>/<uuid>.jsonl`,
+   * which is the only place a `/rename` is distinguishable from Claude's own
+   * `ai-title` — see `sessions/title-origin.ts`.
+   *
+   * Optional on the same terms as {@link cwd}: it is read off a payload this app
+   * does not control, and its absence means one title goes unclassified rather
+   * than anything failing.
+   */
+  sessionUuid?: string;
+  /**
    * Tool identity, carried since HIVE-83.
    *
    * All optional because not every event has them and because a body over
@@ -493,6 +539,52 @@ export interface HookStatusEvent {
    * status channel is not something this needs to do to count what is running.
    */
   backgroundShells?: string[];
+}
+
+/**
+ * The same POST, arriving under an **agent's** name rather than a session's
+ * (HIVE-115).
+ *
+ * A distinct type rather than a widened {@link HookStatusEvent}, because the
+ * two travel on different callbacks and only one of them may reach a status
+ * push or the session history — see `ReceiverOptions.onAgentEvent`.
+ *
+ * **The name documents; it does not enforce.** `sessionUuid` is optional, so
+ * the two interfaces are mutually assignable and the compiler will not stop a
+ * consumer written for one from being handed the other. What actually keeps an
+ * agent's event off the session path is *positional*: `receiver.ts` parts the
+ * two id spaces before it reads a field of the payload, and the branch that
+ * builds this shape can only reach `onAgentEvent`. This type's job is to give
+ * the uuid somewhere to live that is not the session's shape, and to say at a
+ * glance which register a signature is about.
+ *
+ * It extends the session shape rather than replacing it because everything on
+ * that shape is still true here: an agent's headless turn raises the same
+ * events, in the same vocabulary, with the same `cwd` and tool identity. Only
+ * {@link HookAgentEvent.sessionUuid} is new, and only agents have a use for it.
+ */
+export interface HookAgentEvent extends HookStatusEvent {
+  /**
+   * Claude's own uuid for the conversation this hook fired in — the payload's
+   * `session_id`.
+   *
+   * {@link HOOK_HEADER_SESSION} explains why a *session* never correlates on
+   * this field: the app puts its own id in the environment and the hook echoes
+   * it, so the mapping is the identity function and a second table would be one
+   * more thing to keep right. An agent needs both, and for a reason a session
+   * does not have: a wake is one process per turn, and the id in the header is
+   * the agent's **name**, which every run it ever makes shares. A `Stop`
+   * delivered late — after the run it belonged to exited and the next one
+   * started under the same name — would otherwise arm a stall watchdog against
+   * a different, healthy run. The uuid is what tells the two apart, because the
+   * waker minted it for `--session-id` (or is resuming it) and therefore knows
+   * which run it names.
+   *
+   * Optional because it is read off a payload this app does not control. Absent
+   * means the correlation cannot be made and the consumer decides what to do
+   * with that; it is never inferred.
+   */
+  sessionUuid?: string;
 }
 
 /**

@@ -2,6 +2,19 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
 
 import type {
+  AgentLinesPush,
+  AgentNameRequest,
+  AgentRenameRequest,
+  AgentRotateResult,
+  AgentRunRequest,
+  AgentRunResult,
+  AgentsSnapshot,
+  AgentStatus,
+  AgentStatusPush,
+  AgentWriteRequest,
+  AgentWriteResult,
+} from '@shared/agent-contract';
+import type {
   AddProjectRequest,
   CloneDoneEvent,
   CloneRequest,
@@ -75,6 +88,14 @@ import type {
   JiraStatus,
   JiraTransition,
 } from '@shared/jira-contract';
+import type {
+  LedgerAnswerRequest,
+  LedgerEntry,
+  LedgerPostRequest,
+  LedgerReadQuery,
+  LedgerResult,
+  LedgerSnapshot,
+} from '@shared/ledger-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
 import type {
   HiveNotification,
@@ -101,6 +122,7 @@ import type {
   SkillWriteRequest,
   SkillsSnapshot,
 } from '@shared/skills-contract';
+import type { SlackStatus } from '@shared/slack-contract';
 import type { PickedTheme, SaveThemeRequest } from '@shared/theme-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -296,6 +318,69 @@ const bridge: HiveBridge = {
     rename: (request: SkillRenameRequest): Promise<SkillsSnapshot> =>
       ipcRenderer.invoke(CH.skillsRename, request),
   },
+  /*
+    HIVE-114. The same five path-free verbs as `skills`, plus `onChanged` —
+    which skills deliberately lack. The difference is that main is a second
+    writer here: an AGENT.md is a file the user is invited to edit outside the
+    app, so the pane cannot learn about every change from its own responses.
+
+    `onChanged` carries no payload. The renderer is poked and re-`list`s, which
+    keeps this listener incapable of leaking anything `list` would not already
+    have handed over.
+  */
+  agents: {
+    list: (): Promise<AgentsSnapshot> => ipcRenderer.invoke(CH.agentsList),
+    read: (request: AgentNameRequest): Promise<string | null> =>
+      ipcRenderer.invoke(CH.agentsRead, request),
+    write: (request: AgentWriteRequest): Promise<AgentWriteResult> =>
+      ipcRenderer.invoke(CH.agentsWrite, request),
+    remove: (request: AgentNameRequest): Promise<void> =>
+      ipcRenderer.invoke(CH.agentsRemove, request),
+    rename: (request: AgentRenameRequest): Promise<AgentWriteResult> =>
+      ipcRenderer.invoke(CH.agentsRename, request),
+    onChanged: (callback: () => void) =>
+      subscribe<undefined>(CH.agentsChanged, () => {
+        callback();
+      }),
+    /*
+      HIVE-115's two verbs, and the first in this namespace that start and stop
+      a process rather than move bytes. `kill` takes a name and nothing else;
+      `run` takes a name and, since HIVE-126, optional prose saying *why* a
+      person pressed it. Still no flags, no environment and no argv the page
+      composed: `extra` is interpolated into the single positional prompt
+      argument, so the whole of what the page can express here is which agent
+      and what to tell it. `BRIDGE_AGENTS_KEYS` carries the argument;
+      `parseAgentRunRequest` is what refuses a payload that tries to say more —
+      a `trigger` above all.
+    */
+    run: (request: AgentRunRequest): Promise<AgentRunResult> =>
+      ipcRenderer.invoke(CH.agentsRun, request),
+    kill: (request: AgentNameRequest): Promise<boolean> =>
+      ipcRenderer.invoke(CH.agentsKill, request),
+    /*
+      HIVE-117's two, and the narrowest verbs here: they set one field and start
+      nothing. They take the same `AgentNameRequest` as `kill`, so the same
+      guard refuses the same payloads, and they answer the status now in force
+      rather than a boolean — `resume` has two honest answers.
+    */
+    pause: (request: AgentNameRequest): Promise<AgentStatus> =>
+      ipcRenderer.invoke(CH.agentsPause, request),
+    resume: (request: AgentNameRequest): Promise<AgentStatus> =>
+      ipcRenderer.invoke(CH.agentsResume, request),
+    /*
+      HIVE-122's, and `run`'s twin: a name, no argv, no flags. It answers an
+      `AgentRunResult` because it *is* a run — one field armed first, then the
+      ordinary path — and it takes an `AgentNameRequest` rather than a widened
+      `AgentRunRequest`, so the closed key set that refuses a renderer-chosen
+      trigger stays closed. `BRIDGE_AGENTS_KEYS` carries the argument.
+    */
+    rotate: (request: AgentNameRequest): Promise<AgentRotateResult> =>
+      ipcRenderer.invoke(CH.agentsRotate, request),
+    onStatus: (callback: (push: AgentStatusPush) => void) =>
+      subscribe<AgentStatusPush>(CH.agentsStatus, callback),
+    onLines: (callback: (push: AgentLinesPush) => void) =>
+      subscribe<AgentLinesPush>(CH.agentsLines, callback),
+  },
   // Story 106. `status` takes no argument — see the contract for why that is
   // the security design and not an oversight.
   integrations: {
@@ -360,6 +445,19 @@ const bridge: HiveBridge = {
     ): Promise<JiraResult<JiraComment>> =>
       ipcRenderer.invoke(CH.jiraAddComment, request),
   },
+  /*
+    HIVE-123. Four verbs, none of them returning a credential — see the
+    contract for why that is a stronger guarantee than Jira's own. Every one
+    of them takes no argument at all, which is what makes a call that spawns
+    `claude` safe to expose: there is no argv for a compromised renderer to
+    reach.
+  */
+  slack: {
+    status: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackStatus),
+    signIn: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackSignIn),
+    signOut: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackSignOut),
+    test: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackTest),
+  },
   notifications: {
     onActivate: (callback: (event: NotificationActivateEvent) => void) =>
       subscribe<NotificationActivateEvent>(CH.notificationsActivate, callback),
@@ -395,6 +493,20 @@ const bridge: HiveBridge = {
     /** Hand a clicked row's action back to main to carry out. */
     act: (action: NotificationAction): Promise<void> =>
       ipcRenderer.invoke(CH.notificationsAct, action) as Promise<void>,
+  },
+  ledger: {
+    /** The log main holds. Hydration on mount. */
+    list: (query?: LedgerReadQuery): Promise<LedgerSnapshot> =>
+      ipcRenderer.invoke(CH.ledgerList, query ?? {}) as Promise<LedgerSnapshot>,
+    /** The overmind writes; main supplies `from`. */
+    post: (request: Omit<LedgerPostRequest, 'from'>): Promise<LedgerResult> =>
+      ipcRenderer.invoke(CH.ledgerPost, request) as Promise<LedgerResult>,
+    /** Close a thread, by canonical id or short ref. */
+    answer: (request: LedgerAnswerRequest): Promise<LedgerResult> =>
+      ipcRenderer.invoke(CH.ledgerAnswer, request) as Promise<LedgerResult>,
+    /** One entry landed, from any party. */
+    onChanged: (callback: (entry: LedgerEntry) => void) =>
+      subscribe<LedgerEntry>(CH.ledgerChanged, callback),
   },
   updates: {
     status: (): Promise<UpdateStatus> =>

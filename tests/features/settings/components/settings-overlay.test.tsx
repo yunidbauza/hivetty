@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -60,6 +60,7 @@ describe('SettingsOverlay', () => {
       'Projects',
       'Runtime',
       'Skills',
+      'Agents',
       'Appearance',
       'Integrations',
       'Advanced',
@@ -82,6 +83,24 @@ describe('SettingsOverlay', () => {
       .map((button) => button.textContent);
 
     expect(labels.indexOf('Skills')).toBe(labels.indexOf('Runtime') + 1);
+  });
+
+  it('puts Agents between Skills and Appearance (HIVE-114)', () => {
+    /*
+      It belongs with the session-shaped sections rather than the app-shaped
+      ones: a skill is a command a session comes with, and an agent is a
+      correspondent that runs sessions of its own. Appearance onwards is about
+      the app.
+    */
+    render(<SettingsOverlay />);
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    const labels = within(nav)
+      .getAllByRole('button')
+      .map((button) => button.textContent);
+
+    expect(labels.indexOf('Agents')).toBe(labels.indexOf('Skills') + 1);
+    expect(labels.indexOf('Appearance')).toBe(labels.indexOf('Agents') + 1);
   });
 
   it('switches to Advanced (story 107)', async () => {
@@ -190,6 +209,73 @@ describe('SettingsOverlay', () => {
 
     // Closing settings returns the user to the terminal they were watching.
     expect(useUiStore.getState().activeTab).toBe('hero-refresh');
+  });
+
+  /**
+   * A caller may name the pane (HIVE-116).
+   *
+   * The always-Projects rule above is about the route that dominates — the
+   * picker with nothing to offer. `+ New agent…` in the rail is the other
+   * kind: it is answering a question the user just asked, and Projects would
+   * lose it.
+   */
+  it('opens on the pane the caller asked for', () => {
+    useUiStore.getState().openSettings('agents');
+
+    render(<SettingsOverlay />);
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+
+    expect(within(nav).getByRole('button', { name: 'Agents' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(
+      within(nav).getByRole('button', { name: 'Projects' }),
+    ).not.toHaveAttribute('aria-current');
+  });
+
+  /**
+   * The overlay is `modal={false}` so the rails stay clickable underneath it,
+   * which means `+ New agent…` can fire while Settings is already open. Reading
+   * the request only at mount made that click do visibly nothing.
+   */
+  it('navigates on a request that arrives while it is already open', async () => {
+    const user = userEvent.setup();
+    render(<SettingsOverlay />);
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    await user.click(within(nav).getByRole('button', { name: 'Appearance' }));
+
+    act(() => {
+      useUiStore.getState().openSettings('agents');
+    });
+
+    expect(within(nav).getByRole('button', { name: 'Agents' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+  });
+
+  it('consumes the request, so it cannot re-apply after the user moves on', async () => {
+    // The other half of the same rule: a request acts exactly once. Left set,
+    // any later re-render would drag the reader back to that pane.
+    const user = userEvent.setup();
+    useUiStore.getState().openSettings('agents');
+    render(<SettingsOverlay />);
+
+    expect(useUiStore.getState().settingsSection).toBeNull();
+
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    await user.click(within(nav).getByRole('button', { name: 'Appearance' }));
+
+    act(() => {
+      useUiStore.setState({ activeTab: 'hero-refresh' });
+    });
+
+    expect(
+      within(nav).getByRole('button', { name: 'Appearance' }),
+    ).toHaveAttribute('aria-current', 'page');
   });
 });
 

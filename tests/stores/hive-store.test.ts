@@ -1,11 +1,24 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PHRASES } from '@lib/swarm/phrases';
-import { isSession } from '@/types/entity';
+import { ADVERTISED_VERBS, CONSOLE_VERBS } from '@/types/command';
+import { isAgent, isSession } from '@/types/entity';
 import type { SessionStatus } from '@/types/entity';
-import { statusLabel } from '@components/ui/status-dot';
+import {
+  STATUS_FILL,
+  STATUS_LABEL,
+  statusLabel,
+} from '@components/ui/status-dot';
 import type { IdleDetail } from '@shared/hook-contract';
+import { AGENT_STATUSES, dayKey } from '@shared/agent-contract';
+import type {
+  AgentRunResult,
+  AgentStatus,
+  AgentSummary,
+  RunSummary,
+} from '@shared/agent-contract';
+import { LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
 import { isDesktop } from '@config/runtime';
 import { peek, stamp } from '@lib/fake-clock';
 import {
@@ -20,15 +33,27 @@ import { sendToSession } from '@lib/terminal/session-input';
 import { useAppearanceStore } from '@stores/appearance-store';
 import {
   ACK_DELAY_MS,
+  AGENT_LINE_CAP,
   openOrResume,
   statusWord,
+  agentStatusWord,
+  agentStatusColor,
   useActiveSessions,
+  useAgentAskCount,
+  useAgentFacts,
+  useAgentRuns,
+  useAgentsByGroup,
+  useAgentThread,
   useDisplayName,
   useEndedSessions,
   currentRowFor,
   useHiveStore,
+  useIsAgentId,
+  useLedgerEntries,
   useNavOrder,
+  useOpenAskCount,
   useSessionNameReports,
+  useThread,
 } from '@stores/hive-store';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { useUiStore } from '@stores/ui-store';
@@ -223,8 +248,9 @@ describe('hive-store', () => {
       /*
         The name rides along since HIVE-108. Main used to learn it from the
         `--name` on this session's own command line, and there is no longer one —
-        a note carrying a name is what pins it in the ledger, so without it the
-        next launch would restore the agent's title with the key stripped off.
+        a note carrying a name is what pins it in the session history, so
+        without it the next launch would restore the agent's title with the
+        key stripped off.
       */
       await vi.waitFor(() => {
         expect(noteSessionTicket).toHaveBeenCalledWith({
@@ -518,13 +544,65 @@ describe('hive-store', () => {
     });
 
     describe('help', () => {
-      it('lists every command in the grammar', () => {
+      it('lists every advertised command in the grammar', () => {
         run('help');
         const text = transcript();
 
-        for (const command of ['help', 'status', 'open', 'send', 'spawn', 'clear']) {
+        for (const command of [
+          'help',
+          'status',
+          'ledger',
+          'open',
+          'send',
+          'ask',
+          'spawn',
+          'clear',
+        ]) {
           expect(text).toContain(command);
         }
+      });
+
+      /**
+       * `answer` still runs — the parser and the executor keep it — but the
+       * inbox's ask card is the route `help` teaches to an open ask, so the
+       * verb is absent from the list. Pinned both ways: the row is gone, and
+       * the command still does something other than `command not found`.
+       */
+      it('keeps `answer` out of the list without dropping it from the grammar', () => {
+        run('help');
+        expect(transcript()).not.toMatch(/\banswer\b/);
+
+        run('answer a12 yes');
+        expect(transcript()).not.toContain('command not found');
+      });
+
+      /**
+       * `help` and the hint bar are two views of one decision. The rows are
+       * keyed by verb and filtered through `QUIET_VERBS`, so this pins that
+       * the verbs `help` prints are exactly `ADVERTISED_VERBS` — quieting a
+       * verb in one place cannot leave it taught in the other.
+       */
+      it('teaches exactly the advertised verbs, in their order', () => {
+        run('help');
+        const taught = useHiveStore
+          .getState()
+          .orchLines.map((l) => /^ {2}(\S+)/.exec(l.text)?.[1])
+          .filter((verb): verb is string => verb !== undefined)
+          .filter((verb) => (CONSOLE_VERBS as readonly string[]).includes(verb));
+
+        expect(taught).toEqual([...ADVERTISED_VERBS]);
+      });
+
+      it('spells out the ledger verbs’ arguments (HIVE-113)', () => {
+        // `help` is where a user goes to find out a verb takes arguments at
+        // all, so the row has to carry the shape, not just the word.
+        run('help');
+        const text = transcript();
+
+        expect(text).toContain('ledger [--open]');
+        expect(text).toContain('ask <agent> <message>');
+        // Each verb documented against the target type it accepts (HIVE-126).
+        expect(text).toContain('run <agent> [prompt]');
       });
     });
 
@@ -1307,6 +1385,288 @@ describe('hive-store', () => {
       });
     });
 
+    /**
+     * The ledger verbs (HIVE-113).
+     *
+     * `ledger` reads the store's own mirror, so it needs no bridge at all —
+     * only `isDesktop`. `ask` and `answer` write, so they are the only console
+     * verbs that reach `window.hive` directly, and they resolve asynchronously
+     * inside a synchronous action.
+     */
+    describe('ledger verbs', () => {
+      const post = vi.fn();
+      const answer = vi.fn();
+
+      beforeEach(() => {
+        post.mockReset().mockResolvedValue({ ok: true, id: 'id-1', ref: 'a14' });
+        answer.mockReset().mockResolvedValue({ ok: true, id: 'id-2' });
+        vi.mocked(isDesktop).mockReturnValue(true);
+        Object.defineProperty(window, 'hive', {
+          configurable: true,
+          value: { ledger: { post, answer } },
+        });
+      });
+
+      afterEach(() => {
+        Reflect.deleteProperty(window, 'hive');
+      });
+
+      const ask = (over: Partial<LedgerEntry> = {}): LedgerEntry => ({
+        id: '20260829-120000-0001',
+        ts: Date.now(),
+        from: 'sess-a',
+        to: 'overmind',
+        kind: 'ask',
+        ref: 'a12',
+        body: 'which branch?',
+        ...over,
+      });
+
+      it('prints the tail from the store mirror', () => {
+        useHiveStore.getState().hydrateLedger([ask()]);
+        run('ledger');
+
+        expect(transcript()).toContain('a12');
+        expect(transcript()).toContain('which branch?');
+      });
+
+      it('prints only open asks for --open', () => {
+        useHiveStore.getState().hydrateLedger([
+          ask(),
+          ask({ id: '20260829-120000-0002', kind: 'post', ref: undefined, body: 'a note' }),
+        ]);
+        run('ledger --open');
+
+        expect(transcript()).toContain('which branch?');
+        expect(transcript()).not.toContain('a note');
+      });
+
+      /**
+       * Open-ness is derived from the whole log, then filtered.
+       *
+       * An answer is addressed back to the *asker*, so filtering first strips
+       * the answers while keeping the asks — and every already-answered
+       * question would be reported as still open.
+       */
+      it('does not call an answered ask open just because a filter hid the answer', () => {
+        useHiveStore.getState().hydrateLedger([
+          ask({ id: '20260829-120000-0001', from: 'overmind', to: 'sess-a', ref: 'a12' }),
+          ask({
+            id: '20260829-120000-0002',
+            from: 'sess-a',
+            to: 'overmind',
+            kind: 'answer',
+            ref: undefined,
+            thread: '20260829-120000-0001',
+            body: 'the answer',
+          }),
+        ]);
+
+        run('ledger --open --to sess-a');
+
+        expect(lastLine()).toMatchObject({ text: '  no entries', color: 'dim' });
+      });
+
+      it('filters by party', () => {
+        useHiveStore.getState().hydrateLedger([
+          ask({ body: 'from a' }),
+          ask({ id: '20260829-120000-0002', from: 'sess-b', ref: 'a13', body: 'from b' }),
+        ]);
+        run('ledger --from sess-b');
+
+        expect(transcript()).toContain('from b');
+        expect(transcript()).not.toContain('from a');
+      });
+
+      it('says so when the log is empty', () => {
+        run('ledger');
+        expect(lastLine()).toMatchObject({ text: '  no entries', color: 'dim' });
+      });
+
+      /*
+        HIVE-126. The mirror of `send`'s `agents are asked, not sent`.
+
+        A session has a terminal you can open and read, so a question to one is
+        a keystroke — `send`. An agent has no terminal, which is exactly why the
+        agent is the party that keeps `ask`. Before this, `send` had a target
+        type and `ask` took either, so the pair read as redundant.
+      */
+      it('refuses a session and names the verb that would have worked', async () => {
+        seedDemoFleet();
+        const id = Object.keys(useHiveStore.getState().entities)[0];
+
+        run(`ask ${id} post a summary`);
+        await Promise.resolve();
+
+        expect(transcript()).toContain('sessions are sent to, not asked: try send');
+        expect(post).not.toHaveBeenCalled();
+      });
+
+      it('asks an agent and prints the ref it got back', async () => {
+        useHiveStore.getState().hydrateAgents([
+          {
+            name: 'slack-watcher',
+            description: 'Watches the channel.',
+            icon: 'Robot',
+            status: 'sleeping',
+            wake: { on: ['slack.mention'], everyMs: 300_000 },
+            mcp: [],
+            tools: [],
+            rotateAfter: 50,
+            skipsSinceRun: 0,
+            runs: [],
+          },
+        ]);
+
+        run('ask slack-watcher post a summary');
+
+        await vi.waitFor(() => expect(post).toHaveBeenCalled());
+        expect(post).toHaveBeenCalledWith({
+          to: 'slack-watcher',
+          kind: 'ask',
+          body: 'post a summary',
+        });
+        await vi.waitFor(() => expect(transcript()).toContain('(a14)'));
+        expect(transcript()).toContain('asked slack-watcher');
+      });
+
+      /**
+       * The terminal-vs-row-id hazard is now unreachable through this verb.
+       *
+       * Main's registry — and `deliver`'s notion of who is live — is keyed by
+       * `terminalOf(session)`, and a cleared row's successor carries a fresh id
+       * over the predecessor's terminal. Posting the wrong one addressed a
+       * party main had never heard of, or wrote into a terminal that now
+       * belonged to somebody else. `ask` used to map around that; since
+       * HIVE-126 it refuses every session, so there is no mapping left to get
+       * wrong. This is the test that used to prove the mapping, kept as the one
+       * that proves the mapping is gone.
+       */
+      it('refuses a cleared row’s successor along with every other session', async () => {
+        seedDemoFleet();
+        const state = useHiveStore.getState();
+        const id = Object.keys(state.entities)[0];
+        const entity = state.entities[id];
+        if (entity === undefined || entity.kind !== 'session') throw new Error('no session');
+
+        // A successor minted by `/clear`: a fresh row id over the old terminal.
+        useHiveStore.setState({
+          entities: {
+            ...state.entities,
+            'sess-successor': { ...entity, id: 'sess-successor', terminalId: id },
+          },
+          order: [...state.order, 'sess-successor'],
+        });
+
+        run('ask sess-successor hello');
+        await Promise.resolve();
+
+        expect(post).not.toHaveBeenCalled();
+        expect(transcript()).toContain('sessions are sent to, not asked');
+      });
+
+      it('reports a miss in agent language, not session language', () => {
+        // The verb's usage line and help line both say `<agent>` now, so its
+        // runtime refusals must too — it resolves through `resolveEntityRef`
+        // with the agent verbs rather than through `resolve()`.
+        run('ask pr-reviewr hello');
+
+        expect(transcript()).toContain('no such agent: pr-reviewr');
+      });
+
+      it('flattens a multi-line message quoted into the refusal', () => {
+        /*
+          `pushOrch` writes one `TermLine` and the surface renders with
+          `convertEol: true`, so a quoted message carrying newlines would draw
+          many rows while counting once against `ORCH_LINE_CAP` — the
+          cap-evasion the command echo splits per line to avoid.
+        */
+        seedDemoFleet();
+        const id = Object.keys(useHiveStore.getState().entities)[0];
+
+        run(`ask ${id} first\nsecond`);
+
+        const refusal = useHiveStore
+          .getState()
+          .orchLines.map((l) => l.text)
+          .find((t) => t.includes('sessions are sent to, not asked'));
+
+        expect(refusal).toBeDefined();
+        expect(refusal).not.toContain('\n');
+        expect(refusal).toContain('first second');
+      });
+
+      it('refuses a name that matches nothing, the way the agent verbs do', () => {
+        // `no such session` until HIVE-126 — `ask` moved into the agent verbs'
+        // resolution when it stopped accepting sessions.
+        run('ask nosuch hello');
+
+        expect(lastLine()).toMatchObject({
+          text: '  no such agent: nosuch',
+          color: 'red',
+        });
+        expect(post).not.toHaveBeenCalled();
+      });
+
+      it('prints main’s reason when a post is refused', async () => {
+        // Addressed to an agent: since HIVE-126 a session never reaches the
+        // ledger through this verb, so main gets no chance to refuse one.
+        useHiveStore.getState().hydrateAgents([
+          {
+            name: 'slack-watcher',
+            description: 'Watches the channel.',
+            icon: 'Robot',
+            status: 'sleeping',
+            wake: { on: ['slack.mention'], everyMs: 300_000 },
+            mcp: [],
+            tools: [],
+            rotateAfter: 50,
+            skipsSinceRun: 0,
+            runs: [],
+          },
+        ]);
+        post.mockResolvedValue({
+          ok: false,
+          status: 404,
+          reason: 'unknown party: slack-watcher',
+        });
+
+        run('ask slack-watcher hello');
+
+        await vi.waitFor(() =>
+          expect(transcript()).toContain('unknown party: slack-watcher'),
+        );
+      });
+
+      it('answers an open ask', async () => {
+        run('answer a12 main');
+
+        await vi.waitFor(() => expect(answer).toHaveBeenCalled());
+        expect(answer).toHaveBeenCalledWith({ thread: 'a12', body: 'main' });
+        await vi.waitFor(() => expect(transcript()).toContain('answered a12'));
+      });
+
+      it('prints the reason when a thread is not open', async () => {
+        answer.mockResolvedValue({ ok: false, status: 400, reason: 'a12 is not an open ask' });
+
+        run('answer a12 main');
+
+        await vi.waitFor(() => expect(transcript()).toContain('a12 is not an open ask'));
+      });
+
+      it.each(['ledger', 'ask sess-a hi', 'answer a12 hi'])(
+        'refuses %s on the browser target',
+        (input) => {
+          vi.mocked(isDesktop).mockReturnValue(false);
+
+          run(input);
+
+          expect(lastLine()?.text).toContain('needs the desktop app');
+          expect(lastLine()?.color).toBe('red');
+        },
+      );
+    });
+
     it('reports an unknown command and points at help', () => {
       run('frobnicate');
       expect(lastLine()).toMatchObject({
@@ -1323,6 +1683,592 @@ describe('hive-store', () => {
       const lines = useHiveStore.getState().orchLines;
       expect(lines).toHaveLength(200);
       expect(lines.map((l) => l.text).join('\n')).not.toContain('maestro v0.4.2');
+    });
+
+    /**
+     * The five agent verbs (HIVE-117).
+     *
+     * Every one of them is desktop-only, and the browser refusal is asserted
+     * per verb rather than once: they are five separate `case` arms, and a
+     * guard is only present in the arms that have one.
+     */
+    describe('agent verbs', () => {
+      const summary = (over: Partial<AgentSummary> = {}): AgentSummary => ({
+        name: 'slack-watcher',
+        description: 'Watches the channel.',
+        icon: 'Robot',
+        status: 'sleeping',
+        wake: { on: ['slack.mention'], everyMs: 300_000 },
+        mcp: [],
+        tools: [],
+        rotateAfter: 50,
+        skipsSinceRun: 0,
+        runs: [],
+        ...over,
+      });
+
+      const bridge = {
+        run: vi.fn<() => Promise<AgentRunResult>>(() =>
+          Promise.resolve({ started: true, run: 'run-7', kind: 'standing' }),
+        ),
+        kill: vi.fn(() => Promise.resolve(true)),
+        pause: vi.fn<() => Promise<AgentStatus>>(() =>
+          Promise.resolve('paused'),
+        ),
+        resume: vi.fn<() => Promise<AgentStatus>>(() =>
+          Promise.resolve('sleeping'),
+        ),
+        rotate: vi.fn<() => Promise<AgentRunResult>>(() =>
+          Promise.resolve({ started: true, run: 'run-7', kind: 'standing' }),
+        ),
+      };
+
+      beforeEach(() => {
+        vi.mocked(isDesktop).mockReturnValue(true);
+        bridge.run.mockResolvedValue({ started: true, run: 'run-7', kind: 'standing' });
+        bridge.kill.mockResolvedValue(true);
+        bridge.pause.mockResolvedValue('paused');
+        bridge.resume.mockResolvedValue('sleeping');
+        bridge.rotate.mockResolvedValue({ started: true, run: 'run-7', kind: 'standing' });
+        window.hive = { agents: bridge } as unknown as Window['hive'];
+      });
+
+      afterEach(() => {
+        delete window.hive;
+      });
+
+      describe('agents', () => {
+        it('prints one row per agent, with its status word, wake and today', () => {
+          useHiveStore.getState().hydrateAgents([
+            summary({
+              status: 'asking',
+              // The same accumulator the `Today` tile reads — one source, so
+              // the table and the tile cannot word one number two ways.
+              today: { day: dayKey(Date.now()), runs: 1, usd: 0.0031 },
+            }),
+          ]);
+
+          run('agents');
+
+          const row = lastLine();
+          expect(row?.text).toContain('slack-watcher');
+          expect(row?.text).toContain('asking');
+          expect(row?.text).toContain('every 5m · slack.mention');
+          expect(row?.text).toContain('1 run');
+          // Four decimals below a cent — `formatRunCost`'s rule, and a wake
+          // routinely costs less than one.
+          expect(row?.text).toContain('$0.0031');
+          // Whole-row colour by status, the way `status` paints a session.
+          expect(row?.color).toBe('amber');
+        });
+
+        /*
+          Today, not ever. A run from yesterday is still in `runs` — the history
+          is capped by count, not by age — so a table that summed the array
+          would report a number that never went back down.
+        */
+        it('counts only runs from today', () => {
+          const yesterday = Date.now() - 36 * 60 * 60 * 1000;
+          useHiveStore.getState().hydrateAgents([
+            summary({
+              runs: [
+                {
+                  run: 'r0',
+                  trigger: 'manual',
+                  startedAt: yesterday,
+                  endedAt: yesterday,
+                  outcome: 'done',
+                  costUsd: 9.99,
+                },
+              ],
+            }),
+          ]);
+
+          run('agents');
+
+          expect(lastLine()?.text).toContain('0 runs');
+          expect(lastLine()?.text).toContain('$0.00');
+          expect(lastLine()?.text).not.toContain('9.99');
+        });
+
+        it('names the open ask beside an asking agent', () => {
+          useHiveStore.getState().hydrateAgents([summary({ status: 'asking' })]);
+          useHiveStore.getState().hydrateLedger([
+            {
+              id: '20260830-120000-0001',
+              ts: Date.now(),
+              from: 'slack-watcher',
+              kind: 'ask',
+              ref: 'a71',
+              body: 'ship it?',
+            },
+          ]);
+
+          run('agents');
+
+          expect(lastLine()?.text).toContain('asking (a71)');
+        });
+
+        it('says so when there are no agents at all', () => {
+          // The demo fleet seeds three; this verb's empty case needs saying.
+          useHiveStore.getState().hydrateAgents([]);
+
+          run('agents');
+
+          expect(lastLine()?.text).toContain('no agents');
+        });
+
+        it('is refused in the browser', () => {
+          vi.mocked(isDesktop).mockReturnValue(false);
+
+          run('agents');
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining('desktop app'),
+            color: 'red',
+          });
+        });
+      });
+
+      describe('what is live (HIVE-128)', () => {
+        const live = [
+          { run: 'r-standing', kind: 'standing' as const, trigger: 'interval', startedAt: 1 },
+          { run: 'r-task', kind: 'task' as const, trigger: 'manual', extra: 'review', startedAt: 2 },
+        ];
+
+        it('hydrates the live runs, and reads an absent list as none', () => {
+          useHiveStore.getState().hydrateAgents([summary({ live }), summary({ name: 'other' })]);
+
+          expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({ live });
+          expect(useHiveStore.getState().entities['other']).toMatchObject({ live: [] });
+        });
+
+        it('replaces the list on every status push', () => {
+          useHiveStore.getState().hydrateAgents([summary({ live })]);
+          useHiveStore.getState().setAgentStatus({
+            name: 'slack-watcher',
+            status: 'sleeping',
+            runs: [],
+            runsSinceRotate: 0,
+            live: [],
+          });
+
+          expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({ live: [] });
+        });
+      });
+
+      describe('run', () => {
+        beforeEach(() => {
+          useHiveStore.getState().hydrateAgents([summary()]);
+        });
+
+        it('wakes the agent and prints the run it started', async () => {
+          run('run slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.run).toHaveBeenCalledWith({ name: 'slack-watcher' });
+          expect(lastLine()?.text).toContain('woke slack-watcher (run-7)');
+        });
+
+        it('announces a task run by its kind (HIVE-128)', async () => {
+          bridge.run.mockResolvedValue({ started: true, run: 'run-7', kind: 'task' });
+
+          run('run slack-watcher review PR 166');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('started a task run for slack-watcher (run-7)');
+        });
+
+        it('sends the prompt a user typed after the name (HIVE-126)', async () => {
+          run('run slack-watcher review PR 1234');
+          await Promise.resolve();
+
+          expect(bridge.run).toHaveBeenCalledWith({
+            name: 'slack-watcher',
+            extra: 'review PR 1234',
+          });
+        });
+
+        it('omits extra entirely for a bare run', async () => {
+          // An absent key, not `extra: undefined` — the guard's closed key set
+          // counts keys, and `toHaveBeenCalledWith` tells the two apart.
+          run('run slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.run).toHaveBeenCalledWith({ name: 'slack-watcher' });
+        });
+
+        /*
+          The refusal wordings are this story's whole contract with the user:
+          each one names the thing they have to do next.
+        */
+        it.each([
+          ['working', 'is working'],
+          ['paused', 'is paused — resume it first'],
+        ] as const)('prints main’s %s refusal', async (refused, text) => {
+          bridge.run.mockResolvedValue({ started: false, refused });
+
+          run('run slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining(text),
+            color: 'red',
+          });
+        });
+
+        /*
+          HIVE-126. Before this, a run refused because the agent was busy was
+          printed and forgotten, while the same intent arriving through the
+          ledger was queued — so the console had to say "try again" and mean it.
+        */
+        it.each([
+          [
+            'working',
+            'queued for slack-watcher — it will run when its current turn ends',
+          ],
+          ['paused', 'queued for slack-watcher — resume it to run'],
+        ] as const)('says a run queued behind %s was queued', async (behind, text) => {
+          bridge.run.mockResolvedValue({ started: false, queued: true, behind });
+
+          run('run slack-watcher review PR 1234');
+          await Promise.resolve();
+
+          // `dim`, not `red`: a run waiting its turn is a deferral, not a fault.
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining(text),
+            color: 'dim',
+          });
+        });
+
+        it('says an agent is saturated in words that name the wait (HIVE-128)', async () => {
+          bridge.run.mockResolvedValue({ started: false, refused: 'saturated' });
+
+          run('run slack-watcher review PR 1');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('slack-watcher is saturated');
+        });
+
+        it('says a saturated agent queued the run', async () => {
+          bridge.run.mockResolvedValue({
+            started: false,
+            queued: true,
+            behind: 'saturated',
+          });
+
+          run('run slack-watcher review PR 1');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('queued for slack-watcher');
+          expect(lastLine()?.text).toContain('one of its runs ends');
+        });
+
+        it('still refuses a rotate rather than promising it a queue', async () => {
+          // `rotate` answers `AgentRotateResult`, which has no queued arm:
+          // `forceRotate` stays armed through a refusal, so a rotation survives
+          // by a different route and must not claim a queue it has no place in.
+          bridge.rotate.mockResolvedValue({ started: false, refused: 'working' });
+
+          run('rotate slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining('slack-watcher is working'),
+            color: 'red',
+          });
+        });
+
+        it('prints main’s own reason when it supplies one', async () => {
+          bridge.run.mockResolvedValue({
+            started: false,
+            refused: 'invalid',
+            reason: 'wake: `every` must be at least 60s',
+          });
+
+          run('run slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('every` must be at least 60s');
+        });
+
+        it('refuses a name that is not an agent', () => {
+          run('run nope');
+
+          expect(lastLine()?.text).toContain('no such agent: nope');
+          expect(bridge.run).not.toHaveBeenCalled();
+        });
+
+        /*
+          A session id resolves — `entities` holds both kinds — so without the
+          kind check `run sess-01` would reach the bridge and be refused by
+          main's name guard, with a message about agent names rather than about
+          what the user actually did.
+        */
+        it('refuses a session, naming the verb that would have worked', () => {
+          seedDemoFleet();
+          const session = useHiveStore.getState().order[0];
+
+          run(`run ${String(session)}`);
+
+          expect(lastLine()?.text).toContain('not an agent');
+          expect(bridge.run).not.toHaveBeenCalled();
+        });
+
+        it('is refused in the browser', () => {
+          vi.mocked(isDesktop).mockReturnValue(false);
+
+          run('run slack-watcher');
+
+          expect(lastLine()?.color).toBe('red');
+          expect(bridge.run).not.toHaveBeenCalled();
+        });
+      });
+
+      describe('pause and resume', () => {
+        beforeEach(() => {
+          useHiveStore.getState().hydrateAgents([summary()]);
+        });
+
+        it('pauses, and says what the status now is', async () => {
+          run('pause slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.pause).toHaveBeenCalledWith({ name: 'slack-watcher' });
+          expect(lastLine()?.text).toContain('paused slack-watcher');
+        });
+
+        /*
+          Resume prints the status main computed rather than the word "resumed".
+          The two answers differ in the one case the user most needs to see: an
+          agent that asked something while it was paused comes back `asking`,
+          and a line saying only "resumed" would bury the question.
+        */
+        it('resumes to sleeping, and says so', async () => {
+          run('resume slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.resume).toHaveBeenCalledWith({ name: 'slack-watcher' });
+          expect(lastLine()?.text).toContain('resumed slack-watcher — sleeping');
+        });
+
+        it('resumes to asking when a question was waiting', async () => {
+          bridge.resume.mockResolvedValue('asking');
+
+          run('resume slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('resumed slack-watcher — asking');
+        });
+
+        it.each(['pause', 'resume'])('refuses %s on a non-agent', (verb) => {
+          run(`${verb} nope`);
+
+          expect(lastLine()?.text).toContain('no such agent: nope');
+        });
+
+        it.each(['pause', 'resume'])('refuses %s in the browser', (verb) => {
+          vi.mocked(isDesktop).mockReturnValue(false);
+
+          run(`${verb} slack-watcher`);
+
+          expect(lastLine()?.color).toBe('red');
+        });
+      });
+
+      describe('kill', () => {
+        beforeEach(() => {
+          useHiveStore.getState().hydrateAgents([summary()]);
+        });
+
+        it('stops the run and says so', async () => {
+          run('kill slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.kill).toHaveBeenCalledWith({ name: 'slack-watcher' });
+          expect(lastLine()?.text).toContain("killed slack-watcher's run");
+        });
+
+        /*
+          `false` is not an error — the run can end between reading the table
+          and pressing return — so it prints in the ordinary colour.
+        */
+        it('says nothing was running, without calling it a failure', async () => {
+          bridge.kill.mockResolvedValue(false);
+
+          run('kill slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining('nothing running'),
+            color: 'dim',
+          });
+        });
+
+        it('counts the runs it killed when there were several (HIVE-128)', async () => {
+          useHiveStore.getState().hydrateAgents([
+            summary({
+              status: 'working',
+              live: [
+                { run: 'a', kind: 'standing', trigger: 'interval', startedAt: 1 },
+                { run: 'b', kind: 'task', trigger: 'manual', startedAt: 2 },
+                { run: 'c', kind: 'task', trigger: 'manual', startedAt: 3 },
+              ],
+            }),
+          ]);
+
+          run('kill slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()?.text).toContain('killed 3 runs of slack-watcher');
+        });
+      });
+
+      /**
+       * The manual rotation (HIVE-122).
+       *
+       * The same shape as `run` — it *is* a run, with `forceRotate` armed
+       * first — so it is asserted against `run`'s contract rather than a new
+       * one: the refusals are main's, worded by `agentRunRefusal`, and the
+       * not-an-agent guard is the group's.
+       */
+      describe('rotate', () => {
+        beforeEach(() => {
+          useHiveStore.getState().hydrateAgents([summary()]);
+        });
+
+        it('rotates the agent and prints the run it started', async () => {
+          run('rotate slack-watcher');
+          await Promise.resolve();
+
+          expect(bridge.rotate).toHaveBeenCalledWith({ name: 'slack-watcher' });
+          expect(lastLine()?.text).toContain(
+            'woke slack-watcher to rotate (run-7)',
+          );
+        });
+
+        /*
+          A busy agent refuses the run, and main leaves the flag armed — so the
+          console says only what `run` would say. The rotation is not lost; it
+          happens on the wake that does land.
+        */
+        it('prints main’s refusal when the agent is busy', async () => {
+          bridge.rotate.mockResolvedValue({
+            started: false,
+            refused: 'working',
+          });
+
+          run('rotate slack-watcher');
+          await Promise.resolve();
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining('is working'),
+            color: 'red',
+          });
+        });
+
+        it('refuses to rotate something that is not an agent', () => {
+          seedDemoFleet();
+          const session = useHiveStore.getState().order[0];
+
+          run(`rotate ${String(session)}`);
+
+          expect(lastLine()?.text).toContain('not an agent');
+          expect(bridge.rotate).not.toHaveBeenCalled();
+        });
+
+        it('refuses a name nothing answers to', () => {
+          run('rotate nope');
+
+          expect(lastLine()?.text).toContain('no such agent: nope');
+          expect(bridge.rotate).not.toHaveBeenCalled();
+        });
+
+        it('is refused in the browser', () => {
+          vi.mocked(isDesktop).mockReturnValue(false);
+
+          run('rotate slack-watcher');
+
+          expect(lastLine()?.color).toBe('red');
+          expect(bridge.rotate).not.toHaveBeenCalled();
+        });
+
+        it('is listed in help', () => {
+          run('help');
+
+          expect(transcript()).toContain('  rotate <agent>');
+        });
+      });
+
+      /**
+       * `send` to an agent is refused, and this is a **deletion** as much as an
+       * addition: the verb used to fall through to the demo branch, echoing the
+       * message into the agent's own transcript and scheduling a fake ack. It
+       * looked exactly like a delivery and was not one.
+       */
+      describe('send to an agent', () => {
+        it('refuses, and names the verb that would have worked', () => {
+          useHiveStore.getState().hydrateAgents([summary()]);
+          const before = useHiveStore.getState().ledger.length;
+
+          run('send slack-watcher hello');
+
+          expect(lastLine()).toMatchObject({
+            text: expect.stringContaining(
+              'agents are asked, not sent: try ask slack-watcher hello',
+            ),
+            color: 'red',
+          });
+          // Nothing was written down, either — the refusal is total.
+          expect(useHiveStore.getState().ledger).toHaveLength(before);
+        });
+      });
+
+      /*
+        `agents:pause` and `agents:resume` throw by design when the runtime is
+        not up — answering a status they never wrote is what their contract
+        calls the one outcome worth a rejected promise. A dropped rejection
+        would leave the console showing the echoed command and nothing else,
+        with an unhandled rejection in the renderer.
+      */
+      it('prints why a verb failed rather than falling silent', async () => {
+        useHiveStore.getState().hydrateAgents([summary()]);
+        bridge.pause.mockRejectedValue(
+          new Error('The agent runtime is not running.'),
+        );
+
+        run('pause slack-watcher');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(lastLine()).toMatchObject({
+          text: expect.stringContaining('The agent runtime is not running.'),
+          color: 'red',
+        });
+      });
+
+      /*
+        Resolution is the shared one — `open`, `send` and `ask` all match
+        case-insensitively, and a `pause` that alone demanded the exact key
+        would refuse `SLACK-WATCHER` on the same screen where `open` accepts it.
+      */
+      it('resolves an agent name the way every other targeted verb does', async () => {
+        useHiveStore.getState().hydrateAgents([summary()]);
+
+        run('pause SLACK-WATCHER');
+        await Promise.resolve();
+
+        expect(bridge.pause).toHaveBeenCalledWith({ name: 'slack-watcher' });
+      });
+
+      it('lists all five in help', () => {
+        run('help');
+
+        const printed = transcript();
+        for (const verb of ['agents', 'run', 'pause', 'resume', 'kill']) {
+          expect(printed).toContain(`  ${verb}`);
+        }
+      });
     });
   });
 
@@ -1510,7 +2456,7 @@ describe('hive-store', () => {
         .appendEntityLines('slack-agent', [{ text: 'ping', color: 'ink' }]);
 
       const entity = useHiveStore.getState().entities['slack-agent'];
-      expect(entity.status).toBe('online');
+      expect(entity.status).toBe('sleeping');
       expect(entity.lines.at(-1)?.text).toBe('ping');
     });
 
@@ -1704,13 +2650,415 @@ describe('hive-store', () => {
   });
 
   /**
-   * Restoring the fleet from the ledger (HIVE-87).
+   * Restoring the fleet from the session history (HIVE-87).
    *
    * The first time this store receives data at boot, which `emptySeeds()`
    * argues against at length — so most of these are about the restored rows
    * staying *inert*: they may not overwrite anything live, may not claim to be
    * running, and may not hand out an id a future spawn would collide with.
    */
+  describe('hydrateAgents', () => {
+    const summary = (
+      name: string,
+      over: Partial<AgentSummary> = {},
+    ): AgentSummary => ({
+      name,
+      description: `${name} does things`,
+      icon: 'Ghost',
+      status: 'sleeping',
+      wake: { on: [] },
+      mcp: [],
+      tools: [],
+      rotateAfter: 50,
+      skipsSinceRun: 0,
+      runs: [],
+      ...over,
+    });
+
+    const agentAt = (id: string) => {
+      const entity = useHiveStore.getState().entities[id];
+      return entity !== undefined && isAgent(entity) ? entity : undefined;
+    };
+
+    it('fills entities and agentOrder alphabetically', () => {
+      useHiveStore.getState().hydrateAgents([summary('zulu'), summary('alpha')]);
+
+      expect(useHiveStore.getState().agentOrder).toEqual(['alpha', 'zulu']);
+      expect(agentAt('alpha')).toMatchObject({
+        kind: 'agent',
+        id: 'alpha',
+        sub: 'alpha does things',
+        status: 'sleeping',
+      });
+    });
+
+    it('replaces, so a removed agent leaves both entities and order', () => {
+      // A definitions folder is a *set*, unlike the append-only ledger: a
+      // folder deleted in Finder must leave the list, which a merge could
+      // never express.
+      const store = useHiveStore.getState();
+      store.hydrateAgents([summary('alpha'), summary('zulu')]);
+      store.hydrateAgents([summary('alpha')]);
+
+      expect(useHiveStore.getState().agentOrder).toEqual(['alpha']);
+      expect(useHiveStore.getState().entities.zulu).toBeUndefined();
+    });
+
+    it('keeps a rehydrated agent transcript, which is run output not definition', () => {
+      const store = useHiveStore.getState();
+      store.hydrateAgents([summary('alpha')]);
+      store.appendEntityLines('alpha', [{ text: 'hello', color: 'ink' }]);
+      store.hydrateAgents([summary('alpha', { description: 'now different' })]);
+
+      expect(agentAt('alpha')?.lines).toHaveLength(1);
+      expect(agentAt('alpha')?.sub).toBe('now different');
+    });
+
+    it('never writes over a session that shares an agent name', () => {
+      /*
+        `entities` is one map for both kinds and an agent name is a legal
+        session id, so a definition called after a live session used to replace
+        its entity and orphan it from `order`. The clear loop guarded this; the
+        write did not.
+      */
+      const store = useHiveStore.getState();
+      const id = useHiveStore.getState().order[0];
+
+      expect(id).toBeDefined();
+
+      store.hydrateAgents([summary(id as string)]);
+
+      const entity = useHiveStore.getState().entities[id as string];
+
+      expect(entity && isSession(entity)).toBe(true);
+      expect(useHiveStore.getState().order).toContain(id);
+    });
+
+    it('carries an invalid reason through', () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([summary('broken', { invalid: 'nope: Unknown key.' })]);
+
+      expect(agentAt('broken')?.invalid).toBe('nope: Unknown key.');
+    });
+
+    it('leaves sessions untouched', () => {
+      const store = useHiveStore.getState();
+      store.spawnSession('nova-web');
+      const before = useHiveStore.getState().order;
+
+      store.hydrateAgents([summary('alpha')]);
+
+      expect(useHiveStore.getState().order).toEqual(before);
+    });
+
+    it('is empty-safe', () => {
+      const store = useHiveStore.getState();
+      store.hydrateAgents([summary('alpha')]);
+      store.hydrateAgents([]);
+
+      expect(useHiveStore.getState().agentOrder).toEqual([]);
+    });
+  });
+
+  describe('agent runs', () => {
+    const seedAgent = () =>
+      useHiveStore.getState().hydrateAgents([
+        {
+          name: 'slack-watcher',
+          description: 'Watches #incorp-dev.',
+          icon: 'ph-robot',
+          status: 'sleeping',
+          wake: { on: ['ledger'] },
+          mcp: [],
+          tools: [],
+          rotateAfter: 50,
+          skipsSinceRun: 0,
+          runs: [],
+        },
+      ]);
+
+    it('sets an agent status without disturbing its definition fields', () => {
+      seedAgent();
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'working',
+        live: [],
+        lastRunAt: 42,
+        cost: '$0.02',
+        runs: [],
+        runsSinceRotate: 0,
+      });
+
+      const agent = useHiveStore.getState().entities['slack-watcher'];
+
+      expect(agent).toMatchObject({
+        status: 'working',
+        lastRunAt: 42,
+        cost: '$0.02',
+        sub: 'Watches #incorp-dev.',
+      });
+    });
+
+    /*
+      The two the scheduler's tick moves with no run attached (HIVE-121). It
+      pushes on a skip and on a new next-run time precisely because nothing
+      else would — which is what keeps `next 18:20 · skipped 3` live on an
+      agent that is deliberately not running.
+    */
+    it("takes today's totals and the skip count from a push", () => {
+      seedAgent();
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+        today: { day: '2026-08-31', runs: 12, usd: 0.84 },
+        skipsSinceRun: 3,
+      });
+
+      expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({
+        today: { day: '2026-08-31', runs: 12, usd: 0.84 },
+        skipsSinceRun: 3,
+      });
+    });
+
+    it('reads an absent skip count as none, not as last render’s', () => {
+      seedAgent();
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+        skipsSinceRun: 3,
+      });
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+      });
+
+      expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({
+        skipsSinceRun: 0,
+      });
+    });
+
+    /*
+      `nextRunAt` genuinely goes away — the scheduler clears it when a
+      definition stops scheduling or stops parsing mid-edit. Spread-guarded,
+      that clear could never cross the wire, and the rail would go on promising
+      `next 09:00` for an agent that will never wake.
+    */
+    it('lets a push clear the next run time', () => {
+      seedAgent();
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+        nextRunAt: 1_756_500_000_000,
+      });
+      useHiveStore.getState().setAgentStatus({
+        name: 'slack-watcher',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+      });
+
+      const agent = useHiveStore.getState().entities['slack-watcher'];
+
+      expect(agent !== undefined && isAgent(agent) && agent.nextRunAt).toBeUndefined();
+    });
+
+    it('ignores a status for an agent it does not have', () => {
+      expect(() =>
+        useHiveStore.getState().setAgentStatus({
+          name: 'ghost',
+          status: 'working',
+          live: [],
+          runs: [],
+          runsSinceRotate: 0,
+        }),
+      ).not.toThrow();
+      expect(useHiveStore.getState().entities['ghost']).toBeUndefined();
+    });
+
+    it('never lets an agent status overwrite a session', () => {
+      // A definition may legally share a name with a live session id.
+      const before = useHiveStore.getState().entities['sess-01'];
+
+      useHiveStore.getState().setAgentStatus({
+        name: 'sess-01',
+        status: 'working',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+      });
+
+      expect(useHiveStore.getState().entities['sess-01']).toBe(before);
+    });
+
+    it('never lets appended run lines overwrite a session', () => {
+      // The same guard `setAgentStatus` carries, pinned at its second call
+      // site: a definition may legally be named `sess-01`, and a defence
+      // proven at one of two entrances is not proven.
+      const before = useHiveStore.getState().entities['sess-01'];
+
+      useHiveStore.getState().appendAgentLines({
+        name: 'sess-01',
+        lines: [{ text: 'from an agent', color: 'ink' }],
+      });
+
+      expect(useHiveStore.getState().entities['sess-01']).toBe(before);
+    });
+
+    it('keeps the last run cost across a re-hydrate', () => {
+      seedAgent();
+      useHiveStore
+        .getState()
+        .setAgentStatus({
+          name: 'slack-watcher',
+          status: 'sleeping',
+          live: [],
+          cost: '$0.02',
+          runs: [],
+          runsSinceRotate: 0,
+        });
+
+      // `agents:list` reads the cost back out of `agents.json`, so a folder
+      // change — any saved `AGENT.md`, for any agent — must not blank the row.
+      useHiveStore.getState().hydrateAgents([
+        {
+          name: 'slack-watcher',
+          description: 'Watches #incorp-dev.',
+          icon: 'ph-robot',
+          status: 'sleeping',
+          wake: { on: ['ledger'] },
+          mcp: [],
+          tools: [],
+          rotateAfter: 50,
+          skipsSinceRun: 0,
+          runs: [],
+          cost: '$0.02',
+        },
+      ]);
+
+      expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({
+        cost: '$0.02',
+      });
+    });
+
+    /*
+      HIVE-122. The rotation counter now moves live on every status push, and
+      the uuid it belongs to has to move with it — otherwise the tile's two
+      halves disagree the moment a rotation lands.
+    */
+    it('re-reads the session fact after a rotation', () => {
+      useHiveStore.getState().hydrateAgents([
+        {
+          name: 'drone',
+          description: 'drone does things',
+          icon: 'ph-robot',
+          status: 'sleeping',
+          wake: { on: [] },
+          mcp: [],
+          tools: [],
+          rotateAfter: 50,
+          skipsSinceRun: 0,
+          runs: [],
+          sessionUuid: '9f3c1e2a',
+          runsSinceRotate: 50,
+        },
+      ]);
+
+      useHiveStore.getState().setAgentStatus({
+        name: 'drone',
+        status: 'sleeping',
+        live: [],
+        runs: [],
+        runsSinceRotate: 1,
+        sessionUuid: 'b2e1c4d5',
+      });
+
+      const agent = useHiveStore.getState().entities['drone'];
+
+      expect(agent !== undefined && isAgent(agent) && agent.sessionUuid).toBe(
+        'b2e1c4d5',
+      );
+      expect(
+        agent !== undefined && isAgent(agent) && agent.runsSinceRotate,
+      ).toBe(1);
+    });
+
+    // Absent must mean unchanged, never cleared: main only ever replaces this.
+    it('keeps the uuid a push does not carry', () => {
+      useHiveStore.getState().hydrateAgents([
+        {
+          name: 'drone',
+          description: 'drone does things',
+          icon: 'ph-robot',
+          status: 'sleeping',
+          wake: { on: [] },
+          mcp: [],
+          tools: [],
+          rotateAfter: 50,
+          skipsSinceRun: 0,
+          runs: [],
+          sessionUuid: '9f3c1e2a',
+        },
+      ]);
+
+      useHiveStore.getState().setAgentStatus({
+        name: 'drone',
+        status: 'working',
+        live: [],
+        runs: [],
+        runsSinceRotate: 0,
+      });
+
+      const agent = useHiveStore.getState().entities['drone'];
+
+      expect(agent !== undefined && isAgent(agent) && agent.sessionUuid).toBe(
+        '9f3c1e2a',
+      );
+    });
+
+    it('appends run lines and keeps them across a re-hydrate', () => {
+      seedAgent();
+      useHiveStore.getState().appendAgentLines({
+        name: 'slack-watcher',
+        lines: [{ text: 'hello', color: 'ink' }],
+      });
+      seedAgent();
+
+      expect(useHiveStore.getState().entities['slack-watcher']).toMatchObject({
+        lines: [{ text: 'hello', color: 'ink' }],
+      });
+    });
+
+    it('caps the lines it keeps', () => {
+      seedAgent();
+
+      for (let i = 0; i < AGENT_LINE_CAP + 50; i += 1) {
+        useHiveStore.getState().appendAgentLines({
+          name: 'slack-watcher',
+          lines: [{ text: `line ${i}`, color: 'ink' }],
+        });
+      }
+
+      const agent = useHiveStore.getState().entities['slack-watcher'];
+
+      expect(agent?.lines).toHaveLength(AGENT_LINE_CAP);
+      expect(agent?.lines.at(-1)?.text).toBe(`line ${AGENT_LINE_CAP + 49}`);
+    });
+  });
+
   describe('hydrateSessions', () => {
     const record = (over: Partial<SessionHistoryEntry> = {}): SessionHistoryEntry => ({
       id: 'sess-01',
@@ -1790,8 +3138,8 @@ describe('hive-store', () => {
 
     it('never clobbers a live row', () => {
       // A restart reuses entity ids, so this collision is the ordinary case
-      // rather than a corner: the ledger holds `sess-01` from last time and
-      // this run has just spawned one.
+      // rather than a corner: the session history holds `sess-01` from last
+      // time and this run has just spawned one.
       useHiveStore.getState().spawnSession('the-hive');
       const live = useHiveStore.getState().order.at(-1)!;
 
@@ -1894,7 +3242,7 @@ describe('hive-store', () => {
     });
 
     it('drops a model or effort the closed lists do not contain', () => {
-      // `ledger.ts` casts these on the way in and points here for validation.
+      // `history.ts` casts these on the way in and points here for validation.
       // A hand-edited file must not put an arbitrary string into a union.
       useHiveStore.getState().hydrateSessions([
         record({
@@ -1924,8 +3272,8 @@ describe('hive-store', () => {
     it('seeds the counter from an id it skipped as a collision', () => {
       /**
        * The narrow race the counter has to survive: a spawn lands between boot
-       * and the unawaited hydrate, taking `sess-01`. The ledger's own `sess-01`
-       * is then skipped — and if the counter never heard of it, the next spawn
+       * and the unawaited hydrate, taking `sess-01`. The session history's
+       * own `sess-01` is then skipped — and if the counter never heard of it, the next spawn
        * takes `sess-02`, the id of another record still waiting to be restored.
        */
       useHiveStore.getState().reset();
@@ -1946,8 +3294,8 @@ describe('hive-store', () => {
       /**
        * The renderer is not always the first of its run (HIVE-88). Close the
        * window on macOS and reopen it from the dock, reload it, crash it: a
-       * fresh store hydrates in front of the same running ptys, and the ledger
-       * lists them. Main marks those `live`, and a live row is this run's fleet
+       * fresh store hydrates in front of the same running ptys, and the
+       * session history lists them. Main marks those `live`, and a live row is this run's fleet
        * — not restored, not closed, and reading whatever it was last doing.
        */
       useHiveStore.getState().hydrateSessions([
@@ -1974,7 +3322,7 @@ describe('hive-store', () => {
       expect(statusOf('x')).toBe('done');
     });
 
-    it('is a no-op for an empty ledger', () => {
+    it('is a no-op for an empty history', () => {
       const before = [...useHiveStore.getState().order];
 
       useHiveStore.getState().hydrateSessions([]);
@@ -2432,8 +3780,8 @@ describe('hive-store', () => {
 
     it('never restores a second row for an id this run already runs', () => {
       // The identity that survives a restart is the entity id: a reopened row
-      // spawns under its own id, and the ledger is keyed by it. The collision
-      // guard is therefore the dedup, and it has to hold with the live row
+      // spawns under its own id, and the session history is keyed by it. The
+      // collision guard is therefore the dedup, and it has to hold with the live row
       // under any status.
       useHiveStore.getState().spawnSession('the-hive');
       const live = useHiveStore.getState().order.at(-1)!;
@@ -2727,8 +4075,8 @@ describe('lifecycle timestamps', () => {
       expect(sessionAt('old-05').resumedAt).toBe(
         Date.parse('2026-08-26T11:00:00Z'),
       );
-      // `createdAt` is untouched: it is when the session began, and the ledger's
-      // retention sorts on it.
+      // `createdAt` is untouched: it is when the session began, and the
+      // session history's retention sorts on it.
       expect(sessionAt('old-05').createdAt).toBe(
         Date.parse('2026-08-26T06:00:00Z'),
       );
@@ -2742,7 +4090,7 @@ describe('lifecycle timestamps', () => {
     /**
      * The times the row really had, not the moment it was restored — otherwise
      * every launch would file last week's endings as though they had all just
-     * happened, in whatever order the ledger listed them.
+     * happened, in whatever order the session history listed them.
      */
     it('restores the times a record carried rather than stamping at hydrate', () => {
       useHiveStore.getState().hydrateSessions([
@@ -2837,6 +4185,40 @@ describe('statusWord agrees with statusLabel', () => {
   });
 
   /**
+   * The same guard for the agent half (HIVE-117).
+   *
+   * `agentStatusWord` is a fifth hand-written mapping of the same vocabulary,
+   * built because `stores/` may not import `components/`. That constraint is
+   * real and this is the only thing that keeps the two tables in step — the
+   * session pair above exists because a comment saying "the words must match"
+   * had already failed to make them match.
+   */
+  it.each(AGENT_STATUSES)('says the same thing for an agent’s %s', (status) => {
+    expect(agentStatusWord(status)).toBe(STATUS_LABEL[status]);
+  });
+
+  /**
+   * And paints it the colour the dot is painted.
+   *
+   * Asserted as a *pairing* rather than by re-listing the hexes: the console
+   * speaks `TermColor` and `status-dot.tsx` speaks Tailwind, so the two can
+   * only be checked against a stated correspondence. `sleeping` and `paused`
+   * share `dim` on purpose — `bg-subtle` and `bg-muted` are both "nothing is
+   * happening here", the distinction is carried by the word, and `STATUS_COLOR`
+   * already collapses `idle` and `terminated` the same way.
+   */
+  it.each([
+    ['asking', 'bg-amber', 'amber'],
+    ['working', 'bg-green', 'green'],
+    ['sleeping', 'bg-subtle', 'dim'],
+    ['paused', 'bg-muted', 'dim'],
+    ['failed', 'bg-red', 'red'],
+  ] as const)('paints %s the way its dot is painted', (status, fill, term) => {
+    expect(STATUS_FILL[status]).toBe(fill);
+    expect(agentStatusColor(status)).toBe(term);
+  });
+
+  /**
    * And paints it the same way. The console is the fourth surface printing this
    * word, and it got the rename without the colour — so `status` listed
    * `working (agents)` in idle's grey while the fleet table, the projects rail
@@ -2855,6 +4237,152 @@ describe('statusWord agrees with statusLabel', () => {
     expect(row).toBeDefined();
     // `dim` is what `STATUS_COLOR.idle` gives, and what this used to print.
     expect(row?.color).toBe('green');
+  });
+});
+
+/**
+ * Which name may replace which (first-prompt naming).
+ *
+ * ## The measurement this rule is built on
+ *
+ * Claude Code writes exactly **one** `ai-title` per conversation — no transcript
+ * in this project holds two distinct ones — but it writes it at an arbitrary
+ * point, from whatever the conversation is about by then:
+ *
+ * ```
+ * line  170/2054   "PR 157 merge check and implementation"
+ * line 1226/2613   "terminal focus and text scramble"
+ * line 1441/1445   "runtime and appearance settings"
+ * ```
+ *
+ * The first is a session opened for HIVE-123 that took the name of a merge check
+ * it ran three hundred turns later. So a guess is welcome while the alternative
+ * is `sess-07`, and refused once the row has a name that came from somewhere
+ * better. Main separates a `/rename` from a guess by reading the transcript
+ * Claude records the difference in; this suite is about what the store does with
+ * the answer.
+ */
+describe('renameSession and where a name came from', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  /** The name on a row, or `undefined` while it has none. */
+  const nameOf = (id: string): string | undefined => {
+    const entity = useHiveStore.getState().entities[id];
+    return entity && isSession(entity) ? entity.name : undefined;
+  };
+
+  describe('while the row is still generic', () => {
+    it("takes the agent's own title, because sess-0n is worse", () => {
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation', 'agent');
+
+      expect(nameOf('lead-form')).toBe('mutex-explanation');
+    });
+
+    it('takes it for a freshly spawned row, whose id is the generic name', () => {
+      const id = useHiveStore.getState().spawnSession('nova-web');
+      useHiveStore.getState().renameSession(id, 'github token debug', 'agent');
+
+      expect(nameOf(id)).toBe('github-token-debug');
+    });
+
+    it('takes a name derived from the first prompt', () => {
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+
+      expect(nameOf('lead-form')).toBe('HIVE-123');
+    });
+  });
+
+  describe('once the row has a real name', () => {
+    it("refuses the agent's late guess", () => {
+      // The reported defect, exactly: a session opened for HIVE-123 must not end
+      // up called after a merge check it ran hundreds of turns later.
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+      useHiveStore
+        .getState()
+        .renameSession('lead-form', 'PR 157 merge check and implementation', 'agent');
+
+      expect(nameOf('lead-form')).toBe('HIVE-123');
+    });
+
+    it('accepts a deliberate rename', () => {
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+      useHiveStore.getState().renameSession('lead-form', 'something else', 'rename');
+
+      expect(nameOf('lead-form')).toBe('something-else');
+    });
+
+    it("refuses a guess against a name an earlier guess established", () => {
+      /*
+        The gate is about the row, not about who named it last: once *any* real
+        name is there, a second guess is the late-title case again.
+      */
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation', 'agent');
+      useHiveStore.getState().renameSession('lead-form', 'terminal focus', 'agent');
+
+      expect(nameOf('lead-form')).toBe('mutex-explanation');
+    });
+
+    it('lets the first prompt correct a guess that arrived first', () => {
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation', 'agent');
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+
+      expect(nameOf('lead-form')).toBe('HIVE-123');
+    });
+
+    it('treats an absent origin as a guess, which is what every old sender was', () => {
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation');
+
+      expect(nameOf('lead-form')).toBe('HIVE-123');
+    });
+  });
+
+  describe('a pinned ticket row', () => {
+    /*
+      Covered by the gate rather than exempted from it. HIVE-108 let a title
+      enrich `HIVE-73` into `HIVE-73-back-key-interception`, on the reasoning
+      that the key plus a description beats either alone — true only if the
+      description is of the right work, and the measurement above is that it
+      frequently is not.
+    */
+    it('keeps its key rather than taking a late description', () => {
+      const id = useHiveStore.getState().spawnSession('nova-web', '', 'opus', 'high', 'HIVE-73');
+      expect(nameOf(id)).toBe('HIVE-73');
+
+      useHiveStore.getState().renameSession(id, 'PR 157 merge check', 'agent');
+
+      expect(nameOf(id)).toBe('HIVE-73');
+    });
+  });
+
+  describe('after a /clear', () => {
+    it('lets the successor name itself, because it is generic again', () => {
+      /*
+        The successor starts with no name at all, so the gate opens for it. This
+        is the property that would break if "named" were tracked per terminal
+        rather than read off the row.
+      */
+      useHiveStore.getState().renameSession('lead-form', 'HIVE-123', 'prompt');
+      const successor = useHiveStore.getState().clearSession('lead-form')!;
+
+      useHiveStore.getState().renameSession(successor, 'a new topic', 'agent');
+
+      expect(nameOf(successor)).toBe('a-new-topic');
+    });
+
+    it('still refuses the retired conversation\'s title', () => {
+      // The stale-title guard is untouched by the gate: the successor is
+      // generic, so the gate lets this through, and the older rule stops it.
+      useHiveStore.getState().renameSession('lead-form', 'Mutex explanation', 'agent');
+      const successor = useHiveStore.getState().clearSession('lead-form')!;
+
+      useHiveStore.getState().renameSession(successor, 'Mutex explanation', 'agent');
+
+      expect(nameOf(successor)).toBeUndefined();
+    });
   });
 });
 
@@ -2990,6 +4518,579 @@ describe('session names for the world outside the rail', () => {
       rerender();
 
       expect(result.current).toBe(before);
+    });
+  });
+});
+
+describe('the ledger slice', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+  });
+
+  const entry = (over: Partial<LedgerEntry> & Pick<LedgerEntry, 'id'>): LedgerEntry => ({
+    ts: 1,
+    from: 'sess-a',
+    kind: 'post',
+    body: '',
+    ...over,
+  });
+
+  it('hydrates from a snapshot', () => {
+    useHiveStore.getState().hydrateLedger([entry({ id: '1' }), entry({ id: '2' })]);
+
+    expect(useHiveStore.getState().ledger.map((found) => found.id)).toEqual(['1', '2']);
+  });
+
+  it('appends one entry to the tail', () => {
+    useHiveStore.getState().hydrateLedger([entry({ id: '1' })]);
+    useHiveStore.getState().ledgerAppend(entry({ id: '2' }));
+
+    expect(useHiveStore.getState().ledger.map((found) => found.id)).toEqual(['1', '2']);
+  });
+
+  /**
+   * The hydrate/push race (HIVE-111 final review, finding 3).
+   *
+   * `useLedgerSync` arms the push channel while `list()` is still in flight,
+   * so an entry appended after main took its snapshot reaches the store first
+   * and is absent from the snapshot that follows. A replacing hydrate would
+   * discard it for good — the hook mounts once and never remounts.
+   */
+  it('keeps an entry that the snapshot it hydrates from does not contain', () => {
+    useHiveStore.getState().ledgerAppend(entry({ id: '3' }));
+    useHiveStore.getState().hydrateLedger([entry({ id: '1' }), entry({ id: '2' })]);
+
+    expect(useHiveStore.getState().ledger.map((found) => found.id)).toEqual(['1', '2', '3']);
+  });
+
+  it('does not duplicate an entry that arrived on both paths', () => {
+    useHiveStore.getState().ledgerAppend(entry({ id: '2', body: 'from the channel' }));
+    useHiveStore.getState().hydrateLedger([entry({ id: '1' }), entry({ id: '2' })]);
+
+    const kept = useHiveStore.getState().ledger;
+    expect(kept.map((found) => found.id)).toEqual(['1', '2']);
+    // The copy already in the mirror wins; both are the same immutable entry.
+    expect(kept[1].body).toBe('from the channel');
+  });
+
+  it('keeps the newest when the cap is passed', () => {
+    const many = Array.from({ length: LEDGER_MEMORY_CAP + 10 }, (_, index) =>
+      entry({ id: String(index).padStart(5, '0') }),
+    );
+    useHiveStore.getState().hydrateLedger(many);
+
+    const kept = useHiveStore.getState().ledger;
+    expect(kept).toHaveLength(LEDGER_MEMORY_CAP);
+    expect(kept[kept.length - 1].id).toBe(many[many.length - 1].id);
+    expect(kept[0].id).toBe(many[10].id);
+  });
+
+  it('drops the oldest when an append passes the cap', () => {
+    useHiveStore.getState().hydrateLedger(
+      Array.from({ length: LEDGER_MEMORY_CAP }, (_, index) =>
+        entry({ id: String(index).padStart(5, '0') }),
+      ),
+    );
+    useHiveStore.getState().ledgerAppend(entry({ id: 'zzzzz' }));
+
+    const kept = useHiveStore.getState().ledger;
+    expect(kept).toHaveLength(LEDGER_MEMORY_CAP);
+    expect(kept[kept.length - 1].id).toBe('zzzzz');
+    expect(kept[0].id).toBe('00001');
+  });
+
+  it('counts open asks', () => {
+    useHiveStore.getState().hydrateLedger([
+      entry({ id: '1', kind: 'ask', ts: Date.now() }),
+      entry({ id: '2', kind: 'ask', ts: Date.now() }),
+      entry({ id: '3', kind: 'answer', thread: '1', ts: Date.now() }),
+    ]);
+
+    const { result } = renderHook(() => useOpenAskCount());
+    expect(result.current).toBe(1);
+  });
+
+  it('filters entries through the shared query rules', () => {
+    useHiveStore.getState().hydrateLedger([
+      entry({ id: '1', from: 'sess-a' }),
+      entry({ id: '2', from: 'sess-b' }),
+    ]);
+
+    const { result } = renderHook(() => useLedgerEntries({ from: 'sess-b' }));
+    expect(result.current.map((found) => found.id)).toEqual(['2']);
+  });
+
+  it('returns a thread in order', () => {
+    useHiveStore.getState().hydrateLedger([
+      entry({ id: '1', kind: 'ask' }),
+      entry({ id: '2', kind: 'post' }),
+      entry({ id: '3', kind: 'answer', thread: '1' }),
+    ]);
+
+    const { result } = renderHook(() => useThread('1'));
+    expect(result.current.map((found) => found.id)).toEqual(['1', '3']);
+  });
+
+  /**
+   * HIVE-118 self-review, finding 8. `AskCard` called the bare `isAgentId` —
+   * a `getState()` read — in its render path, which the project rule forbids
+   * and which cannot correct itself: `entities` gains its agents from
+   * `hydrateAgents`, and the `ledger:changed` push that puts an ask on screen
+   * can beat that home. The card would have answered `false` for ever, and
+   * `false` is precisely "resolve this asker through session lookup" — the
+   * collision the guard exists to close.
+   *
+   * The `rerender` is the whole point: it is what proves the subscription,
+   * because a non-reactive read passes the "after" assertion too.
+   */
+  it('answers whether an id names an agent, and re-answers when the fleet arrives', () => {
+    const { result, rerender } = renderHook(() => useIsAgentId('drone'));
+    expect(result.current).toBe(false);
+
+    act(() => {
+      useHiveStore.setState((state) => ({
+        entities: {
+          ...state.entities,
+          drone: {
+            kind: 'agent',
+            id: 'drone',
+            icon: 'ph-robot',
+            sub: '',
+            task: '',
+            status: 'sleeping',
+            wake: { on: [] },
+            mcp: [],
+            runsSinceRotate: 0,
+            rotateAfter: 50,
+            skipsSinceRun: 0,
+            runs: [],
+            live: [],
+            lines: [],
+          },
+        },
+      }));
+    });
+    rerender();
+
+    expect(result.current).toBe(true);
+  });
+});
+
+describe('answerAsk (HIVE-118)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hive');
+  });
+
+  it('posts the answer through the bridge and stores nothing', async () => {
+    const answer = vi.fn().mockResolvedValue({ ok: true, id: 'a41' });
+    Object.defineProperty(window, 'hive', {
+      configurable: true,
+      value: { ledger: { answer } },
+    });
+
+    const before = useHiveStore.getState().ledger;
+    const result = await useHiveStore.getState().answerAsk('a41', 'yes');
+
+    expect(answer).toHaveBeenCalledWith({ thread: 'a41', body: 'yes' });
+    expect(useHiveStore.getState().ledger).toBe(before);
+    expect(result).toEqual({ ok: true, id: 'a41' });
+  });
+
+  /**
+   * Whole-branch review, finding 3: the refusal used to be discarded here,
+   * which is what let it fail silently all the way up to the card. It is a
+   * value from `Ledger.answer`, not a throw, so the fix is to hand it back
+   * rather than to catch anything.
+   */
+  it('hands back a refusal instead of swallowing it', async () => {
+    const answer = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      reason: 'already answered',
+    });
+    Object.defineProperty(window, 'hive', {
+      configurable: true,
+      value: { ledger: { answer } },
+    });
+
+    const result = await useHiveStore.getState().answerAsk('a41', 'yes');
+
+    expect(result).toEqual({ ok: false, status: 409, reason: 'already answered' });
+  });
+
+  it('passes meta through when the card edited a draft', async () => {
+    const answer = vi.fn().mockResolvedValue({ ok: true });
+    Object.defineProperty(window, 'hive', {
+      configurable: true,
+      value: { ledger: { answer } },
+    });
+
+    await useHiveStore
+      .getState()
+      .answerAsk('a44', 'approve', { edited: 'the new text' });
+
+    expect(answer).toHaveBeenCalledWith({
+      thread: 'a44',
+      body: 'approve',
+      meta: { edited: 'the new text' },
+    });
+  });
+
+  it('is a no-op in the browser, where there is no bridge', async () => {
+    await expect(
+      useHiveStore.getState().answerAsk('a41', 'yes'),
+    ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * HIVE-116. The rail groups by what an agent is doing, the view's facts are
+ * derived from the run history the bridge now carries, and the tab's badge
+ * counts only the asks an *agent* is waiting on.
+ */
+describe('the agent view selectors', () => {
+  const summary = (
+    name: string,
+    over: Partial<AgentSummary> = {},
+  ): AgentSummary => ({
+    name,
+    description: `${name} watches things`,
+    icon: 'Ghost',
+    status: 'sleeping',
+    wake: { on: [] },
+    mcp: [],
+    tools: [],
+    rotateAfter: 50,
+    skipsSinceRun: 0,
+    runs: [],
+    ...over,
+  });
+
+  const run = (over: Partial<RunSummary> = {}): RunSummary => ({
+    run: 'r1',
+    trigger: 'timer',
+    startedAt: Date.now(),
+    endedAt: Date.now(),
+    outcome: 'done',
+    ...over,
+  });
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+  });
+
+  describe('useAgentsByGroup', () => {
+    it('groups by state, with asking first inside Awake', () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([
+          summary('zzz-working', { status: 'working', lastRunAt: 500 }),
+          summary('aaa-asking', { status: 'asking' }),
+          summary('sleeper', { status: 'sleeping' }),
+          summary('held', { status: 'paused' }),
+        ]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(result.current.map((group) => [group.key, group.ids])).toEqual([
+        ['awake', ['aaa-asking', 'zzz-working']],
+        ['sleeping', ['sleeper']],
+        ['paused', ['held']],
+      ]);
+    });
+
+    it('breaks an Awake tie on the most recent run', () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([
+          summary('older', { status: 'working', lastRunAt: 100 }),
+          summary('newer', { status: 'working', lastRunAt: 900 }),
+        ]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(result.current[0]?.ids).toEqual(['newer', 'older']);
+    });
+
+    it('omits a group with no members, rather than a header reading zero', () => {
+      useHiveStore.getState().hydrateAgents([summary('sleeper')]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(result.current.map((group) => group.key)).toEqual(['sleeping']);
+    });
+
+    /**
+     * The rail must not rebuild on every unrelated store write.
+     *
+     * Subscribing to `state.entities` did exactly that: the map's identity
+     * changes on any write, so a line batch from a running agent re-derived the
+     * groups and handed every row a fresh object. This is the rule CLAUDE.md
+     * states as keeping a picker keystroke from re-rendering thirteen live
+     * terminals.
+     */
+    it('returns the same groups when an unrelated write lands', () => {
+      useHiveStore.getState().hydrateAgents([summary('watcher')]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+      const before = result.current;
+
+      act(() => {
+        useHiveStore.getState().appendAgentLines({
+          name: 'watcher',
+          lines: [{ text: 'a line', color: 'ink' }],
+        });
+      });
+
+      expect(result.current).toBe(before);
+    });
+
+    it('does rebuild when a status actually changes', () => {
+      useHiveStore.getState().hydrateAgents([summary('watcher')]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+      const before = result.current;
+
+      act(() => {
+        useHiveStore.getState().setAgentStatus({
+          name: 'watcher',
+          status: 'asking',
+          live: [],
+          runs: [],
+          runsSinceRotate: 0,
+        });
+      });
+
+      expect(result.current).not.toBe(before);
+      expect(result.current[0]?.key).toBe('awake');
+    });
+
+    it('files a failed agent under Awake, because it is the loudest yes', () => {
+      // The grouping answers "should I look at this?" — a broken agent is not
+      // resting, and burying it under Sleeping would hide the one row that
+      // needs a person.
+      useHiveStore
+        .getState()
+        .hydrateAgents([summary('broke', { status: 'failed' })]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(result.current[0]?.key).toBe('awake');
+    });
+  });
+
+  describe('useAgentFacts', () => {
+    /*
+      Read from the accumulator main keeps, not summed from `runs` (HIVE-121).
+      That array holds the last twenty runs and a five-minute agent takes 288 a
+      day, so the sum this used to compute stopped growing part-way through any
+      day the agent actually worked.
+    */
+    it("reads today's totals from the accumulator", () => {
+      useHiveStore.getState().hydrateAgents([
+        summary('a', {
+          runsSinceRotate: 17,
+          sessionUuid: '9f3c1e2a',
+          today: { day: dayKey(Date.now()), runs: 31, usd: 2.14 },
+        }),
+      ]);
+
+      const { result } = renderHook(() => useAgentFacts('a'));
+
+      expect(result.current?.todayRuns).toBe(31);
+      expect(result.current?.todayCost).toBe('$2.14');
+      expect(result.current?.runsSinceRotate).toBe(17);
+      expect(result.current?.rotateAfter).toBe(50);
+      expect(result.current?.sessionUuid).toBe('9f3c1e2a');
+    });
+
+    /*
+      Main replaces the accumulator on the day's first run, so between local
+      midnight and that run the stored key names a day that is over. Showing
+      its number would make the tile wrong every morning.
+    */
+    it("ignores a total belonging to a day that has ended", () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([
+          summary('a', { today: { day: '2020-01-01', runs: 9, usd: 9 } }),
+        ]);
+
+      const { result } = renderHook(() => useAgentFacts('a'));
+
+      expect(result.current?.todayRuns).toBe(0);
+      expect(result.current?.todayCost).toBe('$0.00');
+    });
+
+    it('surfaces the skip count, and only when there is one', () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([summary('a', { skipsSinceRun: 3 }), summary('b')]);
+
+      expect(renderHook(() => useAgentFacts('a')).result.current?.skips).toBe(
+        'skipped 3',
+      );
+      expect(
+        renderHook(() => useAgentFacts('b')).result.current?.skips,
+      ).toBeUndefined();
+    });
+
+    it('reads $0.00 for a day with no runs, not a blank', () => {
+      useHiveStore.getState().hydrateAgents([summary('a')]);
+
+      const { result } = renderHook(() => useAgentFacts('a'));
+
+      expect(result.current?.todayRuns).toBe(0);
+      expect(result.current?.todayCost).toBe('$0.00');
+    });
+
+    it('keeps four decimals for a day that ran but cost less than a cent', () => {
+      // The reason `formatRunCost` has the rule at all: a wake routinely costs
+      // less than a cent, and `$0.00` for real work reads as a bug. Only a day
+      // with *no* runs gets the short form.
+      useHiveStore.getState().hydrateAgents([
+        summary('a', {
+          today: { day: dayKey(Date.now()), runs: 1, usd: 0.0031 },
+        }),
+      ]);
+
+      const { result } = renderHook(() => useAgentFacts('a'));
+
+      expect(result.current?.todayCost).toBe('$0.0031');
+    });
+
+    it('names the open ask it is waiting on', () => {
+      useHiveStore.getState().hydrateAgents([summary('a', { status: 'asking' })]);
+      useHiveStore.getState().hydrateLedger([
+        {
+          id: '20260830-140000-0001',
+          ts: Date.now(),
+          from: 'a',
+          to: 'overmind',
+          kind: 'ask',
+          ref: 'a71',
+          body: 'Retry?',
+        },
+      ]);
+
+      const { result } = renderHook(() => useAgentFacts('a'));
+
+      expect(result.current?.askRef).toBe('a71');
+      expect(result.current?.next).toBe('on answer');
+    });
+
+    it('returns null for a name that is not an agent', () => {
+      const { result } = renderHook(() => useAgentFacts('nobody'));
+
+      expect(result.current).toBeNull();
+    });
+  });
+
+  describe('useAgentAskCount', () => {
+    it('counts open asks from agents and ignores a session’s', () => {
+      useHiveStore
+        .getState()
+        .hydrateAgents([summary('watcher', { status: 'asking' })]);
+      useHiveStore.getState().hydrateLedger([
+        {
+          id: '20260830-140000-0001',
+          ts: Date.now(),
+          from: 'watcher',
+          to: 'overmind',
+          kind: 'ask',
+          ref: 'a71',
+          body: 'Retry?',
+        },
+        {
+          id: '20260830-140000-0002',
+          ts: Date.now(),
+          from: 'sess-01',
+          to: 'overmind',
+          kind: 'ask',
+          ref: 'a72',
+          body: 'Other',
+        },
+      ]);
+
+      const { result } = renderHook(() => useAgentAskCount());
+
+      expect(result.current).toBe(1);
+    });
+
+    it('is zero with an empty ledger', () => {
+      const { result } = renderHook(() => useAgentAskCount());
+
+      expect(result.current).toBe(0);
+    });
+  });
+
+  describe('useAgentThread', () => {
+    const entry = (over: Partial<LedgerEntry>): LedgerEntry => ({
+      id: '20260830-140000-0001',
+      ts: Date.now(),
+      from: 'overmind',
+      kind: 'post',
+      body: 'something',
+      ...over,
+    });
+
+    it('keeps what the agent said and what it was told', () => {
+      useHiveStore
+        .getState()
+        .hydrateLedger([
+          entry({ id: '1', from: 'watcher', to: 'overmind', body: 'mine' }),
+          entry({ id: '2', from: 'overmind', to: 'watcher', body: 'yours' }),
+          entry({ id: '3', from: 'sess-01', to: 'overmind', body: 'neither' }),
+        ]);
+
+      const { result } = renderHook(() => useAgentThread('watcher'));
+
+      expect(result.current.map((found) => found.body)).toEqual([
+        'mine',
+        'yours',
+      ]);
+    });
+
+    it('leaves out a broadcast from somebody else', () => {
+      // `matches` counts an undirected entry as addressed to everyone, which
+      // is right for an inbox and wrong for a thread: this column answers
+      // "what passed between us", and an announcement to the hive did not.
+      useHiveStore
+        .getState()
+        .hydrateLedger([entry({ id: '1', from: 'sess-01', body: 'all hands' })]);
+
+      const { result } = renderHook(() => useAgentThread('watcher'));
+
+      expect(result.current).toEqual([]);
+    });
+
+    it('keeps the agent’s own broadcast, which it did say', () => {
+      useHiveStore
+        .getState()
+        .hydrateLedger([entry({ id: '1', from: 'watcher', body: 'all hands' })]);
+
+      const { result } = renderHook(() => useAgentThread('watcher'));
+
+      expect(result.current).toHaveLength(1);
+    });
+  });
+
+  describe('useAgentRuns', () => {
+    it('hands back the history, and a stable empty array for a stranger', () => {
+      useHiveStore.getState().hydrateAgents([summary('a', { runs: [run()] })]);
+
+      const { result } = renderHook(() => useAgentRuns('a'));
+      const { result: none } = renderHook(() => useAgentRuns('nobody'));
+      const { result: again } = renderHook(() => useAgentRuns('nobody'));
+
+      expect(result.current).toHaveLength(1);
+      // Identity matters: a fresh [] each call re-renders every consumer on
+      // any unrelated store write.
+      expect(none.current).toBe(again.current);
     });
   });
 });

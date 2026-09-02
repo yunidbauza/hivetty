@@ -2,7 +2,13 @@ import type { RefObject } from 'react';
 
 import { SplitHandle } from '@components/ui/split-handle';
 import { useRailWidths } from '@hooks/use-rail-widths';
-import { useResetRailWidth, useSetRailWidth } from '@stores/appearance-store';
+import { RAIL_MIN } from '@lib/rail-width';
+import {
+  useRailWidthState,
+  useResetRailWidth,
+  useSetRailCollapsed,
+  useSetRailWidth,
+} from '@stores/appearance-store';
 import { useShowActivityRail } from '@stores/ui-store';
 
 interface RailHandlesProps {
@@ -43,8 +49,10 @@ interface RailHandlesProps {
 export function RailHandles({ containerRef }: RailHandlesProps) {
   const rails = useRailWidths();
   const showActivityRail = useShowActivityRail();
+  const { density } = useRailWidthState();
   const setRailWidth = useSetRailWidth();
   const resetRailWidth = useResetRailWidth();
+  const setRailCollapsed = useSetRailCollapsed();
 
   return (
     <>
@@ -55,6 +63,13 @@ export function RailHandles({ containerRef }: RailHandlesProps) {
         value={rails.left.value}
         onValue={(width) => setRailWidth('left', width)}
         onReset={() => resetRailWidth('left')}
+        /*
+          40px of overshoot past the minimum, so parking a rail at its
+          narrowest legal width does not fall through the floor by accident —
+          and someone who means it gets there in one gesture.
+        */
+        collapseBelow={RAIL_MIN[density].left - 40}
+        onCollapse={() => setRailCollapsed('left', true)}
         scale="px-from-start"
         min={rails.left.min}
         max={rails.left.max}
@@ -69,6 +84,8 @@ export function RailHandles({ containerRef }: RailHandlesProps) {
           value={rails.right.value}
           onValue={(width) => setRailWidth('right', width)}
           onReset={() => resetRailWidth('right')}
+          collapseBelow={RAIL_MIN[density].right - 40}
+          onCollapse={() => setRailCollapsed('right', true)}
           scale="px-from-end"
           min={rails.right.min}
           max={rails.right.max}

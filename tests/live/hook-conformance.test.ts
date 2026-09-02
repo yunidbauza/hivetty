@@ -533,6 +533,10 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         onDone: () => {},
         onReady: () => {},
         knowsSession: (id) => id === 'sess-live',
+        // This scenario is a pty session, not an agent (HIVE-115): the second
+        // id space is closed so nothing here can be answered by mistake.
+        knowsAgent: () => false,
+        onAgentEvent: () => {},
         onMetrics: () => {},
         onEvent: (e) => {
           const derived = statusTracker.apply({
@@ -571,7 +575,12 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
           });
         },
         onTicketIntent: () => undefined,
+        onPromptName: () => {},
         onCleared: () => undefined,
+        onLedgerRead: () => ({ entries: [], openAsks: [], claims: {} }),
+        onLedgerPost: () => ({ ok: false, status: 503, reason: 'not exercised by this test' }),
+        // Not exercised by this suite — hooks, not the peer directory.
+        onAgentsList: () => Promise.resolve({ agents: [] }),
       });
 
       const url = await receiver.start();
@@ -584,7 +593,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
       // A real pty, so the TUI behaves as it does in a session.
       const driver = [
         'import os, pty, time, select',
-        `env = dict(os.environ, HIVE_SESSION_ID='sess-live', HIVE_HOOK_TOKEN=${JSON.stringify(receiver.token)}, TERM='xterm-256color')`,
+        `env = dict(os.environ, HIVE_SESSION_ID='sess-live', HIVE_HOOK_TOKEN=${JSON.stringify(receiver.tokenFor('sess-live'))}, TERM='xterm-256color')`,
         "env.pop('CLAUDE_CODE_CHILD_SESSION', None)",
         `argv = ['claude', '--settings', ${JSON.stringify(settingsPath)}, '--model', 'haiku']`,
         'pid, fd = pty.fork()',

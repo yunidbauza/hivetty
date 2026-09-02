@@ -1,10 +1,12 @@
 import { X } from '@phosphor-icons/react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
-import { useState, type ComponentType } from 'react';
+import { useEffect, useState, type ComponentType } from 'react';
 
 import { cn } from '@/lib/utils';
+import type { SettingsSection } from '@/types/settings';
 
 import { AdvancedSection } from '@features/settings/components/advanced-section';
+import { AgentsSection } from '@features/settings/components/agents-section';
 import { AppearanceSection } from '@features/settings/components/appearance-section';
 import { EditorSection } from '@features/settings/components/editor-section';
 import { IntegrationsSection } from '@features/settings/components/integrations-section';
@@ -12,7 +14,7 @@ import { NotificationsSection } from '@features/settings/components/notification
 import { ProjectsSection } from '@features/settings/components/projects-section';
 import { RuntimeSection } from '@features/settings/components/runtime-section';
 import { SkillsSection } from '@features/settings/components/skills-section';
-import { useSettingsActions } from '@stores/ui-store';
+import { useSettingsActions, useSettingsSection } from '@stores/ui-store';
 
 
 /**
@@ -60,10 +62,11 @@ import { useSettingsActions } from '@stores/ui-store';
  * questions about the app rather than setting anything in it, and the
  * destructive verb in the product lives there.
  */
-const SECTIONS = [
+const SECTIONS: readonly { id: SettingsSection; label: string }[] = [
   { id: 'projects', label: 'Projects' },
   { id: 'runtime', label: 'Runtime' },
   { id: 'skills', label: 'Skills' },
+  { id: 'agents', label: 'Agents' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'editor', label: 'Editor' },
   { id: 'integrations', label: 'Integrations' },
@@ -71,7 +74,13 @@ const SECTIONS = [
   { id: 'advanced', label: 'Advanced' },
 ] as const;
 
-type SectionId = (typeof SECTIONS)[number]['id'];
+/*
+  Derived from the shared union rather than declared here: `ui-store` has to
+  name a pane to honour `openSettings('agents')` and may not import a feature
+  slice, so the vocabulary lives in `@/types/settings` and this list is checked
+  against it. A pane added below without a member there does not compile.
+*/
+type SectionId = SettingsSection;
 
 /**
  * Section id → pane, the same shape `left-rail.tsx` uses for its panels.
@@ -83,6 +92,7 @@ const PANES: Record<SectionId, ComponentType> = {
   projects: ProjectsSection,
   runtime: RuntimeSection,
   skills: SkillsSection,
+  agents: AgentsSection,
   appearance: AppearanceSection,
   editor: EditorSection,
   integrations: IntegrationsSection,
@@ -120,17 +130,35 @@ export function escapeIsClaimed(target: EventTarget | null): boolean {
 }
 
 export function SettingsOverlay() {
-  const { closeSettings } = useSettingsActions();
+  const { closeSettings, clearSettingsSection } = useSettingsActions();
 
   /**
    * Component-local, deliberately not `ui-store`.
    *
-   * Settings should always open on Projects. The realistic route in is the
-   * picker discovering it has no projects to offer (story 101), and reopening
-   * onto whichever pane was last visited would strand exactly that user in
-   * Appearance with no idea where the thing they came for went.
+   * Settings open on Projects unless the caller *named* a pane. The realistic
+   * route in is the picker discovering it has no projects to offer (story
+   * 101), and reopening onto whichever pane was last visited would strand
+   * exactly that user in Appearance with no idea where the thing they came for
+   * went. A caller that asked for a pane — the rail's `+ New agent…`
+   * (HIVE-116) — is a different case: it is answering a question the user just
+   * asked, and landing them on Projects would lose it.
+   *
+   * The request is honoured on arrival, not only at mount. This overlay is
+   * `modal={false}` precisely so the rails stay live underneath it, so
+   * `openSettings('agents')` can fire while it is already open — and reading
+   * the request once made that click do visibly nothing. The effect below
+   * consumes each request exactly once, which is what keeps a stale value from
+   * yanking the pane back after the user has navigated on.
    */
-  const [section, setSection] = useState<SectionId>('projects');
+  const requested = useSettingsSection();
+  const [section, setSection] = useState<SectionId>(requested ?? 'projects');
+
+  useEffect(() => {
+    if (requested === null) return;
+
+    setSection(requested);
+    clearSettingsSection();
+  }, [requested, clearSettingsSection]);
   const Pane = PANES[section];
 
   return (

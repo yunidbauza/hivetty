@@ -196,6 +196,47 @@ const TOKEN_EDGES = /^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g;
 const NAME_WORD_MAX = 4;
 
 /**
+ * Join words into a name that fits, dropping whole words rather than cutting one.
+ *
+ * Shared by {@link hiveNameFromTitle} and {@link sessionNameFromPrompt} because
+ * both had this loop verbatim, and the two must not be able to drift: they name
+ * the same rail, and a truncation rule that applied to titles but not to prompts
+ * would show up as two spellings of the same session.
+ *
+ * Words go before `lead` in the caller, not here — a key is hoisted by one and
+ * used alone by the other, which is the part they genuinely disagree about.
+ *
+ * Answers `''` when nothing survives, which callers already treat as "no name".
+ */
+function joinWithinLimit(parts: string[]): string {
+  const kept = [...parts];
+  // A name cut through the middle of a word is a worse label than a shorter one
+  // that still reads — the reason SESSION_NAME_DISPLAY_MAX gives.
+  while (kept.length > 1 && kept.join('-').length > SESSION_NAME_MAX) kept.pop();
+
+  const name = kept.join('-');
+  return name.length > SESSION_NAME_MAX ? '' : name;
+}
+
+/**
+ * The words a raw token contributes to a name, lower-cased.
+ *
+ * Shared for the same reason {@link joinWithinLimit} is: both callers split a
+ * token on non-alphanumerics and fold it down, and a change to what counts as a
+ * word boundary must reach both or the two paths spell one session differently.
+ *
+ * Splitting and folding only. What to *do* with the result differs between the
+ * two callers and is deliberately left to them — see the all-numeric rule in
+ * {@link sessionNameFromPrompt}, which must not reach titles.
+ */
+function wordsInToken(token: string): string[] {
+  return token
+    .split(/[^A-Za-z0-9]+/)
+    .filter((piece) => piece !== '')
+    .map((piece) => piece.toLowerCase());
+}
+
+/**
  * Rewrite an agent's terminal title into the register the rail names sessions in
  * (HIVE-108).
  *
@@ -309,9 +350,7 @@ export function hiveNameFromTitle(title: string, prefix?: string): string | unde
       continue;
     }
 
-    for (const word of token.split(/[^A-Za-z0-9]+/)) {
-      if (word !== '') words.push(word.toLowerCase());
-    }
+    words.push(...wordsInToken(token));
   }
 
   /*
@@ -336,17 +375,242 @@ export function hiveNameFromTitle(title: string, prefix?: string): string | unde
     return lead === undefined || lead.length > SESSION_NAME_MAX ? undefined : lead;
   }
 
-  /*
-    Trailing words are dropped rather than the name truncated mid-word, for the
-    reason SESSION_NAME_DISPLAY_MAX gives: a name cut through the middle of a
-    word is a worse label than a shorter one that still reads.
-  */
-  const parts = lead === undefined ? capped : [lead, ...capped];
-  while (parts.length > 1 && parts.join('-').length > SESSION_NAME_MAX) parts.pop();
-
-  const name = parts.join('-');
-  return name === '' || name.length > SESSION_NAME_MAX ? undefined : name;
+  const name = joinWithinLimit(lead === undefined ? capped : [lead, ...capped]);
+  return name === '' ? undefined : name;
 }
+
+/**
+ * Words that say nothing about what a session is *for*, dropped before a first
+ * prompt is slugged.
+ *
+ * Articles, prepositions, auxiliaries, and the politeness a person puts around
+ * an instruction. Deliberately **not** a general English stopword list: verbs
+ * survive, because "fix", "add" and "remove" are half of what distinguishes one
+ * session from another, and a list that swallowed them would name three
+ * unrelated rows `settings-project-name`.
+ *
+ * Measured against the prompt this rule was written for:
+ *
+ * ```
+ * "fix the bug in the settings for when capturing the project name"
+ *   words   fix bug settings capturing project name
+ *   name    fix-bug-settings-capturing
+ * ```
+ *
+ * `the`, `in`, `for` and `when` are what stand between that and
+ * `fix-the-bug-in`, which is four words of nothing.
+ */
+const PROMPT_STOPWORDS = new Set([
+  'a',
+  'about',
+  'also',
+  'am',
+  'an',
+  'and',
+  'any',
+  'are',
+  'as',
+  'at',
+  'be',
+  'been',
+  'but',
+  'by',
+  'can',
+  'could',
+  'do',
+  'does',
+  'for',
+  'from',
+  'had',
+  'has',
+  'have',
+  'i',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'its',
+  'just',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'our',
+  'please',
+  'so',
+  'some',
+  'that',
+  'the',
+  'their',
+  'then',
+  'there',
+  'these',
+  'they',
+  'this',
+  'to',
+  'up',
+  'us',
+  'was',
+  'we',
+  'were',
+  'what',
+  'when',
+  'where',
+  'which',
+  'while',
+  'why',
+  'will',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
+/**
+ * How much of a first prompt is read.
+ *
+ * A prompt is user text of unbounded length — a pasted stack trace, a whole
+ * file. What names a session is in its opening words, so scanning further buys
+ * nothing and turns a 64 KB paste into 64 KB of tokenising.
+ *
+ * The same figure `hooks/ticket-intent.ts` uses, for the same reason, and
+ * deliberately not shared with it: that module is main-only and this one is the
+ * contract both processes read.
+ */
+const MAX_PROMPT_NAME_SCAN = 4_096;
+
+/**
+ * Name a session after the **first thing it was asked to do**.
+ *
+ * ## Why the Hive has to do this itself
+ *
+ * HIVE-108 stopped sending `--name`, because the flag suppresses Claude Code's
+ * own titling, and let Claude name the session instead. What that measured — and
+ * what this fixes — is *when* Claude names it. Claude writes exactly one
+ * `ai-title` per conversation, but it writes it at an arbitrary point, from
+ * whatever the conversation is about at that moment. Over this project's own
+ * transcripts:
+ *
+ * ```
+ * line  170/2054   "PR 157 merge check and implementation"
+ * line  740/1408   "epic hive-3 completion"
+ * line 1226/2613   "terminal focus and text scramble"
+ * line 1441/1445   "runtime and appearance settings"
+ * ```
+ *
+ * So a row sat on `sess-07` for hundreds of turns and then took a name
+ * describing turn 170. Both halves of that are the same defect, and both are
+ * fixed by naming the session from the one prompt that is guaranteed to be about
+ * why it exists: its first.
+ *
+ * ## The two shapes
+ *
+ * 1. **A ticket key anywhere in the prompt wins**, upper-cased:
+ *    `/work-on HIVE-123 and also do X` → `HIVE-123`. Position does not matter —
+ *    a key is identity, and a sentence's word order should not decide whether the
+ *    row gets one.
+ * 2. **Otherwise a slug**: stopwords dropped, at most {@link NAME_WORD_MAX}
+ *    words, lower-cased and hyphenated.
+ *
+ * A leading slash command is dropped before either runs, so `/work-on` does not
+ * spend a quarter of the word budget saying "work".
+ *
+ * ## Why the key test is looser here than in `hooks/ticket-intent.ts`
+ *
+ * That module requires **work intent** around a key — "work on ABC-123" claims
+ * the ticket, "the PR for ABC-123 broke CI" does not — because its output
+ * *associates* the session with a Jira issue, and a wrong association is both
+ * consequential and invisible. This one only produces a **name**, which is
+ * visible on the row and costs nothing to be wrong about. Importing the strict
+ * rule here would leave most ticket-shaped prompts unnamed to avoid a harm this
+ * function cannot do.
+ *
+ * Answers `undefined` when the prompt has nothing nameable in it — a greeting, a
+ * pasted blob of punctuation — which callers treat as "no name yet", leaving the
+ * row on its `sess-0n` id until Claude's own title arrives.
+ */
+export function sessionNameFromPrompt(prompt: string): string | undefined {
+  const text = prompt.slice(0, MAX_PROMPT_NAME_SCAN).trim();
+
+  /*
+    The slash command itself is never the topic. `/work-on HIVE-123` is a
+    request about HIVE-123, and letting `work` and `on` into the budget is how
+    every routed session ends up called `work-on-<something>`.
+  */
+  const body = text.startsWith('/') ? text.replace(/^\S+\s*/, '') : text;
+
+  let found: string | undefined;
+  const words: string[] = [];
+
+  for (const raw of body.split(/\s+/)) {
+    const token = raw.replace(TOKEN_EDGES, '');
+    if (token === '') continue;
+
+    const key = TITLE_TICKET_KEY.exec(token);
+    if (key !== null) {
+      // First key wins, for the reason `hiveNameFromTitle` gives: a later one
+      // would let word order decide which ticket the session is filed under.
+      found ??= `${key[1].toUpperCase()}-${key[2]}`;
+      continue;
+    }
+
+    const pieces = wordsInToken(token);
+
+    /*
+      A token that is nothing but numbers joined by punctuation is a date, a
+      version range or an id — never a description. `2026-08-27` splits into
+      three pieces and would otherwise spend the entire four-word budget saying
+      nothing, which is the same complaint TITLE_TICKET_KEY's "a leading letter
+      is required" answers one rule earlier.
+
+      **A prompt rule, not a shared one.** `hiveNameFromTitle` deliberately keeps
+      `2026-08-27 retro` whole: a title is already a short label Claude chose,
+      where a date is there because it is the subject. A prompt is a sentence
+      somebody typed, where it is nearly always incidental.
+
+      Scoped to the *token*, so a lone number keeps its meaning: `React 18
+      upgrade` is `react-18-upgrade`, because `18` arrived on its own.
+    */
+    if (pieces.length > 1 && pieces.every((piece) => !/[a-z]/.test(piece))) continue;
+
+    for (const word of pieces) {
+      if (!PROMPT_STOPWORDS.has(word)) words.push(word);
+    }
+  }
+
+  /*
+    A key is the whole name, not a prefix on the description. That is the one
+    place this deliberately differs from `hiveNameFromTitle`, which hoists a key
+    in front of the words Claude chose: here the words are the user's raw
+    sentence rather than a title, and `HIVE-123-and-also-do` is worse than
+    `HIVE-123`.
+  */
+  if (found !== undefined) return found;
+
+  const name = joinWithinLimit(words.slice(0, NAME_WORD_MAX));
+  return name === '' ? undefined : name;
+}
+
+/**
+ * Who decided a session's name, and therefore how much it may override.
+ *
+ * The three arrive on the same channel and are indistinguishable there, which is
+ * the whole reason this type exists. `readTitle` in `sessions/index.ts` is what
+ * separates the last two, by reading the transcript Claude itself records the
+ * difference in.
+ *
+ * - `prompt` — the Hive derived it from the session's first prompt. Authoritative:
+ *   it is the earliest and most reliable statement of what the session is for.
+ * - `rename` — the user ran `/rename`. Authoritative for the same reason a pin
+ *   is: a person said it just now.
+ * - `agent` — Claude's own `ai-title`. Accepted **only while the row is still
+ *   generic**, because it is a guess made from whatever the conversation had
+ *   drifted to by the time Claude got round to titling it. Better than `sess-07`
+ *   and worse than either of the above.
+ */
+export type SessionNameOrigin = 'prompt' | 'rename' | 'agent';
 
 /**
  * Main telling the renderer what a session now calls itself (HIVE-61).
@@ -366,6 +630,15 @@ export interface SessionNameEvent {
   entityId: string;
   /** Already stripped of the leading activity glyph. Never empty. */
   name: string;
+  /**
+   * Who decided this name — see {@link SessionNameOrigin}.
+   *
+   * Optional, and absent means `agent`. That default is what keeps the field
+   * additive: every sender that predates it was reporting a terminal title, and
+   * a terminal title with nothing else known about it is exactly what `agent`
+   * means.
+   */
+  origin?: SessionNameOrigin;
 }
 
 /**
@@ -513,7 +786,7 @@ export interface SessionFinishedEvent {
    * would offer Resume on exactly that row and start a **brand-new**
    * conversation under the promise of continuing the old one.
    *
-   * So the ledger is asked, here, where it can be. See `Session.resumable` in
+   * So the session history is asked, here, where it can be. See `Session.resumable` in
    * `src/types/entity.ts`, whose own contract says this must not be derived.
    */
   resumable: boolean;
@@ -638,9 +911,6 @@ export const BOOTSTRAP_FALLBACK_MS = 5_000;
  * paste-coalescing window, not any model work, which is why it is short.
  */
 export const SUBMIT_DELAY_MS = 300;
-
-/** How long every session's process group gets to exit on quit. */
-export const QUIT_GRACE_MS = 3_000;
 
 /**
  * Why a session could not start.

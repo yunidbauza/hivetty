@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { selectRailTab } from '../fixtures/rail-tabs';
 import {
   launchHive,
   startSession,
@@ -79,7 +80,7 @@ async function launch(outputPath: (name: string) => string, repo: string) {
    */
   await startSession(page, 'fixture');
 
-  await page.getByRole('tab', { name: 'Explorer' }).click();
+  await selectRailTab(page.getByRole('tab', { name: 'Explorer' }));
   return { app, page };
 }
 

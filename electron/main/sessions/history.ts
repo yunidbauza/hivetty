@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 
-import { hiveNameFromTitle } from '@shared/session-contract';
+import { SESSION_ID_PREFIX_PATTERN } from '@shared/agent-contract';
+import {
+  hiveNameFromTitle,
+  type SessionNameOrigin,
+} from '@shared/session-contract';
 import {
   HISTORY_CAP,
   type SessionRecord,
@@ -26,21 +30,21 @@ import { nameFromTitle } from './title';
  * `config/write.ts`, which has the real temp-file/`fsync`/rename discipline —
  * and the choice is not an oversight.
  *
- * A config write that half-lands costs the user settings they typed. A ledger
- * write that half-lands costs them the last few seconds of a history that is,
- * by construction, a record of things that are already over. Set against that,
- * the failure mode of the durable path is that a ledger can refuse, throw, or
- * block on `fsync` at exactly the two moments this module runs: app start and
- * app quit. A history feature that can stop the app opening is a far worse bug
- * than one that can lose a page.
+ * A config write that half-lands costs the user settings they typed. A
+ * session-history write that half-lands costs them the last few seconds of a
+ * history that is, by construction, a record of things that are already
+ * over. Set against that, the failure mode of the durable path is that it
+ * can refuse, throw, or block on `fsync` at exactly the two moments this
+ * module runs: app start and app quit. A history feature that can stop the
+ * app opening is a far worse bug than one that can lose a page.
  *
  * ## Why nothing here ever records an app close
  *
  * Because nothing here can observe it. `runShutdown()` invokes every hook body
  * synchronously and then awaits them together, so a flush registered there
  * *races* the pty teardown rather than following it — and a crash, a SIGKILL or
- * a power loss writes nothing at all. So the ledger stores the last status it
- * was told about, and the renderer infers the ending at hydrate: a record
+ * a power loss writes nothing at all. So the history stores the last status
+ * it was told about, and the renderer infers the ending at hydrate: a record
  * claiming to be `working` plainly is not, and becomes `done` with
  * `endedBy: 'app-closed'`. That inference cannot be raced, cannot be
  * interrupted, and needs no quit-time write to be correct.
@@ -57,21 +61,36 @@ import { nameFromTitle } from './title';
 const PERSIST_DEBOUNCE_MS = 400;
 
 /** A patch is any part of a record except the identity, which is the key. */
-export type SessionPatch = Partial<Omit<SessionRecord, 'id'>>;
+export type SessionPatch = Partial<Omit<SessionRecord, 'id'>> & {
+  /**
+   * Who decided the `name` in this patch, when one is being written.
+   *
+   * **Not part of the record** — it is stripped before the merge, and nothing is
+   * persisted under this key. It exists because this file has to run *the same
+   * rule the store runs*, and since first-prompt naming that rule is no longer a
+   * function of the title alone: a late `ai-title` may name a row that is still
+   * generic and may not replace a name that came from a first prompt or a
+   * `/rename`.
+   *
+   * Absent means `agent`, which is what every writer that predates the field was
+   * reporting — a terminal title with nothing else known about it.
+   */
+  nameOrigin?: SessionNameOrigin;
+};
 
 export interface BeginOptions {
   /**
    * This `begin` continues a previous run's conversation under its own id
    * (HIVE-88), so the record is kept the way a restart keeps it — ticket,
    * branch, cwd, `createdAt` — rather than started over. Only honoured when
-   * {@link SessionLedger.resumable} would have answered for the id: a record
+   * {@link SessionHistory.resumable} would have answered for the id: a record
    * this run began is a restart whether or not the flag is set, and one with
    * nothing to resume is a new session whatever the caller believed.
    */
   resume?: boolean;
 }
 
-export interface SessionLedger {
+export interface SessionHistory {
   /**
    * Merge a fragment into this session's record, creating it if new.
    *
@@ -84,7 +103,7 @@ export interface SessionLedger {
   /**
    * Start a session's record over, discarding anything held under that id.
    *
-   * Entity ids are **reused across a restart**, so the ledger's `sess-01` and a
+   * Entity ids are **reused across a restart**, so the history's `sess-01` and a
    * freshly spawned `sess-01` are different sessions wearing the same name. The
    * renderer already knows this — `hydrateSessions` refuses to let a restored
    * row overwrite a live one — and this is main acting on the same fact.
@@ -115,9 +134,9 @@ export interface SessionLedger {
    *
    * Test-only in practice, and it has to exist rather than being implied by
    * dropping the reference: `schedule()`'s timer closes over `write()`
-   * directly, so a ledger nobody holds any more still fires one last
+   * directly, so a history nobody holds any more still fires one last
    * `writeFileSync` at whatever path it was built with. In a suite that stubs
-   * `app.getPath`, that is a file left behind — or the next test's ledger
+   * `app.getPath`, that is a file left behind — or the next test's history
    * clobbered at the same path.
    */
   dispose(): void;
@@ -136,7 +155,7 @@ const finite = (value: unknown): number | undefined =>
  * A stored name, re-cleaned with **today's** rule rather than the one that was
  * in force when it was written.
  *
- * The ledger holds whatever `title.ts` reported, and `title.ts` has been wrong
+ * The history holds whatever `title.ts` reported, and `title.ts` has been wrong
  * twice about which glyphs Claude puts in front of a name — most recently the
  * `◐`/`◑` spinner, which fixing the reader alone does not remove from the rows
  * already on disk. Those are exactly the rows PREVIOUS RUN shows at launch, so
@@ -254,13 +273,13 @@ function reviveRecord(raw: unknown): SessionRecord | undefined {
 }
 
 /**
- * Read the ledger, or an empty one.
+ * Read the session history, or an empty one.
  *
  * Never throws, and never reports. A missing file is the normal first-launch
  * state; an unreadable one is indistinguishable from it as far as the caller is
  * concerned, and there is nothing the app could usefully do about either.
  */
-export function readLedger(path: string): SessionRecord[] {
+export function readHistory(path: string): SessionRecord[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
@@ -305,22 +324,22 @@ function prune(records: SessionRecord[]): SessionRecord[] {
   return [...live, ...ended.slice(Math.max(0, ended.length - HISTORY_CAP))];
 }
 
-export function createSessionLedger(
+export function createSessionHistory(
   path: string,
   /** Injected for the same reason `newSessionUuid` is: a real clock makes the file unassertable. */
   now: () => number = Date.now,
-): SessionLedger {
+): SessionHistory {
   /**
    * Seeded from the file, **not empty**.
    *
-   * This is the whole point of the ledger surviving a launch, and leaving it out
-   * is not a missing feature so much as an actively destructive one: an empty
-   * ledger answers `session:history` with nothing *and* then writes that nothing
-   * back over the file at the next debounce, so the second launch after any
-   * session silently erases the first launch's history.
+   * This is the whole point of the history surviving a launch, and leaving it
+   * out is not a missing feature so much as an actively destructive one: an
+   * empty history answers `session:history` with nothing *and* then writes
+   * that nothing back over the file at the next debounce, so the second
+   * launch after any session silently erases the first launch's history.
    *
    * That is exactly what shipped in the first draft of this module, and no unit
-   * test noticed — each one built a fresh ledger over a fresh temp file, which
+   * test noticed — each one built a fresh history over a fresh temp file, which
    * is the one arrangement in which the bug is invisible. `session-history.spec.ts`
    * caught it by quitting a real app and starting it again.
    *
@@ -354,7 +373,7 @@ export function createSessionLedger(
    * `closed`.
    */
   const records = new Map(
-    readLedger(path).map((record) => {
+    readHistory(path).map((record) => {
       const stamped: SessionRecord =
         record.endedAt === undefined ? { ...record, endedAt: now() } : record;
       return [record.id, stamped] as const;
@@ -523,11 +542,11 @@ export function createSessionLedger(
          *   a terminal and on which row is current, neither of which this file
          *   models — records are per entity id, and a retired row keeps its own.
          * - the **live-name numbering** that gives the second session to reach a
-         *   title a `-2` (HIVE-109). "Live" is a property of this run; the
-         *   ledger is mostly history, where duplicate names are normal and
-         *   correct — two finished sessions may well have done the same kind of
-         *   work. Numbering across history would push a suffix onto records that
-         *   are not in conflict with anything.
+         *   title a `-2` (HIVE-109). "Live" is a property of this run; most of
+         *   what this file holds is already over, where duplicate names are
+         *   normal and correct — two finished sessions may well have done the
+         *   same kind of work. Numbering across history would push a suffix
+         *   onto records that are not in conflict with anything.
          *
          * So two live sessions that converge on one title leave the store
          * showing `current-time` and `current-time-2` while this file holds
@@ -543,20 +562,52 @@ export function createSessionLedger(
           and cast at the call, so the compiler is the thing proving there is a
           title here and not a comment claiming it.
         */
+        /**
+         * A guess may not overwrite a name that came from somewhere better.
+         *
+         * The store refuses this in `renameSession`, and refusing it *only*
+         * there would be a fix that lasts until the next launch: `readTitle`
+         * records every title it reads, so the late `ai-title` the live row
+         * correctly ignored would still land in this file — and
+         * `hydrateSessions` would restore the row under it. The defect would
+         * come back on restart, one layer down, which is precisely the shape
+         * HIVE-107 warned about.
+         *
+         * "Generic" is read off the *record*, the same test the store applies to
+         * the row: no name, or one still wearing its minted `sess-0n` id.
+         */
+        const generic =
+          existing.name === undefined || SESSION_ID_PREFIX_PATTERN.test(existing.name);
+        const guessed = (patch.nameOrigin ?? 'agent') === 'agent';
+
         const title = patch.namePinned === undefined ? patch.name : undefined;
         const pinned = existing.namePinned === true;
         const renamed =
-          title === undefined || (pinned && existing.ticket === undefined)
+          title === undefined ||
+          (pinned && existing.ticket === undefined) ||
+          (guessed && !generic)
             ? undefined
             : hiveNameFromTitle(title, pinned ? existing.ticket : undefined);
 
+        /*
+          `nameOrigin` decides what is written; it is never itself written. A
+          spread that carried it would put a key on the record that nothing
+          reads and `hydrateSessions` would have to learn to ignore.
+        */
+        const { nameOrigin: _nameOrigin, ...fields } = patch;
+
         const merged: SessionRecord = {
           ...existing,
-          ...patch,
+          ...fields,
           /*
-            `?? existing.name` covers both refusals — a pin the ticket cannot
-            complete, and a title that normalised to nothing — with the value
-            that was already true. Neither is a reason to forget the name.
+            `?? existing.name` covers all three refusals — a pin the ticket
+            cannot complete, a guess against a name that came from somewhere
+            better, and a title that normalised to nothing — with the value that
+            was already true. None of them is a reason to forget the name.
+
+            This branch is also what makes a refusal *stick*: `fields` above
+            spreads `patch.name` raw, so a refusal expressed by skipping this
+            line would write the unnormalised title instead of withholding it.
           */
           ...(title === undefined ? {} : { name: renamed ?? existing.name }),
           // `createdAt` is deliberately not overwritable: it is the first thing

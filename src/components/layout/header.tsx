@@ -9,7 +9,12 @@ import { ModelChip } from '@components/layout/model-chip';
 import { StatusCounts } from '@components/layout/status-counts';
 import { Badge } from '@components/ui/badge';
 import { isDesktop } from '@config/runtime';
-import { useTheme, useThemeActions } from '@stores/appearance-store';
+import {
+  useRailWidthState,
+  useSetRailCollapsed,
+  useTheme,
+  useThemeActions,
+} from '@stores/appearance-store';
 import { useUnreadCount } from '@stores/hive-store';
 import {
   usePickerActions,
@@ -42,8 +47,8 @@ import {
  *
  * ## Where the width goes when the header runs out
  *
- * The brand claims exactly the rail's width (252px = the rail's 268px minus
- * this header's own `px-4`), so whatever follows it starts on that line.
+ * The brand claims exactly the rail's width (the `--cc-rail-w-left` token
+ * minus this header's own `px-4`), so whatever follows it starts on that line.
  *
  * The left cluster is `min-w-0` and the right one does not shrink, so the model
  * chip is what gives when the window narrows. That is the right way round now:
@@ -67,8 +72,18 @@ export function Header() {
   const { toggleTheme } = useThemeActions();
   const unread = useUnreadCount();
   const revealRailTab = useRevealRailTab();
-  // Named rather than inlined, so the bell's JSX reads as what it does.
-  const showInbox = () => revealRailTab('inbox');
+  const setRailCollapsed = useSetRailCollapsed();
+  /*
+    Named rather than inlined, so the bell's JSX reads as what it does — and
+    because it is now two actions, not one. `revealRailTab` lives in `ui-store`
+    and collapse in `appearance-store`; no store may read another, so a caller
+    that wants both says both. Without the second call the bell would select the
+    Inbox tab on a rail showing three icons: visibly nothing happening.
+  */
+  const showInbox = () => {
+    revealRailTab('inbox');
+    setRailCollapsed('right', false);
+  };
   const { openPicker } = usePickerActions();
   const { openSettings } = useSettingsActions();
 
@@ -81,6 +96,14 @@ export function Header() {
     HIVE-79.
   */
   const showActivityRail = useShowActivityRail();
+  /*
+    Collapse also removes the line the cluster is meant to claim, and it lives
+    in the other store from `showActivityRail` — mount and collapse are
+    independent facts, so both are read here rather than one standing in for
+    the other. See the cluster's own comment for why a collapsed rail cannot
+    take the same branch as a mounted, expanded one.
+  */
+  const { railCollapsedLeft, railCollapsedRight } = useRailWidthState();
 
   return (
     <header
@@ -113,10 +136,17 @@ export function Header() {
           stage begins on. Without this the chips float wherever the wordmark
           happens to end, aligned to nothing.
 
-          252px = the rail's 268px minus this header's own `px-4`, since the
-          rail starts at the viewport edge and the header's content box does
-          not. `left-rail.tsx` owns the 268; `chip-alignment.spec.ts` measures
-          the two against each other so this cannot drift silently.
+          The width is the rail's own token minus this header's `px-4`, since
+          the rail starts at the viewport edge and the header's content box
+          does not. The token, not a number: `--cc-rail-w-left` is what the
+          rail paints with — 320px comfortable, 284px compact, or whatever the
+          user dragged it to — and a literal here was right in one density and
+          20px wrong in the other, and wrong by the drag's delta after every
+          drag. Same derivation as the controls cluster on the right, and the
+          same fallback: a **collapsed** rail paints the token at `RAIL_STRIP`
+          (44px), and 28px cannot hold a wordmark, so collapse drops the claim
+          and the brand is simply content-sized. `chip-alignment.spec.ts`
+          measures the brand against the rail so the derivation cannot drift.
         */}
         <div
           /*
@@ -134,7 +164,10 @@ export function Header() {
            * stays, because it is what puts the chips on the rail's edge, and
            * that was never about the lights.
            */
-          className="flex w-[252px] shrink-0 items-center"
+          className={cn(
+            'flex shrink-0 items-center',
+            !railCollapsedLeft && 'w-[calc(var(--cc-rail-w-left)-1rem)]',
+          )}
         >
           <BrandBlock />
         </div>
@@ -204,10 +237,23 @@ export function Header() {
 
           With the rail hidden there is no column to claim, so the width drops
           away and the cluster is simply flush right.
+
+          A **collapsed** rail needs that same fallback, not the claimed
+          column. Collapse paints `--cc-rail-w-right` at `RAIL_STRIP` — 44px,
+          room for one icon — because that property is also what the rail
+          itself is sized with; this cluster reusing it was only ever valid
+          while the value meant "the panel's own width". Claim a 44px column
+          here and the ~262px of `shrink-0` children above do not shrink to
+          fit it — they overflow it and land on the counts to their left. So
+          the column is claimed only when the rail is both mounted **and**
+          expanded; either `showActivityRail` or `railCollapsedRight` failing
+          drops the width exactly like the hidden case above.
         */
         className={cn(
           'flex shrink-0 items-center justify-end gap-[14px]',
-          showActivityRail && 'w-[calc(var(--cc-rail-w-right)-1rem)]',
+          showActivityRail &&
+            !railCollapsedRight &&
+            'w-[calc(var(--cc-rail-w-right)-1rem)]',
         )}
       >
         <button
@@ -231,7 +277,9 @@ export function Header() {
         */}
         <button
           type="button"
-          onClick={openSettings}
+          // Wrapped: `openSettings` now takes an optional pane, and a bare
+          // handler would hand it the click event as one (HIVE-116).
+          onClick={() => openSettings()}
           aria-label="Settings"
           className="flex size-[34px] shrink-0 items-center justify-center rounded-full border border-border text-muted hover:bg-hover hover:text-ink [-webkit-app-region:no-drag]"
         >

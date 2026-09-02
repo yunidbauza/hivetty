@@ -1,10 +1,27 @@
 import { cn } from '@/lib/utils';
 import type { SessionStatus } from '@/types/entity';
 
+import type { AgentStatus } from '@shared/agent-contract';
 import type { IdleDetail } from '@shared/hook-contract';
 
-/** Sessions have four states; agents are always `online`. */
-export type DotStatus = SessionStatus | 'online';
+/**
+ * Sessions have five states; agents have five of their own (HIVE-114).
+ *
+ * A union rather than a widened `SessionStatus`, because the two halves answer
+ * different questions — one is about a terminal, the other about a
+ * correspondent — and `working` appears in both meaning the same thing, so the
+ * overlap collapses for free rather than needing a synonym.
+ *
+ * `'online'` is gone with it. It described a socket, and an agent is not one:
+ * between two wakes there is no process to be connected to.
+ *
+ * The four agent-only members took `idle`'s grey until HIVE-116, which had to
+ * tell them apart on a rail. Each now takes the utility of the session state
+ * it mirrors — `asking`/`waiting`, `sleeping`/`idle`, `paused`/`terminated` —
+ * so that one word means one colour wherever it is drawn, and only `failed`
+ * needed a hue the session vocabulary does not have.
+ */
+export type DotStatus = SessionStatus | AgentStatus;
 
 /**
  * `terminated` is muted, not blue, and not `subtle` either (story 108).
@@ -17,13 +34,34 @@ export type DotStatus = SessionStatus | 'online';
  * giving them the same dot would erase the only distinction that matters when
  * deciding whether to go look.
  */
-const STATUS_FILL: Record<DotStatus, string> = {
+/**
+ * Exported since HIVE-114 for the one caller that cannot use `StatusDot`
+ * itself: the agent rail row draws a 9px ringed dot lifted off its avatar
+ * tile, which this atom deliberately is not. It takes the fill so the two
+ * still cannot drift to different colours — the property this file exists to
+ * hold.
+ */
+export const STATUS_FILL: Record<DotStatus, string> = {
   working: 'bg-green',
   waiting: 'bg-amber',
   idle: 'bg-subtle',
   done: 'bg-brand',
   terminated: 'bg-muted',
-  online: 'bg-green',
+  /*
+    Agent states (HIVE-116). Each takes the utility of the session state it
+    mirrors, so one word means one colour across the app: `asking` is a
+    `waiting`, `working` is a `working`, `sleeping` is an `idle`, and `paused`
+    is the agent-side `terminated` — quiet, and not coming back on its own.
+
+    `failed` is the only one with no counterpart. Nothing in the session
+    vocabulary is red, because a session that ends badly is `terminated` and
+    the reason lives in its row; an agent's failure is a state it sits in
+    until someone looks.
+  */
+  sleeping: 'bg-subtle',
+  asking: 'bg-amber',
+  paused: 'bg-muted',
+  failed: 'bg-red',
 };
 
 /**
@@ -39,7 +77,10 @@ export const STATUS_TEXT: Record<DotStatus, string> = {
   idle: 'text-subtle',
   done: 'text-brand',
   terminated: 'text-muted',
-  online: 'text-green',
+  sleeping: 'text-subtle',
+  asking: 'text-amber',
+  paused: 'text-muted',
+  failed: 'text-red',
 };
 
 /**
@@ -56,7 +97,10 @@ export const STATUS_LABEL: Record<DotStatus, string> = {
   idle: 'idle',
   done: 'done',
   terminated: 'terminated',
-  online: 'online',
+  sleeping: 'sleeping',
+  asking: 'asking',
+  paused: 'paused',
+  failed: 'failed',
 };
 
 /**
@@ -86,7 +130,10 @@ const STATUS_RING: Record<DotStatus, string> = {
   idle: 'border-subtle',
   done: 'border-brand',
   terminated: 'border-muted',
-  online: 'border-green',
+  sleeping: 'border-subtle',
+  asking: 'border-subtle',
+  paused: 'border-subtle',
+  failed: 'border-subtle',
 };
 
 /**

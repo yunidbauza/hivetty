@@ -18,6 +18,19 @@
  */
 
 import type {
+  AgentLinesPush,
+  AgentNameRequest,
+  AgentRenameRequest,
+  AgentRunRequest,
+  AgentRotateResult,
+  AgentRunResult,
+  AgentsSnapshot,
+  AgentStatus,
+  AgentStatusPush,
+  AgentWriteRequest,
+  AgentWriteResult,
+} from './agent-contract';
+import type {
   AddProjectRequest,
   CloneDoneEvent,
   CloneRequest,
@@ -72,6 +85,14 @@ import type {
   JiraStatus,
   JiraTransition,
 } from './jira-contract';
+import type {
+  LedgerAnswerRequest,
+  LedgerEntry,
+  LedgerPostRequest,
+  LedgerReadQuery,
+  LedgerResult,
+  LedgerSnapshot,
+} from './ledger-contract';
 import type { SessionMetricsEvent } from './metrics-contract';
 import type {
   HiveNotification,
@@ -100,6 +121,7 @@ import type {
   SkillWriteRequest,
   SkillsSnapshot,
 } from './skills-contract';
+import type { SlackStatus } from './slack-contract';
 import type { PickedTheme, SaveThemeRequest } from './theme-contract';
 import type { UpdateStatus } from './update-contract';
 
@@ -243,6 +265,19 @@ export const CH = {
   jiraLinks: 'jira:links',
   jiraAddComment: 'jira:add-comment',
   /**
+   * Slack's MCP server (HIVE-123).
+   *
+   * Four verbs and, like Jira's, **no verb that returns a credential** — but
+   * for a stronger reason: there is no credential here to return. Claude Code
+   * holds the OAuth token in `~/.claude/.credentials.json` and refreshes it;
+   * this app only asks what state it is in. None of the four takes a payload,
+   * so none of them can be widened by a compromised renderer.
+   */
+  slackStatus: 'slack:status',
+  slackSignIn: 'slack:sign-in',
+  slackSignOut: 'slack:sign-out',
+  slackTest: 'slack:test',
+  /**
    * The pull requests the configured repositories hold.
    *
    * **Takes no payload at all**, which is the security design and not an
@@ -384,6 +419,23 @@ export const CH = {
    * carrying free text is `url`, which `isSafeExternalUrl` already gates.
    */
   notificationsAct: 'notifications:act',
+  /**
+   * The ledger's four channels (HIVE-111).
+   *
+   * The renderer is the overmind's only mouth: `ledgerPost` and `ledgerAnswer`
+   * carry no `from`, because main supplies {@link OVERMIND} and would overwrite
+   * anything sent. A session's own writes arrive on the receiver routes
+   * instead, where the `x-hive-session` header names the writer.
+   *
+   * Read the log — hydration on mount, and any filtered view.
+   */
+  ledgerList: 'ledger:list',
+  /** The overmind writes. `from` is forced to OVERMIND in main. */
+  ledgerPost: 'ledger:post',
+  /** Close a thread, by canonical id or by short ref. */
+  ledgerAnswer: 'ledger:answer',
+  /** Push: one entry landed, from any party. main → renderer. */
+  ledgerChanged: 'ledger:changed',
   /** What the app knows about a newer version of itself. */
   updatesStatus: 'updates:status',
   /**
@@ -608,6 +660,84 @@ export const CH = {
   skillsWrite: 'skills:write',
   skillsRemove: 'skills:remove',
   skillsRename: 'skills:rename',
+  /**
+   * Agent definitions — the same five verbs as `skills`, and one more thing
+   * (HIVE-114).
+   *
+   * The bound is identical: every verb names an **agent**, never a path, and
+   * main already knows the one directory agents live in, so traversal is
+   * unrepresentable rather than filtered. `agent-contract.ts` carries the
+   * grammar those names are checked against.
+   *
+   * Unlike skills, this block **has** an event channel. Skills have none
+   * because the Settings pane is their only writer; an `AGENT.md` is a file
+   * the user is invited to write by hand, and the story requires a folder
+   * deleted in Finder to leave the list without a restart. That makes main a
+   * second writer, and a second writer is exactly what an event channel is
+   * for.
+   */
+  agentsList: 'agents:list',
+  agentsRead: 'agents:read',
+  agentsWrite: 'agents:write',
+  agentsRemove: 'agents:remove',
+  agentsRename: 'agents:rename',
+  /** The folder changed — on disk or through this pane. Carries no payload. */
+  agentsChanged: 'agents:changed',
+  /**
+   * Wake an agent now, and stop one that is running (HIVE-115).
+   *
+   * The first two verbs in this group that make the machine *do* something
+   * rather than read or write a file, which is why `BRIDGE_AGENTS_KEYS` argues
+   * for each one. `run` is bounded the same way the five before it are: it
+   * names an agent, never a command line, and main builds the argv from a
+   * definition it read itself. HIVE-126 lets it carry a prompt as well, and the
+   * bound holds — that prose lands *inside* the single positional argument, so
+   * it cannot become a flag or a path. Nothing the renderer sends reaches a
+   * shell — there is no shell.
+   *
+   * `kill` exists because a run that has stopped making progress is otherwise
+   * unstoppable short of quitting the app: one run per agent at a time means a
+   * stuck run blocks every future wake of that agent.
+   */
+  agentsRun: 'agents:run',
+  agentsKill: 'agents:kill',
+  /**
+   * Stop this agent waking, and let it wake again (HIVE-117).
+   *
+   * Narrower than `run` and `kill`: neither starts or stops a process. They set
+   * one field — `status` — and the consequence is a refusal inside
+   * `RunTracker.run`, which is the single door every trigger passes through.
+   * That placement is the point: a guard on `agents:run` alone would leave a
+   * paused agent woken by HIVE-121's timer.
+   *
+   * Both answer the {@link AgentStatus} now in force rather than a boolean,
+   * because `resume` genuinely has two answers — an agent with an unanswered
+   * ask resumes to `asking`, not `sleeping` — and the caller should not have to
+   * re-`list` to find out which.
+   */
+  agentsPause: 'agents:pause',
+  agentsResume: 'agents:resume',
+  /**
+   * End this agent's session after a handoff (HIVE-122).
+   *
+   * A channel of its own rather than a flag on `agents:run`, because
+   * `AgentRunRequest`'s closed key set is the reason a renderer cannot name its
+   * own trigger — widening it to carry a second field would spend that argument
+   * to save a constant. This takes the same {@link AgentNameRequest} `kill`,
+   * `pause` and `resume` take, and the same guard refuses the same payloads.
+   *
+   * What it adds over `run` is one boolean on state that main itself writes:
+   * the next wake asks the agent to write a handoff before the session is
+   * replaced. That is a thing the counter already does on its own every
+   * `rotateAfter` runs — this only brings it forward, which is what you want
+   * after editing a definition substantially enough that the running
+   * conversation is about a different agent.
+   */
+  agentsRotate: 'agents:rotate',
+  /** A run started, ended, or changed the agent's status. */
+  agentsStatus: 'agents:status',
+  /** A batch of run-log lines. */
+  agentsLines: 'agents:lines',
   appInfo: 'app:info',
   /**
    * HIVE-80's two verbs. Neither takes a destination path — the dialog chooses
@@ -688,6 +818,10 @@ export const EVENT_CHANNELS = [
   CH.configCloneDone,
   CH.notificationsActivate,
   CH.fsChanged,
+  CH.ledgerChanged,
+  CH.agentsChanged,
+  CH.agentsStatus,
+  CH.agentsLines,
 ] as const;
 export type EventChannel = (typeof EVENT_CHANNELS)[number];
 
@@ -737,13 +871,14 @@ export interface SpawnRequest {
    *
    * Set by the renderer for exactly one spawn: a row restored under PREVIOUS
    * RUN that the user opens. Main then starts `claude --resume` with the uuid
-   * its ledger kept for that id, and the row carries on as the session it
-   * was rather than as a blank one wearing its name.
+   * its session history kept for that id, and the row carries on as the
+   * session it was rather than as a blank one wearing its name.
    *
-   * The renderer says so **explicitly**; main never infers it from "the ledger
-   * knows this id". A fresh spawn can take an id last run used — the ledger's
-   * own `begin` exists for that case — and inferring would hand that new
-   * session a conversation it was never part of.
+   * The renderer says so **explicitly**; main never infers it from "the
+   * session history knows this id". A fresh spawn can take an id last run
+   * used — the session history's own `begin` exists for that case — and
+   * inferring would hand that new session a conversation it was never part
+   * of.
    */
   resume?: boolean;
 }
@@ -928,11 +1063,43 @@ export interface IntegrationsStatus {
   notificationsSupported: boolean;
 }
 
-/** A clicked notification, naming the session it was about (story 106). */
-export interface NotificationActivateEvent {
-  /** The *entity* id, matching {@link SessionStatusEvent}. */
-  entityId: string;
-}
+/**
+ * A clicked notification (story 106), and where the renderer should take the
+ * user for it.
+ *
+ * A union rather than the bare `{ entityId }` it started as, for the reason
+ * {@link NotificationAction} gives for being one itself: not every row points
+ * at an entity. An **ask** is answered in place, on a card in the inbox — there
+ * is no tab to open — and before HIVE-118 main answered that by returning
+ * early and sending nothing at all. The window came forward on a rail that
+ * might be sitting on the explorer, or collapsed, with the card the click was
+ * *for* nowhere on screen.
+ *
+ * ## Why this widened rather than gaining a second channel
+ *
+ * One user gesture — a notification was clicked — stays one event. A second
+ * channel would give the renderer two subscriptions to the same gesture, each
+ * free to drift on what it does about focus and ordering, and would add a name
+ * to {@link EVENT_CHANNELS} for no new fact. The discriminant carries the
+ * difference, and `satisfies` at both send sites makes an unhandled member a
+ * compile error rather than a silent no-op.
+ *
+ * ## Why main names the cause, not the cure
+ *
+ * `ask` says *what was clicked*, not "reveal the inbox". Main may not touch
+ * the rail — it does not know the rail exists — so the destination is the
+ * renderer's to decide, exactly as "what opening a session means" already is.
+ */
+export type NotificationActivateEvent =
+  /**
+   * Open the row this id names.
+   *
+   * A **terminal** id for a session — see `currentRowFor` — and an agent's own
+   * name for an agent, which the renderer tells apart with `isAgentId`.
+   */
+  | { type: 'entity'; entityId: string }
+  /** An ask was clicked (HIVE-118). Its card lives in the inbox. */
+  | { type: 'ask' };
 
 /** Answer to {@link CH.appInfo} — proves the bridge round-trips. */
 export interface AppInfo {
@@ -1358,6 +1525,28 @@ export interface HiveBridge {
       request: AddJiraCommentRequest,
     ): Promise<JiraResult<JiraComment>>;
   };
+  /**
+   * Slack's MCP server (HIVE-123).
+   *
+   * Four verbs, and — like `jira` — **no verb that returns a credential**. The
+   * reason is stronger here: there is no credential in this app to return at
+   * all. Claude Code holds the OAuth token and refreshes it; this bridge only
+   * asks what state the connection is in, signs in, signs out, and spends one
+   * model turn confirming a workspace admin has approved the server. None of
+   * the four takes an argument, which is what makes a handler that spawns
+   * `claude` safe to expose: there is no argv for a compromised renderer to
+   * reach.
+   */
+  slack: {
+    /** `claude mcp get slack`, parsed. No model turn, answers in well under a second. */
+    status(): Promise<SlackStatus>;
+    /** `claude mcp add` then `claude mcp login slack`, then a re-read of status. */
+    signIn(): Promise<SlackStatus>;
+    /** `claude mcp remove slack`, which drops the credential entry with it. */
+    signOut(): Promise<SlackStatus>;
+    /** The Test button — the only verb here that spends a model turn. */
+    test(): Promise<SlackStatus>;
+  };
   /** OS notifications raised by main (story 106). */
   notifications: {
     /**
@@ -1409,6 +1598,80 @@ export interface HiveBridge {
      * one means — and hands everything else here. See {@link CH.notificationsAct}.
      */
     act(action: NotificationAction): Promise<void>;
+  };
+  /**
+   * The ledger (HIVE-111).
+   *
+   * The renderer is the **overmind's** mouth and nothing else's: `post` and
+   * `answer` carry no `from`, because main supplies {@link OVERMIND} and would
+   * overwrite anything sent. A session's own writes arrive on the receiver
+   * routes instead, where the header names the writer.
+   */
+  ledger: {
+    list: (query?: LedgerReadQuery) => Promise<LedgerSnapshot>;
+    post: (request: Omit<LedgerPostRequest, 'from'>) => Promise<LedgerResult>;
+    answer: (request: LedgerAnswerRequest) => Promise<LedgerResult>;
+    onChanged: (callback: (entry: LedgerEntry) => void) => () => void;
+  };
+  /**
+   * Agent definitions on disk (HIVE-114).
+   *
+   * `write` answers with a {@link AgentWriteResult} rather than the fresh
+   * snapshot the skills verbs return, because a refusal here has *structure* —
+   * a list of problems, each naming the field it belongs to — and the editor
+   * renders each one beside the control it names. A snapshot could only say
+   * that nothing changed.
+   */
+  agents: {
+    list(): Promise<AgentsSnapshot>;
+    /** The raw file, or `null` when there is no such agent. */
+    read(request: AgentNameRequest): Promise<string | null>;
+    write(request: AgentWriteRequest): Promise<AgentWriteResult>;
+    remove(request: AgentNameRequest): Promise<void>;
+    rename(request: AgentRenameRequest): Promise<AgentWriteResult>;
+    /** The folder changed; re-`list` to see how. */
+    onChanged(callback: () => void): () => void;
+    /**
+     * Wake this agent now (HIVE-115).
+     *
+     * Answers with a value either way — see {@link AgentRunResult} for why a
+     * refusal is not a rejection.
+     */
+    run(request: AgentRunRequest): Promise<AgentRunResult>;
+    /**
+     * Stop the run in progress. `false` when there was none, which is not an
+     * error: the run may have ended between the row rendering and the click.
+     */
+    kill(request: AgentNameRequest): Promise<boolean>;
+    /**
+     * Stop this agent waking (HIVE-117). Any turn already in flight finishes —
+     * a pause is not a kill, and `kill` is next door for that.
+     *
+     * Answers the status now in force, which is always `paused`.
+     */
+    pause(request: AgentNameRequest): Promise<AgentStatus>;
+    /**
+     * Let it wake again. Answers the status it resumed *to*: `asking` when the
+     * agent has an unanswered question in the ledger, `sleeping` otherwise.
+     */
+    resume(request: AgentNameRequest): Promise<AgentStatus>;
+    /**
+     * Force a handoff wake now (HIVE-122).
+     *
+     * Answers an {@link AgentRotateResult} because it *is* a run — the flag is
+     * armed and the ordinary path taken — so a busy or paused agent refuses
+     * here. The flag survives a refusal, so the wake that does land is still
+     * the handoff wake.
+     *
+     * Narrower than `run`'s answer by the `queued` arm (HIVE-126), and for that
+     * same reason: a refused rotation is already durable, so it takes the
+     * tracker directly rather than the scheduler's queue.
+     */
+    rotate(request: AgentNameRequest): Promise<AgentRotateResult>;
+    /** A run started, ended, or changed this agent's status. */
+    onStatus(callback: (push: AgentStatusPush) => void): () => void;
+    /** Run-log lines, as the process writes them. */
+    onLines(callback: (push: AgentLinesPush) => void): () => void;
   };
   /**
    * The app's newer self.
@@ -1591,18 +1854,34 @@ export const RESIZE_THROTTLE_MS = 50;
  * where it may reach: `rename` names two skills under the same rule, and the
  * argument for it is recorded on {@link BRIDGE_SKILLS_KEYS} rather than here,
  * because it is a change to one namespace and not to the surface.
+ *
+ * HIVE-111 adds `ledger`. What a web page can now do that it could not before:
+ * read the whole correspondence log between every session and the overmind,
+ * append to it, and close an open ask — but always **as the overmind**. `post`
+ * and `answer` take no `from`; main supplies {@link OVERMIND} and would
+ * overwrite anything a caller sent, so this namespace cannot be used to forge
+ * another party's words the way a compromised page could try.
+ *
+ * HIVE-123 adds `slack`. What a web page can now do that it could not before:
+ * read Slack's MCP connection state, sign in, sign out, and spend one model
+ * turn confirming a workspace admin has approved the server. None of the four
+ * verbs takes an argument, and none returns a credential — Claude Code holds
+ * the OAuth token, this app only asks what state it is in.
  */
 export const BRIDGE_KEYS = [
+  'agents',
   'appInfo',
   'config',
   'fs',
   'github',
   'integrations',
   'jira',
+  'ledger',
   'notifications',
   'pty',
   'session',
   'skills',
+  'slack',
   'theme',
   'ui',
   'updates',
@@ -1646,6 +1925,167 @@ export const BRIDGE_SKILLS_KEYS = [
   'rename',
 ] as const;
 
+/**
+ * The exact key set of `window.hive.agents` (HIVE-114).
+ *
+ * Five verbs matching {@link BRIDGE_SKILLS_KEYS} one for one, and the same
+ * security story: two readers and three writers, all bounded to one directory
+ * by the shape of what they accept rather than by a check they perform.
+ * `assertAgentName` is what makes that true, and it refuses the reserved names
+ * as well as any name that could be a path.
+ *
+ * The sixth is `onChanged`, and it widens nothing — it is a *listener*, not a
+ * verb. It carries no payload at all (the renderer re-`list`s on being poked),
+ * so it cannot leak the contents of a definition the renderer could not
+ * already have asked for. It exists because main became a second writer the
+ * moment the folder was declared hand-editable; see `CH.agentsChanged`.
+ *
+ * HIVE-115 appends `run`, HIVE-117 `pause`/`resume`. Each of those is a change
+ * to what the renderer may make the machine *do*, rather than to what it may
+ * read or write, and should be argued for here before it is written. HIVE-126
+ * widens no key but changes what one of them may *carry*, which the same rule
+ * covers and which is argued for below.
+ *
+ * ## The argument for `run` (HIVE-115)
+ *
+ * This is the first key in the namespace that starts a **process**, so it is
+ * the first that has to answer a question the five above never faced: what can
+ * a compromised renderer make this machine execute?
+ *
+ * The answer is *nothing it could not already write to disk*, and the reason is
+ * that the payload is {@link AgentRunRequest} — one name, through
+ * `assertAgentName`, the identical guard `read` and `remove` pass. No path, no
+ * argv, no flag, no environment, and no trigger string: main writes `manual`
+ * itself, because a person pressing a button is the only trigger this channel
+ * could honestly report. Main then reads the definition off a folder it chose,
+ * resolves `claudeCommand` from *its own* config, and builds the argv as an
+ * array handed straight to `spawn`. There is no shell anywhere on that path —
+ * `claude-path.ts` refuses a command carrying arguments rather than splitting
+ * one — so there is no quoting to get wrong and no alias to inherit.
+ *
+ * What `run` therefore widens is **timing, not reach**. A renderer that can
+ * call it can already call `write`, and `write` is the verb that decides what
+ * an agent *is*; `run` only decides when the definition the user already
+ * approved gets its turn. A page that could write an agent and not run it
+ * would be a page that has to wait for HIVE-121's timer to fire — the same
+ * process, a few minutes later.
+ *
+ * ## The argument for `extra` on `run` (HIVE-126)
+ *
+ * `run` shipped with one name and nothing else, and that omission was doing two
+ * jobs at once: keeping the renderer from naming a **trigger**, and keeping it
+ * from naming a **command line**. Only the first was ever load-bearing, and it
+ * is untouched — `trigger` is still refused outright, and main still writes
+ * `manual` itself.
+ *
+ * The paragraph above says "no argv", and `extra` is now the exception, so it
+ * has to be stated exactly. `wakeCommand` interpolates it into the single
+ * positional `-p` prompt — the last element of an array handed straight to
+ * `spawn`. It becomes prose *inside* one argument, never an argument of its
+ * own: it cannot introduce a flag, a path, or a variable, and there is still no
+ * shell on the path to quote it wrong. `assertText` bounds what that prose may
+ * be, the same way it bounds `spawn.task`, which is the closest thing already
+ * in this contract — free text from the console that ends up in a process.
+ *
+ * So the reach is unchanged and the *expressiveness* is not: a page can now say
+ * why a person pressed the button. The cost of it not being able to was a verb
+ * that lied. `run pr-reviewer review PR 1234` parsed, reported success, and
+ * woke an agent that had never heard of the PR. The alternative considered and
+ * rejected was routing a task through the ledger instead — which works, and is
+ * what `ask` is for, but makes `run` and `ask` two spellings of one act.
+ *
+ * ## The argument for `kill`
+ *
+ * Narrower than `run` by construction: it takes the same validated name and
+ * can only ever reach a process **this app started and is still tracking** —
+ * the tracker holds the child handle, and an unknown name answers `false`
+ * rather than signalling anything. It cannot name a pid.
+ *
+ * It has to exist. One run per agent at a time (§5) means a run that has
+ * stopped making progress blocks every future wake of that agent, and the only
+ * other way out is quitting the app — which takes the other twelve sessions
+ * with it.
+ *
+ * ## The argument for `pause` and `resume` (HIVE-117)
+ *
+ * The narrowest pair in the namespace, and the first that make the machine do
+ * *less*. Neither starts a process, stops one, or reads a file. Each takes the
+ * same validated {@link AgentNameRequest} the four verbs above take and writes
+ * a single field — `status` — to `agents.json`, a file main already owns and
+ * rewrites on every run.
+ *
+ * Against the question `run` had to answer — what can a compromised renderer
+ * make this machine execute? — the answer here is *strictly less than before*.
+ * `pause` can only subtract: a paused agent refuses every trigger, including
+ * the ones no renderer can reach (HIVE-120's ledger wakes, HIVE-121's timer).
+ * `resume` can only restore an agent to the state it was in before someone
+ * paused it — it cannot create an agent, change what one is, or wake one, and
+ * a renderer that wanted a run still has to call `run` and be refused or
+ * obeyed on `run`'s own terms.
+ *
+ * The one widening worth naming is availability: a renderer that can call
+ * `pause` can stop an agent the user is relying on. That is the same reach
+ * `kill` already has, on a verb that recovers with a single `resume`, where
+ * `kill` costs a turn. It is also, unlike `kill`, plainly visible — the row
+ * says `paused` until someone changes it.
+ *
+ * Why the refusal lives in `RunTracker.run` rather than on the `agents:run`
+ * channel: the channel is only today's caller. Guarding there would leave a
+ * paused agent woken by a clock the moment HIVE-121 lands, and the bug would
+ * look like the timer's.
+ *
+ * ## The argument for `rotate` (HIVE-122)
+ *
+ * Narrower than `run`, which it is otherwise a copy of. Both take a name and
+ * nothing else, both build their argv in main from a definition read off disk,
+ * and both go through `RunTracker.run` — so a paused agent refuses a rotate for
+ * the same reason it refuses a run. The one thing this verb can do that `run`
+ * cannot is set `forceRotate`, and the consequence of that field is bounded by
+ * what `rotate-after` already does unattended: the agent is asked to summarise
+ * itself, and its session is replaced by a fresh one carrying that summary.
+ *
+ * A renderer that called it in a loop would cost the user turns — the same
+ * reach `run` has, and bounded by the same one-run-per-agent rule.
+ *
+ * Why not a second field on `AgentRunRequest`: because a rotation is a *kind*
+ * of run rather than a reason for one, and a field naming the kind is exactly
+ * what that guard's closed key set exists to refuse. A separate channel keeps
+ * that argument intact and costs one constant.
+ *
+ * This sentence used to read that the key set "is only closed while nothing has
+ * needed to open it", and HIVE-126 is what needed to: `extra` carries a
+ * *reason*, which is prose, and it went on the payload. The line the two sit on
+ * opposite sides of is kind versus reason — not one more field.
+ *
+ * ## `onStatus` and `onLines` widen nothing
+ *
+ * Listeners, like `onChanged`, and the same test applies: can either carry
+ * something `list` would not already hand over? `onStatus` carries a subset of
+ * what `agents:list` returns for that agent — including, since HIVE-122,
+ * `sessionUuid`, which this comment used to name as the one field it withheld.
+ * A rotation moves that uuid mid-life, on an agent the user may well be
+ * watching, and nothing emits `agents:changed` on a run to carry it. It is
+ * still a subset — `agents:list` has always returned it — so the answer to the
+ * question above is unchanged. `onLines` carries the agent's own stdout, which
+ * is the one genuinely new fact, and it is the fact the feature exists to show:
+ * a run nobody can read is a run nobody can trust.
+ */
+export const BRIDGE_AGENTS_KEYS = [
+  'list',
+  'read',
+  'write',
+  'remove',
+  'rename',
+  'onChanged',
+  'run',
+  'kill',
+  'pause',
+  'resume',
+  'rotate',
+  'onStatus',
+  'onLines',
+] as const;
+
 /** The exact key set of `window.hive.session`. */
 export const BRIDGE_SESSION_KEYS = [
   'onStatus',
@@ -1670,8 +2110,8 @@ export const BRIDGE_SESSION_KEYS = [
    * What it exposes to the page is a timing fact about a session the page
    * already has the id of. What it deliberately does *not* carry is the thing
    * its source has and this bridge has never passed: the `SessionStart` hook
-   * knows Claude's own session uuid, and that stays in main, where the ledger
-   * is the only thing that reads it.
+   * knows Claude's own session uuid, and that stays in main, where the
+   * session history is the only thing that reads it.
    */
   'onReady',
   /**
@@ -1804,6 +2244,16 @@ export const BRIDGE_JIRA_KEYS = [
   'addComment',
 ] as const;
 
+/**
+ * The exact key set of `window.hive.slack` (HIVE-123).
+ *
+ * Four, and the count is the security story: no verb here returns a
+ * credential, and the reason is stronger than Jira's — there is no credential
+ * in this app to return at all. A fifth verb would be the one addition this
+ * list exists to make impossible to add quietly.
+ */
+export const BRIDGE_SLACK_KEYS = ['status', 'signIn', 'signOut', 'test'] as const;
+
 /** The exact key set of `window.hive.notifications`. */
 /**
  * What {@link CH.notificationsRead} carries. `null` means "all of them".
@@ -1908,6 +2358,23 @@ export const BRIDGE_NOTIFICATIONS_KEYS = [
   // The router for everything a row cannot carry out itself — see
   // `CH.notificationsAct`.
   'act',
+] as const;
+
+/** The exact key set of `window.hive.ledger` (HIVE-111). */
+export const BRIDGE_LEDGER_KEYS = [
+  // Hydration on mount, and any filtered view. `to` is added by main, never
+  // by this call — see the contract.
+  'list',
+  /**
+   * The overmind writes; the two verbs worth watching here. Neither takes a
+   * `from` — widening either signature to accept one would be the change this
+   * list exists to catch, because it would let a compromised page speak as
+   * any party rather than only as the overmind.
+   */
+  'post',
+  'answer',
+  // One entry landed, from any party — see `CH.ledgerChanged`.
+  'onChanged',
 ] as const;
 
 /** The exact key set of `window.hive.updates`. */

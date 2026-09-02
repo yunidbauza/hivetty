@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { ParsedCommand } from '@/types/command';
-import { USAGE } from '@/types/command';
+import { QUIET_VERBS, USAGE } from '@/types/command';
 import type {
   Effort,
   Entity,
@@ -16,6 +16,7 @@ import {
   branchLabel,
   endedReason,
   entityLabel,
+  isAgent,
   isEnded,
   isSession,
   recencyOf,
@@ -28,9 +29,16 @@ import type { TermLine } from '@/types/terminal';
 import type { Ticket } from '@/types/ticket';
 
 import { isDesktop } from '@config/runtime';
+import {
+  describeNextRun,
+  describeSkips,
+  describeWake,
+  runsToday,
+} from '@lib/agents';
 import { reset as resetClock } from '@lib/fake-clock';
 import { readPullRequests, searchPullRequests } from '@lib/github';
 import { readJiraStatus, searchJiraIssues } from '@lib/jira';
+import { ledgerRows } from '@lib/ledger/console-rows';
 import {
   projectConfigSnapshot,
   resolveProjectRef,
@@ -40,16 +48,35 @@ import { noteSessionPr, noteSessionTicket } from '@lib/session-history';
 import { pickPhrase } from '@lib/swarm/phrases';
 import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
+import {
+  SESSION_ID_PREFIX_PATTERN,
+  type AgentLinesPush,
+  type AgentRunResult,
+  type AgentStatus,
+  type AgentStatusPush,
+  type AgentSummary,
+  type LiveRunSummary,
+  type RunSummary,
+} from '@shared/agent-contract';
 import type { PrRecord } from '@shared/github-contract';
 import type { IdleDetail } from '@shared/hook-contract';
 import type { SessionNameReport } from '@shared/ipc-contract';
 import type { JiraIssue } from '@shared/jira-contract';
+import {
+  LEDGER_MEMORY_CAP,
+  type LedgerEntry,
+  type LedgerReadQuery,
+  type LedgerResult,
+  type OpenAsk,
+} from '@shared/ledger-contract';
+import { matches, openAsks, thread } from '@shared/ledger-derive';
 import type { SessionMetrics } from '@shared/metrics-contract';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
 import {
   hiveNameFromTitle,
   SESSION_EFFORTS,
   SESSION_MODELS,
+  type SessionNameOrigin,
 } from '@shared/session-contract';
 import type {
   SessionHistoryEntry,
@@ -235,6 +262,14 @@ interface HiveState {
   /** Where {@link HiveState.prs} came from. */
   prSource: PrSource;
   notifs: HiveNotification[];
+  /**
+   * The ledger's tail (HIVE-111).
+   *
+   * A mirror, not the source — main owns the log and this holds the newest
+   * {@link LEDGER_MEMORY_CAP} entries so the console and the inbox can render
+   * without a round trip. Older entries are still there; they are asked for.
+   */
+  ledger: LedgerEntry[];
   orchLines: TermLine[];
 
   /**
@@ -325,6 +360,36 @@ interface HiveState {
   /** Mark one notification read, by id (HIVE-75). */
   markRead: (id: string) => void;
   /**
+   * Answer an open ask (HIVE-118).
+   *
+   * Writes **nothing** locally. The answer comes back through
+   * `ledger:changed` like any other entry, and the card re-derives from
+   * `useThread` — so an answer typed here, one posted from the agent view and
+   * one written by another session all collapse the card the same way. An
+   * optimistic local append would be a second copy of the entry that main is
+   * about to send anyway.
+   *
+   * ## The result is handed back, not discarded (whole-branch review, finding 3)
+   *
+   * `Ledger.answer` refuses as a **value**, not a throw, once a thread is no
+   * longer an open ask — which `LEDGER_ASK_TTL_MS` makes routine on an app
+   * meant to stay open for days: an ask raised Monday and answered Tuesday is
+   * refused, silently, if nothing reads what came back. This action still
+   * stores nothing — that part was always correct — but the caller needs the
+   * `LedgerResult` to tell a refusal from a success, which discarding it made
+   * impossible.
+   *
+   * `undefined` rather than a `LedgerResult` is what a caller gets in the
+   * browser target, where `window.hive` does not exist at all: there was no
+   * write attempted and therefore nothing to have been refused, which is a
+   * different fact from `{ ok: false }` and must not be rendered as one.
+   */
+  answerAsk: (
+    thread: string,
+    body: string,
+    meta?: Record<string, unknown>,
+  ) => Promise<LedgerResult | undefined>;
+  /**
    * Remove a notification the user has acted on (HIVE-93).
    *
    * Not the same gesture as {@link markRead}: read means "seen", dismissed means
@@ -361,6 +426,16 @@ interface HiveState {
    */
   hydrateNotifs: (notifs: HiveNotification[]) => void;
   /**
+   * Merge a fresh snapshot into the ledger's tail by `id` (HIVE-111).
+   *
+   * A union rather than a replacement, for the reason `hydrateNotifs` above
+   * gives — and see the note at the implementation for why a dropped entry
+   * here would never come back.
+   */
+  hydrateLedger: (entries: LedgerEntry[]) => void;
+  /** One entry landed — append it to the tail. */
+  ledgerAppend: (entry: LedgerEntry) => void;
+  /**
    * Put last run's fleet back on the table (HIVE-87).
    *
    * The first time this store receives data at boot, which reverses the
@@ -373,6 +448,37 @@ interface HiveState {
    * ordinary case rather than a corner, and the live row always wins.
    */
   hydrateSessions: (records: SessionHistoryEntry[]) => void;
+  /**
+   * Mirror `~/.hive/agents` into the fleet (HIVE-114).
+   *
+   * A **replacement**, which is the opposite of what {@link hydrateSessions}
+   * and {@link hydrateLedger} do, and deliberately so. Those two merge because
+   * a restarted session reuses its id and the ledger only ever grows. A
+   * definitions folder is a *set*: a folder deleted in Finder has to leave the
+   * list, and a merge cannot express a removal.
+   *
+   * A transcript survives the replacement even so — lines are run output, not
+   * definition, and re-reading the file is no reason to forget what the agent
+   * said.
+   */
+  hydrateAgents: (summaries: AgentSummary[]) => void;
+  /**
+   * A run started, ended, or otherwise changed what an agent's row shows
+   * (HIVE-115).
+   *
+   * Shares `hydrateAgents`' never-write-over-a-session guard: an agent name
+   * is a legal session id, and a push for a name that currently names a
+   * session must be dropped rather than clobber it.
+   */
+  setAgentStatus: (push: AgentStatusPush) => void;
+  /**
+   * A batch of run-log lines, in the order the process wrote them
+   * (HIVE-115).
+   *
+   * Capped at {@link AGENT_LINE_CAP} the way `capLines` bounds the console
+   * transcript, and guarded the same way `setAgentStatus` is.
+   */
+  appendAgentLines: (push: AgentLinesPush) => void;
   /**
    * Apply read-state the hub decided, without writing it back (HIVE-75).
    *
@@ -419,8 +525,14 @@ interface HiveState {
     status: SessionStatus,
     idleDetail?: IdleDetail,
   ) => void;
-  /** The agent reported a new display name (HIVE-61). */
-  renameSession: (id: string, name: string) => void;
+  /**
+   * A new display name for a session (HIVE-61, gated by first-prompt naming).
+   *
+   * `origin` says who decided it, which is what settles whether it may replace a
+   * name the row already has — see the action for the rule. Defaults to `agent`,
+   * the only origin that existed before first-prompt naming.
+   */
+  renameSession: (id: string, name: string, origin?: SessionNameOrigin) => void;
   /**
    * Main observed this session's real branch and working directory (HIVE-78).
    *
@@ -500,6 +612,27 @@ const NOTIF_CAP = NOTIFICATION_CAP;
  * orchestrator slower the longer the session had been running.
  */
 const ORCH_LINE_CAP = 200;
+
+/**
+ * Run-log cap, per agent (HIVE-115).
+ *
+ * `ORCH_LINE_CAP`'s neighbour, and module-private the same way — except this
+ * one is exported. The test that pins it (`tests/stores/hive-store.test.ts`)
+ * has to name the real number to prove the cap actually held; hard-coding
+ * `2000` there would let the test and the implementation drift apart
+ * silently, which a shared constant cannot.
+ */
+export const AGENT_LINE_CAP = 2_000;
+
+/**
+ * The answer for an agent with no run log yet.
+ *
+ * A module-level frozen constant rather than a literal `[]` in the selector
+ * below — a fresh array is a new reference on every call, and a Zustand
+ * selector that returns one re-renders its subscriber on every store change
+ * whether or not this agent's lines actually changed.
+ */
+const EMPTY_LINES = Object.freeze([]) as unknown as TermLine[];
 
 /**
  * How many cleared sessions the ENDED group keeps (per fleet, not per terminal).
@@ -612,14 +745,63 @@ function currentSessionIn(state: HiveState, terminalId: string): string {
 const capLines = (lines: TermLine[]) =>
   lines.length > ORCH_LINE_CAP ? lines.slice(lines.length - ORCH_LINE_CAP) : lines;
 
-/** The `help` output — one row per command in the grammar. */
+const capAgentLines = (lines: TermLine[]) =>
+  lines.length > AGENT_LINE_CAP ? lines.slice(lines.length - AGENT_LINE_CAP) : lines;
+
+/**
+ * Why the ledger verbs cannot run in the browser preview (HIVE-113).
+ *
+ * Store-local rather than a reuse of `SESSIONS_REQUIRE_DESKTOP`: that constant
+ * lives in `src/features/sessions/`, and `src/stores/**` may not import
+ * `src/features/**`. Worded to match the browser refusals this file already
+ * prints for pull requests and search.
+ */
+const LEDGER_REQUIRES_DESKTOP =
+  'the ledger needs the desktop app — this is the browser preview';
+
+/**
+ * The same refusal for the agent verbs (HIVE-117).
+ *
+ * A second string rather than a reuse of the one above, because it is a
+ * different subject and the sentence names it: a browser has no `~/.hive/agents`
+ * to read and no process to wake, which is a fuller absence than the ledger's.
+ */
+const AGENTS_REQUIRE_DESKTOP =
+  'agents need the desktop app — this is the browser preview';
+
+/**
+ * The `help` rows, one per verb the console parses — **keyed by the verb**, so
+ * that the ones it keeps quiet about can be filtered rather than remembered.
+ *
+ * `answer` is written here like every other verb and never printed: the inbox's
+ * ask card is the route to an open ask, and a second one printed beside it made
+ * the harder route look official. `QUIET_VERBS` in `types/command.ts` is the
+ * one place that decision lives; the hint bar derives `ADVERTISED_VERBS` from
+ * it and {@link HELP_LINES} derives itself from it below. A hand-written list
+ * here would have been a second copy of the decision, and the first time a
+ * verb was quieted only in the bar, `help` would have gone on teaching it.
+ */
+const HELP_ROWS: readonly (readonly [ParsedCommand['kind'], string])[] = [
+  ['help', '  help                       show this list'],
+  ['status', '  status                     one line per session'],
+  ['ledger', '  ledger [--open] [-n 20]    print the ledger tail'],
+  ['open', '  open <session>             open a session in the center stage'],
+  ['send', '  send <session> <message>   route a message to a session'],
+  ['ask', '  ask <agent> <message>      ask an agent a question'],
+  ['answer', '  answer <id> <text>         answer an open ask'],
+  ['spawn', '  spawn <project> <task>     start a new session on a project'],
+  ['agents', '  agents                     one line per agent'],
+  ['run', '  run <agent> [prompt]       wake an agent now, optionally saying why'],
+  ['pause', '  pause <agent>              stop an agent waking'],
+  ['resume', '  resume <agent>             let it wake again'],
+  ['kill', '  kill <agent>               stop the run in progress'],
+  ['rotate', '  rotate <agent>             hand off, then start a fresh session'],
+  ['clear', '  clear                      empty this transcript'],
+];
+
+/** The `help` output: the advertised rows, then the footnote. */
 const HELP_LINES = [
-  '  help                       show this list',
-  '  status                     one line per session',
-  '  open <session>             open a session in the center stage',
-  '  send <session> <message>   route a message to a session',
-  '  spawn <project> <task>     start a new session on a project',
-  '  clear                      empty this transcript',
+  ...HELP_ROWS.filter(([verb]) => !QUIET_VERBS.has(verb)).map(([, line]) => line),
   /*
     One trailing line rather than a fourth column, because it is a footnote and
     not a verb (HIVE-94). It is the only place the console says out loud that a
@@ -707,6 +889,146 @@ function statusColor(
   return STATUS_COLOR[status];
 }
 
+/**
+ * The same two mappings for an agent (HIVE-117).
+ *
+ * A third and fourth hand-written table, for the reason the two above are
+ * hand-written: `stores/` may not import `components/`, so `STATUS_FILL` and
+ * `STATUS_TEXT` in `status-dot.tsx` are unreachable from here — and they are
+ * Tailwind classes in any case, where these are `TermColor` names the ANSI
+ * colorizer resolves. `tests/stores/hive-store.test.ts` asserts the words
+ * against `STATUS_LABEL` the way it already does for sessions, which is the
+ * only thing that keeps two tables in step once a comment has failed to.
+ *
+ * The colours mirror the session state each agent state mirrors in
+ * `STATUS_FILL`, so one word means one colour on both surfaces:
+ *
+ * | agent | mirrors | `STATUS_FILL` | here |
+ * | `asking` | `waiting` | `bg-amber` | `amber` |
+ * | `working` | `working` | `bg-green` | `green` |
+ * | `sleeping` | `idle` | `bg-subtle` | `dim` |
+ * | `paused` | `terminated` | `bg-muted` | `dim` |
+ * | `failed` | — | `bg-red` | `red` |
+ *
+ * `sleeping` and `paused` land on the same `dim`, and that is not a
+ * compromise forced by a narrow palette: `STATUS_COLOR` already paints `idle`
+ * and `terminated` both `dim` for exactly the reason it records there — dim is
+ * this palette's "nothing is happening here", and the *word* beside it carries
+ * which kind of nothing. `TermColor` has no `subtle`/`muted` distinction to
+ * spend, and inventing one would ripple through `ansi.ts` and every transcript
+ * consumer to restate what the row already says in letters.
+ */
+const AGENT_STATUS_WORD: Record<AgentStatus, string> = {
+  sleeping: 'sleeping',
+  working: 'working',
+  asking: 'asking',
+  paused: 'paused',
+  failed: 'failed',
+};
+
+const AGENT_STATUS_COLOR: Record<AgentStatus, TermLine['color']> = {
+  sleeping: 'dim',
+  working: 'green',
+  asking: 'amber',
+  paused: 'dim',
+  failed: 'red',
+};
+
+export function agentStatusWord(status: AgentStatus): string {
+  return AGENT_STATUS_WORD[status];
+}
+
+export function agentStatusColor(status: AgentStatus): TermLine['color'] {
+  return AGENT_STATUS_COLOR[status];
+}
+
+/**
+ * Why a wake did not happen, in the user's terms (HIVE-117).
+ *
+ * Main's `reason` is printed verbatim where it has one — an `invalid` refusal
+ * names the field of the definition that is wrong, and no wording here could
+ * reproduce that. What this adds is the cases main has no words for, because
+ * they are not faults: the agent is busy, or the user themselves stopped it.
+ * Each line ends in the thing to do next.
+ *
+ * `working` and `paused` still say "try again" rather than promising a queue,
+ * and since HIVE-126 that is a statement about `rotate`. A `run` refused for
+ * either reason is queued by the scheduler and never reaches this function —
+ * see {@link agentRunQueued}. A rotation still can, and is not queued:
+ * `forceRotate` stays armed through the refusal and carries it instead.
+ *
+ * **Exported, and read by the agent view as well as the console.** Both surfaces
+ * draw the refusal from one `AgentRunResult`, and the view had its own ternary
+ * chain ending in a bare `else` — so when this story widened `refused` with
+ * `paused`, the view began telling users that the runtime was not up about an
+ * agent they had paused thirty seconds earlier. An exhaustive `switch` over the
+ * union in one place is what makes the next member a compile error there
+ * instead of a plausible sentence.
+ *
+ * In `hive-store.ts` rather than a lib module because it is the console's
+ * wording first; `features/` may import `stores/`, and the reverse is the
+ * direction the fence forbids.
+ */
+export function agentRunRefusal(
+  name: string,
+  outcome: Extract<AgentRunResult, { refused: string }>,
+): string {
+  if (outcome.reason !== undefined) return outcome.reason;
+
+  switch (outcome.refused) {
+    case 'working':
+      return `${name} is working — try again when it sleeps`;
+    case 'paused':
+      return `${name} is paused — resume it first`;
+    case 'saturated':
+      return `${name} is saturated — every run it may have live is live; try again when one ends`;
+    case 'invalid':
+      return `${name}'s definition could not be read — edit it to fix that`;
+    case 'unknown':
+      return 'the agent runtime is not running';
+  }
+}
+
+/**
+ * Why a wake has not happened *yet*, in the user's terms (HIVE-126).
+ *
+ * Beside {@link agentRunRefusal} rather than folded into it, because the two
+ * answer different questions — that one names a fault, this one names a wait —
+ * and a `queued` branch inside a function whose whole job is the refusal's
+ * exhaustive switch would blunt exactly the thing that switch is for.
+ *
+ * Each line still ends in the thing to do next. For a run queued behind a
+ * working agent that is *nothing*, and saying so is the point: before this, the
+ * console said "try again when it sleeps" and the user had to.
+ */
+export function agentRunQueued(
+  name: string,
+  outcome: Extract<AgentRunResult, { queued: true }>,
+): string {
+  switch (outcome.behind) {
+    case 'working':
+      return `queued for ${name} — it will run when its current turn ends`;
+    case 'paused':
+      return `queued for ${name} — resume it to run`;
+    case 'saturated':
+      return `queued for ${name} — it starts when one of its runs ends`;
+  }
+}
+
+/**
+ * A message quoted back inside a one-line suggestion (HIVE-126).
+ *
+ * `pushOrch` writes its whole argument as a **single** `TermLine`, and the
+ * surface renders with `convertEol: true` — so a quoted message carrying
+ * newlines draws as many rows while counting once against `ORCH_LINE_CAP`.
+ * That is the same cap-evasion the command echo splits per line to avoid, and
+ * `send` and `ask` both keep line breaks in a message on purpose.
+ *
+ * A cross-verb suggestion is one line by construction — it is a command to
+ * retype — so the message it quotes is flattened into it.
+ */
+const oneLine = (text: string): string => text.replace(/\s*\n\s*/gu, ' ');
+
 let spawnCounter = 0;
 
 /**
@@ -748,7 +1070,7 @@ let spawnCounter = 0;
  * The closed lists, checked rather than assumed (HIVE-87).
  *
  * `session-history-contract.ts` types `model` and `effort` as the unions but the
- * file they come from is not typed at all, and `ledger.ts` deliberately does not
+ * file they come from is not typed at all, and `history.ts` deliberately does not
  * re-check them — it points here instead. These are what make that pointer
  * true.
  */
@@ -896,8 +1218,8 @@ function byRecency(
  * but only by skipping: with the counter at zero and `sess-05` restored, the
  * next four spawns take `sess-01`…`sess-04` and the fifth silently jumps the
  * gap. That is a fleet whose ids no longer say anything about order, and it is
- * the kind of thing that reads as a bug in the ledger long after the ledger has
- * stopped being involved.
+ * the kind of thing that reads as a bug in the session history long after the
+ * session history has stopped being involved.
  *
  * Parsed base 36 because that is what `nextSessionId` formats with. An id that
  * does not match the pattern — a fixture, a hand-edited file — is ignored
@@ -994,8 +1316,8 @@ const line = (text: string, color: TermLine['color'] = 'ink'): TermLine => ({
  * {@link HiveActions.hydrateSessions} puts last run's sessions back shortly
  * after the first paint. That reads like a reversal of everything above, so the
  * difference is worth stating — **the seeds are still empty, and the rows still
- * arrive from a real producer.** The producer is main's ledger rather than a
- * pty, and every row it supplies is one that has already ended.
+ * arrive from a real producer.** The producer is main's session history rather
+ * than a pty, and every row it supplies is one that has already ended.
  *
  * The failure this comment is about is untouched. A seeded fleet claimed
  * sessions were *running* that were not, and a real read replaced them a frame
@@ -1082,6 +1404,7 @@ function sameTickets(
 export const useHiveStore = create<HiveState>()((set, get) => ({
   ...emptySeeds(),
   notifs: [],
+  ledger: [],
   metrics: {},
   /**
    * Loading until the first read answers.
@@ -1291,7 +1614,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           The name rides along with it (HIVE-108), which it did not have to
           before: main used to learn this row's name from the `--name` on its
           own command line, and there is no longer one. A note carrying a name
-          is what sets `namePinned` in the ledger, so without it the file would
+          is what sets `namePinned` in the session history, so without it the file would
           take the agent's first title unpinned — and the next launch would
           restore `back-key-interception` for a row the app is showing as
           `HIVE-73-back-key-interception`.
@@ -1613,6 +1936,51 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         return;
       }
 
+      case 'ledger': {
+        if (!isDesktop()) {
+          pushOrch(`  ${LEDGER_REQUIRES_DESKTOP}`, 'red');
+          return;
+        }
+        /*
+          Read from the store's own mirror, not over IPC (HIVE-113).
+
+          `runOrchCommand` is synchronous, and `use-ledger-sync.ts` already
+          keeps this slice hydrated and pushed — an `invoke` here would make the
+          whole verb async to fetch what is already sitting in memory. Filtering
+          goes through the same `matches`/`openAsks` main uses, so the console
+          and the log cannot drift apart about what "open" means.
+        */
+        const now = Date.now();
+        const query: LedgerReadQuery = {
+          ...(command.from === undefined ? {} : { from: command.from }),
+          ...(command.to === undefined ? {} : { to: command.to }),
+        };
+        /**
+         * Open-ness is derived from the **whole log**, then filtered — never
+         * the other way round.
+         *
+         * `openAsks` decides "answered" by scanning the array it is handed, and
+         * an answer is always addressed back to the asker rather than to the
+         * ask's recipient. So any `--from`/`--to` filter applied first removes
+         * the answers while keeping the asks, and `ledger --open --to <party>`
+         * would report every already-answered question as still open. Main
+         * states the same rule on `Ledger.read` for the same reason; this is
+         * the console keeping its side of it.
+         */
+        const entries = command.open
+          ? openAsks(get().ledger, now).filter((entry) => matches(entry, query))
+          : get().ledger.filter((entry) => matches(entry, query));
+
+        for (const row of ledgerRows(entries, {
+          now,
+          showEvents: command.events,
+          limit: command.limit,
+        })) {
+          pushOrch(row.text, row.color);
+        }
+        return;
+      }
+
       case 'clear': {
         set({ orchLines: [line('console cleared — help for commands', 'dim')] });
         return;
@@ -1642,6 +2010,29 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       case 'send': {
         const match = resolve(command.target);
         if (match === null) return;
+
+        /**
+         * An agent is **asked**, never sent to (HIVE-117).
+         *
+         * This arm is a deletion as much as an addition. `sendToEntity` branches
+         * on `isDesktop() && isSession(entity)`, so an agent target fell through
+         * to the demo branch: it echoed `❯ [overmind] <message>` into the
+         * agent's own transcript and scheduled a fake ack on a timer. Nothing
+         * was delivered and nothing was written down, but the console said it
+         * had been — which is the one failure mode a router must not have.
+         *
+         * The refusal names the verb that works rather than only the one that
+         * does not: `ask` is a real channel to an agent, it takes the same two
+         * arguments, and a user who typed `send` wanted exactly that.
+         */
+        const target = get().entities[match.id];
+        if (target !== undefined && isAgent(target)) {
+          pushOrch(
+            `  agents are asked, not sent: try ask ${match.label} ${oneLine(command.message)}`,
+            'red',
+          );
+          return;
+        }
 
         /**
          * An ended session is refused **before** `sendToEntity`, and this is a
@@ -1681,6 +2072,107 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
          * whether it matched at all.
          */
         pushOrch(`  routed → ${match.label}`, 'dim');
+        return;
+      }
+
+      case 'ask': {
+        if (!isDesktop()) {
+          pushOrch(`  ${LEDGER_REQUIRES_DESKTOP}`, 'red');
+          return;
+        }
+        /*
+          Resolved through `resolveEntityRef` and worded here, as the agent
+          verbs are — not through `resolve()`, whose sentences are a session's
+          (HIVE-126).
+
+          `ask` used to belong to `resolve()`'s group, and correctly: it took a
+          session. Now that it takes an agent, a miss reported as "no such
+          session" would name the target type this very story just changed its
+          usage line away from. The *resolution* stays the shared one for the
+          reason the agent verbs give: every verb matches case-insensitively and
+          by label, and one that alone demanded the exact key would refuse
+          `SLACK-WATCHER` on a screen where `open SLACK-WATCHER` works.
+        */
+        const match = resolveEntityRef(command.target, get().entities);
+
+        if (match.kind === 'none') {
+          pushOrch(`  no such agent: ${command.target}`, 'red');
+          return;
+        }
+        if (match.kind === 'ambiguous') {
+          pushOrch(
+            `  ${command.target} matches ${match.labels.join(', ')} — use an agent name`,
+            'red',
+          );
+          return;
+        }
+
+        /**
+         * Agents only, and the mirror of `send`'s refusal (HIVE-126).
+         *
+         * `send` writes into a pty *now*; `ask` writes a durable, answerable
+         * entry. A session has a terminal you can open and read, so a question
+         * to one is a keystroke. An agent has no terminal — which is precisely
+         * why the agent is the party that keeps `ask`. While this verb took
+         * either, the pair read as redundant and neither had a clean domain.
+         *
+         * Two things went with the narrowing, and both were load-bearing while
+         * a session could be asked. The party mapping — `terminalOf(session)`
+         * rather than the row id, because a cleared row's successor carries a
+         * fresh id over the predecessor's terminal — is unreachable now that no
+         * session resolves here. So is the `held` line: `resolve` documents
+         * that agents are never ended and always answer `null`, so an ask from
+         * this verb is never held for a party that has gone away.
+         *
+         * `deliver.ts` still holds and flushes an ask addressed to a session —
+         * that path is main's, it serves entries agents write, and nothing here
+         * touches it.
+         */
+        const entity = get().entities[match.id];
+        if (entity === undefined || !isAgent(entity)) {
+          const label = entity === undefined ? command.target : entityLabel(entity);
+          pushOrch(
+            `  sessions are sent to, not asked: try send ${label} ${oneLine(command.message)}`,
+            'red',
+          );
+          return;
+        }
+
+        void window.hive?.ledger
+          .post({ to: match.id, kind: 'ask', body: command.message })
+          .then((outcome) => {
+            if (!outcome.ok) {
+              // Verbatim, the way `send` prints a refusal: the reason names
+              // what the user has to do about it.
+              pushOrch(`  ${outcome.reason}`, 'red');
+              return;
+            }
+            const handle = outcome.ref ?? outcome.id;
+            pushOrch(`  asked ${entityLabel(entity)} (${handle})`, 'dim');
+          });
+        return;
+      }
+
+      case 'answer': {
+        if (!isDesktop()) {
+          pushOrch(`  ${LEDGER_REQUIRES_DESKTOP}`, 'red');
+          return;
+        }
+        /*
+          The thread argument is passed through untouched. `ledger.answer` in
+          main accepts a short ref or a canonical id and resolves it there, so
+          the console does not need a second copy of that rule — and could not
+          have one, since a ref only resolves against the whole log.
+        */
+        void window.hive?.ledger
+          .answer({ thread: command.thread, body: command.message })
+          .then((outcome) => {
+            if (!outcome.ok) {
+              pushOrch(`  ${outcome.reason}`, 'red');
+              return;
+            }
+            pushOrch(`  answered ${command.thread}`, 'dim');
+          });
         return;
       }
 
@@ -1773,6 +2265,285 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         // No confirmation line here: `spawnSession` writes it, so both this
         // command and the picker log exactly once.
         get().spawnSession(target, command.task);
+        return;
+      }
+
+      /**
+       * The fleet's tenants, one row each (HIVE-117).
+       *
+       * Read from the store's own mirror rather than over IPC, for `ledger`'s
+       * reason: `runOrchCommand` is synchronous and `use-agents-sync.ts`
+       * already keeps this slice hydrated and pushed.
+       *
+       * Desktop-gated even though it only reads: in a browser `agentOrder` is
+       * empty forever, so the honest answer is "not here", and printing
+       * `no agents` would read as "you have none" — a different and wrong
+       * claim.
+       */
+      case 'agents': {
+        if (!isDesktop()) {
+          pushOrch(`  ${AGENTS_REQUIRE_DESKTOP}`, 'red');
+          return;
+        }
+
+        const state = get();
+        const now = Date.now();
+        const open = openAsks(state.ledger, now);
+        const rows = state.agentOrder.flatMap((id) => {
+          const entity = state.entities[id];
+
+          // `entities` holds both kinds and an agent name is a legal session
+          // id — the same narrowing every other agent reader does.
+          return entity !== undefined && isAgent(entity) ? [entity] : [];
+        });
+
+        if (rows.length === 0) {
+          pushOrch('  no agents — add one in Settings › Agents', 'dim');
+          return;
+        }
+
+        for (const agent of rows) {
+          const ref = open.find((ask) => ask.from === agent.id)?.ref;
+          const word =
+            ref === undefined
+              ? agentStatusWord(agent.status)
+              : `${agentStatusWord(agent.status)} (${ref})`;
+          const today = runsToday(agent.today, now);
+
+          /*
+            One colour per line, not per column — `status`'s rule, and for its
+            reason: `TermLine` carries a single colour, and a wall of amber is
+            still "these need you" at a glance.
+
+            The widths are `status`'s too, widened where this table's values are
+            longer: 16 for the name, then 14 for a status word carrying a ref
+            (`sleeping` is 8 and `asking (a71)` is 12), then 26 for the wake
+            description — which is the one column with no upper bound, since
+            `describeWake` will happily print five weekday names. A `padEnd`
+            that is short does not truncate, it stops aligning, so the columns
+            after a long wake give way rather than the wake being cut.
+          */
+          pushOrch(
+            `  ${agent.id.padEnd(16)}${word.padEnd(14)}${describeWake(agent.wake).padEnd(26)}${String(today.count)} ${today.count === 1 ? 'run' : 'runs'} · ${today.cost}`,
+            agentStatusColor(agent.status),
+          );
+        }
+        return;
+      }
+
+      case 'run':
+      case 'pause':
+      case 'resume':
+      case 'rotate':
+      case 'kill': {
+        if (!isDesktop()) {
+          pushOrch(`  ${AGENTS_REQUIRE_DESKTOP}`, 'red');
+          return;
+        }
+
+        /**
+         * Resolved through `resolveEntityRef` but worded here (HIVE-117).
+         *
+         * Not through `resolve()`, whose sentences are a session's — "no such
+         * session", "use a session id" — and whose ended-gate is a session's
+         * too. But the *resolution* has to be the shared one: `open`, `send`
+         * and `ask` all match case-insensitively and by label, and a `pause`
+         * that alone demanded the exact key would refuse `SLACK-WATCHER` on the
+         * same screen where `open SLACK-WATCHER` works.
+         *
+         * A hit that turns out to be a session is refused here rather than sent
+         * to main. `entities` holds both kinds under one map, so `run sess-01`
+         * resolves perfectly well and would come back rejected by main's name
+         * guard — with a message about legal agent names rather than about what
+         * the user actually did.
+         */
+        const match = resolveEntityRef(command.target, get().entities);
+
+        if (match.kind === 'none') {
+          pushOrch(`  no such agent: ${command.target}`, 'red');
+          return;
+        }
+        if (match.kind === 'ambiguous') {
+          pushOrch(
+            `  ${command.target} matches ${match.labels.join(', ')} — use an agent name`,
+            'red',
+          );
+          return;
+        }
+
+        const entity = get().entities[match.id];
+        if (entity === undefined || !isAgent(entity)) {
+          pushOrch(
+            `  ${command.target} is a session, not an agent — try open or send`,
+            'red',
+          );
+          return;
+        }
+
+        const name = entity.id;
+        const agents = window.hive?.agents;
+
+        /*
+          Desktop with no bridge is not a state the app reaches, but a silent
+          return would be indistinguishable from a verb that ran and said
+          nothing — the failure the ledger verbs' desktop guard exists to
+          prevent. Say it instead.
+        */
+        if (agents === undefined) {
+          pushOrch(`  ${AGENTS_REQUIRE_DESKTOP}`, 'red');
+          return;
+        }
+
+        /**
+         * Every one of these rejects, and a dropped rejection is a silent verb.
+         *
+         * `agents:pause` and `agents:resume` throw by design when the runtime is
+         * not up — answering a status they never wrote is the one outcome their
+         * contract calls worth a rejected promise — and `assertSender` and the
+         * payload guards reject on every channel. Without this the console
+         * would print the echoed command and nothing else, and the renderer
+         * would log an unhandled rejection where the user was owed a sentence.
+         */
+        const said = (work: Promise<void>) => {
+          void work.catch((cause: unknown) => {
+            pushOrch(
+              `  ${cause instanceof Error ? cause.message : String(cause)}`,
+              'red',
+            );
+          });
+        };
+
+        if (command.kind === 'run') {
+          said(
+            agents
+              .run(
+                /*
+                  An absent key rather than `extra: undefined`: the guard's
+                  closed key set counts keys, not values, and a payload naming
+                  a field it has nothing to put in it is a payload disagreeing
+                  with the contract.
+                */
+                command.prompt === undefined
+                  ? { name }
+                  : { name, extra: command.prompt },
+              )
+              .then((outcome) => {
+                if (outcome.started) {
+                  // A task run is a named job in a fresh session, not the
+                  // agent's own standing conversation — "woke" is the wrong
+                  // verb for a run that is not a wake at all (HIVE-128).
+                  pushOrch(
+                    outcome.kind === 'task'
+                      ? `  started a task run for ${name} (${outcome.run})`
+                      : `  woke ${name} (${outcome.run})`,
+                    'dim',
+                  );
+                  return;
+                }
+                /*
+                  Woken, or queued — never a bare refusal for a wait (HIVE-126).
+
+                  `dim`, like the line above and unlike the one below: a run
+                  waiting its turn is a deferral, not a fault, and red would
+                  report that something went wrong when nothing did.
+                */
+                if ('queued' in outcome) {
+                  pushOrch(`  ${agentRunQueued(name, outcome)}`, 'dim');
+                  return;
+                }
+                /*
+                  Main's reason wins where it has one — an `invalid` refusal
+                  names the field of the definition that is wrong, which no
+                  wording here could reproduce. The refusals the console says
+                  better than main are the ones that name the user's next move.
+                */
+                pushOrch(`  ${agentRunRefusal(name, outcome)}`, 'red');
+              }),
+          );
+          return;
+        }
+
+        /*
+          `run`'s twin, refusals and all (HIVE-122).
+
+          The refusal wording is `run`'s exactly rather than a rotation-flavoured
+          variant, because what was refused *is* a run — and main leaves
+          `forceRotate` armed when it refuses one, so the rotation is not lost:
+          the wake that does land is the handoff wake. Wording it as "the
+          rotation failed" would say the opposite of what happened.
+
+          The success line says "to rotate", not "for a handoff": main only
+          makes it a handoff wake when the agent already has a session to hand
+          over, and on the documented degrade path — a `rotate` on an agent
+          that has never run — the wake that starts is an ordinary first wake
+          on a fresh session, with no handoff asked for. The renderer cannot
+          see which branch main took, and inventing an IPC field to tell it
+          would be a lot of wire for one adverb. "To rotate" is what the user
+          asked for, and it is true of both branches.
+        */
+        if (command.kind === 'rotate') {
+          said(
+            agents.rotate({ name }).then((outcome) => {
+              if (outcome.started) {
+                pushOrch(`  woke ${name} to rotate (${outcome.run})`, 'dim');
+                return;
+              }
+              pushOrch(`  ${agentRunRefusal(name, outcome)}`, 'red');
+            }),
+          );
+          return;
+        }
+
+        if (command.kind === 'kill') {
+          // Read before the call: a task agent may have several runs live,
+          // and the count that matters is the one the user was looking at
+          // when they typed `kill`, not whatever main leaves behind by the
+          // time the promise settles (HIVE-128).
+          const count = entity.live.length;
+
+          said(
+            agents.kill({ name }).then((stopped) => {
+              /*
+                `false` is not an error: a run can end between the table being
+                read and the command being typed, and colouring that red would
+                teach the user to distrust a verb that did exactly what they
+                wanted.
+              */
+              pushOrch(
+                stopped
+                  ? count > 1
+                    ? `  killed ${String(count)} runs of ${name}`
+                    : `  killed ${name}'s run`
+                  : `  nothing running`,
+                'dim',
+              );
+            }),
+          );
+          return;
+        }
+
+        if (command.kind === 'pause') {
+          said(
+            agents.pause({ name }).then(() => {
+              pushOrch(`  paused ${name}`, 'dim');
+            }),
+          );
+          return;
+        }
+
+        /*
+          Resume prints the status main computed, not the word "resumed".
+
+          The two differ in the case that matters most: an agent that asked
+          something while it was paused comes back `asking`, not `sleeping`, and
+          a line saying only "resumed" would bury the question it came back
+          holding.
+        */
+        said(
+          agents.resume({ name }).then((status) => {
+            pushOrch(`  resumed ${name} — ${agentStatusWord(status)}`, 'dim');
+          }),
+        );
         return;
       }
 
@@ -1898,6 +2669,198 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       return { notifs: merged.slice(0, NOTIF_CAP) };
     }),
 
+  hydrateAgents: (summaries) =>
+    set((state) => {
+      const entities = { ...state.entities };
+
+      // Clear the previous set first: this is a replacement, and an agent
+      // whose folder is gone has to go with it. Only ids this store already
+      // believes are agents are dropped, so a session can never be caught by
+      // a name collision.
+      for (const id of state.agentOrder) {
+        const previous = entities[id];
+
+        if (previous !== undefined && isAgent(previous)) delete entities[id];
+      }
+
+      for (const summary of summaries) {
+        const previous = state.entities[summary.name];
+
+        /*
+          Never write over a session.
+
+          `entities` is one map for both kinds, and an agent name is a legal
+          session id — so a definition called `sess-01` used to replace a live
+          session's entity and orphan it from `order`. The clear loop above
+          already guarded this; the write did not.
+        */
+        if (previous !== undefined && !isAgent(previous)) continue;
+
+        const kept = previous === undefined ? [] : previous.lines;
+
+        entities[summary.name] = {
+          kind: 'agent',
+          id: summary.name,
+          icon: summary.icon,
+          sub: summary.description,
+          status: summary.status,
+          wake: summary.wake,
+          mcp: summary.mcp,
+          ...(summary.lastRunAt === undefined
+            ? {}
+            : { lastRunAt: summary.lastRunAt }),
+          ...(summary.nextRunAt === undefined
+            ? {}
+            : { nextRunAt: summary.nextRunAt }),
+          ...(summary.invalid === undefined ? {} : { invalid: summary.invalid }),
+          // Run state, not definition, and carried for the same reason
+          // `lastRunAt` is: `agents:list` reads it back out of `agents.json`,
+          // so a folder change must not blank the cost the live push put in
+          // this row until whenever the agent happens to run again.
+          ...(summary.cost === undefined ? {} : { cost: summary.cost }),
+          /*
+            Run state, like `cost` above (HIVE-116). `runsSinceRotate` is
+            optional on the wire — a summary the registry built for an agent
+            with no entry in `agents.json` omits it — and zero is the honest
+            reading of "nothing has run yet".
+          */
+          runsSinceRotate: summary.runsSinceRotate ?? 0,
+          /*
+            Run state too (HIVE-121). `today` stays absent when main has none —
+            a fresh agent has spent nothing, and an empty accumulator would be
+            indistinguishable from one belonging to a day that has ended. Zero
+            skips is the honest reading of "nothing has skipped yet", as with
+            `runsSinceRotate` above.
+          */
+          ...(summary.today === undefined ? {} : { today: summary.today }),
+          skipsSinceRun: summary.skipsSinceRun ?? 0,
+          rotateAfter: summary.rotateAfter,
+          runs: summary.runs,
+          // Run state too (HIVE-128): absent on a summary built for an agent
+          // with nothing in flight, which is the common case.
+          live: summary.live ?? [],
+          ...(summary.sessionUuid === undefined
+            ? {}
+            : { sessionUuid: summary.sessionUuid }),
+          task: summary.description,
+          // Run output, not definition — re-reading the file is no reason to
+          // forget what the agent said.
+          lines: kept,
+        };
+      }
+
+      return {
+        entities,
+        agentOrder: summaries
+          .map((summary) => summary.name)
+          .sort((a, b) => a.localeCompare(b)),
+      };
+    }),
+
+  setAgentStatus: (push) =>
+    set((state) => {
+      const previous = state.entities[push.name];
+
+      // Never write over a session — see the guard in `hydrateAgents`: an
+      // agent name is a legal session id, and this map holds both kinds.
+      if (previous === undefined || !isAgent(previous)) return state;
+
+      return {
+        entities: {
+          ...state.entities,
+          [push.name]: {
+            ...previous,
+            status: push.status,
+            ...(push.lastRunAt === undefined ? {} : { lastRunAt: push.lastRunAt }),
+            /*
+              Assigned, not spread-guarded — unlike `lastRunAt` and `cost`
+              above, which only ever gain a value.
+
+              `nextRunAt` genuinely goes away: the scheduler clears it when a
+              definition stops scheduling, or stops parsing mid-edit. Guarded,
+              that clear could never cross, and the rail would go on reading
+              `next 09:00` for an agent that will never wake again until an
+              unrelated re-list happened past.
+            */
+            nextRunAt: push.nextRunAt,
+            ...(push.cost === undefined ? {} : { cost: push.cost }),
+            /*
+              Assigned, not spread-guarded: both are required on the push, and
+              a run that closes with an empty history is a real state the tile
+              must show as `0 runs` rather than as last render's number.
+            */
+            runs: push.runs,
+            runsSinceRotate: push.runsSinceRotate,
+            // Replaced, never merged: main is the only writer and an empty
+            // list is a real state (HIVE-128).
+            live: push.live,
+            // Absent means unchanged, never cleared: main only ever replaces this.
+            ...(push.sessionUuid === undefined ? {} : { sessionUuid: push.sessionUuid }),
+            /*
+              The scheduler pushes on a skip and on a new next-run time, with
+              no run attached — so these two move on rows that are not running,
+              which is exactly when a reader is looking at them (HIVE-121).
+            */
+            ...(push.today === undefined ? {} : { today: push.today }),
+            skipsSinceRun: push.skipsSinceRun ?? 0,
+          },
+        },
+      };
+    }),
+
+  appendAgentLines: (push) =>
+    set((state) => {
+      const previous = state.entities[push.name];
+
+      // Same guard as `setAgentStatus` and `hydrateAgents`.
+      if (previous === undefined || !isAgent(previous)) return state;
+
+      return {
+        entities: {
+          ...state.entities,
+          [push.name]: {
+            ...previous,
+            lines: capAgentLines([...previous.lines, ...push.lines]),
+          },
+        },
+      };
+    }),
+
+  hydrateLedger: (entries) =>
+    set((state) => {
+      /**
+       * Union, not replacement — `hydrateNotifs`' reason, with one difference
+       * that makes it sharper.
+       *
+       * `useLedgerSync` arms the push channel while `list()` is still in
+       * flight, so an entry appended after main took its snapshot lands here
+       * first and is absent from the snapshot that follows. A replace would
+       * discard it *permanently*: that hook mounts once at the composition
+       * root and never remounts, so there is no second hydrate to recover it.
+       *
+       * Ordered by `id` rather than by `ts`, because ids are fixed-width and
+       * sort as strings in write order — which is the same comparison
+       * `since` and the store's own load-time sort already rely on.
+       */
+      const seen = new Set(state.ledger.map((entry) => entry.id));
+      const merged = [
+        ...state.ledger,
+        ...entries.filter((entry) => !seen.has(entry.id)),
+      ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+      return { ledger: merged.slice(-LEDGER_MEMORY_CAP) };
+    }),
+
+  ledgerAppend: (entry) =>
+    set((state) => ({ ledger: [...state.ledger, entry].slice(-LEDGER_MEMORY_CAP) })),
+
+  answerAsk: async (thread, body, meta) =>
+    window.hive?.ledger.answer({
+      thread,
+      body,
+      ...(meta === undefined ? {} : { meta }),
+    }),
+
   hydrateSessions: (records) =>
     set((state) => {
       const entities = { ...state.entities };
@@ -1910,7 +2873,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
          *
          * The counter has to learn about an id whether or not the row is kept.
          * A spawn that lands in the window between boot and this unawaited
-         * hydrate takes `sess-01`; the ledger's own `sess-01` is then skipped
+         * hydrate takes `sess-01`; the session history's own `sess-01` is then skipped
          * below as a collision, and if the counter never heard of it the next
          * spawn is handed `sess-02` — the id of another record still waiting to
          * be restored, which then vanishes the same way. Once past the skip,
@@ -1920,15 +2883,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 
         /*
           A live row always wins. Not a conflict to resolve so much as the
-          ordinary case: entity ids are reused across a restart, so the ledger's
-          `sess-01` and this run's `sess-01` are different sessions wearing the
-          same name, and only one of them has a process behind it.
+          ordinary case: entity ids are reused across a restart, so the
+          session history's `sess-01` and this run's `sess-01` are different
+          sessions wearing the same name, and only one of them has a process
+          behind it.
 
           This is also the whole of restore's deduplication (HIVE-88), and the
           id is the right key for it. It is the one identity that survives a
           restart: a restored row reopened spawns under its own id, the
-          ledger is keyed by it, and `rememberSpawnId` above keeps this run's
-          counter from minting it a second time. Claude's own `sessionUuid`
+          session history is keyed by it, and `rememberSpawnId` above keeps
+          this run's counter from minting it a second time. Claude's own `sessionUuid`
           never reaches the renderer, and `cwd` or `ticket` would collapse two
           genuinely different sessions on one issue into one row.
         */
@@ -1954,8 +2918,8 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         /*
           A status this build does not know is a record written by one that did.
           Dropped rather than guessed at — an unrenderable row in the fleet
-          table is worse than a row missing from it, and the ledger is a
-          convenience, not a source of truth about anything.
+          table is worse than a row missing from it, and the session history is
+          a convenience, not a source of truth about anything.
         */
         if (stored === undefined) continue;
 
@@ -2016,7 +2980,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
             The times the row really had, not the moment it was restored.
             `createdAt` is required on a record so it always lands; `endedAt` is
             not, and a record without one has already been stamped at load by
-            `ledger.ts` — a row that claims to be live in a file main is reading
+            `history.ts` — a row that claims to be live in a file main is reading
             back plainly is not. A live row promoted below keeps `createdAt` and
             has its `endedAt` removed by `stampLifecycle`, so a session the app
             outlived and then found still running does not sort as though it had
@@ -2032,7 +2996,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           ...(item.pr === undefined ? {} : { lastPr: item.pr }),
           /*
             Checked against the closed lists rather than trusted (HIVE-87).
-            `ledger.ts` casts these on the way in and says the store validates
+            `history.ts` casts these on the way in and says the store validates
             them — which was not true until now, so a hand-edited file or one
             from an older build could put an arbitrary string into a field typed
             as a union. An unknown value drops the field and keeps the row: the
@@ -2191,7 +3155,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * most: Claude repaints several times a second, and a normaliser that grew its
    * input would rename the session on every frame.
    */
-  renameSession: (id, name) =>
+  renameSession: (id, name, origin = 'agent') =>
     set((state) => {
       // The terminal's current row, for the reason `setSessionStatus` gives:
       // a rename after a `/clear` describes the new conversation, not the
@@ -2228,6 +3192,44 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * renamed on a guess.
        */
       if (entity.namePinned === true && entity.ticket === undefined) return state;
+
+      /**
+       * **Claude's own title may only name a row that has no name yet**
+       * (first-prompt naming).
+       *
+       * Claude Code writes exactly one `ai-title` per conversation — measured,
+       * across every transcript this project has produced — but it writes it at
+       * an arbitrary point, from whatever the conversation is about by then:
+       *
+       * ```
+       * line  170/2054   "PR 157 merge check and implementation"
+       * line 1226/2613   "terminal focus and text scramble"
+       * line 1441/1445   "runtime and appearance settings"
+       * ```
+       *
+       * The first of those is a session opened for HIVE-123 that took the name
+       * of a merge check it happened to be running three hundred turns later.
+       * That is not a stale value or a race — it is Claude answering a question
+       * about the wrong moment, and no amount of ordering fixes it.
+       *
+       * So a guess is welcome while the alternative is `sess-07`, and refused
+       * once the row has a name that came from somewhere better: the session's
+       * first prompt, or a person typing `/rename`. Main separates those two
+       * from the guess by reading the transcript Claude records the difference
+       * in — see `sessions/title-origin.ts`, because the OSC-0 channel this
+       * arrives on cannot tell them apart.
+       *
+       * A pinned ticket row is covered by this rather than exempted from it.
+       * HIVE-108 let a title enrich `HIVE-73` into `HIVE-73-back-key-interception`
+       * on the reasoning that the key plus a description beats either alone —
+       * true, but only if the description is of the right work, and the measured
+       * behaviour above is that it frequently is not. `HIVE-73` alone is the
+       * name the user asked for.
+       */
+      const named =
+        entity.name !== undefined && !SESSION_ID_PREFIX_PATTERN.test(entity.name);
+      if (origin === 'agent' && named) return state;
+
       const next = hiveNameFromTitle(
         name,
         entity.namePinned === true ? entity.ticket : undefined,
@@ -2466,14 +3468,14 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      *   nowhere else — `ticketSessionName` de-duplicates against the whole
      *   fleet — so a caller can only send the key, and main had no other way
      *   to learn what the row is now called: this rename never reaches Claude,
-     *   so it never comes back on the title stream. The ledger kept the id, and
-     *   the next launch restored it over a name the user had been reading all
-     *   afternoon.
+     *   so it never comes back on the title stream. The session history kept
+     *   the id, and the next launch restored it over a name the user had been
+     *   reading all afternoon.
      * - **It only speaks when it acted.** The three refusals below are silent
      *   from outside, so an unconditional note beside the call wrote a ticket
-     *   into the ledger that the store had just declined — and keyed it on the
-     *   raw id rather than `currentSessionIn`, which after a `/clear` is a
-     *   different row.
+     *   into the session history that the store had just declined — and keyed
+     *   it on the raw id rather than `currentSessionIn`, which after a
+     *   `/clear` is a different row.
      *
      * `get()` before `set()` is the shape `resumeSession` uses a few actions
      * down, and for the same reason: the decision needs the state, and the
@@ -3496,6 +4498,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     set({
       ...emptySeeds(),
       notifs: [],
+      ledger: [],
       metrics: {},
       ticketSource: { kind: 'loading' },
       prSource: { kind: 'loading' },
@@ -3574,6 +4577,33 @@ export const useSessionNameReports = (): SessionNameReport[] => {
     [encoded],
   );
 };
+
+/**
+ * The subscribing form of {@link isAgentId}, for a component (HIVE-118).
+ *
+ * `isAgentId` reads `getState()`, which is exactly right in an event handler —
+ * the `currentRowFor` precedent — and exactly wrong in a render path, for two
+ * separate reasons this codebase already states as rules.
+ *
+ * It is **not reactive**. `entities` gains its agents from `hydrateAgents`,
+ * and the `ledger:changed` push that puts an ask on screen can beat that
+ * hydration home. A card that asked during the gap would read `false` and keep
+ * reading `false` for ever, because nothing re-renders it when the correction
+ * lands — and in the very name collision the caller's guard exists to close,
+ * `false` means "resolve this through session lookup", which is the bug.
+ *
+ * And it is a `getState()` call from a component, which the project rule
+ * forbids outright: every consumer goes through a named selector hook, because
+ * that is what keeps a store write from re-rendering things it did not change.
+ *
+ * Returns a **boolean**, so a subscriber re-renders when the answer flips and
+ * not when anything else about the fleet moves.
+ */
+export const useIsAgentId = (id: string): boolean =>
+  useHiveStore((state) => {
+    const entity = state.entities[id];
+    return entity !== undefined && isAgent(entity);
+  });
 
 /**
  * What to call the session a **terminal** id names, right now (HIVE-110).
@@ -3736,6 +4766,15 @@ export const useNavOrder = () =>
        * about where "here" is, so the partition *and* the sort have to match
        * `session-table.tsx` exactly. A flattening in a different order from the
        * one on screen makes the down arrow skip a row and come back to it.
+       *
+       * **Three** buckets since HIVE-117, because the table draws three. The
+       * agents sit between the two session groups, ranked by `rankedAgents` —
+       * the same function the table's own group is drawn from, not a second
+       * copy of its rule. Without them here an agent row was still *selectable*
+       * (it renders the caret and sets `selId` on click) while being absent
+       * from the order every arrow key consults: `↓` from one teleported to the
+       * first session, `↑` to the last ended row, and `→` opened nothing at all
+       * because `console-input.tsx` gates on membership of this list.
        */
       const active: string[] = [];
       const ended: string[] = [];
@@ -3747,6 +4786,7 @@ export const useNavOrder = () =>
       }
       return [
         ...byRecency(active, state.entities),
+        ...rankedAgents(state.agentOrder, state.entities),
         ...byRecency(ended, state.entities),
       ];
     }),
@@ -3767,7 +4807,7 @@ export const useNavOrder = () =>
  * **Both are newest-first** (`byRecency`). The table used to paint `order`
  * straight through, which is insertion order — so the newest session was at the
  * bottom of the live group, and the ended half read oldest-first from the top,
- * with last run's rows arriving in the ledger's own oldest-ending-first
+ * with last run's rows arriving in the session history's own oldest-ending-first
  * sequence. The one row a fleet table exists to show first was reliably the one
  * furthest from the header.
  */
@@ -3863,9 +4903,482 @@ export const useHasResumable = (): boolean =>
     }),
   );
 
-/** The long-lived background agents, in fixture order (story 033). */
+/**
+ * The background agents, alphabetically (HIVE-114).
+ *
+ * Was "in fixture order (story 033)" — there are no agent fixtures any more.
+ * The order comes from `hydrateAgents`, and it is alphabetical because a
+ * folder listing has no meaningful order of its own and the user names these
+ * themselves.
+ */
 export const useAgentOrder = () =>
   useHiveStore(useShallow((state) => state.agentOrder));
+
+/**
+ * One agent by name, or `null` if that id is not an agent (HIVE-114).
+ *
+ * Narrows rather than casting, so a caller handed a *session*'s id gets `null`
+ * instead of a row that renders half-correctly — `entities` is one map and the
+ * two kinds share it.
+ */
+export const useAgent = (name: string) =>
+  useHiveStore((state) => {
+    const entity = state.entities[name];
+
+    return entity !== undefined && isAgent(entity) ? entity : null;
+  });
+
+/**
+ * One agent's run log.
+ *
+ * A selector rather than `useAgent(name).lines` so a line batch re-renders the
+ * run view and nothing else — the same reason every other consumer here goes
+ * through a named hook.
+ */
+export const useAgentLines = (name: string): TermLine[] =>
+  useHiveStore((state) => {
+    const entity = state.entities[name];
+
+    return entity !== undefined && isAgent(entity) ? entity.lines : EMPTY_LINES;
+  });
+
+/**
+ * Stable identity for an agent that has never run, and for a name that is not
+ * an agent at all — a fresh `[]` per call re-renders every consumer on any
+ * unrelated store write. The same reason `EMPTY_LINES` exists above it.
+ */
+const EMPTY_RUNS: RunSummary[] = [];
+
+export interface AgentGroup {
+  key: 'awake' | 'sleeping' | 'paused';
+  label: string;
+  ids: string[];
+}
+
+/**
+ * The rail's groups, in the order they are read (HIVE-116).
+ *
+ * The question a grouping answers here is *should I look at this?*, which is
+ * why `failed` files under Awake rather than earning a fourth group: a broken
+ * agent is not resting, and filing it under Sleeping would bury the one row
+ * that actually needs a person. Inside Awake, `asking` sorts first and ties
+ * break on the most recent run — the same "what needs me first" order the
+ * fleet table reads in.
+ *
+ * An empty group is omitted rather than drawn with a zero: a header reading
+ * `PAUSED 0` is a line of noise about nothing.
+ */
+export const useAgentsByGroup = (): AgentGroup[] => {
+  /*
+    The three fields the grouping reads, and nothing else.
+
+    Subscribing to `state.entities` re-ran this on every write to *any* entity
+    — a line batch from a running agent, a session's status change — because
+    the map's identity changes each time, and the memo below then handed every
+    row a fresh object. `useShallow` over a flat tuple list means an unrelated
+    write compares equal and the rail does not re-render at all. This is the
+    rule `CLAUDE.md` states as keeping a picker keystroke from re-rendering
+    thirteen live terminals.
+  */
+  const rows = useHiveStore(
+    useShallow((state) =>
+      state.agentOrder.flatMap((id) => {
+        const entity = state.entities[id];
+
+        // `entities` holds both kinds and an agent name is a legal session id,
+        // so the same narrowing every other agent selector does.
+        if (entity === undefined || !isAgent(entity)) return [];
+
+        return [`${id}|${entity.status}|${entity.lastRunAt ?? 0}`];
+      }),
+    ),
+  );
+
+  return useMemo(() => {
+    /*
+      Encoded as strings, not tuples, and that is `useShallow`'s doing: it
+      compares the returned array's elements by identity, so an array of freshly
+      built tuples is never equal to the last one — every read looks like a
+      change, `useSyncExternalStore` re-renders, and React stops it with
+      "maximum update depth exceeded". Primitives compare by value and settle.
+
+      `|` is safe as a separator: `AGENT_NAME_PATTERN` admits lowercase letters,
+      digits and dashes only.
+    */
+    const parsed = rows.map((row) => {
+      const [id = '', status = '', lastRunAt = '0'] = row.split('|');
+
+      return { id, status, lastRunAt: Number(lastRunAt) };
+    });
+
+    const bucket: Record<AgentGroup['key'], (typeof parsed)[number][]> = {
+      awake: [],
+      sleeping: [],
+      paused: [],
+    };
+
+    for (const row of parsed) {
+      if (row.status === 'paused') bucket.paused.push(row);
+      else if (row.status === 'sleeping') bucket.sleeping.push(row);
+      else bucket.awake.push(row);
+    }
+
+    bucket.awake.sort((a, b) => {
+      if (a.status === 'asking' && b.status !== 'asking') return -1;
+      if (b.status === 'asking' && a.status !== 'asking') return 1;
+
+      return b.lastRunAt - a.lastRunAt;
+    });
+
+    const labels: Record<AgentGroup['key'], string> = {
+      awake: 'Awake',
+      sleeping: 'Sleeping',
+      paused: 'Paused',
+    };
+
+    return (['awake', 'sleeping', 'paused'] as const)
+      .filter((key) => bucket[key].length > 0)
+      .map((key) => ({
+        key,
+        label: labels[key],
+        ids: bucket[key].map((row) => row.id),
+      }));
+  }, [rows]);
+};
+
+/** One agent's run summaries, **oldest first** — most recent last. */
+export const useAgentRuns = (name: string): RunSummary[] =>
+  useHiveStore((state) => {
+    const entity = state.entities[name];
+
+    return entity !== undefined && isAgent(entity) ? entity.runs : EMPTY_RUNS;
+  });
+
+const EMPTY_LIVE: LiveRunSummary[] = [];
+
+/** Every run live under the name, standing first is the *view's* job (HIVE-128). */
+export const useAgentLive = (name: string): LiveRunSummary[] =>
+  useHiveStore((state) => {
+    const entity = state.entities[name];
+
+    return entity !== undefined && isAgent(entity) ? entity.live : EMPTY_LIVE;
+  });
+
+export const useAgentLiveCount = (name: string): number =>
+  useHiveStore((state) => {
+    const entity = state.entities[name];
+
+    return entity !== undefined && isAgent(entity) ? entity.live.length : 0;
+  });
+
+export interface AgentFacts {
+  status: AgentStatus;
+  /** The open ask this agent is waiting on, when it is `asking`. */
+  askRef?: string;
+  wake: string;
+  next: string;
+  /** `skipped 3`, when there have been any. Absent is the common case. */
+  skips?: string;
+  todayRuns: number;
+  todayCost: string;
+  sessionUuid?: string;
+  runsSinceRotate: number;
+  rotateAfter: number;
+}
+
+/**
+ * The agent view's five fact tiles, derived on read (HIVE-116).
+ *
+ * The `Today` pair comes from {@link runsToday} rather than being computed here
+ * (HIVE-117): the console's `agents` table prints the same two numbers, and the
+ * two surfaces can share a screen. One spelling, one source.
+ */
+export const useAgentFacts = (name: string): AgentFacts | null => {
+  const entity = useHiveStore((state) => state.entities[name]);
+  const ledger = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => {
+    if (entity === undefined || !isAgent(entity)) return null;
+
+    const today = runsToday(entity.today);
+    const open = openAsks(ledger, Date.now()).find((ask) => ask.from === name);
+
+    return {
+      status: entity.status,
+      ...(open?.ref === undefined ? {} : { askRef: open.ref }),
+      wake: describeWake(entity.wake),
+      next: describeNextRun(entity),
+      /*
+        Separate from `next` rather than joined onto it, so the tile can draw
+        the hour in ink and the count beneath it in `text-subtle` — the rail
+        row joins the same two parts into one plain string.
+      */
+      ...(describeSkips(entity) === undefined
+        ? {}
+        : { skips: describeSkips(entity) as string }),
+      todayRuns: today.count,
+      todayCost: today.cost,
+      ...(entity.sessionUuid === undefined
+        ? {}
+        : { sessionUuid: entity.sessionUuid }),
+      runsSinceRotate: entity.runsSinceRotate,
+      rotateAfter: entity.rotateAfter,
+    };
+  }, [entity, ledger, name]);
+};
+
+/**
+ * The Agents tab's badge: open asks an **agent** is waiting on.
+ *
+ * Deliberately not `useOpenAskCount()`, which counts every open ask including
+ * a session's, and deliberately not the Inbox's `useUnreadCount()`, which
+ * counts notifications. Three badges, three different numbers — this one
+ * answers "how many of my tenants are stuck on me?".
+ *
+ * Filtered here rather than in `openAsks`: that function is shared with main,
+ * which has no notion of which parties are agents, and only the renderer holds
+ * `agentOrder`.
+ */
+export const useAgentAskCount = (): number => {
+  const ledger = useHiveStore((state) => state.ledger);
+  const order = useHiveStore((state) => state.agentOrder);
+
+  return useMemo(() => {
+    const agents = new Set(order);
+
+    return openAsks(ledger, Date.now()).filter((ask) => agents.has(ask.from))
+      .length;
+  }, [ledger, order]);
+};
+
+/**
+ * One agent's side of the log — what it said, and what it was told.
+ *
+ * A selector rather than two `useLedgerEntries` calls merged in a component,
+ * because it is a *union* and `LedgerReadQuery` cannot express one: `matches`
+ * ands its fields, so `{ from, to }` would mean "from this agent AND addressed
+ * to it", which is nothing.
+ *
+ * A broadcast from some other party is excluded on purpose. `matches` counts
+ * an undirected entry as addressed to everyone, which is right for an inbox
+ * and wrong for a thread — this column answers "what passed between us", and
+ * an announcement to the whole hive did not.
+ */
+export const useAgentThread = (name: string): LedgerEntry[] => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(
+    () => entries.filter((entry) => entry.from === name || entry.to === name),
+    [entries, name],
+  );
+};
+
+/** The open ask one agent is waiting on — the `a71` in its row meta. */
+export const useAgentAskRef = (name: string): string | undefined => {
+  const ledger = useHiveStore((state) => state.ledger);
+
+  return useMemo(
+    () => openAsks(ledger, Date.now()).find((ask) => ask.from === name)?.ref,
+    [ledger, name],
+  );
+};
+
+/**
+ * The agents, ordered for the fleet table's AGENTS group (HIVE-117).
+ *
+ * A second ordering rather than a reuse of {@link useAgentsByGroup}, because
+ * the two surfaces are answering different questions. The rail *groups* —
+ * Awake, Sleeping, Paused, three headings the eye scans between. The fleet
+ * table has one heading and one list, so the order has to carry the whole
+ * priority by itself: `asking` (someone is waiting on you), then `working`,
+ * then `sleeping` by the wake that comes soonest, then `paused` last because
+ * nothing will move it until you say so.
+ *
+ * Encoded as strings for `useShallow`'s reason, which `useAgentsByGroup`
+ * records at length: an array of freshly built tuples is never equal to the
+ * last one, so every read looks like a change and React stops it with
+ * "maximum update depth exceeded".
+ */
+const AGENT_RANK: Record<AgentStatus, number> = {
+  asking: 0,
+  working: 1,
+  failed: 2,
+  sleeping: 3,
+  paused: 4,
+};
+
+/** The three fields the AGENTS group's order is a function of. */
+interface AgentRank {
+  id: string;
+  status: AgentStatus;
+  /** `0` for an agent nothing is scheduled to wake. */
+  nextRunAt: number;
+}
+
+/**
+ * The AGENTS group's comparator.
+ *
+ * Extracted rather than left inside {@link useFleetAgents} because
+ * {@link useNavOrder} has to produce the identical sequence: its docblock says
+ * the partition and the sort "have to match `session-table.tsx` exactly", and
+ * the table now draws a third group. Two spellings of one order is the defect
+ * that docblock is warning about — a caret that skips a row and comes back to
+ * it.
+ */
+function byFleetRank(a: AgentRank, b: AgentRank): number {
+  const rank = AGENT_RANK[a.status] - AGENT_RANK[b.status];
+  if (rank !== 0) return rank;
+
+  /*
+    Soonest wake first within a rank, and an agent with no scheduled wake last:
+    absence arrives here as `0`, and treating it as a time would sort the one
+    agent that will never wake on its own ahead of the one about to.
+  */
+  if (a.nextRunAt === b.nextRunAt) return a.id.localeCompare(b.id);
+  if (a.nextRunAt === 0) return 1;
+  if (b.nextRunAt === 0) return -1;
+
+  return a.nextRunAt - b.nextRunAt;
+}
+
+/** The agents of `agentOrder`, ranked — shared by the table and the caret. */
+function rankedAgents(
+  order: readonly string[],
+  entities: Record<string, Entity>,
+): string[] {
+  const rows: AgentRank[] = [];
+
+  for (const id of order) {
+    const entity = entities[id];
+
+    // `entities` holds both kinds and an agent name is a legal session id.
+    if (entity === undefined || !isAgent(entity)) continue;
+
+    rows.push({ id, status: entity.status, nextRunAt: entity.nextRunAt ?? 0 });
+  }
+
+  return rows.sort(byFleetRank).map((row) => row.id);
+}
+
+export const useFleetAgents = (): string[] => {
+  /*
+    Encoded as strings for `useShallow`'s reason, which `useAgentsByGroup`
+    records at length: an array of freshly built objects is never equal to the
+    last one, so every read looks like a change and React stops it with
+    "maximum update depth exceeded". `|` is safe as a separator because
+    `AGENT_NAME_PATTERN` admits lowercase letters, digits and dashes only.
+  */
+  const rows = useHiveStore(
+    useShallow((state) =>
+      state.agentOrder.flatMap((id) => {
+        const entity = state.entities[id];
+
+        if (entity === undefined || !isAgent(entity)) return [];
+
+        return [`${id}|${entity.status}|${entity.nextRunAt ?? 0}`];
+      }),
+    ),
+  );
+
+  return useMemo(
+    () =>
+      rows
+        .map((row) => {
+          const [id = '', status = 'sleeping', next = '0'] = row.split('|');
+
+          return { id, status: status as AgentStatus, nextRunAt: Number(next) };
+        })
+        .sort(byFleetRank)
+        .map((row) => row.id),
+    [rows],
+  );
+};
+
+/**
+ * How many agents are waiting on you (HIVE-117).
+ *
+ * The *count* of agents is deliberately not here: every caller of this already
+ * holds {@link useFleetAgents}' array, whose length is the same number by
+ * construction — both walk `agentOrder` applying the same narrowing. A second
+ * subscription over the same data to recompute `.length` is the kind of derived
+ * value `CLAUDE.md` means by "one truth per number on screen".
+ *
+ * `asking` earns its own walk because nothing else derives it, and it is the
+ * only number in that heading worth a glance.
+ */
+export const useAskingAgentCount = (): number =>
+  useHiveStore((state) => {
+    let asking = 0;
+    for (const id of state.agentOrder) {
+      const entity = state.entities[id];
+      if (entity !== undefined && isAgent(entity) && entity.status === 'asking') {
+        asking += 1;
+      }
+    }
+
+    return asking;
+  });
+
+/** An agent's pull request: always a number, linkable only when the sweep knows it. */
+export interface AgentPr {
+  n: number;
+  url?: string;
+}
+
+/**
+ * The pull request this agent last finished, if it named one (HIVE-117).
+ *
+ * Read from the **ledger**, not from `runs`: a `RunSummary` records what a wake
+ * cost and how it ended, and deliberately nothing about what it did. What an
+ * agent *produced* is what it wrote down — a `done` entry whose `meta` carries
+ * a `pr`, which `LedgerEntry.meta` names as one of its riders. That is also the
+ * only version of this fact a session could have written for itself.
+ *
+ * The last one wins: an agent that opens a PR a day accumulates `done` entries,
+ * and the row has space for the current one.
+ */
+export const useAgentPr = (name: string): AgentPr | null => {
+  const ledger = useHiveStore((state) => state.ledger);
+  const prs = useHiveStore((state) => state.prs);
+
+  return useMemo(() => {
+    for (let i = ledger.length - 1; i >= 0; i -= 1) {
+      const entry = ledger[i];
+      if (entry === undefined || entry.from !== name || entry.kind !== 'done') {
+        continue;
+      }
+      const written = entry.meta?.['pr'];
+      /*
+        A number, or a string that is one. Main writes `meta` from whatever the
+        agent handed `ledger_post`, so this is model-authored input in every
+        sense that matters — `#12` and `"12"` are both things it will write, and
+        neither should put `NaN` in the table.
+      */
+      const n =
+        typeof written === 'number'
+          ? written
+          : Number(String(written).replace(/^#/, ''));
+
+      if (!Number.isInteger(n) || n <= 0) continue;
+
+      /*
+        The URL comes from the **sweep**, not from the number.
+
+        A `done` entry records that an agent opened a pull request; it does not
+        say which repository, and there is no honest URL to build from an
+        integer alone. A GitHub-wide search for "42" is a worse answer than no
+        link — it looks like a destination and lands on thousands of unrelated
+        results. So the number renders as plain text until the PR list happens
+        to hold it, which is the same standing a session's *remembered* PR has.
+      */
+      const known = prs.find((pr) => pr.number === n);
+
+      return { n, ...(known === undefined ? {} : { url: known.url }) };
+    }
+
+    return null;
+  }, [ledger, prs, name]);
+};
 
 /** Create a session on a project (stories 041, 044). */
 export const useSpawnSession = () => useHiveStore((state) => state.spawnSession);
@@ -3976,6 +5489,28 @@ export const useSessionBooting = (id: string): boolean =>
  */
 export function currentRowFor(id: string): string {
   return currentSessionIn(useHiveStore.getState(), id);
+}
+
+/**
+ * True when `id` currently names an agent, not a terminal (HIVE-118).
+ *
+ * `currentRowFor`'s callers all speak terminal ids **except** one: an OS
+ * notification about an agent carries the agent's own name, and an agent's
+ * entity id *is* its name — but `hydrateAgents`'s own guard above concedes
+ * "an agent name is a legal session id", so on a live machine an agent can
+ * end up sharing a name with some session's `terminalId`. `currentSessionIn`
+ * would then walk right past the direct `entities[id]` miss — an agent is
+ * never `isSession` — into the search loop that exists to follow a `/clear`,
+ * find that session, and hand back its row instead of the agent.
+ *
+ * A sibling to `currentRowFor` rather than a branch inside it: the two ids
+ * are never confusable in the other direction (a session id never means
+ * "check whether this is secretly an agent first"), so folding this in would
+ * have made the common case pay for a check only one caller needs.
+ */
+export function isAgentId(id: string): boolean {
+  const entity = useHiveStore.getState().entities[id];
+  return entity !== undefined && isAgent(entity);
 }
 
 export function terminalIdFor(id: string): string {
@@ -4695,6 +6230,62 @@ export const useMarkAllRead = () => useHiveStore((state) => state.markAllRead);
 /** The inbox, newest first (story 051). */
 export const useNotifs = () => useHiveStore((state) => state.notifs);
 
+/** Hydration and the push subscription — see `use-ledger-sync.ts`. */
+export const useHydrateLedger = () => useHiveStore((state) => state.hydrateLedger);
+
+/** Mirror `~/.hive/agents` into the fleet (HIVE-114). */
+export const useHydrateAgents = () => useHiveStore((state) => state.hydrateAgents);
+export const useLedgerAppend = () => useHiveStore((state) => state.ledgerAppend);
+
+/** A run started, ended, or changed an agent's status (HIVE-115). */
+export const useSetAgentStatus = () => useHiveStore((state) => state.setAgentStatus);
+
+/** Run-log lines, as the process writes them (HIVE-115). */
+export const useAppendAgentLines = () =>
+  useHiveStore((state) => state.appendAgentLines);
+
+/**
+ * The ledger tail, optionally filtered.
+ *
+ * Memoised over the raw slice rather than wrapped in `useShallow`, for the
+ * reason spelled out on {@link usePrs}: this builds a new array, and shallow-
+ * comparing a freshly-built one never matches. Callers passing a `filter` must
+ * hand over a stable object — an inline literal defeats the memo.
+ */
+export const useLedgerEntries = (filter?: LedgerReadQuery): LedgerEntry[] => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(
+    () => (filter === undefined ? entries : entries.filter((entry) => matches(entry, filter))),
+    [entries, filter],
+  );
+};
+
+/**
+ * Asks nobody has answered.
+ *
+ * `Date.now()` is read inside the memo, so `ageMs` is as fresh as the last
+ * entry rather than as fresh as the last render. That is the right trade here:
+ * the TTL is a day, and re-deriving on every tick to keep a minutes-old age
+ * exact would re-render the inbox for nothing.
+ */
+export const useOpenAsks = (): OpenAsk[] => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => openAsks(entries, Date.now()), [entries]);
+};
+
+/** The badge. A number, so it needs no memo and no shallow compare. */
+export const useOpenAskCount = (): number =>
+  useHiveStore((state) => openAsks(state.ledger, Date.now()).length);
+
+/** One conversation: the ask, and everything that named it. */
+export const useThread = (id: string): LedgerEntry[] => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => thread(entries, id), [entries, id]);
+};
+
 /**
  * Every PR the panel shows, with its owning session resolved (story 052).
  *
@@ -4809,6 +6400,9 @@ export const useClearPrSearchResults = () =>
 
 /** Mark one notification read, by its id (story 051, HIVE-75). */
 export const useMarkRead = () => useHiveStore((state) => state.markRead);
+
+/** {@link HiveState.answerAsk}, for a component that must not touch the store. */
+export const useAnswerAsk = () => useHiveStore((state) => state.answerAsk);
 
 /** Remove a notification the user has acted on (HIVE-93). */
 export const useDismissNotif = () =>

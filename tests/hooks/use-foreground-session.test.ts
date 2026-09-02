@@ -38,7 +38,14 @@ const agent: Agent = {
   icon: 'ph-slack-logo',
   sub: '#eng-alerts',
   task: 'watch the channel',
-  status: 'online',
+  status: 'sleeping',
+  wake: { on: [] },
+  mcp: [],
+  runsSinceRotate: 0,
+  rotateAfter: 50,
+  skipsSinceRun: 0,
+  runs: [],
+  live: [],
   lines: [],
 };
 

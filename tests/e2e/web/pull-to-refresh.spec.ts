@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+import { selectRailTab } from '../fixtures/rail-tabs';
+
 /**
  * Overscroll-to-refresh, driven by a real wheel.
  *
@@ -41,7 +43,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('the work list says what the pull will do, then does it', async ({ page }) => {
-  await leftRail(page).getByRole('tab', { name: /^Work/ }).click();
+  await selectRailTab(leftRail(page).getByRole('tab', { name: /^Work/ }));
 
   const panel = page.locator('[data-panel="work"]');
   await expect(panel).toBeVisible();
@@ -60,7 +62,7 @@ test('the work list says what the pull will do, then does it', async ({ page }) 
 });
 
 test('the PR list pulls too', async ({ page }) => {
-  await activityRail(page).getByRole('tab', { name: /^PRs/ }).click();
+  await selectRailTab(activityRail(page).getByRole('tab', { name: /^PRs/ }));
 
   const panel = page.locator('[data-panel="prs"]');
   await expect(panel).toBeVisible();
@@ -80,7 +82,7 @@ test('the PR list pulls too', async ({ page }) => {
 test('the inbox, sharing the same scroll container, does not pull', async ({
   page,
 }) => {
-  await activityRail(page).getByRole('tab', { name: /^Inbox/ }).click();
+  await selectRailTab(activityRail(page).getByRole('tab', { name: /^Inbox/ }));
   await page.locator('[data-panel="inbox"]').hover();
 
   await pull(page, 4);
@@ -102,7 +104,7 @@ test('the PR search row stays put while the list scrolls', async ({ page }) => {
   await page.setViewportSize({ width: 1200, height: 240 });
   await page.goto(APP_URL);
   await page.waitForSelector('header');
-  await activityRail(page).getByRole('tab', { name: /^PRs/ }).click();
+  await selectRailTab(activityRail(page).getByRole('tab', { name: /^PRs/ }));
 
   const panel = page.locator('[data-panel="prs"]');
   await expect(panel).toBeVisible();

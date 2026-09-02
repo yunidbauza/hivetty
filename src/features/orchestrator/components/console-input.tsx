@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import { CONSOLE_VERBS } from '@/types/command';
+import { ADVERTISED_VERBS } from '@/types/command';
 
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { effectiveSelId } from '@features/orchestrator/utils/selection';
@@ -12,7 +12,6 @@ import {
 } from '@stores/hive-store';
 import { useSelId, useSetSelId } from '@stores/ui-store';
 
-const PLACEHOLDER = 'help · status · send <session> <message> · spawn <project> <task>';
 const KEY_HINT = '↑↓ select · → open · ⇧↵ line · ↵ run';
 
 /**
@@ -20,6 +19,17 @@ const KEY_HINT = '↑↓ select · → open · ⇧↵ line · ↵ run';
  *
  * Both are kept, as the concept shows: the input is how you drive the fleet, and
  * the hint bar says what the keyboard does.
+ *
+ * ## The prompt carries no placeholder
+ *
+ * It used to print a curated subset of the grammar — `help · status · send …`
+ * — which was the same fact the hint bar prints in full one row beneath, and
+ * a second, shorter copy of a list is not a second piece of information. It
+ * also had a hard length budget, because it was the placeholder of a textarea
+ * that auto-grows to its content: a string long enough to wrap made the
+ * *empty* console two rows tall and took that row out of the terminal above.
+ * Removing it removes the budget, and leaves the row reading as what it is —
+ * a prompt, with the grammar under it where `ADVERTISED_VERBS` keeps it.
  *
  * ## Why the third hint is the grammar and no longer "read-only" (HIVE-93)
  *
@@ -189,7 +199,6 @@ export function ConsoleInput() {
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={PLACEHOLDER}
           spellCheck={false}
           aria-label="Overmind command"
           /*
@@ -205,10 +214,39 @@ export function ConsoleInput() {
         </span>
       </div>
 
-      <div className="flex shrink-0 items-center justify-center gap-5 border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-[11px] text-subtle">
-        <span>↑↓ select</span>
-        <span>→ or ↵ open session</span>
-        <span>{CONSOLE_VERBS.join(' · ')}</span>
+      {/*
+        The verbs, and only the verbs.
+
+        This bar used to open with `↑↓ select` and `→ or ↵ open session`, and
+        `KEY_HINT` prints `↑↓ select · → open` in the input row's right corner a
+        few pixels above — the same fact twice, which at a narrow stage was what
+        wrapped this row onto two lines.
+
+        One thing did go with them, and it is worth naming rather than glossing:
+        `KEY_HINT` says `↵ run`, not that `↵` on an *empty* row opens the
+        selected session. That branch is real (see `onKeyDown`) and is now
+        undocumented on screen. It is the cheaper half of the trade — the keys
+        it shares with `→`, which is documented — but it is a trade, not a free
+        removal.
+
+        The verb list stays because nothing else says it. It is the only place
+        the grammar is visible without already knowing that `help` exists.
+
+        `ADVERTISED_VERBS`, not `CONSOLE_VERBS`: the grammar has a verb it
+        parses but does not teach — see `QUIET_VERBS` in `types/command.ts`.
+      */}
+      <div
+        /*
+          The last thing on the stage, and `fleet-scroll.spec.ts` reads it as
+          exactly that: it proves the fleet table never grows until the console
+          is pushed past the foot of the window. It used to find this bar by
+          its `↑↓ select` span, which no longer exists — a text locator for a
+          string that has moved is a spec that silently stops testing anything.
+        */
+        data-testid="console-hints"
+        className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-[11px] text-subtle"
+      >
+        <span>{ADVERTISED_VERBS.join(' · ')}</span>
       </div>
     </>
   );

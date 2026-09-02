@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useState } from 'react';
 
-import { clampRailWidths, RAIL_MIN, railMaxWidth } from '@lib/rail-width';
+import { clampRailWidths, RAIL_MIN, railMaxWidth, type RailDisplay } from '@lib/rail-width';
 import { applyRailWidths, useRailWidthState } from '@stores/appearance-store';
 import { useShowActivityRail } from '@stores/ui-store';
 
@@ -58,7 +58,8 @@ export interface RailWidths {
  * default — a visible jump on every launch for anyone who has resized a rail.
  */
 export function useRailWidths(): RailWidths {
-  const { railWidthLeft, railWidthRight, density } = useRailWidthState();
+  const { railWidthLeft, railWidthRight, railCollapsedLeft, railCollapsedRight, density } =
+    useRailWidthState();
   const showActivityRail = useShowActivityRail();
 
   /*
@@ -88,6 +89,21 @@ export function useRailWidths(): RailWidths {
 
   const min = RAIL_MIN[density];
 
+  /*
+    Three facts from three places, which is why this assembly happens in a
+    component: the widths and collapse flags (`appearance-store`), whether the
+    activity rail is mounted at all (`ui-store`), and the window (the DOM).
+
+    `hidden` outranks `collapsed`: an unmounted rail claims no width, and a
+    collapsed one claims 44px, so asking "is it mounted?" first is the only
+    order that cannot paint a strip for a rail nobody renders.
+  */
+  const rightDisplay: RailDisplay = !showActivityRail
+    ? 'hidden'
+    : railCollapsedRight
+      ? 'collapsed'
+      : 'expanded';
+
   const widths = useMemo(
     () =>
       clampRailWidths({
@@ -95,9 +111,10 @@ export function useRailWidths(): RailWidths {
         storedRight: railWidthRight,
         min,
         windowWidth,
-        showActivityRail,
+        left: railCollapsedLeft ? 'collapsed' : 'expanded',
+        right: rightDisplay,
       }),
-    [railWidthLeft, railWidthRight, min, windowWidth, showActivityRail],
+    [railWidthLeft, railWidthRight, min, windowWidth, railCollapsedLeft, rightDisplay],
   );
 
   useLayoutEffect(() => {
@@ -111,7 +128,7 @@ export function useRailWidths(): RailWidths {
    * *narrower than its own minimum*. Handing the handle the unreduced minimum
    * there produces a slider whose `min` exceeds its `value` — invalid to
    * announce, and actively wrong to drive: the shrink key would evaluate
-   * `Math.max(268, …)` on a rail painted at 256 and *grow* it, writing a stored
+   * `Math.max(320, …)` on a rail painted at 308 and *grow* it, writing a stored
    * width the user never chose.
    *
    * So the floor follows the paint down, and the ceiling is never allowed below

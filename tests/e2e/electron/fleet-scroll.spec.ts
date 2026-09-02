@@ -76,11 +76,12 @@ async function resizeTo(
         x: 0,
         y: 0,
         /*
-          The app's default width, and not an incidental choice: narrower than
-          this the console's placeholder soft-wraps, the row grows to three
-          lines, and `↑↓` become caret motion inside the textarea rather than
-          fleet navigation — so the caret half of this spec would be asserting
-          against a keystroke the console never forwarded.
+          The app's default width. It used to be load-bearing: the console
+          row carried a placeholder that soft-wrapped below this width, the
+          row grew to three lines, and `↑↓` became caret motion inside the
+          textarea rather than fleet navigation. The placeholder is gone and
+          an empty row cannot wrap, so the width is now simply the one the
+          app opens at — kept so the numbers below describe a real launch.
         */
         width: 1440,
         height: h,
@@ -172,7 +173,7 @@ test('a fleet taller than the stage scrolls, and the console stays on screen', a
       own, because an element inside an `overflow-hidden` ancestor is still
       "visible" to Playwright when it has been laid out past the bottom edge.
     */
-    const legend = page.getByText('↑↓ select', { exact: true });
+    const legend = page.getByTestId('console-hints');
     await expect(legend).toBeVisible();
     const belowTheFold = await legend.evaluate(
       (element) => element.getBoundingClientRect().bottom - window.innerHeight,
@@ -194,7 +195,7 @@ test('a fleet taller than the stage scrolls, and the console stays on screen', a
     /*
       And the caret drags the scroll box after it.
 
-      `↑↓ select` is printed under the prompt, so a caret that walks off the
+      The console prints what the arrow keys do, so a caret that walks off the
       bottom of the scroll box and stays there is the console telling the user
       something the screen does not do. Fifteen rows is past the fold at this
       window and short of the end of the list, so the assertion is about the

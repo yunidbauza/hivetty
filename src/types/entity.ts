@@ -1,11 +1,17 @@
 import type { TermLine } from '@/types/terminal';
 
+import type {
+  AgentStatus,
+  LiveRunSummary,
+  RunSummary,
+  WakeSpec,
+} from '@shared/agent-contract';
 import type { IdleDetail } from '@shared/hook-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
 import type { SessionPrRecord } from '@shared/session-history-contract';
 
 /**
- * Session lifecycle. Agents are always `online` and are tracked separately.
+ * Session lifecycle. Agents have their own states — see {@link AgentStatus}.
  *
  * **Two endings, and they answer different questions** (story 108, HIVE-93).
  *
@@ -186,8 +192,8 @@ export interface Session {
    */
   cwd?: string;
   /**
-   * This row came back from the ledger rather than from a session this run
-   * started (HIVE-87).
+   * This row came back from the session history rather than from a session
+   * this run started (HIVE-87).
    *
    * **Provenance, not lifecycle**, and it has to be both because they are
    * genuinely different facts. `endedBy` says *how* a session ended. This says
@@ -219,10 +225,11 @@ export interface Session {
    * every list in this store was in `order`, which is insertion order, so the
    * table read oldest-first from the top. For live rows that is spawn order and
    * merely backwards; for ended rows it was worse than backwards, because
-   * restored rows arrive in the ledger's own oldest-ending-first sequence and a
-   * `/clear` successor takes its predecessor's slot rather than the end. There
-   * was no field anywhere that could answer "which of these two finished more
-   * recently", which is the question a fleet table is for.
+   * restored rows arrive in the session history's own oldest-ending-first
+   * sequence and a `/clear` successor takes its predecessor's slot rather
+   * than the end. There was no field anywhere that could answer "which of
+   * these two finished more recently", which is the question a fleet table
+   * is for.
    *
    * `endedAt` is stamped **once**, by the write that first puts the row in an
    * ended status, and cleared when a row comes back to life — see
@@ -232,8 +239,9 @@ export interface Session {
    * claims to be the newest thing on the table, and rows that are all unknown
    * keep the order they were inserted in.
    *
-   * The ledger has carried both since HIVE-87 (`SessionRecord`), so a restored
-   * row keeps the times it really had rather than being stamped at hydrate.
+   * The session history has carried both since HIVE-87 (`SessionRecord`), so
+   * a restored row keeps the times it really had rather than being stamped
+   * at hydrate.
    */
   createdAt?: number;
   endedAt?: number;
@@ -242,9 +250,9 @@ export interface Session {
    *
    * A third timestamp rather than a rewrite of `createdAt`, because they are
    * different facts and `createdAt` is one somebody may still want: it is when
-   * the session began, it is what the ledger's retention sorts on, and `begin`
-   * deliberately keeps it across a restart. Overwriting it to fix an ordering
-   * problem would destroy the answer to a different question.
+   * the session began, it is what the session history's retention sorts on,
+   * and `begin` deliberately keeps it across a restart. Overwriting it to fix
+   * an ordering problem would destroy the answer to a different question.
    *
    * It exists because `recencyOf` had nothing else to go on. A resumed row's
    * `endedAt` is cleared — it is not over any more — so it fell back to
@@ -253,7 +261,7 @@ export interface Session {
    * row furthest from the header and the exact failure the newest-first sort
    * exists to remove.
    *
-   * **Renderer-only, and not on the ledger.** It describes this run's ordering,
+   * **Renderer-only, and not on the session history.** It describes this run's ordering,
    * and a resumed row that is still running at the next quit comes back as a
    * live record whose `createdAt` is the honest thing to sort it by.
    */
@@ -303,7 +311,7 @@ export interface Session {
   /**
    * This row's conversation can be reopened (HIVE-93).
    *
-   * Set from the ledger at hydrate — main answers whether it still holds a
+   * Set from the session history at hydrate — main answers whether it still holds a
    * `--session-id` for this row — and by `finishSession`, because a `/done`
    * keeps its uuid where a `/clear` drops it.
    *
@@ -346,14 +354,92 @@ export interface Session {
   lines: TermLine[]; // terminal transcript
 }
 
-/** A long-lived background worker, not tied to a branch. */
+/**
+ * A long-lived background worker, not tied to a branch (HIVE-114).
+ *
+ * Backed by a real `AGENT.md` under `~/.hive/agents` rather than by a fixture:
+ * `id` is the agent's name, which is also its folder and the identity its
+ * ledger entries are `from`.
+ *
+ * `status` used to be the literal `'online'`, which described a *socket* and
+ * an agent is not one. Between two wakes there is no process at all — only a
+ * definition on disk and a resumable session — so the states that matter are
+ * about correspondence: asleep, running, waiting on an answer, held, broken.
+ */
 export interface Agent {
   kind: 'agent';
-  id: string; // 'slack-agent'
-  icon: string; // phosphor icon name, e.g. 'ph-slack-logo'
-  sub: string; // '#eng-alerts · #deploys · #ask-eng'
+  /** The agent's name — also its folder under `~/.hive/agents`. */
+  id: string; // 'slack-watcher'
+  icon: string; // phosphor icon name, e.g. 'ChatCircleDots'
+  /** The definition's `description`. */
+  sub: string; // 'Watches #incorp-dev and my mentions.'
   task: string;
-  status: 'online';
+  status: AgentStatus;
+  wake: WakeSpec;
+  /**
+   * `mcp:` from the definition, verbatim (HIVE-123).
+   *
+   * A definition fact, carried through unchanged from `AgentSummary.mcp` by
+   * `hydrateAgents` — not run state, and not touched by `mergeRunState`'s
+   * push path. It is what lets the row's chip tooltip gate on the agent's
+   * **current** `mcp:` list rather than inferring "still names Slack" from
+   * run history that a later edit can leave stale: `AgentRunState.runs` is
+   * never cleared or invalidated when a definition is saved.
+   */
+  mcp: string[];
+  lastRunAt?: number;
+  nextRunAt?: number;
+  /**
+   * Why the definition failed to parse, when it did.
+   *
+   * Present on a *listed* agent rather than causing it to be dropped: a broken
+   * file the user cannot see is a folder on disk with no way to connect it to
+   * the thing that is missing.
+   */
+  invalid?: string;
+  cost?: string;
+  /**
+   * Claude's own conversation id for this agent, once it has run (HIVE-116).
+   *
+   * Arrives on `agents:list` only — never on a status push, which is soon
+   * enough for a fact that changes on a first run and on a rotation.
+   */
+  sessionUuid?: string;
+  /** Runs since the last rotation — the numerator in `run 17/50`. */
+  runsSinceRotate: number;
+  /** `limits.rotateAfter` from the definition — the denominator. */
+  rotateAfter: number;
+  /**
+   * The last `AGENT_RUN_HISTORY` runs, oldest first.
+   *
+   * The view's `Today` tile counts and sums the ones that started today, which
+   * is why the array is here rather than a stored pair: "today" is the user's
+   * calendar day, and a stored count would be wrong by morning.
+   */
+  runs: RunSummary[];
+  /** Every run live under the name (HIVE-128). Replaced on every status push. */
+  live: LiveRunSummary[];
+  /**
+   * Today's runs and spend, accumulated in main rather than summed here.
+   *
+   * The comment on `runs` above says a stored count would be wrong by morning.
+   * It would — which is why this carries the *day* it belongs to, and why the
+   * selector still compares that day against now. What it buys is a number
+   * that is still right after the twentieth run of the day, which `runs`
+   * cannot give: it holds only the last `AGENT_RUN_HISTORY`, and a five-minute
+   * agent takes 288 wakes between midnights.
+   *
+   * It is also the number the scheduler's daily ceiling is compared against,
+   * so a tile deriving its own would be a second opinion about one fact.
+   */
+  today?: { day: string; runs: number; usd: number; capped?: boolean };
+  /**
+   * Scheduled ticks skipped since the last run — the `· skipped 3` on `Next`.
+   *
+   * Zero for an agent that has never skipped, which is most of them. A skip is
+   * not a run, so `runs` above cannot count these.
+   */
+  skipsSinceRun: number;
   lines: TermLine[];
 }
 

@@ -15,6 +15,7 @@ import {
   NEWLINE_SEQUENCE,
   TERMINAL_CHORD_EVENT,
   decideTerminalKey,
+  isRailChord,
   type CursorContext,
   type TerminalChordDetail,
 } from '@lib/terminal/keymap';
@@ -514,6 +515,22 @@ export function TerminalSurface({
             container.dispatchEvent(
               new CustomEvent(TERMINAL_CHORD_EVENT, { detail, bubbles: true }),
             );
+            event.preventDefault();
+            return false;
+          }
+          /**
+           * Same contract as `app-chord`: the app takes the key, so the pty
+           * must not see it. Separate only because the event has to say
+           * *which* rail, and `app-chord` carries no discriminant.
+           */
+          case 'rail-chord': {
+            const side = isRailChord(event, isMac);
+            if (side) {
+              const detail: TerminalChordDetail = { chord: `rail-${side}` };
+              container.dispatchEvent(
+                new CustomEvent(TERMINAL_CHORD_EVENT, { detail, bubbles: true }),
+              );
+            }
             event.preventDefault();
             return false;
           }

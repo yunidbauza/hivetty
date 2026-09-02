@@ -1,10 +1,22 @@
+import type { Icon } from '@phosphor-icons/react';
+
 import { cn } from '@/lib/utils';
 
 import { Badge, type BadgeTone } from '@components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@components/ui/tooltip';
 
 export interface Tab<Id extends string = string> {
   id: Id;
   label: string;
+  /**
+   * The tab's glyph — what it becomes when its rail collapses to a strip.
+   *
+   * Required, not optional: both tab bars in this app live in a rail that can
+   * collapse, so a tab without an icon is a tab that vanishes when its rail
+   * does. Optional would make that a runtime hole; required makes it a type
+   * error, and there are exactly six call sites.
+   */
+  icon: Icon;
   /** Rendered as a muted chip. Omitted or zero renders no badge at all. */
   badgeCount?: number;
   /**
@@ -34,6 +46,31 @@ interface TabBarProps<Id extends string> {
   onSelect: (id: Id) => void;
   /** Names the tablist for screen readers — e.g. `'Rail sections'`. */
   label: string;
+  /**
+   * `strip` is what a collapsed rail renders: a vertical column of icon-only
+   * buttons, no labels, no bottom rule, the active one marked with a bar on
+   * the outer edge rather than an underline.
+   */
+  orientation?: 'horizontal' | 'strip';
+  /**
+   * A click on the tab that is *already* active.
+   *
+   * A second callback rather than a widened `onSelect`, because `onSelect`
+   * firing only for a genuine change is what every existing caller relies on —
+   * and what stops a click on the current tab from writing the state it already
+   * holds. The rails pass `toggleRailCollapsed` here; nobody else passes it.
+   */
+  onActiveSelect?: () => void;
+  /**
+   * Which way a strip tab's tooltip opens. Only meaningful in `strip`
+   * orientation — an expanded tab has a visible label and gets no tooltip.
+   *
+   * A rail on the left edge opens its tooltips rightward, into the screen; a
+   * rail on the right edge opens leftward, for the same reason. Getting this
+   * backwards runs the tooltip off-screen, which is invisible in a unit test
+   * and only shows up in a real browser — see `rail-collapse.spec.ts`.
+   */
+  tooltipSide?: 'left' | 'right';
   className?: string;
 }
 
@@ -56,39 +93,98 @@ export function TabBar<Id extends string>({
   active,
   onSelect,
   label,
+  orientation = 'horizontal',
+  onActiveSelect,
+  tooltipSide,
   className,
 }: TabBarProps<Id>) {
+  const strip = orientation === 'strip';
+
   return (
     <div
       role="tablist"
       aria-label={label}
-      className={cn('flex gap-0.5 border-b border-border-soft', className)}
+      aria-orientation={strip ? 'vertical' : 'horizontal'}
+      className={cn(
+        'flex gap-0.5',
+        strip ? 'flex-col items-center' : 'border-b border-border-soft',
+        className,
+      )}
     >
       {tabs.map((tab) => {
         const selected = tab.id === active;
+        const TabIcon = tab.icon;
+        const count = tab.badgeCount ?? 0;
 
-        return (
+        /*
+          The count reaches a screen reader through the name in strip mode,
+          because the visible chip is gone. `Badge` carries it in horizontal
+          mode, so doubling it up here would announce it twice.
+        */
+        const stripName =
+          count > 0 && tab.badgeLabel ? `${tab.label}, ${count} ${tab.badgeLabel}` : tab.label;
+
+        const button = (
           <button
-            key={tab.id}
+            // Only the strip branch below needs a key of its own (on the
+            // `Tooltip` it returns); giving this one too would either be
+            // redundant or, worse, collide as a duplicate key in the DOM.
+            key={strip ? undefined : tab.id}
             type="button"
             role="tab"
             id={tabId(tab.id)}
             aria-selected={selected}
-            onClick={() => onSelect(tab.id)}
-            className={cn(
-              '-mb-px flex items-center gap-1.5 border-b-2 px-2.5 pt-1.5 pb-[9px] text-[11px] font-semibold uppercase tracking-[0.08em]',
-              selected
-                ? 'border-brand text-ink'
-                : 'border-transparent text-subtle hover:text-ink',
-            )}
+            aria-label={strip ? stripName : undefined}
+            onClick={() => (selected && onActiveSelect ? onActiveSelect() : onSelect(tab.id))}
+            className={
+              strip
+                ? cn(
+                    'relative flex size-[34px] items-center justify-center rounded-md',
+                    selected ? 'bg-hover text-ink' : 'text-subtle hover:bg-hover hover:text-ink',
+                  )
+                : cn(
+                    '-mb-px flex items-center gap-1.5 border-b-2 px-2.5 pt-1.5 pb-[9px] text-[11px] font-semibold uppercase tracking-[0.08em]',
+                    selected
+                      ? 'border-brand text-ink'
+                      : 'border-transparent text-subtle hover:text-ink',
+                  )
+            }
           >
-            {tab.label}
-            <Badge
-              count={tab.badgeCount ?? 0}
-              tone={tab.badgeTone ?? 'muted'}
-              label={tab.badgeLabel}
-            />
+            <TabIcon size={strip ? 20 : 16} aria-hidden="true" />
+
+            {strip ? (
+              count > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    'absolute top-1 right-1 size-1.5 rounded-full',
+                    (tab.badgeTone ?? 'muted') === 'danger' ? 'bg-danger-solid' : 'bg-muted',
+                  )}
+                />
+              ) : null
+            ) : (
+              <>
+                {tab.label}
+                <Badge count={count} tone={tab.badgeTone ?? 'muted'} label={tab.badgeLabel} />
+              </>
+            )}
           </button>
+        );
+
+        /*
+          Strip only: an expanded tab already shows its label and needs no
+          tooltip. The tooltip's text is `stripName` — the very string already
+          passed to `aria-label` above, not a second one computed for display,
+          so the tooltip can never say something different from what a screen
+          reader announces.
+        */
+        return strip ? (
+          <Tooltip key={tab.id}>
+            <TooltipTrigger asChild>{button}</TooltipTrigger>
+            <TooltipContent side={tooltipSide}>{stripName}</TooltipContent>
+          </Tooltip>
+        ) : (
+          button
         );
       })}
     </div>

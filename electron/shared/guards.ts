@@ -1,3 +1,13 @@
+import {
+  AGENT_NAME_PATTERN,
+  isReservedAgentName,
+} from './agent-contract';
+import type {
+  AgentNameRequest,
+  AgentRenameRequest,
+  AgentRunRequest,
+  AgentWriteRequest,
+} from './agent-contract';
 import type {
   AddProjectRequest,
   CloneRequest,
@@ -42,6 +52,13 @@ import type {
   WriteRequest,
 } from './ipc-contract';
 import { ISSUE_KEY_PATTERN } from './jira-contract';
+import {
+  LEDGER_KINDS,
+  type LedgerAnswerRequest,
+  type LedgerKind,
+  type LedgerPostRequest,
+  type LedgerReadQuery,
+} from './ledger-contract';
 import type { NotificationAction } from './notification-contract';
 import {
   NOTIFICATION_DELIVERIES,
@@ -352,7 +369,7 @@ export function assertSessionName(value: unknown, label: string): string {
  * The renderer naming the ticket a session is being worked for (HIVE-87).
  *
  * `entityId` takes {@link assertId} rather than `assertText`: it is a lookup key
- * into the ledger's map, not a string to render, and the same argument that
+ * into the session history's map, not a string to render, and the same argument that
  * bounds a session id applies — a key with separators or control characters in
  * it is a lookup that can be made to mean something other than it looks like.
  *
@@ -405,7 +422,7 @@ function assertPrNumber(value: unknown, label: string): number {
  * Checked as an **absolute https URL** rather than as free text, because this
  * is the one field here that becomes an `href`. `assertText` would let
  * `javascript:…` through, and a value the renderer read back out of its own
- * ledger and put on a link is exactly the shape of a stored-XSS carrier. The
+ * session history and put on a link is exactly the shape of a stored-XSS carrier. The
  * scheme is the whole check: the host is GitHub's business, not this guard's,
  * and pinning it here would break the moment somebody points the app at an
  * enterprise instance.
@@ -889,6 +906,18 @@ export function parseNotificationAction(
     case 'url': {
       const { url } = input as { url?: unknown };
       return typeof url === 'string' && url !== '' ? { type: 'url', url } : null;
+    }
+    case 'ask': {
+      const { thread } = input as { thread?: unknown };
+      return typeof thread === 'string' && thread !== ''
+        ? { type: 'ask', thread }
+        : null;
+    }
+    case 'agent': {
+      const { name } = input as { name?: unknown };
+      return typeof name === 'string' && name !== ''
+        ? { type: 'agent', name }
+        : null;
     }
     default:
       return null;
@@ -1554,6 +1583,122 @@ export function parseSkillWriteRequest(input: unknown): SkillWriteRequest {
 }
 
 /**
+ * An agent name — a folder name, and the identity a ledger entry is `from`
+ * (HIVE-114).
+ *
+ * The same job as {@link assertSkillName} and for the same reason: main will
+ * `join` this onto a directory it owns, so the work here is making a path
+ * unrepresentable rather than sanitising one. Nothing downstream re-checks
+ * containment.
+ *
+ * A reserved name — {@link isReservedAgentName} — is refused here as well as in
+ * the reader, following the argument `assertSkillName` makes about `done`: a
+ * reservation is part of the contract rather than a detail of the filesystem
+ * layer. `overmind` matters more than `done` does here — it is the ledger's
+ * coordinator identity, and an agent that could take that name could sign its
+ * entries as the overmind. Since HIVE-115 the session-id shape is reserved on
+ * the same footing, and for a sharper reason: an agent called `sess-01` would
+ * have a live *terminal*'s identity, not just a confusing one.
+ */
+export function assertAgentName(value: unknown, label: string): string {
+  const name = assertString(value, label);
+
+  if (!AGENT_NAME_PATTERN.test(name)) {
+    return fail(`${label}: must be lowercase letters, digits and dashes`);
+  }
+  if (isReservedAgentName(name)) {
+    return fail(`${label}: "${name}" is reserved`);
+  }
+  return name;
+}
+
+export function parseAgentNameRequest(input: unknown): AgentNameRequest {
+  const raw = assertShape(input, ['name'], 'agentName');
+  return { name: assertAgentName(raw.name, 'agentName.name') };
+}
+
+/**
+ * `agents:run` — wake one agent, and say nothing else about how (HIVE-115).
+ *
+ * Shape-identical to {@link parseAgentNameRequest} and deliberately not an
+ * alias of it. The two guards label their failures for the channel that
+ * actually rejected the payload — the reason {@link parseDiagnoseEnvRequest}
+ * gives for the same duplication next door — and this is the channel where a
+ * rejection matters most, because it is the one that starts a process.
+ *
+ * It runs {@link assertAgentName}, so `run` is bounded by exactly the grammar
+ * the five verbs before it are bounded by: a name that cannot be a path and
+ * cannot be a reserved identity. Everything the command line is *built* from —
+ * the binary, the flags, the environment, the working directory — is read by
+ * main from its own config and the definition on disk, and stays unreachable
+ * from here.
+ *
+ * `extra` is the one field that does reach the argv (HIVE-126), and the shape
+ * of that reach is the point: `wakeCommand` interpolates it into the single
+ * positional `-p` prompt, so it becomes prose *inside* an argument rather than
+ * an argument of its own. It cannot become a flag, a path or a variable, and
+ * `assertText` — the guard `spawn.task` uses — is what keeps it from carrying a
+ * control character or an unbounded length into a spawned process.
+ *
+ * `assertShape`'s closed key set is load-bearing here rather than tidy: a
+ * payload carrying a `trigger`, `args` or `env` is refused outright instead of
+ * being silently ignored, so a renderer that starts sending one fails loudly at
+ * the boundary rather than developing a belief that main is reading it. HIVE-126
+ * opened this set by exactly one key, and `trigger` is the one it kept shut.
+ */
+export function parseAgentRunRequest(input: unknown): AgentRunRequest {
+  const raw = assertShape(input, ['name'], 'agentRun', ['extra']);
+  const name = assertAgentName(raw.name, 'agentRun.name');
+
+  if (raw.extra === undefined) return { name };
+
+  return { name, extra: assertText(raw.extra, 'agentRun.extra') };
+}
+
+/**
+ * `agents:rename` — two names, and no path between them.
+ *
+ * Both run through {@link assertAgentName} for the reason
+ * {@link parseSkillRenameRequest} spells out: `from` arrives from the page
+ * exactly as `to` does, and validating only the destination would let a
+ * request name a *source* main never listed.
+ */
+export function parseAgentRenameRequest(input: unknown): AgentRenameRequest {
+  const raw = assertShape(input, ['from', 'to'], 'agentRename', ['source']);
+  return {
+    from: assertAgentName(raw.from, 'agentRename.from'),
+    to: assertAgentName(raw.to, 'agentRename.to'),
+    // Same decision `parseAgentWriteRequest` documents: the bytes are not
+    // pattern-checked, because what makes them safe is *where* they land.
+    ...(raw.source === undefined
+      ? {}
+      : { source: assertString(raw.source, 'agentRename.source') }),
+  };
+}
+
+/**
+ * `agents:write` — the whole file the user typed, under a validated name.
+ *
+ * `source` gets no length cap and no control-character sweep, the same
+ * decision {@link parseSkillWriteRequest} documents: an AGENT.md legitimately
+ * contains tabs and newlines, and what makes this safe is *where* the bytes
+ * land — a directory main chose, under a name that cannot name anywhere else.
+ *
+ * The frontmatter inside is deliberately **not** validated here. This layer
+ * decides what a payload may express; whether the definition is well-formed is
+ * the registry's question, and it answers with field-addressed problems the
+ * editor can render. A guard that threw on a half-typed file would turn every
+ * keystroke-in-progress into an IPC error.
+ */
+export function parseAgentWriteRequest(input: unknown): AgentWriteRequest {
+  const raw = assertShape(input, ['name', 'source'], 'agentWrite');
+  return {
+    name: assertAgentName(raw.name, 'agentWrite.name'),
+    source: assertString(raw.source, 'agentWrite.source'),
+  };
+}
+
+/**
  * Which project's environment to diagnose (story 108). An absent id means the
  * top-level env.
  *
@@ -1567,4 +1712,151 @@ export function parseDiagnoseEnvRequest(input: unknown): DiagnoseEnvRequest {
   return {
     ...(raw.id !== undefined ? { id: assertId(raw.id, 'diagnoseEnv.id') } : {}),
   };
+}
+
+/**
+ * The ledger's three payloads (HIVE-111).
+ *
+ * `parseLedgerPostBody` **drops** any `from` it is given rather than
+ * validating it. Identity comes from the transport — the `x-hive-session`
+ * header, or `OVERMIND` for the renderer — and a body that could name a party
+ * would be a party impersonating another with a one-word edit.
+ */
+
+/**
+ * Same {@link FORBIDDEN_KEYS} discipline `assertShape` applies, for the ledger
+ * parsers that cannot use `assertShape` itself: `meta` is an arbitrary
+ * caller-supplied map, not a fixed shape, and it is written to disk verbatim
+ * by `ledger/index.ts` — a `__proto__` own key surviving this check would
+ * survive to persistence, not just to one process's `Object.prototype`.
+ *
+ * **Top level only**, and deliberately: `Object.keys` does not recurse, so a
+ * forbidden key nested inside a `meta` *value* is stored as written. That is
+ * safe for every consumer the ledger has, because all of them only ever read
+ * values *out* of `meta` (`claims` reads `meta.task`; the renderer renders
+ * it) — a plain own property named `__proto__` on a nested object poisons
+ * nothing that is merely read. The day a consumer **deep-merges** `meta` into
+ * another object, or spreads it into one whose prototype matters, this needs
+ * to become a recursive sanitiser; until then a recursive walk over an
+ * unbounded caller-supplied map on every write would be cost without a threat
+ * behind it.
+ */
+const asRecord = (input: unknown, label: string): Record<string, unknown> => {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new TypeError(`${label} must be an object`);
+  }
+  for (const key of Object.keys(input)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      throw new TypeError(`${label}: forbidden key "${key}"`);
+    }
+  }
+  return input as Record<string, unknown>;
+};
+
+const optionalString = (
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+): string | undefined => {
+  const value = source[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || value === '') {
+    throw new TypeError(`${label}.${key} must be a non-empty string`);
+  }
+  return value;
+};
+
+const requiredString = (
+  source: Record<string, unknown>,
+  key: string,
+  label: string,
+): string => {
+  const value = source[key];
+  if (typeof value !== 'string') {
+    throw new TypeError(`${label}.${key} must be a string`);
+  }
+  return value;
+};
+
+const optionalKind = (
+  source: Record<string, unknown>,
+  label: string,
+): LedgerKind | undefined => {
+  const value = source.kind;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !(LEDGER_KINDS as readonly string[]).includes(value)) {
+    throw new TypeError(`${label}.kind must be one of ${LEDGER_KINDS.join(', ')}`);
+  }
+  return value as LedgerKind;
+};
+
+const optionalMeta = (
+  source: Record<string, unknown>,
+  label: string,
+): Record<string, unknown> | undefined => {
+  const value = source.meta;
+  if (value === undefined) return undefined;
+  return asRecord(value, `${label}.meta`);
+};
+
+export function parseLedgerReadQuery(input: unknown): LedgerReadQuery {
+  const source = asRecord(input, 'ledger query');
+  const query: LedgerReadQuery = {};
+
+  const to = optionalString(source, 'to', 'ledger query');
+  if (to !== undefined) query.to = to;
+  const from = optionalString(source, 'from', 'ledger query');
+  if (from !== undefined) query.from = from;
+  const kind = optionalKind(source, 'ledger query');
+  if (kind !== undefined) query.kind = kind;
+  const thread = optionalString(source, 'thread', 'ledger query');
+  if (thread !== undefined) query.thread = thread;
+  const since = optionalString(source, 'since', 'ledger query');
+  if (since !== undefined) query.since = since;
+
+  const limit = source.limit;
+  if (limit !== undefined) {
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 0) {
+      throw new TypeError('ledger query.limit must be a non-negative integer');
+    }
+    query.limit = limit;
+  }
+
+  return query;
+}
+
+export function parseLedgerPostBody(input: unknown): Omit<LedgerPostRequest, 'from'> {
+  const source = asRecord(input, 'ledger post');
+  const kind = optionalKind(source, 'ledger post');
+  if (kind === undefined) {
+    throw new TypeError(`ledger post.kind must be one of ${LEDGER_KINDS.join(', ')}`);
+  }
+
+  const request: Omit<LedgerPostRequest, 'from'> = {
+    kind,
+    body: requiredString(source, 'body', 'ledger post'),
+  };
+
+  const to = optionalString(source, 'to', 'ledger post');
+  if (to !== undefined) request.to = to;
+  const thread = optionalString(source, 'thread', 'ledger post');
+  if (thread !== undefined) request.thread = thread;
+  const meta = optionalMeta(source, 'ledger post');
+  if (meta !== undefined) request.meta = meta;
+
+  return request;
+}
+
+export function parseLedgerAnswerRequest(input: unknown): LedgerAnswerRequest {
+  const source = asRecord(input, 'ledger answer');
+  const request: LedgerAnswerRequest = {
+    thread: optionalString(source, 'thread', 'ledger answer') ?? '',
+    body: requiredString(source, 'body', 'ledger answer'),
+  };
+  if (request.thread === '') throw new TypeError('ledger answer.thread must be a non-empty string');
+
+  const meta = optionalMeta(source, 'ledger answer');
+  if (meta !== undefined) request.meta = meta;
+
+  return request;
 }

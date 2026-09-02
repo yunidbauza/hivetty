@@ -8,6 +8,7 @@ import {
 } from '@/types/notification';
 
 import { Icon } from '@components/ui/icon';
+import { AskCard } from '@features/inbox/components/ask-card';
 import { useReducedMotion } from '@hooks/use-reduced-motion';
 import { useRelativeTime } from '@hooks/use-relative-time';
 import {
@@ -73,8 +74,38 @@ interface NotificationCardProps {
  * The glyph and its colour come from the kind's registry entry rather than from
  * the record, and the label comes from `createdAt` and ticks — so a row reading
  * "4m" is four minutes old, rather than having been four minutes old once.
+ *
+ * ## Why an `ask` forks to a different component (HIVE-118)
+ *
+ * An ask is not a row you click — it is a row you answer, and it must survive
+ * the click that answers it. It cannot be a branch *inside* the button below
+ * either: `AskCard` draws its own buttons, and a button nested inside a
+ * button is interactive content nested in interactive content — invalid
+ * HTML, and two targets no browser or screen reader can tell apart.
+ *
+ * The check has to live in *this* component, with no hooks of its own above
+ * or below it, and {@link NotificationButtonRow} has to hold every hook the
+ * button path needs. React's Rules of Hooks forbid an early return before a
+ * hook even when a branch condition provably never changes for one mounted
+ * instance (a notification's action never mutates after it is raised —
+ * dismissal unmounts the row rather than rewriting it) — the lint rule has
+ * no way to see that invariant, so the fork has to happen a component
+ * boundary up instead of as an early return inside a component that also
+ * calls hooks.
  */
 export function NotificationCard({ notif }: NotificationCardProps) {
+  if (notif.action.type === 'ask') {
+    return <AskCard notif={notif} thread={notif.action.thread} />;
+  }
+  return <NotificationButtonRow notif={notif} />;
+}
+
+/**
+ * The clickable row for every action other than `ask` — the original
+ * `NotificationCard` body, split out so its hooks run unconditionally. See
+ * {@link NotificationCard}'s doc comment for why the split exists at all.
+ */
+function NotificationButtonRow({ notif }: NotificationCardProps) {
   const openEntity = useOpenEntity();
   const dismissNotif = useDismissNotif();
   const reduced = useReducedMotion();
@@ -100,7 +131,19 @@ export function NotificationCard({ notif }: NotificationCardProps) {
     notif.subject === undefined ? notif.title : `${subjectName} ${notif.title}`;
 
   const [leaving, setLeaving] = useState(false);
-  const ref = useRef<HTMLButtonElement>(null);
+  /**
+   * The card's **root**, which is the button on its own or the wrapper that
+   * holds the button and the link (HIVE-123).
+   *
+   * Typed as `HTMLElement` and set through a ref callback because it is one or
+   * the other, and the exit has to own whichever it is. Measuring the button
+   * while collapsing the wrapper — or the reverse — clips the link away
+   * instantly and then animates a height the row never had.
+   */
+  const ref = useRef<HTMLElement | null>(null);
+  const holdRoot = (el: HTMLElement | null): void => {
+    ref.current = el;
+  };
   const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /**
@@ -150,6 +193,23 @@ export function NotificationCard({ notif }: NotificationCardProps) {
       openEntity(currentRowFor(notif.action.entityId));
       return;
     }
+
+    /**
+     * Not `currentRowFor` (HIVE-118): that helper resolves a *terminal* id to
+     * the row it names now, translating around a `/clear`. An agent has no
+     * terminal and is never cleared — its entity id **is** its name, fixed
+     * for the entity's life (`hive-store.ts`'s `entities[summary.name]`) — so
+     * there is nothing for that translation to do, and calling it anyway is
+     * not merely redundant: `hydrateAgents` documents that an agent's name is
+     * a legal session id, so `currentRowFor`'s search loop can walk straight
+     * past this agent to a live session that happens to share its name and
+     * open that instead. See `isAgentId` and `useNotificationActivate`, which
+     * guard the toast path against exactly this collision.
+     */
+    if (notif.action.type === 'agent') {
+      openEntity(notif.action.name);
+      return;
+    }
     if (notif.action.type === 'none') return;
     void window.hive?.notifications.act(notif.action);
   };
@@ -191,9 +251,39 @@ export function NotificationCard({ notif }: NotificationCardProps) {
     exitTimer.current = setTimeout(() => dismissNotif(notif.id), CARD_EXIT_MS);
   };
 
-  return (
+  /*
+    The clickable row itself. When the card carries no `link` this is the
+    whole return value, exactly as before HIVE-123.
+
+    When it does, this button cannot also be the card's root: `notif.link`
+    renders as a real `<a>`, and an anchor nested inside a `<button>` is
+    interactive content nested inside interactive content — invalid HTML, and
+    the two targets no mouse or keyboard could tell apart, which is the same
+    reason `AskCard` forks away from this button entirely (see its own doc
+    comment) and `session-table.tsx` draws its row action as "a sibling of
+    the row, not a child of it". So the list spacing (`mb-*`/`last:mb-0`)
+    moves to a wrapper in that case, and the link is the wrapper's other
+    child — a sibling of the button, never its descendant.
+  */
+  /**
+   * The exit, applied to whichever element is the row's outermost.
+   *
+   * `overflow-hidden` so the contents clip as `max-height` closes instead of
+   * spilling past the shrinking border; the list's own spacing, so the gap
+   * collapses with the row rather than outliving it by 220ms; and
+   * `animate-ccslideout` itself. All three belong to the root — on the button
+   * of a card that also has a link, the anchor and the margin below it stayed
+   * at full height while the button collapsed, and the list jumped when the
+   * remains finally unmounted.
+   */
+  const exit = cn(
+    'overflow-hidden mb-[var(--cc-list-gap-sm)] last:mb-0',
+    leaving && 'pointer-events-none animate-ccslideout',
+  );
+
+  const card = (
     <button
-      ref={ref}
+      ref={notif.link === undefined ? holdRoot : null}
       type="button"
       /*
         The card's identity in the DOM, the way `data-panel` and
@@ -205,17 +295,11 @@ export function NotificationCard({ notif }: NotificationCardProps) {
       data-notification={notif.id}
       onClick={onClick}
       className={cn(
-        'flex items-start gap-2.5 rounded-xl border px-3 py-[var(--cc-card-py)] text-left hover:bg-hover',
+        'flex w-full items-start gap-2.5 rounded-xl border px-3 py-[var(--cc-card-py)] text-left hover:bg-hover',
         notif.unread ? 'border-border bg-chip' : 'border-border-soft',
-        /*
-          The list's spacing lives here rather than as a parent `gap`, so it can
-          collapse with the rest of the card on the way out. See `inbox-panel`.
-
-          `overflow-hidden` so the contents clip as `max-height` closes instead of
-          spilling past the shrinking border.
-        */
-        'mb-[var(--cc-list-gap-sm)] overflow-hidden last:mb-0',
-        leaving && 'pointer-events-none animate-ccslideout',
+        // The exit belongs to the root, which this is only when there is no
+        // link below to share a wrapper with — see {@link exit}.
+        notif.link === undefined && exit,
       )}
     >
       <Icon
@@ -236,5 +320,31 @@ export function NotificationCard({ notif }: NotificationCardProps) {
 
       <span className="shrink-0 font-mono text-[10px] text-subtle">{time}</span>
     </button>
+  );
+
+  if (notif.link === undefined) return card;
+
+  return (
+    <div ref={holdRoot} className={exit}>
+      {card}
+      <a
+        href={notif.link.href}
+        target="_blank"
+        rel="noreferrer"
+        /*
+          Stops here, not because the click would otherwise misfire — the link
+          is a sibling of the button, never its descendant, so nothing would
+          route to `onClick` regardless. It stops the *bubble*: without this
+          the click still reaches whatever this row's ancestors are listening
+          for (the panel, eventually the document), and a link that also
+          fires those handlers is a click doing two things the user asked for
+          only one of.
+        */
+        onClick={(event) => event.stopPropagation()}
+        className="mt-1 block px-3 text-[11px] font-medium text-brand hover:underline"
+      >
+        {notif.link.label}
+      </a>
+    </div>
   );
 }

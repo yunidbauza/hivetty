@@ -1,0 +1,595 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { OVERMIND, type LedgerEntry } from '@shared/ledger-contract';
+import { honestPermissionAsk } from '@shared/permission-rules';
+
+import { createLedgerNotifier } from '../../../../electron/main/ledger/notify';
+
+const entry = (over: Partial<LedgerEntry>): LedgerEntry => ({
+  id: '20260830-101500-0001',
+  ts: 1_756_500_000_000,
+  from: 'drone',
+  kind: 'post',
+  body: '',
+  ...over,
+});
+
+const harness = () => {
+  const raise = vi.fn();
+  const markRead = vi.fn();
+  const dismiss = vi.fn();
+  const onEntry = createLedgerNotifier({
+    raise,
+    markRead,
+    dismiss,
+    isAgent: (id: string) => id !== OVERMIND && !id.startsWith('sess-'),
+  });
+  return { raise, markRead, dismiss, onEntry };
+};
+
+describe('createLedgerNotifier', () => {
+  it('raises agent.ask for an ask addressed to the overmind, keyed by the entry id', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        to: OVERMIND,
+        kind: 'ask',
+        body: 'ship it?\nTests are green.',
+        meta: { options: ['yes', 'no'] },
+      }),
+    );
+    expect(raise).toHaveBeenCalledWith({
+      kind: 'agent.ask',
+      id: '20260830-101500-0001',
+      title: 'ship it?',
+      subject: 'drone',
+      body: 'Tests are green.',
+      action: { type: 'ask', thread: '20260830-101500-0001' },
+      createdAt: 1_756_500_000_000,
+    });
+  });
+
+  it('titles a quoted ask Send this reply?', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({ to: OVERMIND, kind: 'ask', body: 'ok?', meta: { quote: 'hello' } }),
+    );
+    expect(raise.mock.calls[0][0].title).toBe('Send this reply?');
+  });
+
+  /**
+   * HIVE-118 self-review, finding 7. `meta.quote === undefined` and the card's
+   * own `text()` helper disagreed about two values `mcp-host/tools.ts` can
+   * actually produce: it admits `quote: ''` outright, and any non-string
+   * reaches `meta` through the passthrough. One ask then had two
+   * presentations — this notification titled "Send this reply?" with the whole
+   * body under it, and a card next to it drawing the ordinary title and no
+   * quote block at all.
+   */
+  it.each([
+    ['an empty string', ''],
+    ['a non-string', 42],
+  ])('treats %s quote as no quote, exactly as the card does', (_label, quote) => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({ to: OVERMIND, kind: 'ask', body: 'ok?\nwhy not', meta: { quote } }),
+    );
+    expect(raise.mock.calls[0][0]).toMatchObject({ title: 'ok?', body: 'why not' });
+  });
+
+  /**
+   * HIVE-118 self-review, finding 10: without a subject every ask toasted
+   * under its bare title, so three agents asking at once gave three toasts
+   * reading "Send this reply?" with nothing to tell them apart.
+   *
+   * The **party**, not a name pasted in — `hub.ts` resolves it at presentation
+   * time, which is the only way a session that titles itself after the row was
+   * raised ever toasts under the name the user can see.
+   */
+  it('carries the asker as the subject, for both a session and an agent', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ from: 'sess-01', to: OVERMIND, kind: 'ask', body: 'ok?' }));
+    onEntry(entry({ id: 'x9', from: 'drone', to: OVERMIND, kind: 'ask', body: 'ok?' }));
+
+    expect(raise.mock.calls[0][0].subject).toBe('sess-01');
+    expect(raise.mock.calls[1][0].subject).toBe('drone');
+  });
+
+  it('raises agent.permission when meta.kind says so', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        to: OVERMIND,
+        kind: 'ask',
+        body: 'Allow Bash?',
+        meta: { kind: 'permission', tool: 'Bash' },
+      }),
+    );
+    expect(raise.mock.calls[0][0]).toMatchObject({
+      kind: 'agent.permission',
+      title: 'Allow Bash?',
+    });
+  });
+
+  it('ignores an ask addressed to somebody else', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ to: 'sess-01', kind: 'ask', body: 'ping' }));
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('marks the ask read when its answer lands', () => {
+    const { markRead, onEntry } = harness();
+    onEntry(entry({ id: 'x2', kind: 'answer', thread: 'a41', body: 'yes' }));
+    expect(markRead).toHaveBeenCalledWith('a41');
+  });
+
+  it('dismisses the answered card when the asker reports done', () => {
+    const { dismiss, raise, onEntry } = harness();
+    onEntry(entry({ id: 'x3', kind: 'done', thread: 'a41', body: 'Sent.' }));
+    expect(dismiss).toHaveBeenCalledWith('a41');
+    expect(raise.mock.calls[0][0]).toMatchObject({
+      kind: 'agent.done',
+      title: 'Sent.',
+      action: { type: 'agent', name: 'drone' },
+    });
+  });
+
+  /**
+   * HIVE-123: a `done` an agent posted through the Slack tools can carry a
+   * permalink, but only once it survives the same validation
+   * `honestPermissionAsk` applies to a permission ask's own `meta` — the
+   * agent wrote it, so it is untrusted until checked.
+   */
+  it('carries a slack permalink from a done entry onto the card', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'done',
+        from: 'slack-watcher',
+        body: 'Replied to Dana in #incorp-dev',
+        meta: { slack: { permalink: 'https://behiques.slack.com/archives/C1/p123' } },
+      }),
+    );
+    expect(raise.mock.calls[0][0].link).toEqual({
+      href: 'https://behiques.slack.com/archives/C1/p123',
+      label: 'Open in Slack',
+    });
+  });
+
+  it('drops a permalink that is not https — the agent wrote it', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'done',
+        from: 'slack-watcher',
+        body: 'done',
+        meta: { slack: { permalink: 'javascript:alert(1)' } },
+      }),
+    );
+    expect(raise.mock.calls[0][0].link).toBeUndefined();
+  });
+
+  it('drops an https permalink on a non-slack host — the label would lie', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'done',
+        from: 'slack-watcher',
+        body: 'done',
+        meta: { slack: { permalink: 'https://evil.example.com/p123' } },
+      }),
+    );
+    expect(raise.mock.calls[0][0].link).toBeUndefined();
+  });
+
+  it('raises no link at all when the done entry carries none', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ kind: 'done', from: 'drone', body: 'Sent.' }));
+    expect(raise.mock.calls[0][0].link).toBeUndefined();
+  });
+
+  it('mints nothing for a session done — only the ask card goes', () => {
+    const { dismiss, raise, onEntry } = harness();
+    onEntry(entry({ from: 'sess-01', kind: 'done', thread: 'a41', body: 'ok' }));
+    expect(dismiss).toHaveBeenCalledWith('a41');
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('raises agent.failed for an agent failed', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ kind: 'failed', body: 'Could not reach the API.' }));
+    expect(raise.mock.calls[0][0]).toMatchObject({
+      kind: 'agent.failed',
+      title: 'Could not reach the API.',
+    });
+  });
+
+  /**
+   * HIVE-118 self-review, finding 6. A `failed` naming a thread used not to
+   * dismiss, so the user kept a live, button-bearing card for a question the
+   * asker had already abandoned — and since `openAsks` now closes the thread,
+   * every one of those buttons would have been refused by `Ledger.append`.
+   *
+   * Symmetric with `done` in both directions: the card goes whoever sent the
+   * `failed`, and only an agent's is also news.
+   */
+  it('dismisses the card when the asker abandons the ask', () => {
+    const { dismiss, raise, onEntry } = harness();
+    onEntry(entry({ id: 'x4', kind: 'failed', thread: 'a41', body: 'Gave up.' }));
+    expect(dismiss).toHaveBeenCalledWith('a41');
+    expect(raise.mock.calls[0][0]).toMatchObject({
+      kind: 'agent.failed',
+      title: 'Gave up.',
+      action: { type: 'agent', name: 'drone' },
+    });
+  });
+
+  it('dismisses the card for a session failed too, and mints nothing', () => {
+    const { dismiss, raise, onEntry } = harness();
+    onEntry(
+      entry({ id: 'x5', from: 'sess-01', kind: 'failed', thread: 'a41', body: 'no' }),
+    );
+    expect(dismiss).toHaveBeenCalledWith('a41');
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['turns', 'Ran out of turns'],
+    ['budget', 'Hit its budget'],
+    ['failed', 'Run failed'],
+  ])('raises agent.failed for a run that ended %s', (outcome, title) => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'event',
+        body: `run.ended — ${outcome}`,
+        meta: { run: 'r-1', outcome, reason: 'stalled' },
+      }),
+    );
+    expect(raise.mock.calls[0][0]).toMatchObject({ kind: 'agent.failed', title });
+  });
+
+  it('shows the reason verbatim for a plain failure and nothing else', () => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'event',
+        body: 'run.ended — failed',
+        meta: { run: 'r-1', outcome: 'failed', reason: 'stalled' },
+      }),
+    );
+    expect(raise.mock.calls[0][0].body).toBe('stalled');
+  });
+
+  /**
+   * Whole-branch review, finding 2. The shape production actually emits: an
+   * agent's own `ledger_failed` carries no `meta.run` at all — nothing in
+   * `mcp-host/tools.ts` stamps one — so the dedup this proves has to key off
+   * the party (`entry.from`), not a run id that never arrives.
+   */
+  it('does not mint a second card when the agent already said it failed', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ from: 'drone', kind: 'failed', body: 'gave up' }));
+    onEntry(
+      entry({
+        from: 'drone',
+        kind: 'event',
+        body: 'run.ended — failed',
+        meta: { run: 'r-1', outcome: 'failed' },
+      }),
+    );
+    expect(raise).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['done', 'asking'])('mints nothing for a run that ended %s', (outcome) => {
+    const { raise, onEntry } = harness();
+    onEntry(
+      entry({
+        kind: 'event',
+        body: `run.ended — ${outcome}`,
+        meta: { run: 'r-2', outcome },
+      }),
+    );
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The stale-flag case the whole-branch review named directly: a `failed`
+   * report must be consumed by the very next `event` from that party, no
+   * matter how that run ended, or a later run's genuine failure would find
+   * the flag already set and be silently swallowed.
+   */
+  it('clears the flag on a run that ended done, so the next run can still fail loudly', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ from: 'drone', kind: 'failed', body: 'gave up' }));
+    onEntry(
+      entry({
+        from: 'drone',
+        kind: 'event',
+        body: 'run.ended — done',
+        meta: { run: 'r-1', outcome: 'done' },
+      }),
+    );
+    raise.mockClear();
+
+    onEntry(
+      entry({
+        from: 'drone',
+        kind: 'event',
+        body: 'run.ended — failed',
+        meta: { run: 'r-2', outcome: 'failed' },
+      }),
+    );
+
+    expect(raise).toHaveBeenCalledTimes(1);
+  });
+
+  /** Two different agents' own failures must not shadow one another. */
+  it('does not let one agent’s report suppress another agent’s receipt', () => {
+    const { raise, onEntry } = harness();
+    onEntry(entry({ from: 'drone', kind: 'failed', body: 'gave up' }));
+    onEntry(
+      entry({
+        from: 'other-drone',
+        kind: 'event',
+        body: 'run.ended — failed',
+        meta: { run: 'r-9', outcome: 'failed' },
+      }),
+    );
+
+    expect(raise).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * An ask time retired takes its card with it (HIVE-120).
+   *
+   * The thread is closed, so `Ledger.append` refuses everything the card's
+   * buttons could send — a live card over a dead thread is the bug the `failed`
+   * branch above was made symmetric to fix.
+   */
+  it('dismisses the card of an ask that expired', () => {
+    const { raise, dismiss, onEntry } = harness();
+    onEntry(
+      entry({
+        id: '20260831-090000-0009',
+        from: OVERMIND,
+        to: 'drone',
+        kind: 'event',
+        thread: '20260830-101500-0001',
+        body: 'ask a7 expired',
+        meta: { expired: '20260830-101500-0001' },
+      }),
+    );
+
+    expect(dismiss).toHaveBeenCalledWith('20260830-101500-0001');
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('leaves a run receipt alone', () => {
+    const { dismiss, onEntry } = harness();
+    onEntry(
+      entry({
+        from: 'drone',
+        kind: 'event',
+        body: 'run.ended — done',
+        meta: { run: 'r-1', outcome: 'done' },
+      }),
+    );
+
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('refuses an expiry from anyone but the overmind', () => {
+    /*
+      `meta` is a free-form rider the tool layer passes through verbatim, so
+      without the `from` check any session or agent could dismiss another
+      party's card by posting an event that claims their ask expired.
+    */
+    const { dismiss, onEntry } = harness();
+    onEntry(
+      entry({
+        from: 'sess-9',
+        to: 'drone',
+        kind: 'event',
+        body: 'not mine to retire',
+        meta: { expired: '20260830-101500-0001' },
+      }),
+    );
+
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  it('ignores an expired rider that is not an id', () => {
+    const { dismiss, onEntry } = harness();
+    onEntry(
+      entry({
+        from: OVERMIND,
+        kind: 'event',
+        body: 'nonsense',
+        meta: { expired: true },
+      }),
+    );
+
+    expect(dismiss).not.toHaveBeenCalled();
+  });
+
+  describe('the daily cap card (HIVE-121)', () => {
+    const cap = (over: Partial<LedgerEntry> = {}) =>
+      entry({
+        from: OVERMIND,
+        kind: 'event',
+        body: 'drone reached its daily budget — $0.50',
+        meta: { dailyCap: 0.5, agent: 'drone' },
+        ...over,
+      });
+
+    it('raises a failed-toned card naming the capped agent', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(cap());
+
+      expect(raise).toHaveBeenCalledWith({
+        kind: 'agent.failed',
+        id: '20260830-101500-0001',
+        title: 'Hit its daily cap',
+        subject: 'drone',
+        body: 'drone reached its daily budget — $0.50',
+        action: { type: 'agent', name: 'drone' },
+        createdAt: 1_756_500_000_000,
+      });
+    });
+
+    /*
+      Gated on the **overmind**, as the `expired` branch is, and for its
+      reason: `meta` is a free-form rider the tool layer passes through
+      verbatim. Keyed off an agent's own `from`, this card would be one any
+      agent could mint for itself — with a body it also writes — simply by
+      posting an event.
+    */
+    it('ignores the same meta posted by an agent about itself', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(cap({ from: 'drone' }));
+
+      expect(raise).not.toHaveBeenCalled();
+    });
+
+    it('ignores it from a session', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(cap({ from: 'sess-01' }));
+
+      expect(raise).not.toHaveBeenCalled();
+    });
+
+    it('ignores a cap that is not a number', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(cap({ meta: { dailyCap: 'lots', agent: 'drone' } }));
+
+      expect(raise).not.toHaveBeenCalled();
+    });
+
+    it('ignores one naming a party that is not an agent', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(cap({ meta: { dailyCap: 0.5, agent: 'sess-01' } }));
+
+      expect(raise).not.toHaveBeenCalled();
+    });
+
+    /*
+      Its own branch, above the run-receipt path, because that path calls
+      `spokenFor.delete(entry.from)` on any outcome — and a cap event is not a
+      run receipt: no run ended, the scheduler simply declined to start one.
+      Falling through would eat the dedup token and swallow the agent's next
+      real report.
+    */
+    it('leaves a pending run receipt intact', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(entry({ kind: 'failed', body: 'Run failed' }));
+      raise.mockClear();
+
+      onEntry(cap({ id: 'cap-1' }));
+
+      expect(raise).toHaveBeenCalledTimes(1);
+      expect(raise.mock.calls[0][0].title).toBe('Hit its daily cap');
+
+      raise.mockClear();
+      onEntry(
+        entry({ id: 'end-1', kind: 'event', meta: { outcome: 'failed' } }),
+      );
+
+      // Still suppressed by the agent's own `failed` report, as it was before.
+      expect(raise).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+    HIVE-125. This notifier does no normalising of its own — it is a
+    `store.onChange` listener, so it only ever receives entries `append` has
+    already rebuilt. Handing it a raw mismatched entry would assert against a
+    state that cannot occur, so these go through the same function `append`
+    does.
+  */
+  describe('a permission ask, normalised', () => {
+    /**
+     * The aged-out fallback renders `notif.title`/`notif.body`
+     * (`ask-card.tsx`), so an honest toast is also what makes a card whose
+     * entry has left the capped mirror honest.
+     */
+    it('titles a permission toast with the meta tool, not the body', () => {
+      const { raise, onEntry } = harness();
+      const honest = honestPermissionAsk('Allow Read?\n/repo/a.ts', {
+        kind: 'permission',
+        tool: 'Bash',
+        input: { command: 'rm -rf /' },
+      });
+
+      onEntry(entry({ to: OVERMIND, kind: 'ask', body: honest.body, meta: honest.meta }));
+
+      expect(raise.mock.calls[0]![0]).toMatchObject({
+        kind: 'agent.permission',
+        title: 'Allow Bash?',
+        body: 'rm -rf /',
+      });
+    });
+
+    /** `meta.quote` retitled the toast too, so dropping it shows up here. */
+    it('does not let a quote retitle a permission toast', () => {
+      const { raise, onEntry } = harness();
+      const honest = honestPermissionAsk('Allow Bash?\nnpm test', {
+        kind: 'permission',
+        tool: 'Bash',
+        input: { command: 'npm test' },
+        quote: 'looks harmless',
+      });
+
+      onEntry(entry({ to: OVERMIND, kind: 'ask', body: honest.body, meta: honest.meta }));
+
+      expect(raise.mock.calls[0]![0].title).toBe('Allow Bash?');
+    });
+  });
+
+  describe('the rotate-failed card (HIVE-122)', () => {
+    it('raises a card when an agent could not rotate', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(
+        entry({
+          id: 'e-9',
+          from: OVERMIND,
+          kind: 'event',
+          body: 'drone could not rotate — three handoff wakes ended without a handoff.',
+          meta: { rotateFailed: 3, agent: 'drone' },
+        }),
+      );
+
+      expect(raise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'agent.failed',
+          id: 'e-9',
+          subject: 'drone',
+          action: { type: 'agent', name: 'drone' },
+        }),
+      );
+    });
+
+    it('ignores a rotation failure naming something that is not an agent', () => {
+      const { raise, onEntry } = harness();
+
+      onEntry(
+        entry({
+          id: 'e-9',
+          from: OVERMIND,
+          kind: 'event',
+          body: 'x',
+          meta: { rotateFailed: 3, agent: 'sess-01' },
+        }),
+      );
+
+      expect(raise).not.toHaveBeenCalled();
+    });
+  });
+});

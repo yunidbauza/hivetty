@@ -11,7 +11,10 @@ import {
   DEFAULT_NOTIFICATIONS,
   type ConfigSnapshot,
 } from '../../../../electron/shared/config-contract';
-import type { HookStatusEvent } from '../../../../electron/shared/hook-contract';
+import type {
+  HookAgentEvent,
+  HookStatusEvent,
+} from '../../../../electron/shared/hook-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
 
 import type { RunAsync } from '../../../../electron/main/integrations/github/run';
@@ -21,7 +24,7 @@ import {
   type Sessions,
 } from '../../../../electron/main/sessions';
 import { MIN_INTERVAL_MS } from '../../../../electron/main/sessions/git';
-import { createSessionLedger } from '../../../../electron/main/sessions/ledger';
+import { createSessionHistory } from '../../../../electron/main/sessions/history';
 
 /**
  * The sessions layer (story 096).
@@ -671,7 +674,7 @@ describe('identity: the renderer only ever sees entity ids', () => {
  * capture, and reading status back by entity is exactly what `on()` already
  * does for the suite's default instance.
  */
-function harness(): {
+function harness(onIdle?: (entityId: string) => void): {
   hook: (
     event: { entityId: string; event: HookStatusEvent['event'] } & Partial<
       Omit<HookStatusEvent, 'entityId' | 'event' | 'status'>
@@ -680,17 +683,20 @@ function harness(): {
   cleared: (entityId: string) => void;
   lastStatus: (entityId: string) => unknown;
   lastEvent: (entityId: string) => Record<string, unknown>;
+  /** The instance itself, for the queries that are not events (HIVE-113). */
+  sessions: Sessions;
 } {
   let onEvent: ((event: HookStatusEvent) => void) | undefined;
   let onCleared: ((entityId: string) => void) | undefined;
   const localSent: Sent[] = [];
 
-  createSessions({
+  const instance = createSessions({
     supervisor,
     send: (channel, payload) =>
       localSent.push({ channel, payload: payload as Record<string, unknown> }),
     config: () => CONFIG,
     newSessionUuid: () => TEST_UUID,
+    ...(onIdle === undefined ? {} : { onIdle }),
     hooks: {
       settingsPathFor: () => undefined,
       envFor: () => ({}),
@@ -721,6 +727,7 @@ function harness(): {
     cleared: (entityId) => onCleared!(entityId),
     lastStatus: (entityId) => statusFor(entityId).status,
     lastEvent: (entityId) => statusFor(entityId),
+    sessions: instance,
   };
 }
 
@@ -1147,7 +1154,7 @@ describe('status', () => {
    * `statusTracker.reset` on `onCleared`, the successor would inherit the
    * retired conversation's live subagent and sit on `idle (agents)` forever.
    */
-  it('withdraws the ledger uuid when the conversation is cleared (HIVE-88)', () => {
+  it('withdraws the history uuid when the conversation is cleared (HIVE-88)', () => {
     const written: { id: string; patch: Record<string, unknown> }[] = [];
     let clear: ((entityId: string) => void) | undefined;
     createSessions({
@@ -1164,7 +1171,7 @@ describe('status', () => {
         },
         stop: () => Promise.resolve(),
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
-      ledger: {
+      history: {
         begin: (id, patch) => written.push({ id, patch: { ...patch } }),
         record: (id, patch) => written.push({ id, patch: { ...patch } }),
         resumable: () => undefined,
@@ -1552,32 +1559,32 @@ describe('session authentication', () => {
 });
 
 /**
- * What reaches the ledger (HIVE-87).
+ * What reaches the history (HIVE-87).
  *
- * The ledger itself is tested against a real file in `ledger.test.ts`; these
+ * The history itself is tested against a real file in `history.test.ts`; these
  * pin the *wiring* — that each moment main knows something worth keeping
- * actually hands it over, and that a build without a ledger is unaffected. A
+ * actually hands it over, and that a build without a history is unaffected. A
  * fake rather than the real one, for the reason the supervisor is faked: a unit
  * test that wrote into `userData` would leave state behind.
  */
-describe('the ledger', () => {
+describe('the history', () => {
   interface Written {
     id: string;
     patch: Record<string, unknown>;
   }
 
-  const withLedger = (written: Written[], resumable?: Record<string, string>) =>
+  const withHistory = (written: Written[], resumable?: Record<string, string>) =>
     createSessions({
       supervisor,
       send: (channel, payload) =>
         sent.push({ channel, payload: payload as Record<string, unknown> }),
       config: () => CONFIG,
       newSessionUuid: () => TEST_UUID,
-      ledger: {
+      history: {
         /*
           Both verbs land in one list. What these tests assert is *what main
-          hands over and when*; which of the two carried it is the ledger's own
-          concern and is covered in `ledger.test.ts`.
+          hands over and when*; which of the two carried it is the history's own
+          concern and is covered in `history.test.ts`.
         */
         begin: (id, patch, options) => {
           written.push({ id, patch: { ...patch, ...(options ?? {}) } });
@@ -1598,7 +1605,7 @@ describe('the ledger', () => {
 
   it('records the session at spawn, carrying the uuid it pinned', () => {
     const written: Written[] = [];
-    withLedger(written).open(OPEN);
+    withHistory(written).open(OPEN);
 
     expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
       project: 'nova-web',
@@ -1607,16 +1614,16 @@ describe('the ledger', () => {
     });
   });
 
-  it('writes the same uuid to the ledger and to the command line', () => {
+  it('writes the same uuid to the history and to the command line', () => {
     // The whole point of hoisting it out of the sessionCommand call: two calls
-    // to newSessionUuid() would leave the ledger naming a transcript that does
+    // to newSessionUuid() would leave the history naming a transcript that does
     // not exist, which is the one thing recording it is meant to make possible.
     //
     // The command line is *typed into* the pty rather than passed as spawn
     // args — `claude` runs inside a login shell — so this reads the bootstrap
     // write, exactly as the BOOT assertions above do.
     const written: Written[] = [];
-    const withIt = withLedger(written);
+    const withIt = withHistory(written);
     withIt.open(OPEN);
     const sessionId = mintedFor('hero-refresh');
 
@@ -1634,7 +1641,7 @@ describe('the ledger', () => {
 
   it('records the model and effort a session was started as', () => {
     const written: Written[] = [];
-    withLedger(written).open({ ...OPEN, model: 'haiku', effort: 'low' });
+    withHistory(written).open({ ...OPEN, model: 'haiku', effort: 'low' });
 
     expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({
       model: 'haiku',
@@ -1644,14 +1651,14 @@ describe('the ledger', () => {
 
   it('omits a name nobody supplied rather than storing an empty one', () => {
     const written: Written[] = [];
-    withLedger(written).open(OPEN);
+    withHistory(written).open(OPEN);
 
     expect(patchesFor(written, 'hero-refresh')[0]).not.toHaveProperty('name');
   });
 
   it('records the ending when the pty exits', () => {
     const written: Written[] = [];
-    withLedger(written).open(OPEN);
+    withHistory(written).open(OPEN);
 
     emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0 });
 
@@ -1661,10 +1668,10 @@ describe('the ledger', () => {
   });
 
   /**
-   * The title stream against a pinned name, over a **real** ledger (HIVE-107,
+   * The title stream against a pinned name, over a **real** history (HIVE-107,
    * relaxed by HIVE-108).
    *
-   * Both halves are pinned on their own — `ledger.test.ts` owns the merge rule,
+   * Both halves are pinned on their own — `history.test.ts` owns the merge rule,
    * and the tests above own the fact that `readTitle` records what it reads —
    * but the bug lived in the seam, so this is the one place they are composed.
    * A session renamed mid-conversation goes on painting the name Claude knows it
@@ -1673,23 +1680,29 @@ describe('the ledger', () => {
    * the user had finished reading the rename, and the file is what the next
    * launch restores from.
    *
-   * What the pin defends is now the **key**, not the whole name: the agent's
-   * title is taken and `HIVE-104` is kept in front of it. The regression this
-   * guards against is the same one either way — the ticket falling off the
-   * front on the next repaint.
+   * What the pin defends is the **key**, and since first-prompt naming the
+   * agent's repaint no longer gets to add to it: a row that already has a real
+   * name refuses a title Claude chose, because Claude's title is written once,
+   * late, about whatever the conversation had drifted to by then.
+   *
+   * The regression this guards against is the same one it always was — the
+   * ticket falling off the front on the next repaint — and it now guards the
+   * stronger property, through the real seam: the classification runs against a
+   * transcript that does not exist here, answers `unknown`, and is reported as
+   * `agent`, which is the conservative half of that trade working as intended.
    */
-  it('keeps a pinned key in front of the agent’s own repaints', () => {
+  it('keeps a pinned key whole against the agent’s own repaints', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hive-pin-'));
     const file = join(dir, 'sessions.json');
     try {
-      const ledger = createSessionLedger(file, () => 1000);
+      const history = createSessionHistory(file, () => 1000);
       const withIt = createSessions({
         supervisor,
         send: (channel, payload) =>
           sent.push({ channel, payload: payload as Record<string, unknown> }),
         config: () => CONFIG,
         newSessionUuid: () => TEST_UUID,
-        ledger,
+        history,
       });
       withIt.open(OPEN);
       const sessionId = mintedFor('hero-refresh');
@@ -1698,15 +1711,15 @@ describe('the ledger', () => {
       vi.advanceTimersByTime(158 + SUBMIT);
 
       // The user names a ticket mid-session; the renderer's note arrives.
-      ledger.record('hero-refresh', { ticket: 'HIVE-104', name: 'HIVE-104', namePinned: true });
+      history.record('hero-refresh', { ticket: 'HIVE-104', name: 'HIVE-104', namePinned: true });
 
       // And Claude, which was never told, goes on painting what it knows.
       emitData({ sessionId, chunk: '\u001b]0;✳ hero-refresh\u0007' });
       vi.advanceTimersByTime(8);
-      ledger.flush();
+      history.flush();
 
-      expect(ledger.all()[0]).toMatchObject({
-        name: 'HIVE-104-hero-refresh',
+      expect(history.all()[0]).toMatchObject({
+        name: 'HIVE-104',
         namePinned: true,
         ticket: 'HIVE-104',
       });
@@ -1714,7 +1727,7 @@ describe('the ledger', () => {
         The renderer is told the *raw* title and applies the same pin itself —
         main's job on this channel is to report what the terminal said, not to
         decide what the row is called. The two arrive at one answer because they
-        run one function, which is what `ledger.ts` and `renameSession` each say
+        run one function, which is what `history.ts` and `renameSession` each say
         in their own words.
       */
       expect(on(CH.sessionName).at(-1)?.payload).toMatchObject({
@@ -1729,7 +1742,7 @@ describe('the ledger', () => {
     // Same reason the activity tracker is not told: a clone's ending is not a
     // session's, and a `clone-1` row in the fleet list would be a fiction.
     const written: Written[] = [];
-    withLedger(written).openCommand({
+    withHistory(written).openCommand({
       entityId: 'clone-1',
       cwd: '/tmp',
       file: 'git',
@@ -1745,9 +1758,9 @@ describe('the ledger', () => {
   /**
    * Picking a previous run's conversation back up (HIVE-88).
    *
-   * The renderer asks; the ledger decides whether it can; the command line and
+   * The renderer asks; the history decides whether it can; the command line and
    * the record both follow that decision. The resumed uuid must reach
-   * `--resume` on the command line, the same uuid must be what the ledger is
+   * `--resume` on the command line, the same uuid must be what the history is
    * told, and the opening instruction must not be delivered again.
    */
   describe('resume', () => {
@@ -1760,9 +1773,9 @@ describe('the ledger', () => {
       vi.advanceTimersByTime(SUBMIT);
     };
 
-    it('resumes the conversation the ledger names, and says nothing twice', () => {
+    it('resumes the conversation the history names, and says nothing twice', () => {
       const written: Written[] = [];
-      withLedger(written, { 'hero-refresh': PRIOR }).open({
+      withHistory(written, { 'hero-refresh': PRIOR }).open({
         ...OPEN,
         task: 'fix the hero',
         resume: true,
@@ -1793,13 +1806,13 @@ describe('the ledger', () => {
      * So the entity-id fallback, which is right for a spawn, was the whole bug:
      * every resumed session was renamed to `sess-0n` on its way back, the title
      * stream reported that as the agent's own choice, and `readTitle` wrote it
-     * through to the ledger — so `troubleshooting-crawling` became `sess-0n`
+     * through to the history — so `troubleshooting-crawling` became `sess-0n`
      * permanently, having survived the quit that was supposed to be the risky
      * part.
      */
     it('leaves the resumed conversation the name it already has', () => {
       const written: Written[] = [];
-      withLedger(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, resume: true });
+      withHistory(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, resume: true });
       settle(mintedFor('hero-refresh'));
 
       const line = vi.mocked(supervisor.write).mock.calls.at(0)?.[1] ?? '';
@@ -1808,14 +1821,14 @@ describe('the ledger', () => {
 
     /**
      * A caller that *does* name a resume is obeyed, because it is saying
-     * something the ledger cannot: this conversation should now be called this.
+     * something the history cannot: this conversation should now be called this.
      * Nothing asks for that today — `resumeSession` and `resolveTransport` both
      * send `resume` and no name — and the flag is dropped only where the
      * alternative was inventing one.
      */
     it('still renames a resume the caller named on purpose', () => {
       const written: Written[] = [];
-      withLedger(written, { 'hero-refresh': PRIOR }).open({
+      withHistory(written, { 'hero-refresh': PRIOR }).open({
         ...OPEN,
         resume: true,
         name: 'HIVE-73',
@@ -1838,7 +1851,7 @@ describe('the ledger', () => {
       // renderer's request is honest but unanswerable, and the spawn is the
       // one it would have been without the flag.
       const written: Written[] = [];
-      withLedger(written).open({ ...OPEN, resume: true });
+      withHistory(written).open({ ...OPEN, resume: true });
       settle(mintedFor('hero-refresh'));
 
       expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
@@ -1849,9 +1862,9 @@ describe('the ledger', () => {
       });
     });
 
-    it('never resumes unasked, however well the ledger knows the id', () => {
+    it('never resumes unasked, however well the history knows the id', () => {
       const written: Written[] = [];
-      withLedger(written, { 'hero-refresh': PRIOR }).open(OPEN);
+      withHistory(written, { 'hero-refresh': PRIOR }).open(OPEN);
       settle(mintedFor('hero-refresh'));
 
       expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
@@ -1860,7 +1873,7 @@ describe('the ledger', () => {
       });
     });
 
-    it('works without a ledger: resume degrades to a plain spawn', () => {
+    it('works without a history: resume degrades to a plain spawn', () => {
       sessions.open({ ...OPEN, resume: true });
       settle(mintedFor('hero-refresh'));
 
@@ -1868,11 +1881,11 @@ describe('the ledger', () => {
     });
   });
 
-  it('keeps the ledger status current as the session reports it', () => {
+  it('keeps the history status current as the session reports it', () => {
     // `status` is documented as the last known one (HIVE-88). A renderer that
     // starts in front of a running pty reads it, so it has to be true.
     const written: Written[] = [];
-    const withIt = withLedger(written);
+    const withIt = withHistory(written);
     withIt.open(OPEN);
     const sessionId = mintedFor('hero-refresh');
     emitData({ sessionId, chunk: 'building' });
@@ -1885,7 +1898,7 @@ describe('the ledger', () => {
     expect(statuses.at(-1)).toBe('idle');
   });
 
-  it('works with no ledger at all — absent is supported, not degraded', () => {
+  it('works with no history at all — absent is supported, not degraded', () => {
     expect(() => {
       sessions.open(OPEN);
       emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0 });
@@ -1955,7 +1968,7 @@ describe('/done', () => {
        * constant (HIVE-93).
        *
        * `resumable: () => undefined` is what let a real bug through a green
-       * suite: `publishFinished` asks the ledger whether the conversation can be
+       * suite: `publishFinished` asks the history whether the conversation can be
        * reopened, and it was asking *before* `settleExit` recorded the ending —
        * so every `/done` shipped `resumable: false` and the Resume control never
        * appeared. A stub that always says "no" agrees with a broken ordering and
@@ -1964,7 +1977,7 @@ describe('/done', () => {
        * So this mirrors the real rule — a record is resumable once it has a uuid
        * and has ended — and the ordering becomes something a test can see.
        *
-       * What it deliberately does **not** model is the real ledger's
+       * What it deliberately does **not** model is the real history's
        * `startedThisRun` half. That branch only decides an *unended, same-run*
        * record, which the rule above already refuses, so modelling it would add
        * nothing here. It would matter to a test that exercised `resumable`
@@ -1972,7 +1985,7 @@ describe('/done', () => {
        * diverges from the real rule in a case a future test does reach is the
        * exact shape of the stub this replaced.
        */
-      ledger: {
+      history: {
         begin: (id, patch, options) => {
           written.push({ id, patch: { ...patch, ...(options ?? {}) } });
         },
@@ -2102,10 +2115,10 @@ describe('/done', () => {
 
     /*
       The ordering assertion, and the reason it is worth its own test: the
-      ledger is asked this question *during* `settleExit`, so it has to have
+      history is asked this question *during* `settleExit`, so it has to have
       been told the session ended before anything asks. Recorded second, it
       answered "no" for every `/done` — the transcript still on disk, the uuid
-      still in the ledger, and nothing on screen able to reach either.
+      still in the history, and nothing on screen able to reach either.
     */
     expect(h.lastFinished('hero-refresh')).toMatchObject({ resumable: true });
   });
@@ -2256,5 +2269,229 @@ describe('/done', () => {
       .map((patch) => patch.status)
       .filter((status) => status !== undefined);
     expect(statuses).not.toContain('done');
+  });
+});
+
+/**
+ * The idle signal the ledger's delivery rule reads (HIVE-113).
+ *
+ * Two shapes of the same question. `onIdle` is the push — main telling a
+ * consumer a prompt just came free — and `isIdle` is the pull, for a caller
+ * that arrives between events and has to ask.
+ */
+describe('the idle signal', () => {
+  it('fires when a session goes idle with nothing running behind it', () => {
+    const onIdle = vi.fn();
+    const h = harness(onIdle);
+    h.sessions.open(OPEN);
+
+    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: [] });
+
+    expect(onIdle).toHaveBeenCalledWith('hero-refresh');
+  });
+
+  it('stays quiet while a background shell is still running', () => {
+    /*
+      `Stop` with a live background shell still derives `idle` — with
+      `detail: 'script'` — so the status alone would say yes to a session that
+      is still working. This is the case the `bgShells` half of the guard is
+      for.
+    */
+    const onIdle = vi.fn();
+    const h = harness(onIdle);
+    h.sessions.open(OPEN);
+
+    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: ['shell-1'] });
+
+    expect(onIdle).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet for a session waiting on a permission prompt', () => {
+    // `waiting` is not `idle`; writing here would be writing mid-turn.
+    const onIdle = vi.fn();
+    const h = harness(onIdle);
+    h.sessions.open(OPEN);
+
+    h.hook({ entityId: 'hero-refresh', event: 'PermissionRequest', toolName: 'Bash' });
+
+    expect(onIdle).not.toHaveBeenCalled();
+  });
+
+  it('reports isIdle only for a live session at an empty prompt', () => {
+    const h = harness();
+
+    // No pty yet: not idle, whatever any hook has said.
+    expect(h.sessions.isIdle('hero-refresh')).toBe(false);
+
+    h.sessions.open(OPEN);
+    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: [] });
+    expect(h.sessions.isIdle('hero-refresh')).toBe(true);
+
+    // `UserPromptSubmit` derives `working` — the turn started again.
+    h.hook({ entityId: 'hero-refresh', event: 'UserPromptSubmit' });
+    expect(h.sessions.isIdle('hero-refresh')).toBe(false);
+  });
+
+  it('does not report isIdle while a background shell is running', () => {
+    const h = harness();
+    h.sessions.open(OPEN);
+
+    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: ['shell-1'] });
+
+    expect(h.sessions.isIdle('hero-refresh')).toBe(false);
+  });
+});
+
+/**
+ * What this layer supplies for the *agent* id space (HIVE-115).
+ *
+ * `receiver.test.ts` proves the socket keeps the two apart. This proves the
+ * other half of the wiring: that the two answers this file hands the receiver —
+ * "is this a name I have a definition for" and "an agent's hook arrived" — are
+ * built the way the receiver's guarantee assumes, and that neither of them ends
+ * in a `session:status` push.
+ */
+describe('the agent id space (HIVE-115)', () => {
+  const AGENT = 'slack-watcher';
+  const UUID = 'f9589d3c-8987-4f7d-ba2f-537952d2633c';
+
+  const agentHarness = (): {
+    knowsAgent: (entityId: string) => boolean;
+    agentEvent: (event: Partial<HookAgentEvent> & { event: HookAgentEvent['event'] }) => void;
+    sessionEvent: (event: HookStatusEvent['event']) => void;
+    turnsEnded: ReturnType<typeof vi.fn>;
+    names: Set<string>;
+    sent: Sent[];
+    sessions: Sessions;
+  } => {
+    let knowsAgent: ((entityId: string) => boolean) | undefined;
+    let onAgentEvent: ((event: HookAgentEvent) => void) | undefined;
+    let onEvent: ((event: HookStatusEvent) => void) | undefined;
+    const localSent: Sent[] = [];
+    /*
+      Mutated after `createSessions` has run, which is the point: a user can
+      write a definition while the app is open, so a set captured at
+      construction would be wrong by the time the agent's first hook lands.
+    */
+    const names = new Set<string>();
+    const turnsEnded = vi.fn();
+
+    const instance = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        localSent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      newSessionUuid: () => TEST_UUID,
+      agentNames: () => names,
+      onAgentTurnEnded: turnsEnded,
+      hooks: {
+        settingsPathFor: () => undefined,
+        envFor: () => ({}),
+        start: (opts: {
+          knowsAgent: (entityId: string) => boolean;
+          onAgentEvent: (event: HookAgentEvent) => void;
+          onEvent: (event: HookStatusEvent) => void;
+        }) => {
+          knowsAgent = opts.knowsAgent;
+          onAgentEvent = opts.onAgentEvent;
+          onEvent = opts.onEvent;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
+    });
+
+    return {
+      knowsAgent: (entityId) => knowsAgent!(entityId),
+      // `status` is required on the wire contract and unread here.
+      agentEvent: (event) =>
+        onAgentEvent!({ entityId: AGENT, status: 'idle', ...event } as HookAgentEvent),
+      sessionEvent: (event: HookStatusEvent['event']) =>
+        onEvent!({ entityId: 'hero-refresh', status: 'idle', event } as HookStatusEvent),
+      turnsEnded,
+      names,
+      sent: localSent,
+      sessions: instance,
+    };
+  };
+
+  it('answers knowsAgent from the register as it stands, not as it was', () => {
+    const h = agentHarness();
+
+    expect(h.knowsAgent(AGENT)).toBe(false);
+
+    // Written while the app is running — the case a snapshot would miss.
+    h.names.add(AGENT);
+
+    expect(h.knowsAgent(AGENT)).toBe(true);
+    expect(h.knowsAgent('nobody-at-all')).toBe(false);
+
+    h.sessions.dispose();
+  });
+
+  it('forwards a Stop with the session uuid that came with it', () => {
+    const h = agentHarness();
+
+    h.agentEvent({ event: 'Stop', sessionUuid: UUID });
+
+    expect(h.turnsEnded).toHaveBeenCalledWith(AGENT, UUID);
+
+    h.sessions.dispose();
+  });
+
+  /**
+   * Absent, not invented. The tracker reads a missing uuid as "cannot
+   * correlate" and decides for itself; substituting anything here would be
+   * this layer asserting a match it has no evidence for.
+   */
+  it('forwards a Stop with no uuid as undefined', () => {
+    const h = agentHarness();
+
+    h.agentEvent({ event: 'Stop' });
+
+    expect(h.turnsEnded).toHaveBeenCalledWith(AGENT, undefined);
+
+    h.sessions.dispose();
+  });
+
+  it.each(['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop'] as const)(
+    'accepts %s from an agent and acts on none of it',
+    (event) => {
+      const h = agentHarness();
+
+      h.agentEvent({ event, sessionUuid: UUID });
+
+      expect(h.turnsEnded).not.toHaveBeenCalled();
+
+      h.sessions.dispose();
+    },
+  );
+
+  /**
+   * The guarantee the second callback exists for, stated where it can be
+   * observed: no agent event, of any kind, puts a row on the fleet.
+   *
+   * The session event at the end is the control. Without it this would pass on
+   * a harness that publishes nothing at all, which is the shape of a test that
+   * is green for the wrong reason.
+   */
+  it('never publishes a session status for an agent, though a session does', () => {
+    const h = agentHarness();
+
+    for (const event of ['SessionStart', 'PreToolUse', 'Stop'] as const) {
+      h.agentEvent({ event, sessionUuid: UUID });
+    }
+
+    expect(h.sent.filter((entry) => entry.channel === CH.sessionStatus)).toEqual([]);
+
+    h.sessionEvent('Stop');
+
+    expect(
+      h.sent
+        .filter((entry) => entry.channel === CH.sessionStatus)
+        .map((entry) => entry.payload['entityId']),
+    ).toEqual(['hero-refresh']);
+
+    h.sessions.dispose();
   });
 });

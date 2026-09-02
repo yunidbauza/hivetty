@@ -16,6 +16,25 @@ import { writeHookSettings } from '../../electron/main/hooks/settings';
 import { writePluginDir } from '../../electron/main/skills/plugin';
 import type { SkillsRead } from '../../electron/main/skills/read';
 
+/** Not exercised by this suite — `/done`, not the ledger. */
+const noLedger = {
+  onLedgerRead: () => ({ entries: [], openAsks: [], claims: {} }),
+  onLedgerPost: () => ({ ok: false as const, status: 503, reason: 'not exercised by this test' }),
+};
+
+/**
+ * The agent half of the id space, closed (HIVE-115).
+ *
+ * `/done` is a session's declaration — it ends in an `/exit` written into a pty
+ * — so this scenario knows no agents and the route stays session-only.
+ */
+const noAgents = {
+  knowsAgent: () => false,
+  onAgentEvent: () => {},
+  // And no peer directory either (HIVE-127).
+  onAgentsList: () => Promise.resolve({ agents: [] }),
+};
+
 /**
  * `/done`, end to end, against a real `claude` (HIVE-93).
  *
@@ -90,11 +109,14 @@ describe.skipIf(!enabled)('/done conformance', () => {
     receiver = createReceiver({
       onEvent: () => {},
       onTicketIntent: () => {},
+      onPromptName: () => {},
       onCleared: () => {},
       onMetrics: () => {},
       onDone: (entityId) => declared.push(entityId),
       onReady: () => {},
       knowsSession: (entityId) => entityId === ENTITY,
+      ...noLedger,
+      ...noAgents,
     });
 
     const url = await receiver.start();
@@ -126,7 +148,7 @@ describe.skipIf(!enabled)('/done conformance', () => {
         ['--plugin-dir', pluginRoot, '--settings', settingsPath, '/done'],
         {
           [HOOK_ENV_SESSION]: ENTITY,
-          [HOOK_ENV_TOKEN]: receiver.token,
+          [HOOK_ENV_TOKEN]: receiver.tokenFor(ENTITY),
         },
       );
 
@@ -160,7 +182,7 @@ describe.skipIf(!enabled)('/done conformance', () => {
         ['--plugin-dir', pluginRoot, '--settings', settingsPath, '/done'],
         {
           [HOOK_ENV_SESSION]: 'sess-not-ours',
-          [HOOK_ENV_TOKEN]: receiver.token,
+          [HOOK_ENV_TOKEN]: receiver.tokenFor('sess-not-ours'),
         },
       );
 

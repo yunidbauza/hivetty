@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
+import { CONSOLE_VERBS, USAGE } from '@/types/command';
 
 /**
  * The command grammar is the highest-value unit-test target in the app
@@ -234,6 +235,259 @@ describe('parseCommand', () => {
       // `HELP` is not `help`. Silently accepting it would imply a
       // case-insensitivity the rest of the grammar does not have.
       expect(parseCommand('HELP')).toMatchObject({ kind: 'unknown' });
+    });
+  });
+
+  /**
+   * The ledger verbs (HIVE-113).
+   *
+   * `ledger` is the only verb in the grammar with flags, so it is the only one
+   * whose *shape* errors go beyond "an argument is missing" — `-n abc` is a
+   * malformed value, and this file's standing split puts that here rather than
+   * in the store.
+   */
+  describe('ledger', () => {
+    it('defaults to a 20-entry tail with no filters', () => {
+      expect(parseCommand('ledger')).toEqual({
+        kind: 'ledger',
+        raw: 'ledger',
+        open: false,
+        events: false,
+        limit: 20,
+      });
+    });
+
+    it('reads --open and --events as flags', () => {
+      expect(parseCommand('ledger --open --events')).toMatchObject({
+        kind: 'ledger',
+        open: true,
+        events: true,
+      });
+    });
+
+    it('reads --from, --to and -n as valued flags in any order', () => {
+      expect(parseCommand('ledger -n 5 --from sess-a --to overmind')).toEqual({
+        kind: 'ledger',
+        raw: 'ledger -n 5 --from sess-a --to overmind',
+        open: false,
+        events: false,
+        from: 'sess-a',
+        to: 'overmind',
+        limit: 5,
+      });
+    });
+
+    it('omits from and to entirely when not given', () => {
+      /*
+        Absent rather than `undefined`: a key that is present but undefined
+        reaches `matches()` as a filter that matches nothing, which is the
+        opposite of "no filter".
+      */
+      const parsed = parseCommand('ledger');
+      expect(parsed).not.toHaveProperty('from');
+      expect(parsed).not.toHaveProperty('to');
+    });
+
+    it.each(['ledger -n', 'ledger -n abc', 'ledger -n 0', 'ledger --from', 'ledger --nope'])(
+      'reports usage for %s',
+      (input) => {
+        expect(parseCommand(input)).toEqual({
+          kind: 'usage',
+          raw: input,
+          command: 'ledger',
+        });
+      },
+    );
+  });
+
+  describe('ask', () => {
+    it('splits the target from the message', () => {
+      expect(parseCommand('ask sess-a which branch?')).toEqual({
+        kind: 'ask',
+        raw: 'ask sess-a which branch?',
+        target: 'sess-a',
+        message: 'which branch?',
+      });
+    });
+
+    it('collapses interior whitespace in the message', () => {
+      expect(parseCommand('ask sess-a  yes   go')).toMatchObject({ message: 'yes go' });
+    });
+
+    it.each(['ask', 'ask sess-a'])('reports usage for %s', (input) => {
+      expect(parseCommand(input)).toEqual({ kind: 'usage', raw: input, command: 'ask' });
+    });
+  });
+
+  describe('answer', () => {
+    it('splits the thread from the text', () => {
+      expect(parseCommand('answer a12 main')).toEqual({
+        kind: 'answer',
+        raw: 'answer a12 main',
+        thread: 'a12',
+        message: 'main',
+      });
+    });
+
+    it('accepts a canonical id as readily as a short ref', () => {
+      // The parser cannot know which exist; `resolveRef` in main takes either.
+      expect(parseCommand('answer 20260829-120000-0001 yes')).toMatchObject({
+        kind: 'answer',
+        thread: '20260829-120000-0001',
+      });
+    });
+
+    it.each(['answer', 'answer a12'])('reports usage for %s', (input) => {
+      expect(parseCommand(input)).toEqual({ kind: 'usage', raw: input, command: 'answer' });
+    });
+  });
+
+  /**
+   * The five agent verbs (HIVE-117).
+   *
+   * `run` takes a bare name and no task, which is a decision rather than an
+   * omission: `AgentRunRequest` shipped with a closed key set, so a task could
+   * only reach the agent by widening what the renderer may make the machine
+   * execute. `ask <agent> <message>` is the channel for that, and it already
+   * exists.
+   */
+  describe('agent verbs (HIVE-117)', () => {
+    it('parses agents as a bare verb', () => {
+      expect(parseCommand('agents')).toEqual({ kind: 'agents', raw: 'agents' });
+    });
+
+    it.each([
+      ['run', 'run slack-watcher'],
+      ['pause', 'pause slack-watcher'],
+      ['resume', 'resume slack-watcher'],
+      ['kill', 'kill slack-watcher'],
+    ] as const)('parses %s with its target', (kind, input) => {
+      expect(parseCommand(input)).toEqual({
+        kind,
+        raw: input,
+        target: 'slack-watcher',
+      });
+    });
+
+    it.each(['run', 'pause', 'resume', 'kill'])(
+      'reports usage for a bare %s',
+      (input) => {
+        expect(parseCommand(input)).toEqual({
+          kind: 'usage',
+          raw: input,
+          command: input,
+        });
+      },
+    );
+
+    /*
+      The one place `run` differs from the four beside it (HIVE-126): it takes
+      `send`'s shape, not `open`'s. The tail used to be dropped here, on the
+      reasoning that `AgentRunRequest` was `{ name }` and a task had nowhere to
+      travel. It has somewhere now.
+    */
+    it('takes the rest of the line as the prompt', () => {
+      expect(parseCommand('run slack-watcher check the PRs')).toEqual({
+        kind: 'run',
+        raw: 'run slack-watcher check the PRs',
+        target: 'slack-watcher',
+        prompt: 'check the PRs',
+      });
+    });
+
+    it('leaves the prompt off when there is nothing after the name', () => {
+      // Unlike `send`, an absent tail is not a usage error: `run <agent>` on
+      // its own is still a complete command.
+      expect(parseCommand('run slack-watcher')).toEqual({
+        kind: 'run',
+        raw: 'run slack-watcher',
+        target: 'slack-watcher',
+      });
+    });
+
+    it('normalizes the prompt exactly as send normalizes a message', () => {
+      // One `normalize` for both verbs: runs of whitespace inside a line
+      // collapse, and the trailing space goes. A prompt is prose reaching a
+      // model, so it earns no spacing rules of its own.
+      expect(parseCommand('run slack-watcher  look   at   1234 ')).toMatchObject(
+        { kind: 'run', prompt: 'look at 1234' },
+      );
+    });
+
+    it('flattens a pasted prompt to one line, unlike send', () => {
+      /*
+        `send` and `ask` keep line breaks; this one cannot. `extra` runs through
+        `assertText` at the IPC boundary — the guard `spawn.task` uses — which
+        refuses every C0 character, LF included. Flattening is what stops a
+        command parsing here and dying there.
+      */
+      expect(parseCommand('run slack-watcher check:\n  the PRs')).toMatchObject(
+        { kind: 'run', prompt: 'check: the PRs' },
+      );
+    });
+
+    it('still refuses a bare run', () => {
+      expect(parseCommand('run')).toEqual({
+        kind: 'usage',
+        raw: 'run',
+        command: 'run',
+      });
+    });
+
+    it('leaves the other four ignoring their tail', () => {
+      // Only `run` gained a second argument. Each of these means exactly one
+      // thing, so there is nothing a trailing word could add.
+      expect(parseCommand('pause slack-watcher for now')).toEqual({
+        kind: 'pause',
+        raw: 'pause slack-watcher for now',
+        target: 'slack-watcher',
+      });
+    });
+
+    it('lists all five in CONSOLE_VERBS', () => {
+      for (const verb of ['agents', 'run', 'pause', 'resume', 'kill']) {
+        expect(CONSOLE_VERBS).toContain(verb);
+      }
+    });
+
+    it('gives the four that take a target a usage line', () => {
+      expect(USAGE.run).toBe('usage: run <agent> [prompt]');
+      expect(USAGE.pause).toBe('usage: pause <agent>');
+      expect(USAGE.resume).toBe('usage: resume <agent>');
+      expect(USAGE.kill).toBe('usage: kill <agent>');
+    });
+  });
+
+  /**
+   * The sixth agent verb (HIVE-122).
+   *
+   * Grammatically identical to the four above — a bare agent name — which is
+   * why it joins their `case` group rather than earning one of its own. What
+   * it does is arm `forceRotate`, so the next wake asks for a handoff instead
+   * of simply carrying on; the parser has no opinion about that.
+   */
+  describe('rotate (HIVE-122)', () => {
+    it('parses rotate with a target', () => {
+      expect(parseCommand('rotate drone')).toEqual({
+        kind: 'rotate',
+        raw: 'rotate drone',
+        target: 'drone',
+      });
+    });
+
+    it('asks for usage when rotate names nobody', () => {
+      expect(parseCommand('rotate')).toEqual({
+        kind: 'usage',
+        raw: 'rotate',
+        command: 'rotate',
+      });
+    });
+
+    it('is listed in CONSOLE_VERBS and has a usage line', () => {
+      expect(CONSOLE_VERBS).toContain('rotate');
+      expect(USAGE.rotate).toBe(
+        'usage: rotate <agent> — end this agent’s session after a handoff',
+      );
     });
   });
 

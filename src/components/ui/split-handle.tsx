@@ -52,6 +52,15 @@ interface SplitHandleProps {
    * with no notion of a default.
    */
   onReset?: () => void;
+  /**
+   * A raw value below this collapses instead of resizing.
+   *
+   * Tested **before** {@link clamp}, deliberately: clamp floors at `min` and
+   * would erase the very reading this needs. Omitted by consumers with no
+   * notion of a collapsed state — the editor divider passes neither.
+   */
+  collapseBelow?: number;
+  onCollapse?: () => void;
   /** Extra classes for positioning — the rails absolutely-position their handle. */
   className?: string;
 }
@@ -101,6 +110,8 @@ export function SplitHandle({
   max = scale === 'ratio' ? 1 : Number.POSITIVE_INFINITY,
   step = scale === 'ratio' ? RATIO_STEP : 8,
   onReset,
+  collapseBelow,
+  onCollapse,
   className,
 }: SplitHandleProps) {
   const vertical = axis === 'vertical';
@@ -115,6 +126,21 @@ export function SplitHandle({
   const clamp = useCallback(
     (next: number) => Math.max(min, Math.min(max, next)),
     [max, min],
+  );
+
+  /**
+   * Returns true when the gesture has gone past the collapse threshold and has
+   * been handled. The caller must then *not* call `onValue` — writing a width
+   * for a rail that is collapsing is what would leave the two disagreeing.
+   */
+  const tookCollapse = useCallback(
+    (raw: number) => {
+      if (collapseBelow === undefined || onCollapse === undefined) return false;
+      if (raw >= collapseBelow) return false;
+      onCollapse();
+      return true;
+    },
+    [collapseBelow, onCollapse],
   );
 
   const onPointerDown = useCallback(
@@ -132,13 +158,15 @@ export function SplitHandle({
         const size = vertical ? rect.width : rect.height;
         const fromStart = vertical ? move.clientX - rect.left : move.clientY - rect.top;
 
-        if (scale === 'ratio') {
-          onValue(clamp(fromStart / size));
-        } else if (scale === 'px-from-start') {
-          onValue(clamp(fromStart));
-        } else {
-          onValue(clamp(size - fromStart));
-        }
+        const raw =
+          scale === 'ratio'
+            ? fromStart / size
+            : scale === 'px-from-start'
+              ? fromStart
+              : size - fromStart;
+
+        if (tookCollapse(raw)) return;
+        onValue(clamp(raw));
       };
 
       const onUp = () => {
@@ -157,7 +185,7 @@ export function SplitHandle({
        */
       window.addEventListener('pointercancel', onUp);
     },
-    [clamp, containerRef, onValue, scale, vertical],
+    [clamp, containerRef, onValue, scale, tookCollapse, vertical],
   );
 
   const onKeyDown = useCallback(
@@ -174,6 +202,45 @@ export function SplitHandle({
 
       const move = (to: number) => {
         event.preventDefault();
+
+        if (tookCollapse(to)) return;
+
+        /*
+          The keyboard's own route to collapse, mirroring the stop the drag
+          already has: a rail already at its floor has nowhere further to
+          shrink *to*, so `clamp` below would just return `value` again and the
+          key would silently do nothing forever. `tookCollapse` alone cannot
+          catch this — its raw threshold sits *below* `min`, a reading the
+          keyboard can never produce because `clamp` never lets `value` fall
+          there in the first place.
+
+          `to < value` is the direction-agnostic way to ask "is this press
+          trying to shrink further?": `sign` has already been folded into `to`
+          by the caller, so it reads the same way for `px-from-start`'s
+          ArrowLeft and `px-from-end`'s inverted ArrowRight.
+
+          `min < max` excludes the one state where `value <= min` is true for a
+          reason that has nothing to do with a floor: a window too narrow for
+          the rail's own minimum, where `use-rail-widths.ts`'s `bounds` reduces
+          `min` (and `max` right along with it) to the single width that still
+          fits. There `min === max === value` — the whole range has collapsed
+          to a point, not stopped at an edge — and the key is correctly inert,
+          the same "no room to move" outcome the effective-minimum fix already
+          established. A genuine floor leaves `max` above `min` — though not
+          always by much: at the desktop's 1100px minimum the left rail's range
+          is 320–330, a single arrow step, because `railMaxWidth` is 30% of the
+          window. `rail-width.test.ts` pins that the range is still open there.
+        */
+        if (
+          collapseBelow !== undefined &&
+          onCollapse !== undefined &&
+          min < max &&
+          value <= min &&
+          to < value
+        ) {
+          onCollapse();
+          return;
+        }
 
         const next = clamp(to);
         /*
@@ -199,7 +266,19 @@ export function SplitHandle({
         move(value + step * sign);
       }
     },
-    [clamp, onValue, scale, step, value, vertical],
+    [
+      clamp,
+      collapseBelow,
+      max,
+      min,
+      onCollapse,
+      onValue,
+      scale,
+      step,
+      tookCollapse,
+      value,
+      vertical,
+    ],
   );
 
   /*

@@ -9,6 +9,25 @@ import { describe, expect, it } from 'vitest';
 import { createReceiver } from '../../electron/main/hooks/receiver';
 import { hookSettings } from '../../electron/main/hooks/settings';
 
+/** Not exercised by this suite — the ready signal, not the ledger. */
+const noLedger = {
+  onLedgerRead: () => ({ entries: [], openAsks: [], claims: {} }),
+  onLedgerPost: () => ({ ok: false as const, status: 503, reason: 'not exercised by this test' }),
+};
+
+/**
+ * The agent half of the id space, closed (HIVE-115).
+ *
+ * The boot-ready signal is a session's — an agent has no terminal to uncover —
+ * so this scenario keeps the second register empty and the route session-only.
+ */
+const noAgents = {
+  knowsAgent: () => false,
+  onAgentEvent: () => {},
+  // And no peer directory either (HIVE-127).
+  onAgentsList: () => Promise.resolve({ agents: [] }),
+};
+
 /**
  * The ready signal, against a real `claude` (HIVE-101).
  *
@@ -57,6 +76,7 @@ describe.skipIf(!enabled)('ready-signal conformance', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
+      onPromptName: () => {},
       onMetrics: () => {},
       onDone: () => {},
       onReady: (entityId) => {
@@ -64,6 +84,8 @@ describe.skipIf(!enabled)('ready-signal conformance', () => {
         readies.push(entityId);
       },
       knowsSession: (entityId) => entityId === ENTITY,
+      ...noLedger,
+      ...noAgents,
     });
 
     const url = await receiver.start();
@@ -88,7 +110,7 @@ describe.skipIf(!enabled)('ready-signal conformance', () => {
       */
       const driver = [
         'import os, pty, time, select',
-        `env = dict(os.environ, HIVE_SESSION_ID=${JSON.stringify(ENTITY)}, HIVE_HOOK_TOKEN=${JSON.stringify(receiver.token)}, TERM='xterm-256color')`,
+        `env = dict(os.environ, HIVE_SESSION_ID=${JSON.stringify(ENTITY)}, HIVE_HOOK_TOKEN=${JSON.stringify(receiver.tokenFor(ENTITY))}, TERM='xterm-256color')`,
         "env.pop('CLAUDE_CODE_CHILD_SESSION', None)",
         `argv = ['claude', '--settings', ${JSON.stringify(settingsPath)}, '--model', 'haiku']`,
         'pid, fd = pty.fork()',

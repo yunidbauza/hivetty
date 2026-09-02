@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  BRIDGE_AGENTS_KEYS,
   BRIDGE_CONFIG_KEYS,
   BRIDGE_INTEGRATIONS_KEYS,
   BRIDGE_JIRA_KEYS,
@@ -9,13 +10,16 @@ import {
   BRIDGE_FS_KEYS,
   BRIDGE_GITHUB_KEYS,
   BRIDGE_KEYS,
+  BRIDGE_LEDGER_KEYS,
   BRIDGE_NOTIFICATIONS_KEYS,
   BRIDGE_PTY_KEYS,
   BRIDGE_SESSION_KEYS,
   BRIDGE_SKILLS_KEYS,
+  BRIDGE_SLACK_KEYS,
   BRIDGE_THEME_KEYS,
   BRIDGE_UI_KEYS,
   CH,
+  EVENT_CHANNELS,
 } from '../../../electron/shared/ipc-contract';
 
 /**
@@ -71,6 +75,8 @@ const notifications = () =>
   exposed.notifications as Record<string, (...args: unknown[]) => unknown>;
 const jira = () =>
   exposed.jira as Record<string, (...args: unknown[]) => unknown>;
+const slack = () =>
+  exposed.slack as Record<string, (...args: unknown[]) => unknown>;
 const github = () =>
   exposed.github as Record<string, (...args: unknown[]) => unknown>;
 const fs = () =>
@@ -86,6 +92,10 @@ const ui = () =>
 
 const session = () =>
   exposed.session as Record<string, (...args: unknown[]) => unknown>;
+const ledger = () =>
+  exposed.ledger as Record<string, (...args: unknown[]) => unknown>;
+const agents = () =>
+  exposed.agents as Record<string, (...args: unknown[]) => unknown>;
 
 describe('exposed surface', () => {
   it('exposes exactly the documented verbs — widening this is the alarm', () => {
@@ -108,6 +118,18 @@ describe('exposed surface', () => {
       is not that a fifth verb is wrong, it is that one cannot arrive quietly.
     */
     expect(Object.keys(skills()).sort()).toEqual([...BRIDGE_SKILLS_KEYS].sort());
+    /*
+      HIVE-114, written with the namespace rather than after the reminder —
+      the habit the notes below spent five namespaces trying to establish.
+
+      `agents` is the third namespace that writes to the user's disk, and the
+      first with six keys. The sixth is `onChanged`, a listener rather than a
+      verb, and `BRIDGE_AGENTS_KEYS` carries the argument for why it widens
+      nothing. A seventh — HIVE-115's `run` — is a change to what the renderer
+      may make the machine *do*, and this line is what stops it arriving
+      quietly.
+    */
+    expect(Object.keys(agents()).sort()).toEqual([...BRIDGE_AGENTS_KEYS].sort());
     /**
      * `github` shipped without this assertion, and `BRIDGE_GITHUB_KEYS` sat
      * unimported — a constant whose docblock claims it makes a second verb
@@ -120,6 +142,12 @@ describe('exposed surface', () => {
       ...BRIDGE_NOTIFICATIONS_KEYS,
     ].sort());
     expect(Object.keys(jira()).sort()).toEqual([...BRIDGE_JIRA_KEYS].sort());
+    /**
+     * HIVE-123's namespace, checked the same way: the constant is only an
+     * alarm if something reads it against the object the preload actually
+     * exposes.
+     */
+    expect(Object.keys(slack()).sort()).toEqual([...BRIDGE_SLACK_KEYS].sort());
     /**
      * The fourth time, avoided. `BRIDGE_UPDATES_KEYS` shipped exported and
      * unimported — exactly the shape the note above describes — and was caught
@@ -142,6 +170,133 @@ describe('exposed surface', () => {
     expect(Object.keys(session()).sort()).toEqual([
       ...BRIDGE_SESSION_KEYS,
     ].sort());
+    /**
+     * HIVE-111's namespace, checked the same way: the constant is only an
+     * alarm if something reads it against the object the preload actually
+     * exposes.
+     */
+    expect(Object.keys(ledger()).sort()).toEqual([...BRIDGE_LEDGER_KEYS].sort());
+  });
+
+  /** HIVE-111. `post` and `answer` take no `from` — see the contract. */
+  it('names every key of the ledger bridge', () => {
+    expect([...BRIDGE_LEDGER_KEYS]).toEqual(['list', 'post', 'answer', 'onChanged']);
+  });
+
+  it('carries the ledger push channel in EVENT_CHANNELS', () => {
+    expect(EVENT_CHANNELS).toContain(CH.ledgerChanged);
+  });
+
+  /**
+   * HIVE-115. The two verbs that make the machine *do* something, spelled out
+   * in order rather than only counted — `BRIDGE_AGENTS_KEYS` carries the
+   * argument each of them had to make, and this is what stops a tenth key
+   * arriving without one.
+   */
+  it('exposes run, kill and the two listeners on the agents bridge', () => {
+    expect([...BRIDGE_AGENTS_KEYS]).toEqual([
+      'list',
+      'read',
+      'write',
+      'remove',
+      'rename',
+      'onChanged',
+      'run',
+      'kill',
+      'pause',
+      'resume',
+      'rotate',
+      'onStatus',
+      'onLines',
+    ]);
+  });
+
+  /**
+   * HIVE-122's verb, held to the same rule: an invoke channel, never pushable.
+   *
+   * It takes an `AgentNameRequest` rather than widening `AgentRunRequest` —
+   * the closed key set that refuses a renderer-chosen trigger stays closed, and
+   * the new reach is one boolean on state that main itself writes.
+   */
+  it('carries the HIVE-122 rotate channel, and it is not pushable', () => {
+    expect(CH.agentsRotate).toBe('agents:rotate');
+    expect(EVENT_CHANNELS).not.toContain(CH.agentsRotate);
+  });
+
+  it('sends a rotate through the rotate channel', () => {
+    void agents().rotate?.({ name: 'slack-watcher' });
+
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.agentsRotate, {
+      name: 'slack-watcher',
+    });
+  });
+
+  it('carries the four HIVE-115 agent channels', () => {
+    expect(CH.agentsRun).toBe('agents:run');
+    expect(CH.agentsKill).toBe('agents:kill');
+    expect(EVENT_CHANNELS).toContain(CH.agentsStatus);
+    expect(EVENT_CHANNELS).toContain(CH.agentsLines);
+    // The two verbs are invoke channels and must never be pushable: a main
+    // process that could `send` on them would be talking to a listener the
+    // preload never registers, and the allowlist is what says so.
+    expect(EVENT_CHANNELS).not.toContain(CH.agentsRun);
+    expect(EVENT_CHANNELS).not.toContain(CH.agentsKill);
+  });
+
+  /**
+   * HIVE-117's two, held to the same rule as HIVE-115's: invoke channels, never
+   * pushable. A pause is a thing the user does, so main has nothing to announce
+   * on these — the consequence travels on `agents:status` like every other
+   * change to a row.
+   */
+  it('carries the two HIVE-117 agent channels, neither of them pushable', () => {
+    expect(CH.agentsPause).toBe('agents:pause');
+    expect(CH.agentsResume).toBe('agents:resume');
+    expect(EVENT_CHANNELS).not.toContain(CH.agentsPause);
+    expect(EVENT_CHANNELS).not.toContain(CH.agentsResume);
+  });
+
+  it('sends a pause and a resume through their own channels', () => {
+    void agents().pause?.({ name: 'slack-watcher' });
+    void agents().resume?.({ name: 'slack-watcher' });
+
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.agentsPause, {
+      name: 'slack-watcher',
+    });
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.agentsResume, {
+      name: 'slack-watcher',
+    });
+  });
+
+  it('sends a run through the run channel and a kill through the kill channel', () => {
+    void agents().run?.({ name: 'slack-watcher' });
+    void agents().kill?.({ name: 'slack-watcher' });
+
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.agentsRun, {
+      name: 'slack-watcher',
+    });
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.agentsKill, {
+      name: 'slack-watcher',
+    });
+  });
+
+  it('delivers a status push and a lines push to their subscribers', () => {
+    const status = vi.fn();
+    const lines = vi.fn();
+
+    agents().onStatus?.(status);
+    agents().onLines?.(lines);
+
+    const push = { name: 'slack-watcher', status: 'working' };
+    const batch = { name: 'slack-watcher', lines: [{ text: 'hi', color: 'ink' }] };
+
+    listeners.get(CH.agentsStatus)?.[0]?.({}, push);
+    listeners.get(CH.agentsLines)?.[0]?.({}, batch);
+
+    // The payload, not the event — every listener in this bridge strips the
+    // `IpcRendererEvent` before the page ever sees it.
+    expect(status).toHaveBeenCalledWith(push);
+    expect(lines).toHaveBeenCalledWith(batch);
   });
 
   /** HIVE-80. Two verbs, neither taking a destination path from the renderer. */
@@ -192,6 +347,46 @@ describe('exposed surface', () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.jiraSetToken, {
       token: 'ATATT-x',
     });
+  });
+
+  /**
+   * HIVE-123's namespace, asserted for what it cannot do — and for a
+   * stronger reason than Jira's: there is no credential in this app to read
+   * back at all, so a fifth verb here could not add one even by mistake.
+   *
+   * Every one of the four routes with **no payload**, which is what makes a
+   * verb that spawns `claude` safe to expose: a caller that tries to smuggle
+   * an argument in has it dropped, because the bridge functions here take no
+   * parameters at all.
+   */
+  it('exposes exactly four verbs, none of them returning a credential (HIVE-123)', async () => {
+    const { ipcRenderer } = await import('electron');
+
+    expect(Object.keys(slack())).not.toContain('token');
+    expect(Object.keys(slack())).not.toContain('getToken');
+    expect(Object.keys(slack())).not.toContain('readToken');
+
+    await slack().status();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.slackStatus);
+
+    await slack().signIn();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.slackSignIn);
+
+    await slack().signOut();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.slackSignOut);
+
+    await slack().test();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.slackTest);
+  });
+
+  it('passes no payload to any slack verb, whatever the caller tries to smuggle in', async () => {
+    const { ipcRenderer } = await import('electron');
+
+    await (slack().status as (...args: unknown[]) => unknown)({
+      command: '/bin/sh',
+    });
+
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(CH.slackStatus);
   });
 
   /**

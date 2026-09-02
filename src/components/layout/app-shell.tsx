@@ -9,8 +9,11 @@ import { TitleBar } from '@components/layout/title-bar';
 import { useProjectWatcher } from '@features/explorer/hooks/use-project-watcher';
 import { useSessionStatus } from '@features/sessions/hooks/use-session-status';
 import { useNotificationActivate } from '@features/settings/hooks/use-notification-activate';
+import { useAgentsSync } from '@features/shared/hooks/use-agents-sync';
+import { useLedgerSync } from '@features/shared/hooks/use-ledger-sync';
 import { useForegroundSession } from '@hooks/use-foreground-session';
 import { useNotificationStream } from '@hooks/use-notification-stream';
+import { useRailChord } from '@hooks/use-rail-chord';
 import { useSessionNames } from '@hooks/use-session-names';
 import { watchSystemTheme } from '@stores/appearance-store';
 import { useShowActivityRail } from '@stores/ui-store';
@@ -63,6 +66,24 @@ export function AppShell() {
   useSessionStatus();
 
   /**
+   * Keep the renderer's ledger mirror current (HIVE-111).
+   *
+   * Here for the same reason as the status subscription above: `ledger:changed`
+   * is a single broadcast channel, and a per-consumer subscription would mean
+   * one listener per card for one channel.
+   */
+  useLedgerSync();
+
+  /**
+   * Keep the fleet's agents in step with `~/.hive/agents` (HIVE-114).
+   *
+   * One broadcast channel again, and here rather than in the Settings pane
+   * because the rail lists agents whether or not Settings has ever been
+   * opened — the same argument `useNotificationStream` makes below.
+   */
+  useAgentsSync();
+
+  /**
    * Open the session a clicked OS notification was about (story 106).
    *
    * Here for the same reason as above — one broadcast channel, one listener —
@@ -104,6 +125,15 @@ export function AppShell() {
    * composition root.
    */
   useProjectWatcher();
+
+  /**
+   * The rail-collapse chords (this story).
+   *
+   * At the composition root for the same reason as the four above: one fact
+   * about the whole shell, one listener. Per-rail would mean two listeners
+   * racing to ignore each other's chord.
+   */
+  useRailChord();
 
   /**
    * Follow the OS while the app is open (story 105).

@@ -283,7 +283,22 @@ function createAgents(): Agent[] {
     sub: string,
     task: string,
     lines: TermLine[],
-  ): Agent => ({ kind: 'agent', id, icon, sub, task, status: 'online', lines });
+  ): Agent => ({
+    kind: 'agent',
+    id,
+    icon,
+    sub,
+    task,
+    status: 'sleeping',
+    wake: { on: [] },
+    mcp: [],
+    runsSinceRotate: 0,
+    rotateAfter: 50,
+    skipsSinceRun: 0,
+    runs: [],
+    live: [],
+    lines,
+  });
 
   return [
     agent(

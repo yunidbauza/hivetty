@@ -69,6 +69,8 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     integrations: Object.keys(window.hive!.integrations).sort(),
     fs: Object.keys(window.hive!.fs).sort(),
     skills: Object.keys(window.hive!.skills).sort(),
+    agents: Object.keys(window.hive!.agents).sort(),
+    ledger: Object.keys(window.hive!.ledger).sort(),
     github: Object.keys(window.hive!.github).sort(),
     notifications: Object.keys(window.hive!.notifications).sort(),
     jira: Object.keys(window.hive!.jira).sort(),
@@ -186,22 +188,142 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * it can name no directory `remove` could not already name, and it refuses a
    * destination that exists rather than replacing it. The argument for the
    * fifth verb is recorded on `BRIDGE_SKILLS_KEYS`.
+   *
+   * ## `agents` (HIVE-114)
+   *
+   * The third namespace that writes to the user's disk, and the first with six
+   * keys. What keeps it inside story 082's posture:
+   *
+   * - **No verb takes a path.** Each names an *agent*, and `assertAgentName`
+   *   makes a path unrepresentable rather than filtering one — the same bound
+   *   `skills` has. The reserved names are refused at the boundary too, and
+   *   `overmind` matters most: it is the ledger's coordinator identity, so an
+   *   agent holding it could sign entries as the overmind.
+   * - **The sixth key is a listener, not a capability.** `onChanged` is main →
+   *   renderer only and carries no payload at all: the renderer is poked and
+   *   re-`list`s, so it cannot surface anything `agents:list` would not
+   *   already return.
+   * - **A refusal is a value, not a write.** `write` validates before touching
+   *   the disk, so a page that spams malformed definitions creates nothing.
+   *
+   * ## `agents` grows to ten (HIVE-115)
+   *
+   * `run` and `kill` are the first verbs in this bridge that **start and stop a
+   * process** from a namespace whose other members only move files around, so
+   * they are exactly what this assertion exists to force an argument for. The
+   * argument is recorded in full on `BRIDGE_AGENTS_KEYS` in
+   * `electron/shared/ipc-contract.ts`; in short:
+   *
+   * - **`run` widens timing, not reach.** Its payload is one agent name through
+   *   the same `assertAgentName` that `read` and `remove` pass — no path, no
+   *   argv, no flag, no environment, not even the trigger string, which main
+   *   writes as `manual` itself. Main reads the definition off a folder it
+   *   chose, resolves `claudeCommand` from its own config, and hands `spawn` an
+   *   array. There is no shell on that path, so there is no quoting to get
+   *   wrong and no alias to inherit. A page that can call `run` can already
+   *   call `write`, and `write` is the verb that decides what an agent *is*;
+   *   `run` only decides when a definition the user already approved gets its
+   *   turn.
+   * - **`kill` is narrower than `run` by construction.** Same validated name,
+   *   and it can only ever reach a child **this app spawned and still holds** —
+   *   the tracker looks the name up in its own map and answers `false` for
+   *   anything else. It cannot name a pid. It has to exist because one run per
+   *   agent at a time means a wedged run blocks every future wake, and the only
+   *   other way out is quitting the app.
+   * - **`onStatus` and `onLines` are listeners, like `onChanged`.** `onStatus`
+   *   carries a strict subset of what `agents:list` already returns for that
+   *   agent — less, in fact, since it omits `sessionUuid`. `onLines` carries
+   *   the agent's own stdout, the one genuinely new fact, and it is the fact
+   *   the feature exists to show: a run nobody can read is a run nobody can
+   *   trust.
+   *
+   * ## `agents` grows to twelve (HIVE-117)
+   *
+   * `pause` and `resume` are the narrowest verbs in the namespace and the first
+   * that make the machine do *less*. Neither starts a process, stops one, or
+   * reads a file: each takes the same validated `AgentNameRequest` the four
+   * verbs above take and writes a single field — `status` — to `agents.json`,
+   * which main already rewrites on every run.
+   *
+   * Against the question `run` had to answer, the answer here is **strictly
+   * less than before**. `pause` can only subtract: a paused agent refuses every
+   * trigger, including the ones no renderer can reach (HIVE-120's ledger wakes,
+   * HIVE-121's timer). `resume` can only put an agent back into the state it
+   * was in before someone paused it — it cannot create one, change what one is,
+   * or wake one, and a renderer that wants a run still has to call `run` and be
+   * obeyed or refused on `run`'s own terms.
+   *
+   * The one widening worth naming is availability: a page that can call `pause`
+   * can stop an agent the user is relying on. That is the same reach `kill`
+   * already has, on a verb that recovers with one `resume` where `kill` costs a
+   * turn — and, unlike `kill`, it is plainly visible, because the row reads
+   * `paused` until somebody changes it.
    */
   expect(surface.top).toEqual([
+    'agents',
     'appInfo',
     'config',
     'fs',
     'github',
     'integrations',
     'jira',
+    /*
+      HIVE-111 added the ledger namespace to `BRIDGE_KEYS` and to the preload,
+      but not to this list, so this assertion has been failing on `main` since
+      that story merged — there is no PR CI here to have caught it. Recorded
+      rather than merely corrected: the page may now read the log and write as
+      the overmind, and `main` supplies `from` on both write paths so it cannot
+      post as anyone else.
+    */
+    'ledger',
     'notifications',
     'pty',
     'session',
     'skills',
+    /*
+      HIVE-123 added the slack namespace to `BRIDGE_KEYS` and to the preload:
+      status, sign-in, sign-out, and the one-turn test call. None of the four
+      takes an argument and none returns a credential — Claude Code holds the
+      OAuth token; this app only asks what state it is in
+      (`electron/shared/ipc-contract.ts`, the comment above `BRIDGE_KEYS`).
+    */
+    'slack',
     'theme',
     'ui',
     'updates',
   ]);
+  /**
+   * ## `agents` grows to thirteen (HIVE-122)
+   *
+   * `rotate` is `run` with one field armed first, and every sentence written
+   * for `run` above holds unchanged: one validated agent name, no path, no
+   * argv, no flag, no environment, and a trigger main writes as `manual`
+   * itself. It deliberately takes an `AgentNameRequest` rather than a widened
+   * `AgentRunRequest`, so the closed key set that refuses a renderer-chosen
+   * trigger stays closed.
+   *
+   * The one new thing it can do is set `forceRotate`, whose whole consequence
+   * is a wake that asks the agent to summarise itself before its session is
+   * replaced — which `rotate-after` already does unattended every N runs. It
+   * cannot create an agent: `requireAgent` refuses a name no definition
+   * answers to, for the reason `pause` does.
+   */
+  expect(surface.agents).toEqual([
+    'kill',
+    'list',
+    'onChanged',
+    'onLines',
+    'onStatus',
+    'pause',
+    'read',
+    'remove',
+    'rename',
+    'resume',
+    'rotate',
+    'run',
+    'write',
+  ]);
+  expect(surface.ledger).toEqual(['answer', 'list', 'onChanged', 'post']);
   expect(surface.skills).toEqual([
     'list',
     'read',
@@ -624,8 +746,8 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * network.
    *
    * `pr` carries the one field on this namespace that later becomes an `href`:
-   * the renderer reads it back out of the ledger and puts it on a link, which
-   * is the shape of a stored-XSS carrier. `parseSessionPrRequest` therefore
+   * the renderer reads it back out of the session history and puts it on a
+   * link, which is the shape of a stored-XSS carrier. `parseSessionPrRequest` therefore
    * checks it is an absolute **https** URL rather than merely text — and checks
    * only the scheme, because the host is GitHub's business and pinning it would
    * break an enterprise instance.

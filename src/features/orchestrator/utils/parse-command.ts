@@ -1,3 +1,4 @@
+import { LEDGER_TAIL_DEFAULT } from '@/types/command';
 import type { ParsedCommand } from '@/types/command';
 
 /**
@@ -149,6 +150,166 @@ export function parseCommand(raw: string): ParsedCommand {
         return { kind: 'usage', raw: input, command: 'spawn' };
       }
       return { kind: 'spawn', raw: input, project, task };
+    }
+
+    /**
+     * The only verb in the grammar with flags.
+     *
+     * A loop over {@link takeWord} rather than a tokenise-and-scan, for the
+     * reason `takeWord` exists at all: the tail of a command is prose, and
+     * splitting the whole string to find a flag is the newline-flattening step
+     * this parser was rewritten to avoid.
+     *
+     * Every malformed flag is a `usage` outcome rather than a runtime failure,
+     * which is this file's standing split: shape errors here, existence errors
+     * in the store. `-n abc` is a shape the parser can reject by itself.
+     */
+    case 'ledger': {
+      let open = false;
+      let events = false;
+      let from: string | undefined;
+      let to: string | undefined;
+      let limit = LEDGER_TAIL_DEFAULT;
+      let cursor = rest;
+
+      while (cursor !== '') {
+        const [token, tail] = takeWord(cursor);
+
+        if (token === '--open') {
+          open = true;
+          cursor = tail;
+          continue;
+        }
+
+        if (token === '--events') {
+          events = true;
+          cursor = tail;
+          continue;
+        }
+
+        if (token === '--from' || token === '--to' || token === '-n') {
+          const [value, next] = takeWord(tail);
+          if (!value) return { kind: 'usage', raw: input, command: 'ledger' };
+
+          if (token === '--from') {
+            from = value;
+          } else if (token === '--to') {
+            to = value;
+          } else {
+            // A tail of "not a number" or "nothing" is not a tail that could be
+            // printed, so it is a shape error rather than an empty result.
+            if (!/^\d+$/u.test(value)) {
+              return { kind: 'usage', raw: input, command: 'ledger' };
+            }
+            const count = Number.parseInt(value, 10);
+            if (count < 1) return { kind: 'usage', raw: input, command: 'ledger' };
+            limit = count;
+          }
+
+          cursor = next;
+          continue;
+        }
+
+        return { kind: 'usage', raw: input, command: 'ledger' };
+      }
+
+      /*
+        The optional halves are spread rather than assigned, so an absent filter
+        leaves no key at all. A `from: undefined` would reach `matches()` as a
+        filter that is present but matches nothing — the opposite of no filter.
+      */
+      return {
+        kind: 'ledger',
+        raw: input,
+        open,
+        events,
+        ...(from === undefined ? {} : { from }),
+        ...(to === undefined ? {} : { to }),
+        limit,
+      };
+    }
+
+    /** `send`'s shape exactly — a target, then prose. */
+    case 'ask': {
+      const [target, tail] = takeWord(rest);
+      const message = normalize(tail);
+      if (!target || message === '') {
+        return { kind: 'usage', raw: input, command: 'ask' };
+      }
+      return { kind: 'ask', raw: input, target, message };
+    }
+
+    case 'answer': {
+      const [thread, tail] = takeWord(rest);
+      const message = normalize(tail);
+      if (!thread || message === '') {
+        return { kind: 'usage', raw: input, command: 'answer' };
+      }
+      return { kind: 'answer', raw: input, thread, message };
+    }
+
+    case 'agents':
+      return { kind: 'agents', raw: input };
+
+    /**
+     * `send`'s shape, not `open`'s (HIVE-126).
+     *
+     * The tail used to be dropped here, deliberately: `AgentRunRequest` was
+     * `{ name }` with a closed key set, so a task had nowhere to travel, and
+     * waking the agent was a better answer than refusing the line. What that
+     * reasoning cost was a verb that lied — `run pr-reviewer review PR 1234`
+     * reported success and woke an agent that had never heard of the PR — so
+     * the key set was opened for prose instead.
+     *
+     * What survives of it is the shape below: unlike `send`, an absent tail is
+     * **not** a usage error, because `run <agent>` on its own is still a whole
+     * command. Only a missing name is.
+     */
+    case 'run': {
+      const [target, tail] = takeWord(rest);
+      if (!target) return { kind: 'usage', raw: input, command: 'run' };
+      /*
+        One line, unlike `send` and `ask`.
+
+        `normalize` keeps line breaks, because a message reaching a pty or the
+        log is prose that may be a list. This one is neither: it reaches
+        `wakePrompt` as the tail of `You woke because: manual — …`, through a
+        guard (`assertText`, the one `spawn.task` uses) that refuses every C0
+        character including LF. Flattening here is what keeps the grammar and
+        the boundary agreeing — the alternative is a command that parses and
+        then dies at the IPC with "control characters are not allowed".
+
+        It also states the division of labour this story is drawing: `run` says
+        *why* in a phrase, and prose that needs line breaks is what `ask` is
+        for.
+      */
+      const prompt = normalize(tail).replace(/\s*\n\s*/gu, ' ');
+      if (prompt === '') return { kind: 'run', raw: input, target };
+      return { kind: 'run', raw: input, target, prompt };
+    }
+
+    /*
+      `open`'s shape — a bare target, and anything after it is surplus rather
+      than an error (HIVE-117).
+
+      Each of these means exactly one thing, so there is nothing a trailing
+      word could add, and refusing the line would turn a request the console
+      *can* honour into nothing at all. `run` above is the one that grew a
+      second argument, because it is the only one a person can have a reason
+      for.
+
+      `rotate` joined the group in HIVE-122 rather than earning a case of its
+      own: it is grammatically indistinguishable from the three beside it — an
+      agent name, and nothing the renderer may say about how — and its payload
+      is the same `AgentNameRequest` theirs is.
+    */
+    case 'pause':
+    case 'resume':
+    case 'rotate':
+    case 'kill': {
+      const [target] = takeWord(rest);
+      if (!target) return { kind: 'usage', raw: input, command: verb };
+      return { kind: verb, raw: input, target };
     }
 
     default:

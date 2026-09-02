@@ -130,16 +130,65 @@ describe('Header', () => {
       expect(controls).not.toHaveClass('w-[calc(var(--cc-rail-w-right)-1rem)]');
     });
 
+    /**
+     * A **collapsed** rail paints `--cc-rail-w-right` at 44px — one icon's
+     * worth of strip, not a panel. Claiming that as the cluster's own column
+     * would size a `shrink-0` box (~262px of buttons) down to 28px of usable
+     * width, and the buttons cannot shrink — they overflow onto the counts
+     * beside them. So collapse must take the same flush-right fallback as an
+     * unmounted rail, not the claimed-column branch.
+     *
+     * This only proves anything if it can tell "claims the column" apart from
+     * "does not" — the class assertion mirrors the one two tests up that
+     * pins the *expanded* case, so a regression that goes back to always
+     * claiming the column fails this one the same way it would fail that one
+     * in reverse.
+     */
+    it('drops that width when the activity rail is collapsed, not just hidden', () => {
+      useUiStore.setState({ activeTab: 'hero-refresh', showActivityRail: true });
+      useAppearanceStore.getState().setRailCollapsed('right', true);
+
+      render(<Header />);
+
+      const controls = screen.getByRole('banner').children[2];
+      expect(controls).not.toHaveClass('w-[calc(var(--cc-rail-w-right)-1rem)]');
+    });
+
     it('gives the brand exactly the rail’s width, so the chips start on its edge', () => {
       useUiStore.setState({ activeTab: 'hero-refresh' });
 
       render(<Header />);
 
-      // 252px = the rail's 268px minus the header's own px-4. The real
-      // geometry is measured in chip-alignment.spec.ts; this pins the
-      // mechanism so a refactor cannot quietly drop it.
+      /*
+        The rail's own token minus the header's px-4 — not a pixel literal,
+        which was right at comfortable density and 20px wrong at compact, and
+        wrong by the drag after any drag. The real geometry is measured in
+        chip-alignment.spec.ts; this pins the mechanism so a refactor cannot
+        quietly put a number back.
+      */
       const [left] = Array.from(screen.getByRole('banner').children);
-      expect(left.firstElementChild).toHaveClass('w-[252px]', 'shrink-0');
+      expect(left.firstElementChild).toHaveClass(
+        'w-[calc(var(--cc-rail-w-left)-1rem)]',
+        'shrink-0',
+      );
+    });
+
+    /**
+     * A collapsed left rail paints the token at 44px, and 28px cannot hold a
+     * wordmark — the same fallback the controls cluster takes for a collapsed
+     * activity rail. The claim drops and the brand is content-sized.
+     */
+    it('drops the claimed width when the left rail is collapsed', () => {
+      useUiStore.setState({ activeTab: 'hero-refresh' });
+      useAppearanceStore.getState().setRailCollapsed('left', true);
+
+      render(<Header />);
+
+      const [left] = Array.from(screen.getByRole('banner').children);
+      expect(left.firstElementChild).not.toHaveClass(
+        'w-[calc(var(--cc-rail-w-left)-1rem)]',
+      );
+      expect(left.firstElementChild).toHaveClass('shrink-0');
     });
 
     /**
@@ -240,6 +289,21 @@ describe('Header', () => {
       expect(
         screen.getByRole('button', { name: 'Inbox — nothing unread' }),
       ).toBeInTheDocument();
+    });
+
+    /**
+     * On a collapsed rail, `revealRailTab` alone selects a tab nobody can see —
+     * visibly nothing happens. The bell must also clear the collapse flag.
+     */
+    it('un-collapses the activity rail when the bell is clicked', async () => {
+      const user = userEvent.setup();
+      useAppearanceStore.getState().setRailCollapsed('right', true);
+
+      render(<Header />);
+      await user.click(screen.getByRole('button', { name: /inbox/i }));
+
+      expect(useAppearanceStore.getState().railCollapsedRight).toBe(false);
+      expect(useUiStore.getState().railTab).toBe('inbox');
     });
   });
 

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 import { PHRASES } from '../../../src/lib/swarm/phrases';
+import { selectRailTab } from '../fixtures/rail-tabs';
 
 /**
  * The swarm layer, in a real browser against production output.
@@ -88,7 +89,7 @@ const RAILS = [
     rail: 'Projects, work, and agents',
     pool: 'empty.agents' as const,
     cast: 'hydralisk',
-    keeps: 'No agents running.',
+    keeps: 'No agents yet — create one in Settings › Agents.',
   },
 ];
 
@@ -101,7 +102,7 @@ for (const { tab, rail, pool, cast, keeps } of RAILS) {
       { name: rail },
     );
 
-    await region.getByRole('tab', { name: tab }).click();
+    await selectRailTab(region.getByRole('tab', { name: tab }));
 
     await expect(region).toContainText(keeps);
 
@@ -115,7 +116,7 @@ for (const { tab, rail, pool, cast, keeps } of RAILS) {
   test(`the ${tab.toLowerCase()} rail holds its creature, small`, async ({ page }) => {
     /**
      * The rails get a sprite, but only at rail size. `empty-state.tsx` argues a
-     * decorative empty state in a 268px column takes more attention than the
+     * decorative empty state in a 320px column takes more attention than the
      * thing it is apologising for, and the answer to that is the *size*: at
      * 44px the creature is shorter than the copy beneath it. This asserts the
      * ceiling, so a later change cannot quietly grow it into the illustration
@@ -126,7 +127,7 @@ for (const { tab, rail, pool, cast, keeps } of RAILS) {
       { name: rail },
     );
 
-    await region.getByRole('tab', { name: tab }).click();
+    await selectRailTab(region.getByRole('tab', { name: tab }));
 
     /**
      * Exactly one sprite in the rail, and it is the cast one. The count is

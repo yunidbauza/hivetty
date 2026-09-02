@@ -34,7 +34,7 @@ to be. Two adaptations are in place and should be preserved on regeneration:
 - Icons come from `@phosphor-icons/react`, not `lucide-react`. The app ships one
   icon library.
 - `dialog.tsx`'s footer close control is a plain styled `DialogPrimitive.Close`
-  rather than the shadcn `button` primitive, which is not installed.
+  rather than `ui/button.tsx`'s `Button` atom, which postdates it.
 
 ## Terminal
 
@@ -134,6 +134,7 @@ contract for their owning story, not existing code.
 | `KeyHint` | `ui/key-hint.tsx` | 041 (also 043) | `keys: string[]`, `label: string` | planned |
 | `SecretField` | `ui/secret-field.tsx` | **HIVE-67** | `label: string`, `value: string`, `onChange(value: string): void`, `onCommit?(): void`, `placeholder?: string`, `hint?: string`, `className?: string` | **built** |
 | `SplitHandle` | `ui/split-handle.tsx` | **explorer** | `axis: 'horizontal' \| 'vertical'`, `containerRef: RefObject<HTMLElement>`, `ratio: number`, `onRatio(ratio: number): void` | **built** |
+| `Button` | `ui/button.tsx` | **HIVE-118** | `variant?: 'primary' \| 'secondary' \| 'danger' \| 'ghost'`, `size?: 'sm' \| 'md'`, plus `ButtonHTMLAttributes<HTMLButtonElement>` | **built** |
 
 `Badge` moved from story 030 to 021: the header's bell needs an unread count,
 and 021 lands first. 030's tab-bar badges reuse it rather than building a second.
@@ -213,6 +214,18 @@ Contracts worth knowing before reusing them:
 - **`STATUS_TEXT` pairs with `STATUS_FILL`** in `ui/status-dot.tsx`: the dot's
   `bg-*` and its label's `text-*` come from the same module, because a dot and
   its label drifting to different colours is the bug that file exists to prevent.
+- **`Button` defaults to `variant="secondary"`, `size="md"`, `type="button"`.**
+  The default type matters: a bare `<button>` inside a `<form>` submits it,
+  which is never what a card's option row means; pass `type="submit"`
+  explicitly on the rare button that really should. Its four variants are
+  `primary`, `secondary`, `danger` and `ghost`; `primary` is the class string
+  already hand-copied into eleven settings panes (`agent-editor.tsx`,
+  `projects-section.tsx`, `skill-editor.tsx`, `skills-section.tsx`,
+  `env-editor.tsx`, `theme-gallery.tsx`, `clone-repo-view.tsx` ×2,
+  `agents-section.tsx`, `new-session-picker.tsx`), lifted unchanged. **Landing
+  the atom does not sweep those eleven call sites** — that is separate
+  follow-up work, not an endorsement to keep hand-rolling the same string
+  elsewhere.
 
 ## Layout
 
@@ -278,7 +291,7 @@ many.
 
 `src/components/layout/left-rail.tsx` — story 030, built.
 
-268px fixed. A flex column of two children: a pinned `<TabBar />` and a scrolling
+320px fixed. A flex column of two children: a pinned `<TabBar />` and a scrolling
 tab panel that mounts exactly one of `ProjectsPanel` (031), `WorkPanel` (032), or
 `AgentsPanel` (033). Reads `useLeftTab()` / `useSetLeftTab()`, plus
 `useTicketCount()` for the Work tab's badge.
@@ -373,22 +386,59 @@ resolution itself is the exported pure function `resolveTicketPrs()`.
 Colour and findings wording live in `src/features/shared/pr-presentation.ts`,
 because the PRs panel (052) is a separate slice that must agree with this one.
 
-### `<AgentsPanel />`
+### `<AgentsPanel />` and `<AgentRow />`
 
-`src/features/agents/components/agents-panel.tsx` — story 033, built.
+`src/features/agents/components/` — stories 033 and HIVE-114, regrouped by
+HIVE-116.
 
-`AgentsPanel` → `AgentRow`, one per id in `agentOrder`. Clicking a row opens the
-agent's terminal — the session view with agent chips (043).
+`AgentsPanel` → a header per group → `AgentRow`. The grouping is **state**, not
+name: a rail is read to answer "what needs me", and the state is what changes
+minute to minute. Every ordering rule lives in `useAgentsByGroup` — asking first
+inside Awake, ties broken on the most recent run, `failed` filed under Awake
+because a broken agent is the loudest yes on the panel, empty groups omitted —
+so the panel renders a decision rather than making one.
 
-**The online dot is not `StatusDot`.** That atom is a 7px unringed dot; this one
+`+ New agent…` at the foot calls `openSettings('agents')`. The empty state names
+the same pane in prose and draws no button, because the copy already is one.
+
+**The status dot is not `StatusDot`.** That atom is a 7px unringed dot; this one
 is 9px with a 2px `--cc-panel` ring so it reads as lifted off the avatar tile.
-Deliberately built inline rather than bending the atom to fit two shapes.
+Deliberately built inline rather than bending the atom to fit two shapes. It
+takes its fill from `STATUS_FILL` and pulses for `working`, the same rules the
+atom applies.
 
-Its `online` text is `sr-only` and sits **last** in the row, so the row announces
-`"slack-agent … online"` rather than leading with its status. Agents are always
-online in this phase, but the state still may not ride on the green alone.
+The status **word** is visible in the right-hand meta rather than `sr-only`,
+which is what changed with HIVE-116: while `sleeping` was the only state an
+agent could be in, saying so on screen was noise. With four possible at once it
+is the point of the row. Beneath it sits whatever makes that word actionable —
+the open ask's ref, the run's cost, the next wake — and `invalid` beats all of
+them, because a file that will not parse is not running.
 
-Creating and pausing agents is out of scope here — they are fixture-defined.
+### `<AgentView />`, `<AgentRunLog />` and `<AgentLedger />`
+
+`src/features/agents/components/` — HIVE-116, built.
+
+An agent's place on the centre stage, and **deliberately not a terminal**:
+nothing is typed into a process, and the log is a transcript of turns that have
+already ended. It keeps the terminal's rhythm — header, body, one input at the
+bottom — and that is the whole of the resemblance.
+
+Header, five fact tiles, then the two regions side by side, then the input. The
+split is `minmax(0, 1fr) clamp(280px, 22%, 380px)` under a **container query**
+that stacks below an 800px stage. Both halves of that are load-bearing: the log is
+elastic because it renders at the user's terminal type scale, `1fr` alone would
+give the app a horizontal scrollbar, and the rails drag so only the container
+knows how wide the stage is.
+
+`AgentRunLog` takes its colours from the theme's terminal palette in JS, the way
+the xterm surface does — those four values already exist and are already
+themeable, and a `--cc-run-*` group would be a second copy of them. Finished
+runs are one-line receipts with no chevron: their lines were never kept.
+
+`AgentLedger` stacks each entry's kind chip and timestamp **above** its body,
+because an inline chip costs 44px of a 280px column. All nine `LedgerKind`
+members get a chip. An open ask draws no option buttons — that control is
+HIVE-118's, and until it lands the input below is the way to answer.
 
 ### `<InboxPanel />` and `<NotificationCard />`
 
@@ -409,6 +459,15 @@ A stack of notification cards, newest first, from `useNotifs()`.
   count that fill implies is the whole point of the red tab badge, and colour
   alone puts it out of reach of a screen reader.
 - The store caps the list at 8 (`NOTIF_CAP`); the panel renders what it is given.
+- **A card carrying a `link` grows a wrapper, and the exit moves with it**
+  (HIVE-123). `notif.link` renders as a real `<a>`, and an anchor inside a
+  `<button>` is interactive content inside interactive content — so the link is
+  the button's *sibling* under a wrapping `<div>`, the way `session-table.tsx`
+  draws its row action. The card's dismissal — `overflow-hidden`, the measured
+  `--cc-card-h`, `animate-ccslideout` and the list's own `mb-*` — then belongs
+  to that wrapper rather than to the button: left on the button, the link and
+  the margin below it held full height while the button collapsed, and the list
+  jumped when the remainder unmounted.
 
 ### `<PrsPanel />` and `<PrCard />`
 
@@ -488,12 +547,16 @@ renders comes from `resolveView()` in `src/lib/resolve-view.ts`.
 `src/components/layout/session-meta-bar.tsx`
 
 ```ts
-function SessionMetaBar(props: { entity: Entity }): JSX.Element
+function SessionMetaBar(props: { entity: Session }): JSX.Element
 ```
 
-The bar above the terminal in the session and agent views (040): a back pill,
-the entity id, its one-line task, and status chips. Sessions get branch, status,
-and PR; agents get "dedicated agent" and "online".
+The bar above the terminal in the **session** view (040): a back pill, the
+entity id, its one-line task, and status chips — branch, status, and PR.
+
+It took an `Entity` and rendered a `dedicated agent` chip for the other kind
+until HIVE-116, which gave agents a view of their own. The prop narrowed to
+`Session` with the branch that drew those chips: a type that admits what the
+component can no longer draw is an invitation to reach it again.
 
 Everything is derived from the entity, so a status change reaches this bar the
 same moment it reaches the rails — including the `waiting → "needs input"`
@@ -509,9 +572,10 @@ the session's branch against the live `prs` list, the same resolution
 `useTicketPrs()` and `usePrs()` perform; `Session.pr` is gone, along with the
 `PrState` type that existed only to type it.
 
-The back pill uses a native `title` rather than the Radix tooltip: the app mounts
-no `TooltipProvider`, and adding one to the root for a single affordance buys
-nothing a title does not. The label names the shortcut story 060 will bind.
+The back pill uses a native `title` rather than the Radix tooltip: this predates
+`TooltipProvider`, now mounted in `app.tsx` for the rail strips' hover labels,
+and a title still does everything this one affordance needs. The label names
+the shortcut story 060 will bind.
 
 ### Feature components (epic HIVE-4)
 
@@ -529,3 +593,32 @@ nothing a title does not. The label names the shortcut story 060 will bind.
 vendored `DialogContent`, which always portals to `document.body`; the picker
 fills the center stage instead. Radix's focus trap, Escape, scroll lock, and
 `aria-modal` are all retained.
+
+### `<SlackGroup />`
+
+`src/features/settings/components/slack-group.tsx` — Settings › Integrations,
+HIVE-123. Design record:
+https://claude.ai/code/artifact/efe48323-a347-4744-8c00-026f8ff086b8
+
+One `SettingsGroup` — a status row (state pill · identity · actions), a
+hairline, then one caption line and an `Advanced` disclosure closed by
+default. Chosen over the two alternatives considered (mirroring Jira's three
+nested groups, and a connection card), both of which cost roughly three times
+the height to say one sentence.
+
+- **The state pill** (`off` / `ok` / `wait` / `err`) collapses `SlackStatus`'s
+  five `kind`s down to four — `not-added` and `needs-auth` read identically,
+  both "sign in again" (`pillKindOf`).
+- **The caption is one slot with a strict precedence** — an error message,
+  else the approval sentence, else the Used-by summary — never two at once.
+  That is what lets `pending-approval` and a failed sign-in fit without a
+  fourth block; `Caption` is the one place the decision gets made.
+- **Only two fields off `AgentSummary` are read**: `name` and `tools` — the
+  Used-by line and the `grantsSlackTools` hint. `SlackGroupAgent` is typed
+  narrower than the full summary on purpose; `AgentSummary` is structurally a
+  superset, so `integrations-section.tsx` passes it straight through.
+- **A broken bridge is reported, not swallowed.** `readSlackStatus` / `signIn`
+  / `signOut` / `testSlack` (`src/lib/slack.ts`) all return `null` when the
+  IPC call cannot reach main; the group turns that into an `error`-kind status
+  rather than rendering nothing, the same choice `JiraCredentialGroup` makes
+  for a failed Jira verb.

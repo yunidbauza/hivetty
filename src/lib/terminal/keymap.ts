@@ -31,6 +31,8 @@ export type TerminalKeyAction =
   | 'newline'
   /** An app navigation chord: not xterm's, not the pty's. Let it bubble. */
   | 'app-chord'
+  /** A rail-collapse chord. Not xterm's, not the pty's. Let it bubble. */
+  | 'rail-chord'
   /**
    * A bare `←` the app wanted and could not have (HIVE-79).
    *
@@ -117,6 +119,13 @@ export interface KeyEventLike {
    * case without it. See the AltGr note in {@link decideTerminalKey}.
    */
   altKey?: boolean;
+  /**
+   * The physical key, layout- and modifier-independent — `event.code` on a
+   * real `KeyboardEvent`. Optional so callers and tests that construct a bare
+   * object with only `key` still compile; see {@link isRailChord} for why it
+   * is worth having at all.
+   */
+  code?: string;
 }
 
 /**
@@ -161,6 +170,54 @@ export function isBackChord(event: KeyEventLike, isMac: boolean): boolean {
     );
   }
   return event.key === 'ArrowLeft' && event.ctrlKey && event.shiftKey;
+}
+
+/**
+ * The two rail-collapse chords, or `null`.
+ *
+ * Returns which rail rather than a boolean, so `decideTerminalKey` and the
+ * surface that dispatches the event derive the side from one rule instead of
+ * two that could drift.
+ *
+ * **Never bare `Ctrl+B` off macOS.** It is `backward-char` in readline and the
+ * tmux prefix; taking it from a focused pty is exactly the class of mistake
+ * `center-stage.tsx` documents making once with `Cmd+←`. `Alt` distinguishes
+ * the two rails on both platforms, matching what VS Code does with its
+ * secondary side bar.
+ *
+ * **Matches the physical key, not the character `event.key` reports.** Both
+ * chords involve `Alt`, and with `Alt` held some platforms and layouts produce
+ * a character other than `"b"` — Option+B alone gives `"∫"` on a macOS US
+ * keyboard, and there is no guarantee every layout reporting `Alt`+`Meta`
+ * together keeps `key` un-remapped. `event.code === 'KeyB'` names the physical
+ * key regardless of modifiers or layout, so it is the test used whenever the
+ * event carries one; `key` is the fallback for the rest — a bare object built
+ * without `code`, which every existing caller and test still constructs.
+ *
+ * The emptiness check, not `!== undefined`: a real `KeyboardEvent` always has
+ * a `code` property, `''` when the caller never set one (every synthetic
+ * `new KeyboardEvent(...)` in this codebase's own tests included) — so testing
+ * for `undefined` alone would treat that `''` as a real, non-matching code and
+ * never fall back to `key` for exactly the events most likely to omit it.
+ */
+export function isRailChord(
+  event: KeyEventLike,
+  isMac: boolean,
+): 'left' | 'right' | null {
+  const side = event.altKey === true ? 'right' : 'left';
+  const isB = event.code ? event.code === 'KeyB' : event.key.toLowerCase() === 'b';
+
+  if (isMac) {
+    if (!isB || !event.metaKey || event.ctrlKey || event.shiftKey) {
+      return null;
+    }
+    return side;
+  }
+
+  if (!isB || !event.ctrlKey || !event.shiftKey || event.metaKey) {
+    return null;
+  }
+  return side;
 }
 
 /**
@@ -588,8 +645,13 @@ export interface TerminalChordDetail {
    * `back-declined` — the app wanted the key, the pty got it, and the user is
    * now somewhere the app did not send them (HIVE-79). Nothing to navigate;
    * something to *say*. See {@link TerminalKeyAction} `back-declined`.
+   *
+   * `rail-left` / `rail-right` — a rail-collapse chord pressed inside a
+   * terminal (see {@link isRailChord}). Carried up for the same reason `back`
+   * is: the app must not sniff every `keydown` on `window`, where these
+   * combinations belong to whatever else has focus.
    */
-  chord: 'back' | 'back-declined';
+  chord: 'back' | 'back-declined' | 'rail-left' | 'rail-right';
 }
 
 /** How that chord is written in the key-hint row. */
@@ -630,6 +692,8 @@ export function decideTerminalKey(
   { isMac, hasSelection, cursor, ended = false }: KeyContext,
 ): TerminalKeyAction {
   if (isBackChord(event, isMac)) return 'app-chord';
+
+  if (isRailChord(event, isMac)) return 'rail-chord';
 
   /**
    * A terminal whose process has ended gives `←` back to the app (story 108).

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { Effort, Model } from '@/types/entity';
+import type { SettingsSection } from '@/types/settings';
 
 import type { FsSearchMode } from '@shared/fs-contract';
 
@@ -99,6 +100,8 @@ interface UiState {
    */
   pickerTicket: string | null;
   settings: boolean; // full-stage settings overlay open (story 101)
+  /** The pane `openSettings` was asked for, or `null` for the default. */
+  settingsSection: SettingsSection | null;
   newModel: Model;
   newEffort: Effort;
   showActivityRail: boolean;
@@ -158,7 +161,15 @@ interface UiState {
   openPicker: (ticketKey?: string) => void;
   closePicker: () => void;
   revealStage: () => void;
-  openSettings: () => void;
+  openSettings: (section?: SettingsSection) => void;
+  /**
+   * Mark the requested pane as consumed.
+   *
+   * The overlay calls this once it has navigated. Without it the request would
+   * stay set, and any later re-render that re-read it would drag the user back
+   * to that pane after they had moved on.
+   */
+  clearSettingsSection: () => void;
   closeSettings: () => void;
   setPickerQuery: (query: string) => void;
   setNewModel: (model: Model) => void;
@@ -184,6 +195,13 @@ const initialUiState = {
   pickerQuery: '',
   pickerTicket: null as string | null,
   settings: false,
+  /**
+   * Which pane the *next* open should land on, or `null` for the default.
+   *
+   * Set by `openSettings('agents')` and cleared by a bare `openSettings()`,
+   * so the rule below still holds for every route that does not name a pane.
+   */
+  settingsSection: null as SettingsSection | null,
   newModel: 'opus' as Model,
   newEffort: 'high' as Effort,
   showActivityRail: true,
@@ -295,8 +313,10 @@ export const useUiStore = create<UiState>()((set) => ({
    * picker, this never touches `activeTab`: closing settings has to return the
    * user to the terminal they were watching.
    */
-  openSettings: () => set({ settings: true, picker: false }),
-  closeSettings: () => set({ settings: false }),
+  openSettings: (section) =>
+    set({ settings: true, picker: false, settingsSection: section ?? null }),
+  closeSettings: () => set({ settings: false, settingsSection: null }),
+  clearSettingsSection: () => set({ settingsSection: null }),
   setPickerQuery: (query) => set({ pickerQuery: query }),
 
   setNewModel: (model) => set({ newModel: model }),
@@ -361,6 +381,7 @@ const newSessionDefaultsSelector = (state: UiState) => ({
 const settingsActionsSelector = (state: UiState) => ({
   openSettings: state.openSettings,
   closeSettings: state.closeSettings,
+  clearSettingsSection: state.clearSettingsSection,
 });
 
 const pickerActionsSelector = (state: UiState) => ({
@@ -455,6 +476,19 @@ export const useSettingsOpen = () => useUiStore((state) => state.settings);
 /** Settings actions, referentially stable across unrelated state changes. */
 export const useSettingsActions = () =>
   useUiStore(useShallow(settingsActionsSelector));
+
+/**
+ * The pane the overlay should navigate to, or `null` for none outstanding.
+ *
+ * A **request**, not a current-pane mirror. The overlay is `modal={false}` so
+ * the rails stay clickable underneath it, which means `openSettings('agents')`
+ * can fire while it is already open — reading this only at mount made that
+ * click do visibly nothing. The overlay now navigates whenever a request
+ * appears and calls `clearSettingsSection` to consume it, so a request acts
+ * exactly once and a later render cannot re-apply it.
+ */
+export const useSettingsSection = (): SettingsSection | null =>
+  useUiStore((state) => state.settingsSection);
 
 /** New-session picker state and actions. */
 export const usePickerState = () => useUiStore(useShallow(pickerStateSelector));

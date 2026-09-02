@@ -78,12 +78,23 @@ describe('CenterStage', () => {
     expect(visibleSurfaces()).toHaveLength(1);
   });
 
-  it('shows the agent chips for an agent', () => {
+  /**
+   * An agent gets its own surface, not a terminal's (HIVE-116).
+   *
+   * Opening one used to mount a session meta bar, a read-only xterm replaying
+   * its lines, and a message row beneath — three pieces of terminal chrome
+   * around something that is not a terminal, and a place to type that reached
+   * no process.
+   */
+  it('mounts the agent view, and none of the terminal chrome', () => {
     render(<CenterStage />);
 
     act(() => useUiStore.getState().openTab('slack-agent'));
 
-    expect(screen.getByText('dedicated agent')).toBeInTheDocument();
+    expect(screen.getByText('Today')).toBeInTheDocument();
+    expect(screen.getByText('Session')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-meta-bar')).not.toBeInTheDocument();
+    expect(screen.queryByText('dedicated agent')).not.toBeInTheDocument();
   });
 
   it('drops the meta bar again on the way back to the orchestrator', () => {
@@ -94,6 +105,65 @@ describe('CenterStage', () => {
     act(() => useUiStore.getState().backToOrch());
 
     expect(metaBarFor('feat/hero-refresh')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The overmind divides its column between the fleet table and the
+   * transcript, and the user decides where.
+   *
+   * The table used to size itself to its content, which with a long fleet
+   * meant the whole column minus the transcript's floor. It gets a share now
+   * — half by default — behind a divider of the same kind the editor split
+   * has. happy-dom performs no layout, so what is pinned here is the
+   * mechanism: the pane's basis follows the store, the divider is mounted for
+   * the overmind and nothing else, and a double-click puts the half back.
+   */
+  describe('the fleet table’s share of the column', () => {
+    const divider = () => screen.queryByRole('slider', { name: 'Resize the fleet table' });
+
+    it('gives the table half the column by default, behind a divider', () => {
+      render(<CenterStage />);
+
+      const pane = screen.getByTestId('fleet-pane');
+      expect(pane).toHaveStyle({ flex: '0 1 50%' });
+      expect(divider()).toBeInTheDocument();
+      /*
+        The share is a cap, not a size: `max-h-max` keeps a short fleet
+        content-sized, so a fresh launch does not paint half a column of
+        table ground over one empty-state line. `min-h-0` is what lets a long
+        fleet shrink to the share and scroll — without it the flex item's
+        automatic minimum is the whole fleet.
+      */
+      expect(pane).toHaveClass('max-h-max', 'min-h-0');
+    });
+
+    it('follows the stored ratio', () => {
+      render(<CenterStage />);
+
+      act(() => useAppearanceStore.getState().setConsoleSplitRatio(0.3));
+
+      expect(screen.getByTestId('fleet-pane')).toHaveStyle({ flex: '0 1 30%' });
+      expect(divider()).toHaveAttribute('aria-valuenow', '30');
+    });
+
+    it('puts the half back on double-click', async () => {
+      const user = userEvent.setup();
+      render(<CenterStage />);
+      act(() => useAppearanceStore.getState().setConsoleSplitRatio(0.7));
+
+      await user.dblClick(divider()!);
+
+      expect(useAppearanceStore.getState().consoleSplitRatio).toBe(0.5);
+    });
+
+    it('is the overmind’s alone — a session has no table to divide', () => {
+      render(<CenterStage />);
+
+      act(() => useUiStore.getState().openTab('hero-refresh'));
+
+      expect(divider()).toBeNull();
+      expect(screen.queryByTestId('fleet-pane')).toBeNull();
+    });
   });
 
   describe('the settings overlay (story 101)', () => {
@@ -195,10 +265,24 @@ describe('CenterStage', () => {
     act(() => useUiStore.getState().backToOrch());
     act(() => useUiStore.getState().openTab('hero-refresh'));
 
-    // orchestrator + hero-refresh + slack-agent, constructed once each.
-    expect(terminalInstances).toHaveLength(3);
+    /*
+      Orchestrator + hero-refresh, constructed once each — and *not* one for
+      slack-agent. Agents left the terminal list with HIVE-116: a definition on
+      disk used to get a cached transport and an xterm nobody mounts, which the
+      count here was quietly asserting was correct.
+    */
+    expect(terminalInstances).toHaveLength(2);
     expect(terminalInstances.some((instance) => instance.disposed)).toBe(false);
     expect(visibleSurfaces()).toHaveLength(1);
+  });
+
+  it('builds no terminal at all for an agent', () => {
+    render(<CenterStage />);
+
+    act(() => useUiStore.getState().openTab('slack-agent'));
+
+    // Only the orchestrator's, which is constructed on mount.
+    expect(terminalInstances).toHaveLength(1);
   });
 });
 
@@ -278,13 +362,12 @@ describe('CenterStage — interactive terminals', () => {
     expect(optionsFor(0).cursorBlink).toBe(false);
   });
 
-  it('keeps an agent read-only, because its transcript is a replay', () => {
-    withBridge();
-    render(<CenterStage />);
-    act(() => useUiStore.getState().openTab('slack-agent'));
-
-    expect(optionsFor(1).disableStdin).toBe(true);
-  });
+  /*
+    There is no agent row in this table any more (HIVE-116). An agent used to
+    get a read-only xterm over a replayed transcript; it now gets a view with
+    no terminal in it at all, which `builds no terminal at all for an agent`
+    above is the assertion for.
+  */
 
   describe('the message row (story 108)', () => {
     const messageRow = () => screen.queryByLabelText(/^Message /);
@@ -313,12 +396,15 @@ describe('CenterStage — interactive terminals', () => {
       expect(messageRow()).toBeInTheDocument();
     });
 
-    it('stays over an agent, whose transcript is a replay on desktop too', () => {
+    it('is absent over an agent, which has an input of its own', () => {
+      // The agent view carries a ledger box, and it is deliberately not this
+      // row: it posts to the log rather than typing at a process. Two inputs
+      // on one stage is the bug the row was removed from live sessions over.
       withBridge();
       render(<CenterStage />);
       act(() => useUiStore.getState().openTab('slack-agent'));
 
-      expect(messageRow()).toBeInTheDocument();
+      expect(messageRow()).not.toBeInTheDocument();
     });
   });
 

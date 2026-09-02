@@ -1,6 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { StringDecoder } from 'node:string_decoder';
 
+import { AGENTS_PATH, type AgentsDirectory } from '@shared/agent-contract';
+import { parseLedgerPostBody, parseLedgerReadQuery } from '@shared/guards';
 import {
   CLEAR_REASON,
   HOOK_HEADER_SESSION,
@@ -13,15 +16,26 @@ import {
   HOOK_EVENTS,
   NOTIFICATION_TYPE_STATUS,
   isHookNotificationType,
+  type HookAgentEvent,
   type HookEvent,
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '@shared/hook-contract';
 import {
+  LEDGER_POST_PATH,
+  LEDGER_READ_PATH,
+  type LedgerPostRequest,
+  type LedgerReadQuery,
+  type LedgerResult,
+  type LedgerSnapshot,
+} from '@shared/ledger-contract';
+import { keepNewest } from '@shared/ledger-derive';
+import {
   METRICS_MAX_BODY_BYTES,
   METRICS_PATH,
   type SessionMetrics,
 } from '@shared/metrics-contract';
+import { sessionNameFromPrompt } from '@shared/session-contract';
 
 import { parseMetrics } from './metrics';
 import { ticketKeyFromPrompt } from './ticket-intent';
@@ -43,17 +57,29 @@ import { ticketKeyFromPrompt } from './ticket-intent';
  * are true of this one and are enforced below rather than documented:
  *
  * 1. It binds **`127.0.0.1`**, never `0.0.0.0` — unreachable from the network.
- * 2. It requires a **per-launch token**, generated at start and never written
- *    anywhere but the settings file the app itself wrote and the environment of
- *    the PTYs it spawned. A token that leaks dies with the app.
- * 3. It answers a **closed set of two paths** and reads a **capped body** on
- *    each, so nothing about it is a general-purpose server. The second path
- *    (HIVE-79) takes Claude Code's status line payload; it shares the token and
- *    the session header, and carries a cap four times smaller.
+ * 2. It requires a **per-session token**, keyed off a per-launch secret that
+ *    is generated at start and never leaves this file — not on the
+ *    {@link Receiver} interface, not in an environment variable, not in the
+ *    generated config, not in a log line. What a session is handed, and what
+ *    the settings file and the environment of the PTYs it spawned carry, is
+ *    {@link tokenFor} applied to that one session's own id (HIVE-112) — so a
+ *    session that leaks its token hands over only its own identity, not
+ *    every other session's.
+ * 3. It answers a **closed set of six paths** — the hook event, the status
+ *    line's metrics (HIVE-79), `/done`, the boot-ready signal, and, since
+ *    HIVE-111, a ledger post and a ledger read — and reads a **capped body**
+ *    on each, so nothing about it is a general-purpose server. Every path
+ *    checks the token against the session header it was issued for; several
+ *    carry a smaller cap than the hook path.
  *
- * It also has no authority: the only thing a valid POST can do is move a status
- * dot, or record usage percentages, for a session id that is already known.
- * There is no command surface here to reach.
+ * Its authority is correspondingly wider than it once was: a valid POST can
+ * still move a status dot or record usage percentages, but the ledger paths
+ * let a known session id append to the shared log — post, ask, answer, claim,
+ * release, done, failed, event, handoff — and read it back. `from` is always
+ * the caller's own session header, never a value the body supplies, and
+ * `Ledger.append` (`electron/main/ledger/index.ts`) is the one place that
+ * decides what a party may write; this file only authenticates the caller and
+ * forwards. There is still no command surface here to reach.
  *
  * ## Why a failure to bind is not an error
  *
@@ -75,6 +101,22 @@ export interface ReceiverOptions {
    * two would put an optional key on every tick of the busiest event here.
    */
   onTicketIntent: (event: HookTicketIntentEvent) => void;
+  /**
+   * A name derived from the session's **first** prompt (first-prompt naming).
+   *
+   * Separate from {@link onTicketIntent} even though both read the same event,
+   * because they answer different questions and disagree on purpose: a ticket
+   * association demands work intent around the key ("work on ABC-123" claims it,
+   * "the PR for ABC-123 broke CI" does not), while a *name* takes any key it can
+   * see. Folding them together would force one rule to serve both, and the
+   * stricter rule would leave most sessions unnamed to avoid a harm a label
+   * cannot do.
+   *
+   * Fired **at most once per conversation** — see the first-prompt set in
+   * `createReceiver`. Nothing here forwards the prompt itself; the derivation
+   * happens in this process and only the resulting name leaves it.
+   */
+  onPromptName: (entityId: string, name: string) => void;
   /**
    * The session's conversation ended by `/clear`, and its pty is still running.
    *
@@ -116,8 +158,67 @@ export interface ReceiverOptions {
    * idempotent — a session that is already up cannot become more up.
    */
   onReady: (entityId: string) => void;
+  /**
+   * A party asked to read the ledger (HIVE-111).
+   *
+   * `caller` is the session id off `x-hive-session`, never the body — the same
+   * discipline `onLedgerPost` follows and for the same reason.
+   */
+  onLedgerRead: (caller: string, query: LedgerReadQuery) => LedgerSnapshot;
+  /**
+   * A party asked to append to the ledger (HIVE-111).
+   *
+   * `request` has already had any `from` in the body stripped by
+   * {@link parseLedgerPostBody} — the caller supplies it from the header.
+   */
+  onLedgerPost: (
+    caller: string,
+    request: Omit<LedgerPostRequest, 'from'>,
+  ) => LedgerResult;
+  /**
+   * A party asked who else is here (HIVE-127).
+   *
+   * `caller` is the session id off `x-hive-session`, never the body — the same
+   * discipline `onLedgerRead` and `onLedgerPost` follow, and the reason the
+   * tool behind this route takes no arguments at all.
+   *
+   * Async, alone among the handlers on this server, and deliberately: the
+   * directory is read from disk on every call rather than cached, which is
+   * what makes an agent written a moment ago discoverable without a restart.
+   * Everything else here answers from memory.
+   */
+  onAgentsList: (caller: string) => Promise<AgentsDirectory>;
   /** Whether an entity id is a session this app actually has. */
   knowsSession: (entityId: string) => boolean;
+  /**
+   * Whether an entity id is an **agent** this app has a definition for
+   * (HIVE-115).
+   *
+   * Separate from {@link ReceiverOptions.knowsSession} rather than folded into
+   * it. An agent and a session are disjoint id spaces, and the difference has
+   * consequences downstream: an agent must not produce a `session:status` push
+   * and must not reach the session history. Keeping the two questions apart is
+   * what makes that a matter of which callback matched, rather than a branch
+   * somewhere later that a future story can forget to write.
+   *
+   * Nothing about the token changes for it: a token is
+   * `HMAC(launchSecret, entityId)` and an agent name is a legal entity id, so
+   * the only thing that ever stood between an agent's `Stop` and this receiver
+   * was the question this answers.
+   */
+  knowsAgent: (entityId: string) => boolean;
+  /**
+   * A hook event from an agent's headless turn (HIVE-115).
+   *
+   * The agent-space twin of {@link ReceiverOptions.onEvent}, and deliberately
+   * not the same callback. What a session's event goes on to do — move a
+   * status dot, write a history record, close a `/done` — is meaningless for a
+   * name with no pty behind it, and *harmful* for it: a `session:status` push
+   * for an id the fleet has never heard of is a row the user cannot explain.
+   * With two callbacks the guarantee is structural. There is no path from an
+   * agent's POST to `onEvent`, so there is none to any of that either.
+   */
+  onAgentEvent: (event: HookAgentEvent) => void;
   /** Overridable for tests; `0` asks the OS for any free port. */
   port?: number;
 }
@@ -129,8 +230,19 @@ export interface Receiver {
    * Never rejects: see the note above on why a failure here is not fatal.
    */
   start(): Promise<string | null>;
-  /** The per-launch shared secret. Stable for the lifetime of the receiver. */
-  readonly token: string;
+  /**
+   * The token a session named `entityId` must present (HIVE-112).
+   *
+   * A keyed derivation — `HMAC-SHA256(launchSecret, entityId)`, hex — of a
+   * secret that is minted once per receiver and never leaves this module: it
+   * is not a field here, not an environment variable, not written to the
+   * generated config, not logged. Two calls with the same `entityId` on the
+   * same receiver always agree, which is what lets `reject` recompute the
+   * expected token from a request's own session header instead of looking one
+   * up in a map — there is no map, so there is nothing to grow or evict as
+   * sessions come and go.
+   */
+  tokenFor(entityId: string): string;
   /** The URL hooks should POST to, or `null` before a successful start. */
   readonly url: string | null;
   /**
@@ -159,6 +271,24 @@ export interface Receiver {
    * discover one.
    */
   readonly readyUrl: string | null;
+  /**
+   * The scheme and authority alone, or `null` before a successful start
+   * (HIVE-112).
+   *
+   * Every other URL on this interface is a *path* — `url` is `origin +
+   * HOOK_PATH`, and the same shape holds for `metricsUrl`, `doneUrl` and
+   * `readyUrl` — because each names one fixed route this receiver serves and
+   * the caller that reads it never appends anything of its own.
+   *
+   * The MCP host is different: it is handed a base and builds its own
+   * request paths from `@shared/ledger-contract` (`LEDGER_POST_PATH`,
+   * `LEDGER_READ_PATH`), because a single client speaks to more than one
+   * route. Handing it `url` instead would have it POST to
+   * `…/hook/ledger/read`, a path this server never registers — so this is a
+   * distinct field rather than a reuse of `url` with the last segment
+   * trimmed off by a caller.
+   */
+  readonly origin: string | null;
   stop(): Promise<void>;
 }
 
@@ -244,15 +374,72 @@ function liveBackgroundShellIds(
   return ids;
 }
 
+/**
+ * What a handler may answer with.
+ *
+ * Every route before HIVE-111 replied with a bare status and nothing else, so
+ * a `number` stays the whole answer for those. The ledger routes have to hand
+ * back a snapshot, and a refusal has to hand back a reason a *model* can read —
+ * so they return a body, and the union is what lets both shapes share one
+ * dispatch.
+ */
+type Reply = number | { status: number; json: unknown };
+
+interface Route {
+  readonly path: string;
+  /** Bytes buffered before the body is drained; see the `data` handler. */
+  readonly cap: number;
+  /**
+   * May be async (HIVE-127).
+   *
+   * Only the agents route is, and only because the directory is read from disk
+   * per call. Every other handler answers from memory and stays synchronous —
+   * the union is a widening for one route, not an invitation.
+   */
+  readonly handle: (
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+  ) => Reply | Promise<Reply>;
+}
+
+const describeCause = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
+/**
+ * Whether `caller` may see this ledger entry (HIVE-111 review finding 3).
+ *
+ * Applied to the *result* of `onLedgerRead`, independent of whatever the query
+ * asked for — `to` stays usable as an ordinary filter a caller can narrow its
+ * own view with, but naming another party in it must never widen what comes
+ * back. `entry.to === undefined` is a broadcast; `entry.from === caller`
+ * covers the asker reading its own thread, whose entries are addressed
+ * `to: overmind` rather than to itself, so forcing `to === caller` upstream
+ * would hide a party's own questions from it.
+ *
+ * Lives here, in the receiver, rather than in whatever implements
+ * `onLedgerRead` — the caller's identity is known at this layer regardless of
+ * how the ledger is wired in, so the guarantee holds no matter what the next
+ * task does on the other side of that callback.
+ */
+const visibleTo = (caller: string, entry: { from: string; to?: string }): boolean =>
+  entry.to === caller || entry.to === undefined || entry.from === caller;
+
 export function createReceiver(options: ReceiverOptions): Receiver {
   const {
     onEvent,
     onTicketIntent,
+    onPromptName,
     onCleared,
     onMetrics,
     onDone,
     onReady,
+    onLedgerRead,
+    onLedgerPost,
+    onAgentsList,
     knowsSession,
+    knowsAgent,
+    onAgentEvent,
     port = 0,
   } = options;
 
@@ -266,6 +453,45 @@ export function createReceiver(options: ReceiverOptions): Receiver {
    * free of mutable module state, which nothing else here has.
    */
   const warnedTaskTypes = new Set<string>();
+
+  /**
+   * Conversations whose first prompt has already been read.
+   *
+   * The whole point of naming from a prompt is that it is the **first** one: the
+   * name should say why the session exists, not what it drifted onto by turn
+   * 170. That is exactly the failure Claude's own `ai-title` has, so a rule that
+   * re-derived on every prompt would reproduce it with extra steps.
+   *
+   * ## Keyed by the conversation, not by the session
+   *
+   * A session id outlives the conversations inside it, and the two boundaries
+   * that start a new one look nothing like each other: `/clear` announces itself
+   * with a `SessionEnd`, and a **restart** does not announce itself here at all —
+   * main kills the pty and spawns a fresh `claude`, which no hook reports. Keyed
+   * by entity id, a restarted session would carry the previous generation's mark
+   * for the life of the process and never be named from a prompt again.
+   *
+   * Claude's own conversation id is the thing that actually changes at both
+   * boundaries — a `/clear` and a restart each mint a new one — so it is the
+   * honest key. The entity id is the fallback for a payload that carried no
+   * `session_id`, and `SessionEnd{clear}` still clears that fallback, which is
+   * the only case it can still matter for.
+   *
+   * Per receiver rather than per module, for the reason {@link warnedTaskTypes}
+   * gives: module state would let one test silence the next.
+   */
+  const promptedSessions = new Set<string>();
+
+  /**
+   * What identifies the conversation a hook fired in, best available.
+   *
+   * The uuid is globally unique, so it needs no entity qualifier; the fallback
+   * does, or two sessions with no uuid would share one mark.
+   */
+  const conversationKey = (entityId: string, sessionUuid: unknown): string =>
+    typeof sessionUuid === 'string' && sessionUuid !== ''
+      ? `uuid:${sessionUuid}`
+      : `entity:${entityId}`;
   const noteUnknownTaskType = (type: string): void => {
     if (warnedTaskTypes.has(type)) return;
     warnedTaskTypes.add(type);
@@ -276,7 +502,18 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     );
   };
 
-  const token = randomUUID();
+  /**
+   * Minted once per receiver and never returned from this function — see the
+   * {@link tokenFor} doc on {@link Receiver} for why. `randomUUID` is used here
+   * only as a convenient source of high-entropy randomness, not because the
+   * result is ever compared as a uuid.
+   */
+  const launchSecret = randomUUID();
+
+  /** HMAC-SHA256(launchSecret, entityId), hex — see {@link Receiver.tokenFor}. */
+  const tokenFor = (entityId: string): string =>
+    createHmac('sha256', launchSecret).update(entityId).digest('hex');
+
   let server: Server | null = null;
   let url: string | null = null;
   /**
@@ -341,39 +578,91 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   const TOOL_NAME_IN_PREFIX = /"tool_name"\s*:\s*"([A-Za-z0-9_]+)"/;
 
   /**
-   * Token, session id, and "do we still have this session".
+   * And once more for `session_id`, which correlates an agent's `Stop` with the
+   * run it belongs to (HIVE-115).
    *
-   * Shared by both paths because both need exactly this and in this order —
+   * A uuid is the narrowest vocabulary of any of these, so the shape is the
+   * strictest: hex and hyphens only, which no truncated tail can half-satisfy.
+   * It survives truncation on every payload measured — `session_id` is the
+   * first key Claude Code writes — but the regex is here rather than assumed,
+   * because dropping the uuid silently is exactly the failure this correlation
+   * exists to prevent: a `Stop` with no uuid arms a watchdog against whatever
+   * is live under that name, which after a fast turnaround is the *next* run.
+   */
+  const SESSION_ID_IN_PREFIX = /"session_id"\s*:\s*"([0-9a-fA-F-]+)"/;
+
+  /**
+   * Token, entity id, and "is this an identity this app still has".
+   *
+   * Shared by every path because they all need exactly this and in this order —
    * and because a second endpoint that checked two of the three would be the
    * kind of drift a reviewer has to notice rather than the compiler.
+   *
+   * "An identity this app has" is **two** registers since HIVE-115: the pty
+   * sessions, and the agents `~/.hive/agents` holds a definition for. Both post
+   * here, both authenticate identically — a token is
+   * `HMAC(launchSecret, entityId)` and an agent name is a legal entity id — and
+   * both are refused when the app has never heard of them. What differs is what
+   * each may reach afterwards, which is {@link rejectUnlessSession}'s and the
+   * hook route's business rather than this function's.
    *
    * Answers the status to return, or `null` when the request may proceed.
    */
   function reject(
     headers: Record<string, string | string[] | undefined>,
   ): number | null {
-    /**
-     * Compared before anything else is read.
-     *
-     * Not a timing-safe comparison, and deliberately not: the secret is a v4
-     * uuid on a loopback socket, where an attacker able to time it is already
-     * running as this user and has no need of it.
-     */
-    if (headers[HOOK_HEADER_TOKEN] !== token) return 403;
-
     const entityId = headers[HOOK_HEADER_SESSION];
     if (typeof entityId !== 'string' || entityId === '') return 400;
 
     /**
-     * An unknown session is refused rather than remembered.
+     * The presented token must be the one derived for *this* session id, not
+     * merely a token this receiver minted for someone else (HIVE-112).
      *
-     * Sessions outlive nothing here: if the app does not have this entity, the
-     * event is about a pty that has already gone, and creating state for it
-     * would leak an entry per stale hook forever.
+     * Not a timing-safe comparison, and deliberately not: this is a derived
+     * secret on a loopback socket, where an attacker able to time the
+     * comparison is already running as this user and has no need to — the
+     * thing being protected is one session's isolation from another's ledger
+     * entries, not the socket as a whole, and timing leaks nothing an
+     * on-machine attacker does not already have.
      */
-    if (!knowsSession(entityId)) return 404;
+    if (headers[HOOK_HEADER_TOKEN] !== tokenFor(entityId)) return 403;
+
+    /**
+     * An unknown identity is refused rather than remembered.
+     *
+     * Neither register outlives anything here: if the app has neither a pty nor
+     * an agent definition under this name, the event is about something that
+     * has already gone, and creating state for it would leak an entry per stale
+     * hook forever.
+     */
+    if (!knowsSession(entityId) && !knowsAgent(entityId)) return 404;
 
     return null;
+  }
+
+  /**
+   * {@link reject}, and then "and it must be a **session**" (HIVE-115).
+   *
+   * Three routes here are session-only in a way the hook route and the ledger
+   * routes are not. `/metrics` reports a status line that `claude -p` never
+   * runs; `/done` and `/ready` both end in a `session:*` push about a terminal
+   * on the fleet. An agent has no terminal, so every one of those is either
+   * inert or a row the user cannot account for — and "inert" is not a property
+   * to rely on from over here, since it is enforced in `sessions/index.ts` and
+   * could stop being true without this file noticing.
+   *
+   * A named layer rather than a line inside each handler, so that which id
+   * space a route serves is visible at its first statement, and a route added
+   * later has to choose one on purpose.
+   */
+  function rejectUnlessSession(
+    headers: Record<string, string | string[] | undefined>,
+  ): number | null {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    // Narrowed by `reject`, which refused every non-string case above.
+    return knowsSession(headers[HOOK_HEADER_SESSION] as string) ? null : 404;
   }
 
   /**
@@ -389,7 +678,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     body: string,
     truncated: boolean,
   ): number {
-    const refusal = reject(headers);
+    const refusal = rejectUnlessSession(headers);
     if (refusal !== null) return refusal;
 
     /*
@@ -409,6 +698,150 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   }
 
   /**
+   * A party read the log (HIVE-111).
+   *
+   * POST, not GET, and that is not an accident of taste: this server has never
+   * parsed a query string and every route on it is POST-only. A read whose
+   * arguments arrive as a JSON body needs no method routing and no parser, and
+   * `LedgerReadQuery` crosses the wire as itself.
+   */
+  function handleLedgerRead(
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+  ): Reply {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    // Same discipline as the write route's own check, and the same reason:
+    // the caller reading this is a model, and "413, over the transport cap"
+    // is something it can act on. "400, unexpected end of JSON input" is not.
+    if (truncated) {
+      return { status: 413, json: { reason: `body exceeds ${HOOK_MAX_BODY_BYTES} bytes` } };
+    }
+
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+    let query: LedgerReadQuery;
+    try {
+      query = parseLedgerReadQuery(body === '' ? {} : JSON.parse(body));
+    } catch (cause) {
+      return { status: 400, json: { reason: describeCause(cause) } };
+    }
+
+    /*
+      Queried with no limit, so nothing is trimmed before the caller's
+      visibility is known. `onLedgerRead` (via `Ledger.read`) would otherwise
+      take the newest `limit` entries over the *whole* ledger and hand back a
+      set `visibleTo` then narrows — which can discard an entry addressed to
+      this caller in favour of ones addressed elsewhere, with nothing to
+      signal the truncation. The limit is applied below, after filtering,
+      against what the caller can actually see.
+    */
+    const { limit, ...unbounded } = query;
+    const snapshot = onLedgerRead(caller, unbounded);
+    const visible: LedgerSnapshot = {
+      // Identity-locked here rather than trusted from `onLedgerRead`, so a
+      // query's own `to` can never widen what a caller is shown — see
+      // `visibleTo`.
+      entries: keepNewest(
+        snapshot.entries.filter((entry) => visibleTo(caller, entry)),
+        limit,
+      ),
+      openAsks: snapshot.openAsks.filter((entry) => visibleTo(caller, entry)),
+      claims: snapshot.claims,
+    };
+    return { status: 200, json: visible };
+  }
+
+  /**
+   * A party asked who else is here (HIVE-127).
+   *
+   * The body is ignored entirely — the tool behind this takes no arguments,
+   * and the caller is the authenticated header. A body naming a `from` is not
+   * refused, merely unread: there is nothing here for it to influence, which
+   * is a stronger guarantee than stripping it would be.
+   *
+   * The only async handler on this server. The directory is read from disk per
+   * call rather than cached, which is the whole of the "a newly written agent
+   * is discoverable on the next wake" promise.
+   */
+  async function handleAgents(
+    headers: Record<string, string | string[] | undefined>,
+  ): Promise<Reply> {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    // Narrowed by `reject`, which refused every non-string case above.
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+
+    try {
+      return { status: 200, json: await onAgentsList(caller) };
+    } catch {
+      /*
+        Reported, never swallowed into an empty list. "There is nobody else
+        here" is a legitimate answer this route gives, so a failed read that
+        returned `{ agents: [] }` would be indistinguishable from it — and the
+        model would conclude it has no peers and stop looking, which is exactly
+        the silence this whole story exists to end.
+
+        A fixed sentence, and **not** `describeCause` as the ledger routes use:
+        this reason is read by a model and lands in its transcript, and the
+        failures reachable from here are filesystem errors whose `message`
+        carries an absolute path (`EACCES … scandir '/Users/<someone>/…'`). The
+        directory's whole contract is that it discloses names, descriptions and
+        grants — no paths, no env. Deriving the text from the cause would make
+        that true only for as long as every fs call underneath happens to be
+        caught individually, which is a property no test asserts and no
+        reviewer would notice going away.
+      */
+      return {
+        status: 500,
+        json: {
+          reason:
+            'the agent directory could not be read. This is a fault in the Hive, not in your request — report it and carry on without delegating.',
+        },
+      };
+    }
+  }
+
+  /**
+   * A party wrote to the log (HIVE-111).
+   *
+   * `from` is taken from the header and the body's is discarded by the guard —
+   * a party cannot post as another party.
+   */
+  function handleLedgerPost(
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+  ): Reply {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    /*
+      Refused, not drained. The hook path drains an oversized body because
+      losing a `waiting` flag is worse than a silent truncation; here the
+      caller is a tool waiting on a result, and a write it believes succeeded
+      but that was quietly cut in half is the worse failure.
+    */
+    if (truncated) {
+      return { status: 413, json: { reason: `body exceeds ${HOOK_MAX_BODY_BYTES} bytes` } };
+    }
+
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+    let request: Omit<LedgerPostRequest, 'from'>;
+    try {
+      request = parseLedgerPostBody(JSON.parse(body));
+    } catch (cause) {
+      return { status: 400, json: { reason: describeCause(cause) } };
+    }
+
+    const result = onLedgerPost(caller, request);
+    if (!result.ok) return { status: result.status, json: { reason: result.reason } };
+    return { status: 200, json: { id: result.id, ref: result.ref } };
+  }
+
+  /**
    * A session declared itself finished (HIVE-93).
    *
    * The shortest handler here by a wide margin, and that is the design rather
@@ -425,7 +858,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   function handleDone(
     headers: Record<string, string | string[] | undefined>,
   ): number {
-    const refusal = reject(headers);
+    const refusal = rejectUnlessSession(headers);
     if (refusal !== null) return refusal;
 
     onDone(headers[HOOK_HEADER_SESSION] as string);
@@ -446,10 +879,82 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   function handleReady(
     headers: Record<string, string | string[] | undefined>,
   ): number {
-    const refusal = reject(headers);
+    const refusal = rejectUnlessSession(headers);
     if (refusal !== null) return refusal;
 
     onReady(headers[HOOK_HEADER_SESSION] as string);
+    return 204;
+  }
+
+  /**
+   * A hook from an **agent's** headless turn (HIVE-115).
+   *
+   * Its own function rather than a flag inside {@link handle}, and that is the
+   * whole of the story: the only callback reachable from here is
+   * `onAgentEvent`. An agent therefore cannot produce a `session:status` push,
+   * a session history record, a ticket rename or a `/clear` — not because
+   * something downstream remembers to skip it, but because the code that would
+   * do any of those is on a path this function never joins.
+   *
+   * It reads two fields where `handle` reads nine, which is honest rather than
+   * lazy. Measured against `claude` 2.1.251, a `-p` run fires `SessionStart`,
+   * `PreToolUse`, `PostToolUse`, `Stop` and `SubagentStop` — `Notification` and
+   * `PermissionRequest` do not fire headless — and the only one the app acts on
+   * today is `Stop`. The rest are accepted so the run does not print a hook
+   * failure into its own log, and are carried no further until HIVE-116 has
+   * somewhere to draw them. When it does, this is the one place that has to
+   * learn a field, and it can learn it without touching the session path.
+   */
+  function handleAgent(
+    entityId: string,
+    body: string,
+    truncated: boolean,
+  ): number {
+    let event: unknown;
+    let sessionUuid: unknown;
+
+    if (truncated) {
+      // The prefix is all there is; see EVENT_IN_PREFIX and SESSION_ID_IN_PREFIX.
+      event = EVENT_IN_PREFIX.exec(body)?.[1];
+      sessionUuid = SESSION_ID_IN_PREFIX.exec(body)?.[1];
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        return 400;
+      }
+      const fields =
+        typeof parsed === 'object' && parsed !== null
+          ? (parsed as { hook_event_name?: unknown; session_id?: unknown })
+          : undefined;
+      event = fields?.hook_event_name;
+      sessionUuid = fields?.session_id;
+    }
+
+    // An event outside the subscribed set is a success, not an error — the
+    // same reading the session path takes, and for the same reason.
+    if (!isHookEvent(event)) return 204;
+
+    /*
+      `SessionEnd` leaves here with no callback at all. It is a lifecycle event
+      about a conversation, and a run's lifecycle is the *process* — which
+      `runs.ts` watches on 'close' and 'exit', where the exit code is. There is
+      nothing this could add that is not already known more accurately a moment
+      later, and `HOOK_STATUS` has no entry for it by construction.
+    */
+    if (event === 'SessionEnd') return 204;
+
+    onAgentEvent({
+      entityId,
+      event,
+      status: HOOK_STATUS[event],
+      // Absent rather than empty when the payload did not carry one, the same
+      // discipline every optional field on the session event follows.
+      ...(typeof sessionUuid === 'string' && sessionUuid !== ''
+        ? { sessionUuid }
+        : {}),
+    });
     return 204;
   }
 
@@ -463,6 +968,25 @@ export function createReceiver(options: ReceiverOptions): Receiver {
 
     // Narrowed by `reject`, which refused every non-string case above.
     const entityId = headers[HOOK_HEADER_SESSION] as string;
+
+    /**
+     * The two id spaces part **here**, before a field of the payload is read
+     * (HIVE-115).
+     *
+     * Everything below this line belongs to a session, and an agent's event has
+     * already left on {@link handleAgent}. That is the guarantee, and it is
+     * positional: there is no arrangement of the payload, no event name and no
+     * later edit to the parsing below that can carry an agent-named event into
+     * `onEvent`, `onTicketIntent` or `onCleared`.
+     *
+     * A session wins a collision. The registers are disjoint in practice —
+     * `sess-07` is not a folder in `~/.hive/agents` — but were they ever not,
+     * the session is the one with a pty, a status dot and a history record that
+     * have to stay truthful.
+     */
+    if (!knowsSession(entityId) && knowsAgent(entityId)) {
+      return handleAgent(entityId, body, truncated);
+    }
 
     let event: unknown;
     let reason: unknown;
@@ -484,6 +1008,15 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     let agentId: unknown;
     let runInBackground: unknown;
     let backgroundShells: string[] | undefined;
+    /**
+     * Claude's own id for the conversation this event fired in (first-prompt naming).
+     *
+     * Read on the session path as well as the agent one, because it is what
+     * names the transcript — and unlike the uuid pinned at spawn it stays
+     * correct across a `/clear`, which starts a *new* conversation in the same
+     * pty under a uuid nothing told main about.
+     */
+    let sessionUuid: unknown;
 
     if (truncated) {
       // The prefix is all there is; see EVENT_IN_PREFIX.
@@ -492,6 +1025,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       cwd = CWD_IN_PREFIX.exec(body)?.[1];
       notificationType = NOTIFICATION_TYPE_IN_PREFIX.exec(body)?.[1];
       toolName = TOOL_NAME_IN_PREFIX.exec(body)?.[1];
+      sessionUuid = SESSION_ID_IN_PREFIX.exec(body)?.[1];
     } else {
       let parsed: unknown;
       try {
@@ -512,9 +1046,11 @@ export function createReceiver(options: ReceiverOptions): Receiver {
               agent_id?: unknown;
               tool_input?: { run_in_background?: unknown };
               background_tasks?: unknown;
+              session_id?: unknown;
             })
           : undefined;
       event = fields?.hook_event_name;
+      sessionUuid = fields?.session_id;
       reason = fields?.reason;
       cwd = fields?.cwd;
       prompt = fields?.prompt;
@@ -548,7 +1084,17 @@ export function createReceiver(options: ReceiverOptions): Receiver {
      * already.
      */
     if (event === 'SessionEnd') {
-      if (reason === CLEAR_REASON) onCleared(entityId);
+      if (reason === CLEAR_REASON) {
+        /*
+          A cleared terminal is a fresh conversation, so its next prompt is a
+          first prompt again. Only the entity-id fallback needs clearing: a
+          `/clear` mints a new conversation id, so a uuid-keyed mark already
+          belongs to the conversation that just ended and can never match the
+          new one.
+        */
+        promptedSessions.delete(conversationKey(entityId, undefined));
+        onCleared(entityId);
+      }
       return 204;
     }
 
@@ -562,9 +1108,35 @@ export function createReceiver(options: ReceiverOptions): Receiver {
      * into the other's path, which is why the whole `handle` runs inside the
      * caller's try.
      */
-    if (event === 'UserPromptSubmit' && typeof prompt === 'string') {
-      const key = ticketKeyFromPrompt(prompt);
-      if (key !== null) onTicketIntent({ entityId, key, source: 'prompt' });
+    if (event === 'UserPromptSubmit') {
+      if (typeof prompt === 'string') {
+        const key = ticketKeyFromPrompt(prompt);
+        if (key !== null) onTicketIntent({ entityId, key, source: 'prompt' });
+      }
+
+      /**
+       * The first prompt names the session.
+       *
+       * ## Marked on the event, not on the text
+       *
+       * Marked as seen whether or not a name came out of it, and whether or not
+       * the text was even readable. A greeting is still the first prompt, and so
+       * is a 256 KB paste whose body truncated past `prompt` — re-reading until
+       * some prompt happened to be nameable is "name from whatever prompt looks
+       * nameable", which is the defect wearing the fix's clothes. The row waits
+       * for Claude's title instead, exactly as it did before.
+       *
+       * That is why the mark is taken on `UserPromptSubmit` itself rather than
+       * inside the `typeof prompt === 'string'` branch above: a truncated first
+       * prompt left the mark unset, and the *second* prompt then named the
+       * session — the late-prompt defect, reintroduced by an edge case.
+       */
+      const conversation = conversationKey(entityId, sessionUuid);
+      if (!promptedSessions.has(conversation)) {
+        promptedSessions.add(conversation);
+        const name = typeof prompt === 'string' ? sessionNameFromPrompt(prompt) : undefined;
+        if (name !== undefined) onPromptName(entityId, name);
+      }
     }
 
     /**
@@ -588,6 +1160,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         status: NOTIFICATION_TYPE_STATUS[notificationType],
         notificationType,
         ...(typeof cwd === 'string' && cwd !== '' ? { cwd } : {}),
+      ...(typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {}),
       });
       return 204;
     }
@@ -596,6 +1169,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       entityId,
       event,
       status: HOOK_STATUS[event],
+      ...(typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {}),
       /**
        * Absent rather than empty when the payload did not carry one. The
        * session layer treats absence as "nothing to look at on this tick",
@@ -612,10 +1186,14 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   }
 
   return {
-    token,
+    tokenFor,
 
     get url() {
       return url;
+    },
+
+    get origin() {
+      return origin;
     },
 
     get metricsUrl() {
@@ -632,49 +1210,71 @@ export function createReceiver(options: ReceiverOptions): Receiver {
 
     start() {
       return new Promise<string | null>((resolve) => {
-        const created = createServer((req, res) => {
+        /*
+          Seven paths now, and still nothing resembling a general-purpose
+          server: the set is closed, every one of them is POST-only, and each
+          has its own body cap sized to the document it expects. A request that
+          is none of them is 404 without reading a byte.
+        */
+        const routes: readonly Route[] = [
+          { path: HOOK_PATH, cap: HOOK_MAX_BODY_BYTES, handle },
+          { path: METRICS_PATH, cap: METRICS_MAX_BODY_BYTES, handle: handleMetrics },
           /*
-            Three paths now, and still nothing resembling a general-purpose
-            server: the set is closed, all three are POST-only, and each has its
-            own body cap sized to the document it expects. A request that is
-            none of them is 404 without reading a byte.
+            `/done` and `/ready` expect no body at all, so their cap is zero:
+            the first byte of one marks the request truncated and every byte
+            after it is dropped on the floor. Neither handler reads it, so a
+            caller that sends something anyway is answered normally rather than
+            refused — the same "drain, do not refuse" discipline the hook path
+            takes, for the same reason. Nothing a session sends here should be
+            able to produce a red line in the user's terminal.
           */
-          const path = req.url ?? '';
-          const isMetrics = path === METRICS_PATH;
-          const isDone = path === DONE_PATH;
-          const isReady = path === READY_PATH;
-          if (
-            req.method !== 'POST' ||
-            (path !== HOOK_PATH && !isMetrics && !isDone && !isReady)
-          ) {
+          { path: DONE_PATH, cap: 0, handle: (headers) => handleDone(headers) },
+          { path: READY_PATH, cap: 0, handle: (headers) => handleReady(headers) },
+          { path: LEDGER_POST_PATH, cap: HOOK_MAX_BODY_BYTES, handle: handleLedgerPost },
+          { path: LEDGER_READ_PATH, cap: HOOK_MAX_BODY_BYTES, handle: handleLedgerRead },
+          /*
+            Cap zero, because the route reads no body at all (HIVE-127): the
+            tool takes no arguments and the caller is the header. Bytes past
+            the cap are drained rather than refused, exactly as `/done` and
+            `/ready` treat theirs.
+          */
+          { path: AGENTS_PATH, cap: 0, handle: (headers) => handleAgents(headers) },
+        ];
+
+        const created = createServer((req, res) => {
+          const route = routes.find((candidate) => candidate.path === (req.url ?? ''));
+          if (req.method !== 'POST' || route === undefined) {
             res.writeHead(404).end();
             return;
           }
-
-          /*
-            `/done` expects no body at all, so its cap is zero: the first byte
-            of one marks the request truncated and every byte after it is
-            dropped on the floor. `handleDone` reads neither, so a caller that
-            sends something anyway is answered normally rather than refused —
-            the same "drain, do not refuse" discipline the hook path takes, for
-            the same reason. Nothing a session sends here should be able to
-            produce a red line in the user's terminal.
-          */
-          const cap =
-            isDone || isReady
-              ? 0
-              : isMetrics
-                ? METRICS_MAX_BODY_BYTES
-                : HOOK_MAX_BODY_BYTES;
+          const cap = route.cap;
 
           let body = '';
           let bytes = 0;
           let truncated = false;
+          /**
+           * One decoder for the whole request, not `chunk.toString('utf8')`
+           * per chunk.
+           *
+           * A TCP chunk boundary falls wherever the kernel put it, which can
+           * be in the middle of a multi-byte character. Decoding each chunk on
+           * its own turns that one character into two replacement characters,
+           * one at the end of a chunk and one at the start of the next. That
+           * was survivable while the only field ever read here was an ASCII
+           * `hook_event_name` in the first few hundred bytes; a ledger body is
+           * up to 16 KB of agent-written markdown that is appended to a file
+           * nothing ever edits, so the corruption would be permanent.
+           * `StringDecoder` holds the partial sequence back until the bytes
+           * that complete it arrive.
+           */
+          const decoder = new StringDecoder('utf8');
 
           req.on('data', (chunk: Buffer) => {
             bytes += chunk.length;
             /**
-             * Past the cap the body is **drained, not refused**.
+             * Past the cap the body is **drained, not refused** — on every
+             * route but the ledger's write, which refuses instead; see
+             * `handleLedgerPost`.
              *
              * Refusing with 413 was wrong in the one case that matters most.
              * A `PermissionRequest` carries `tool_input`, which for a Write or
@@ -692,29 +1292,43 @@ export function createReceiver(options: ReceiverOptions): Receiver {
               truncated = true;
               return;
             }
-            body += chunk.toString('utf8');
+            body += decoder.write(chunk);
           });
 
           req.on('end', () => {
-            let status: number;
-            try {
-              status = isDone
-                ? handleDone(req.headers)
-                : isReady
-                  ? handleReady(req.headers)
-                  : isMetrics
-                    ? handleMetrics(req.headers, body, truncated)
-                    : handle(req.headers, body, truncated);
-            } catch {
-              /**
-               * A throw here must not take the app down. An uncaught exception
-               * in a request handler is an `uncaughtException` on the main
-               * process, which would turn a malformed hook into a crashed
-               * desktop app.
-               */
-              status = 500;
-            }
-            res.writeHead(status).end();
+            // Flushes a trailing incomplete sequence, if the body ended
+            // mid-character, as a single replacement character rather than
+            // dropping it.
+            body += decoder.end();
+            /*
+              A `void`ed async IIFE rather than an async listener (HIVE-127).
+              Node ignores a listener's returned promise, so a rejection inside
+              an `async () => {}` here would surface as an unhandled rejection
+              instead of a reply. Awaiting inside the try keeps an async
+              handler's failure landing in the same 500 the synchronous ones
+              already do.
+            */
+            void (async () => {
+              let reply: Reply;
+              try {
+                reply = await route.handle(req.headers, body, truncated);
+              } catch {
+                /**
+                 * A throw here must not take the app down. An uncaught
+                 * exception in a request handler is an `uncaughtException` on
+                 * the main process, which would turn a malformed hook into a
+                 * crashed desktop app.
+                 */
+                reply = 500;
+              }
+              if (typeof reply === 'number') {
+                res.writeHead(reply).end();
+                return;
+              }
+              res
+                .writeHead(reply.status, { 'content-type': 'application/json' })
+                .end(JSON.stringify(reply.json));
+            })();
           });
         });
 
