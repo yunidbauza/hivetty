@@ -42,10 +42,21 @@ const slackStatus = vi.fn<() => Promise<SlackStatus | null>>(() =>
 );
 
 vi.mock('@/lib/slack', () => ({
+  SLACK_BRIDGE_ERROR: 'The app could not reach its own main process.',
   readSlackStatus: () => slackStatus(),
   signIn: () => Promise.resolve(null),
   signOut: () => Promise.resolve(null),
   testSlack: () => Promise.resolve(null),
+  /* The three writes answer with a `SlackWrite`, not a nullable value. */
+  setSlackTokens: () =>
+    Promise.resolve({ ok: false, message: 'not used in this suite' }),
+  clearSlackTokens: () =>
+    Promise.resolve({ ok: false, message: 'not used in this suite' }),
+  setSlackConfig: () =>
+    Promise.resolve({ ok: false, message: 'not used in this suite' }),
+  testSlackSocket: () => Promise.resolve(null),
+  readSlackSocketState: () => Promise.resolve(null),
+  subscribeSlackSocketStatus: () => () => {},
 }));
 
 vi.mock('@/lib/project-config', async (importOriginal) => {

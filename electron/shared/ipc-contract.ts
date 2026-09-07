@@ -58,6 +58,8 @@ import type {
   SetProjectRuntimeRequest,
   SetReceiverRequest,
   SetRuntimeRequest,
+  SetSlackRequest,
+  SetSlackTokensRequest,
 } from './config-contract';
 import type {
   DirEntry,
@@ -122,7 +124,13 @@ import type {
   SkillWriteRequest,
   SkillsSnapshot,
 } from './skills-contract';
-import type { SlackStatus } from './slack-contract';
+import type {
+  SlackSocketState,
+  SlackSocketStatus,
+  SlackSocketTestResult,
+  SlackStatus,
+  SlackTokensState,
+} from './slack-contract';
 import type { PickedTheme, SaveThemeRequest } from './theme-contract';
 import type { UpdateStatus } from './update-contract';
 
@@ -225,6 +233,16 @@ export const CH = {
    */
   configSetJira: 'config:set-jira',
   /**
+   * The socket-mode switch and the commander allow-list (HIVE-124).
+   *
+   * A `config:` channel rather than a `slack:` one for {@link configSetJira}'s
+   * reason, stated there: this writes the config file and returns the fresh
+   * snapshot, like every other settings verb. The two Slack **tokens** are
+   * secrets and do not live in that file, so they have a namespace of their
+   * own — {@link CH.slackSetTokens}.
+   */
+  configSetSlack: 'config:set-slack',
+  /**
    * The container host alias (HIVE-131).
    *
    * A `config:` channel because it writes the config file and returns the fresh
@@ -286,6 +304,58 @@ export const CH = {
   slackSignIn: 'slack:sign-in',
   slackSignOut: 'slack:sign-out',
   slackTest: 'slack:test',
+  /**
+   * The two Hive-owned socket-mode tokens (HIVE-124).
+   *
+   * Jira's `jira:set-token` / `jira:clear-token` are the precedent, down to the
+   * count: the renderer may **write** a secret and clear one, and there is no
+   * verb that returns one. Both answer with presence — `hasAppToken`,
+   * `hasBotToken`, `encryptionAvailable` — which is everything the pane renders
+   * and nothing a page could exfiltrate. `SlackTokens.read()` is main-internal
+   * and no channel reaches it.
+   *
+   * A `slack:` namespace rather than `config:` for the reason
+   * {@link CH.configSetSlack} states: these never touch the config file.
+   */
+  slackSetTokens: 'slack:set-tokens',
+  slackClearTokens: 'slack:clear-tokens',
+  /**
+   * A **push**, not a verb (HIVE-124).
+   *
+   * Deliberately not folded into {@link CH.integrationsStatus}, which carries
+   * `gh` / `loginEnv` / `notificationsSupported` and has no Slack field. The
+   * ticket named that channel; it is not the one Slack uses.
+   *
+   * A push because the socket changes state on its own — Slack drops a
+   * connection, a token stops working, the last subscribing agent is paused —
+   * and none of those moments is a question the pane thought to ask. Carries a
+   * {@link SlackSocketStatus}, which never holds a token.
+   */
+  slackSocketStatus: 'slack:socket-status',
+  /**
+   * The mount-time read the push above cannot be (HIVE-124).
+   *
+   * {@link CH.slackSocketStatus} fires when the socket changes, `send` buffers
+   * nothing, and the bridge suppresses a repeat of the last status — so a
+   * status emitted at boot is gone before Settings is ever opened, and no
+   * amount of re-pushing on subscribe would bring it back. Token presence is
+   * worse: the two writes answer with it, but nothing answers on mount.
+   *
+   * So one no-payload verb for both, exactly as {@link CH.jiraStatus} carries
+   * `credential` and `encryptionAvailable` for its own pane. Answers with a
+   * {@link SlackSocketState}: presence and a status, never a token.
+   */
+  slackSocketState: 'slack:socket-state',
+  /**
+   * The socket-mode Test button (HIVE-124).
+   *
+   * Its own channel rather than {@link CH.slackTest}, which spends a model turn
+   * proving Claude Code's OAuth connection to Slack's MCP server. This one
+   * spends a single `auth.test` against the stored bot token and **opens no
+   * socket** — a different credential, a different question, a different
+   * failure to report.
+   */
+  slackSocketTest: 'slack:socket-test',
   /**
    * The pull requests the configured repositories hold.
    *
@@ -469,6 +539,11 @@ export const CH = {
    * very backpressure it is measuring.
    */
   ptyAck: 'pty:ack',
+  /**
+   * The input-box report (HIVE-135). Renderer → main, `send`: like an ack it
+   * is a report, not a question, and it must never sit in the typing path.
+   */
+  ptyPrompt: 'pty:prompt',
   ptyData: 'pty:data', // main → renderer, stream
   ptyExit: 'pty:exit', // main → renderer
   /**
@@ -937,6 +1012,24 @@ export interface AckRequest {
   seq: number;
 }
 
+/**
+ * What the renderer can see in a session's input box (HIVE-135).
+ *
+ * Sent by the one visible terminal surface, on change: `empty` when the
+ * screen read behind the bare-`←` claim says Claude's input holds nothing,
+ * `draft` when it holds something or cannot prove it holds nothing, and
+ * `unfocused` when the surface stops being the one on screen. Main uses it
+ * as a delivery precondition — a nudge is never written into a draft — so
+ * the conservative answer is `draft`, and a session that has never reported
+ * is simply not focused.
+ */
+export type PromptInput = 'empty' | 'draft' | 'unfocused';
+
+export interface PromptReport {
+  sessionId: string;
+  input: PromptInput;
+}
+
 export interface ExitEvent {
   sessionId: string;
   exitCode: number;
@@ -1283,6 +1376,17 @@ export interface HiveBridge {
      */
     setJira(request: SetJiraRequest): Promise<ConfigSnapshot>;
     /**
+     * Change the socket-mode switch and the commander allow-list (HIVE-124).
+     *
+     * Only the fields named are touched, so flipping the switch never restates
+     * the allow-list. The two Slack tokens are deliberately **not** here, for
+     * the reason {@link HiveBridge.config.setJira} states about its own token:
+     * they are secrets, and they go through
+     * {@link HiveBridge.slack.setTokens} into `safeStorage` instead of a file
+     * the product invites the user to hand-edit.
+     */
+    setSlack(request: SetSlackRequest): Promise<ConfigSnapshot>;
+    /**
      * Change the container host alias (HIVE-131).
      *
      * An absent field is untouched. There is no clearing arm — the substitution
@@ -1328,6 +1432,8 @@ export interface HiveBridge {
     kill(sessionId: string): Promise<void>;
     /** Report progress so main can apply backpressure. See {@link AckRequest}. */
     ack(request: AckRequest): void;
+    /** What the visible surface sees in the input box. See {@link PromptReport}. */
+    prompt(report: PromptReport): void;
     /** Returns its own unsubscribe. Callers MUST invoke it on unmount. */
     onData(callback: (event: DataEvent) => void): () => void;
     onExit(callback: (event: ExitEvent) => void): () => void;
@@ -1543,16 +1649,21 @@ export interface HiveBridge {
     ): Promise<JiraResult<JiraComment>>;
   };
   /**
-   * Slack's MCP server (HIVE-123).
+   * Slack — the MCP server (HIVE-123) and socket mode (HIVE-124).
    *
-   * Four verbs, and — like `jira` — **no verb that returns a credential**. The
-   * reason is stronger here: there is no credential in this app to return at
-   * all. Claude Code holds the OAuth token and refreshes it; this bridge only
-   * asks what state the connection is in, signs in, signs out, and spends one
-   * model turn confirming a workspace admin has approved the server. None of
-   * the four takes an argument, which is what makes a handler that spawns
-   * `claude` safe to expose: there is no argv for a compromised renderer to
-   * reach.
+   * Two custodies behind one namespace, and the docblocks below say which is
+   * which. The first four verbs are about the OAuth token **Claude Code**
+   * holds and refreshes in `~/.claude/.credentials.json`; this app never reads
+   * it, so there is no credential of its own to leak. The rest are about the
+   * two tokens this app *does* hold — an app-level `xapp-` and a bot `xoxb-`,
+   * in `safeStorage` beside Jira's.
+   *
+   * **No verb here returns a credential**, and that now has to be earned rather
+   * than assumed: `setTokens` and `clearTokens` write and clear, and both
+   * answer with a {@link SlackTokensState} that carries presence and nothing
+   * else. `SlackTokens.read()` is main-internal, and adding a verb that reached
+   * it would be a deliberate widening of what a web page can extract from this
+   * machine.
    */
   slack: {
     /** `claude mcp get slack`, parsed. No model turn, answers in well under a second. */
@@ -1563,6 +1674,40 @@ export interface HiveBridge {
     signOut(): Promise<SlackStatus>;
     /** The Test button — the only verb here that spends a model turn. */
     test(): Promise<SlackStatus>;
+    /**
+     * Store one or both socket-mode tokens (HIVE-124).
+     *
+     * Merged, not replaced: the pane commits one field at a time. Answers with
+     * presence only.
+     */
+    setTokens(request: SetSlackTokensRequest): Promise<SlackTokensState>;
+    /** Forget both. They are acquired together and are useless apart. */
+    clearTokens(): Promise<SlackTokensState>;
+    /**
+     * One `auth.test` against the stored bot token (HIVE-124).
+     *
+     * Not {@link HiveBridge.slack.test}, which spends a model turn on the MCP
+     * server's OAuth connection. This opens no socket and takes no argument.
+     */
+    socketTest(): Promise<SlackSocketTestResult>;
+    /**
+     * Token presence and the last socket status, read on mount (HIVE-124).
+     *
+     * The half {@link HiveBridge.slack.onSocketStatus} cannot supply, for the
+     * reason {@link CH.slackSocketState} states: the push is not buffered and
+     * a repeat of the last status is suppressed, so a pane that mounts after
+     * boot learns nothing by subscribing alone. Presence and a status; still
+     * no verb here returns a token.
+     */
+    socketState(): Promise<SlackSocketState>;
+    /**
+     * What the socket is doing, pushed (HIVE-124). Returns its own unsubscribe.
+     *
+     * A push rather than a verb because the connection changes state with
+     * nobody asking — Slack drops it, a token stops working, the last
+     * subscribing agent is paused. Never carries a token.
+     */
+    onSocketStatus(callback: (status: SlackSocketStatus) => void): () => void;
   };
   /** OS notifications raised by main (story 106). */
   notifications: {
@@ -2262,14 +2407,27 @@ export const BRIDGE_JIRA_KEYS = [
 ] as const;
 
 /**
- * The exact key set of `window.hive.slack` (HIVE-123).
+ * The exact key set of `window.hive.slack` (HIVE-123, HIVE-124).
  *
- * Four, and the count is the security story: no verb here returns a
- * credential, and the reason is stronger than Jira's — there is no credential
- * in this app to return at all. A fifth verb would be the one addition this
- * list exists to make impossible to add quietly.
+ * The count was the security story while there was no credential in this app to
+ * return at all. HIVE-124 gives the app two of its own, so the story is now the
+ * *shape* of the five it added: two writes, one no-argument test, one
+ * presence-and-status read, one subscription — and **still no verb that returns
+ * a token**. That is what this list exists to make impossible to change quietly.
  */
-export const BRIDGE_SLACK_KEYS = ['status', 'signIn', 'signOut', 'test'] as const;
+export const BRIDGE_SLACK_KEYS = [
+  'status',
+  'signIn',
+  'signOut',
+  'test',
+  // HIVE-124. Write and clear; the token *values* have no channel, on purpose.
+  'setTokens',
+  'clearTokens',
+  'socketTest',
+  // Presence and the last status — what a pane needs on mount, and no more.
+  'socketState',
+  'onSocketStatus',
+] as const;
 
 /** The exact key set of `window.hive.notifications`. */
 /**
@@ -2445,6 +2603,12 @@ export const BRIDGE_CONFIG_KEYS = [
    */
   'setJira',
   /**
+   * HIVE-124. The socket-mode switch and the commander allow-list — ordinary
+   * settings, written through the same guarded path. The two tokens are not
+   * here; they have their own namespace because they are not config.
+   */
+  'setSlack',
+  /**
    * HIVE-131. The container host alias — and it **does name a network
    * destination**, the first verb here that does.
    *
@@ -2470,4 +2634,7 @@ export const BRIDGE_PTY_KEYS = [
   'onExit',
   'onLost',
   'restart',
+  // HIVE-135. What the surface can see in the backend's input box, reported
+  // as a fire-and-forget send — the same shape as `ack`.
+  'prompt',
 ] as const;

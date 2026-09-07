@@ -2,13 +2,20 @@ import {
   JIRA_KEYS,
   NOTIFICATION_KEYS,
   RECEIVER_KEYS,
+  SLACK_KEYS,
   SUPPORTED_CONFIG_VERSIONS,
+  isAbsoluteContainerPath,
+  isContainerFreshness,
+  isContainerProbe,
+  isEnvArgTemplate,
   isHostAlias,
   unsafeEnvReason,
+  type ContainerConfig,
   type JiraConfig,
   type NotificationPrefs,
   type ProjectOrigin,
   type ReceiverConfig,
+  type SlackConfig,
 } from '@shared/config-contract';
 import { PROJECT_KEY_HINT, isProjectKey } from '@shared/config-contract';
 import { assertId } from '@shared/guards';
@@ -56,6 +63,8 @@ export interface RawProject {
   shell?: string;
   claudeCommand?: string;
   env?: Record<string, string>;
+  /** HIVE-133's per-project container block. Absent means "inherit". */
+  container?: ContainerConfig;
 }
 
 export interface ParsedConfig {
@@ -122,6 +131,17 @@ export interface ParsedConfig {
    * a block it never asked for.
    */
   receiver?: Partial<ReceiverConfig>;
+  /**
+   * HIVE-124's slack block, exactly as the file declared it.
+   *
+   * `undefined` when the file has none — which every config written before
+   * this story does. Partial when it names only one field; the caller merges
+   * `DEFAULT_SLACK` under it. Kept partial here rather than defaulted for the
+   * same reason `jira` and `receiver` are: the write path must be able to tell
+   * "the user chose this" from "the file said nothing", which is what keeps an
+   * untouched file from growing a block it never asked for.
+   */
+  slack?: Partial<SlackConfig>;
   errors: string[];
   /** The version the file declared, or `null` when it was unreadable. */
   version: number | null;
@@ -171,6 +191,10 @@ const TOP_LEVEL_KEYS = [
   // HIVE-131, for the same reason. The container host alias — a name, never an
   // address with a port; the port belongs to the receiver.
   'receiver',
+  // HIVE-124, for the same reason. The socket-mode switch and the commander
+  // allow-list; the two Slack tokens are secrets and are deliberately not in
+  // this file.
+  'slack',
   // HIVE-79. A boolean rather than a block, and the only key in this file that
   // changes how a session *authenticates* — see `AUTH_ENV_KEYS`.
   'subscriptionAuth',
@@ -181,6 +205,7 @@ const TOP_LEVEL_KEYS = [
 ];
 /**
  * `shell`, `claudeCommand` and `env` are story 104's per-project overrides.
+ * `container` is HIVE-133's per-project container block.
  *
  * They are listed here so a hand-written override is *read* rather than
  * reported as an unknown key. Unlisted keys are still preserved across a write
@@ -197,6 +222,7 @@ const PROJECT_KEYS = [
   'shell',
   'claudeCommand',
   'env',
+  'container',
 ];
 
 /** POSIX-portable environment variable name. */
@@ -282,6 +308,113 @@ function optionalEnv(
     env[key] = raw;
   }
   return env;
+}
+
+/**
+ * HIVE-133's per-project container block.
+ *
+ * **All-or-nothing, like `optionalEnv` above.** A block with one bad field is
+ * dropped entirely rather than half-applied: a container project missing its
+ * `hiveDir` would spawn a session whose `--settings` names a path the container
+ * cannot open, and failing at `claude` startup with an error about a file is
+ * further from the cause than not being containerised at all. The project stays
+ * usable as a host project, and the error names the field.
+ */
+/**
+ * The block's own keys, checked the way every other block in this file is
+ * (final-review fix) — `optionalJira` and `optionalReceiver` both run
+ * `checkKeys` before validating any individual field, and this was the one
+ * level of the file that did not: a hand-written `hostalias` (lowercase `a`)
+ * fell through every check below as simply absent, so the block parsed as
+ * valid with the typo silently ignored. `assertContainer` in `guards.ts`
+ * already rejects that same typo via `assertShape` — closing this makes the
+ * reader as strict as the guard on the one axis where it was looser, not just
+ * as strict as it can afford to be.
+ */
+const CONTAINER_KEYS = ['workspace', 'hiveDir', 'envArg', 'probe', 'freshness', 'hostAlias'];
+
+function optionalContainer(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): ContainerConfig | undefined {
+  const value = record.container;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.container: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.container`;
+  if (!checkKeys(value, CONTAINER_KEYS, at, errors)) return undefined;
+
+  /* Absolute, because a container path is joined onto, never resolved against a
+     cwd this process does not have inside the container. */
+  const absolute = (key: 'workspace' | 'hiveDir'): string | null => {
+    if (!isAbsoluteContainerPath(value[key])) {
+      errors.push(
+        `${label}.container.${key}: required, and must be an absolute path — container ignored`,
+      );
+      return null;
+    }
+    return value[key];
+  };
+
+  const workspace = absolute('workspace');
+  const hiveDir = absolute('hiveDir');
+  if (workspace === null || hiveDir === null) return undefined;
+
+  /*
+    Validated, never defaulted. Absent stays absent all the way to
+    `effectiveRuntime`, which is the layer that knows what to inherit from —
+    the same division `ParsedConfig.shell` and `subscriptionAuth` already use.
+  */
+  if (value.envArg !== undefined && !isEnvArgTemplate(value.envArg)) {
+    errors.push(
+      `${label}.container.envArg: must contain {name} and {value} — container ignored`,
+    );
+    return undefined;
+  }
+
+  let probe: string | undefined;
+  if (value.probe !== undefined) {
+    if (!isContainerProbe(value.probe)) {
+      errors.push(`${label}.container.probe: expected a non-empty string — container ignored`);
+      return undefined;
+    }
+    probe = value.probe;
+  }
+
+  if (value.freshness !== undefined && !isContainerFreshness(value.freshness)) {
+    errors.push(
+      `${label}.container.freshness: expected "exec-env" or "rewrite" — container ignored`,
+    );
+    return undefined;
+  }
+
+  /*
+    `isHostAlias` rather than a second spelling of "looks like a hostname". The
+    per-project override names a network destination exactly as the global one
+    does — it decides which host receives authenticated hook payloads — so it
+    gets the same rule, not a looser one.
+  */
+  if (value.hostAlias !== undefined && !isHostAlias(value.hostAlias)) {
+    errors.push(`${label}.container.hostAlias: not a valid hostname — container ignored`);
+    return undefined;
+  }
+
+  /*
+    Conditional spread, matching the entry build below: an `undefined`-valued
+    own key would be reported as unknown the next time this file is read.
+  */
+  return {
+    workspace,
+    hiveDir,
+    ...(value.envArg === undefined ? {} : { envArg: value.envArg }),
+    ...(probe === undefined ? {} : { probe }),
+    ...(value.freshness === undefined ? {} : { freshness: value.freshness }),
+    ...(value.hostAlias === undefined ? {} : { hostAlias: value.hostAlias }),
+  };
 }
 
 const ORIGINS: readonly string[] = ['local', 'cloned'];
@@ -574,6 +707,70 @@ function optionalReceiver(
   return receiver;
 }
 
+/**
+ * The `slack` block (HIVE-124).
+ *
+ * Structurally a sibling of {@link optionalJira}, with two differences the
+ * shape forces: `socketMode` is a boolean and `commanders` is an array of
+ * strings, so the all-strings loop `optionalJira` uses does not fit.
+ *
+ * A bad entry inside `commanders` costs that entry, not the list. Someone who
+ * typed one id wrong should not lose the other three, and losing the whole
+ * allow-list silently turns the command channel off — a failure that looks
+ * exactly like the feature being broken.
+ */
+function optionalSlack(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): Partial<SlackConfig> | undefined {
+  const value = record.slack;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.slack: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.slack`;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      errors.push(`${at}: forbidden key "${key}" — slack ignored`);
+      return undefined;
+    }
+  }
+
+  if (!checkKeys(value, SLACK_KEYS, at, errors)) return undefined;
+
+  const slack: Partial<SlackConfig> = {};
+
+  if (value.socketMode !== undefined) {
+    if (typeof value.socketMode !== 'boolean') {
+      errors.push(`${at}.socketMode: expected a boolean — using the default`);
+    } else {
+      slack.socketMode = value.socketMode;
+    }
+  }
+
+  if (value.commanders !== undefined) {
+    if (!Array.isArray(value.commanders)) {
+      errors.push(`${at}.commanders: expected an array — using the default`);
+    } else {
+      const ids: string[] = [];
+      for (const raw of value.commanders) {
+        if (typeof raw !== 'string' || raw.trim() === '') {
+          errors.push(`${at}.commanders: expected a non-empty string — entry ignored`);
+          continue;
+        }
+        ids.push(raw.trim());
+      }
+      slack.commanders = ids;
+    }
+  }
+
+  return slack;
+}
+
 export function parseConfig(text: string, label: string): ParsedConfig {
   const errors: string[] = [];
   // Every `return empty` below is a wholesale rejection, so `fatal` is set
@@ -625,6 +822,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
   const notifications = optionalNotifications(document, label, errors);
   const jira = optionalJira(document, label, errors);
   const receiver = optionalReceiver(document, label, errors);
+  const slack = optionalSlack(document, label, errors);
   const subscriptionAuth = optionalBoolean(
     document,
     'subscriptionAuth',
@@ -661,6 +859,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       notifications,
       jira,
       receiver,
+      slack,
       projects: [],
       errors,
       version,
@@ -679,6 +878,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       notifications,
       jira,
       receiver,
+      slack,
       projects: [],
       errors,
       version,
@@ -763,6 +963,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     const shellOverride = optionalString(entry, 'shell', at, errors);
     const commandOverride = optionalString(entry, 'claudeCommand', at, errors);
     const env = optionalEnv(entry, at, errors);
+    const container = optionalContainer(entry, at, errors);
 
     // Conditional spread, matching `parseSpawnRequest`: an `undefined`-valued
     // own key would be reported as unknown the next time this file is read.
@@ -776,6 +977,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       ...(shellOverride !== null ? { shell: shellOverride } : {}),
       ...(commandOverride !== null ? { claudeCommand: commandOverride } : {}),
       ...(env !== undefined ? { env } : {}),
+      ...(container !== undefined ? { container } : {}),
     });
   });
 
@@ -789,6 +991,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     notifications,
     jira,
     receiver,
+    slack,
     projects,
     errors,
     version,

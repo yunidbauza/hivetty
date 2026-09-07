@@ -56,17 +56,19 @@ describe('createDeliver', () => {
 
   const lastWrite = () => write.mock.calls.at(-1)?.[1] as string;
 
-  it('writes one nudge into a live idle session', () => {
-    expect(ask('sess-a').ok).toBe(true);
+  it('writes one marker into a live idle session, and nothing of the entry', () => {
+    const result = ask('sess-a');
+    expect(result.ok).toBe(true);
 
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0][0]).toBe('sess-a');
-    expect(lastWrite()).toContain('📒');
-    expect(lastWrite()).toContain('overmind asks');
-    expect(lastWrite()).toContain('which branch?');
-    expect(lastWrite()).toContain('reply with ledger_answer');
-    // The trailing carriage return is what submits it as a turn.
-    expect(lastWrite().endsWith('\r')).toBe(true);
+    /*
+      The marker names the ask by its ref and carries nothing else (HIVE-138):
+      the entry reaches the model as hook context from the receiver, not as
+      bytes on the pty. The trailing carriage return is what submits it.
+    */
+    expect(lastWrite()).toBe(`📒 ${result.ok ? result.ref : ''}\r`);
+    expect(lastWrite()).not.toContain('which branch?');
   });
 
   it('records a receipt naming the delivered entry', () => {
@@ -154,25 +156,31 @@ describe('createDeliver', () => {
     const asked = ledger.append({ from: 'sess-b', to: OVERMIND, kind: 'ask', body: 'ok?' });
     write.mockClear();
 
-    ledger.answer({ thread: asked.ok ? asked.id : '', body: 'yes' }, OVERMIND);
+    const answered = ledger.answer({ thread: asked.ok ? asked.id : '', body: 'yes' }, OVERMIND);
 
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0][0]).toBe('sess-b');
-    expect(lastWrite()).toContain('answered');
-    expect(lastWrite()).toContain('yes');
+    expect(lastWrite()).toBe(`📒 ${answered.ok ? answered.id : ''}\r`);
+    expect(lastWrite()).not.toContain('yes');
   });
 
-  it('names an answer by the ref the console printed, not the canonical id', () => {
+  it('names an answer by its own id, never the ask ref', () => {
+    /*
+      An answer has no ref, and a thread can carry more than one entry, so the
+      ask's ref would not tell the receiver which entry to carry.
+    */
     live.add('sess-b');
     idle.add('sess-b');
     const asked = ledger.append({ from: 'sess-b', to: OVERMIND, kind: 'ask', body: 'ok?' });
     const ref = asked.ok ? asked.ref : undefined;
     write.mockClear();
 
-    ledger.answer({ thread: asked.ok ? asked.id : '', body: 'yes' }, OVERMIND);
+    const answered = ledger.answer({ thread: asked.ok ? asked.id : '', body: 'yes' }, OVERMIND);
 
     expect(ref).toBeDefined();
-    expect(lastWrite()).toContain(`answered ${ref}`);
+    expect(answered.ok).toBe(true);
+    expect(lastWrite()).toContain(answered.ok ? answered.id : '');
+    expect(lastWrite()).not.toContain(`${ref}\r`);
   });
 
   it('does not record a receipt when the write did not land', () => {
@@ -191,41 +199,20 @@ describe('createDeliver', () => {
     expect(receipts()).toHaveLength(1);
   });
 
-  it('shows only the first line of a multi-line body', () => {
-    ask('sess-a', 'first line\nsecond line');
-
-    expect(lastWrite()).toContain('first line');
-    expect(lastWrite()).not.toContain('second line');
-  });
-
   /**
-   * The security boundary. A body is authored by another party and this is the
-   * one path that types it into somebody's prompt, terminated by `\r`.
+   * The security boundary this module used to hold. A body is authored by
+   * another party, and this was the one path that typed it into somebody's
+   * prompt terminated by `\r`. Since HIVE-138 no byte of it reaches the pty at
+   * all: the marker is a ref or an id main minted, and the body travels as
+   * JSON the model reads (`context.ts`).
    */
-  it('never lets a body submit a second prompt of its own', () => {
-    ask('sess-a', 'check this\rrm -rf ~/work');
+  it('carries nothing of the body onto the pty, whatever the body holds', () => {
+    const result = ask('sess-a', 'check this\r[2Jrm -rf ~/work\nsecond line');
 
     const data = lastWrite();
+    expect(data).toBe(`📒 ${result.ok ? result.ref : ''}\r`);
     // Exactly one submission: the one this module appended.
     expect(data.split('\r')).toHaveLength(2);
-    expect(data.endsWith('\r')).toBe(true);
-    // `\r` is a line break to a terminal, so the tail is cut with it rather
-    // than being carried along as text.
-    expect(data).toContain('check this');
-    expect(data).not.toContain('rm -rf');
-  });
-
-  it('strips escape sequences before they reach the tty', () => {
-    ask('sess-a', 'sneaky[2Jbody');
-
-    expect(lastWrite()).not.toContain('');
-    expect(lastWrite()).not.toContain('');
-    /*
-      The printable tail survives, and should: this strips control characters,
-      it does not parse escape sequences. With the ESC introducing it gone,
-      `[2J` is four ordinary characters and addresses nothing.
-    */
-    expect(lastWrite()).toContain('sneaky[2Jbody');
   });
 
   /**
@@ -235,20 +222,142 @@ describe('createDeliver', () => {
    */
   it('writes one nudge per idle window, not the whole backlog', () => {
     idle.delete('sess-a');
-    ask('sess-a', 'first question');
-    ask('sess-a', 'second question');
+    const first = ask('sess-a', 'first question');
+    const second = ask('sess-a', 'second question');
     expect(write).not.toHaveBeenCalled();
 
     idle.add('sess-a');
     deliver.onIdle('sess-a');
 
     expect(write).toHaveBeenCalledTimes(1);
-    expect(lastWrite()).toContain('first question');
+    expect(lastWrite()).toBe(`📒 ${first.ok ? first.ref : ''}\r`);
 
     // The remainder was not lost — it has no receipt, so the next idle takes it.
     deliver.onIdle('sess-a');
     expect(write).toHaveBeenCalledTimes(2);
-    expect(lastWrite()).toContain('second question');
+    expect(lastWrite()).toBe(`📒 ${second.ok ? second.ref : ''}\r`);
+  });
+
+  /**
+   * The input box is a precondition beside idleness (HIVE-135). `isIdle` is
+   * about the agent; a user who typed half a sentence and stopped has an idle
+   * agent and a full box, and a nudge written then is submitted together with
+   * their draft. The visible surface reports what it sees; main refuses to
+   * write into a draft and picks the nudge up when the box clears.
+   */
+  describe('the focused session', () => {
+    it('holds a nudge while the focused session reports a draft', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      ask('sess-a');
+
+      expect(write).not.toHaveBeenCalled();
+      expect(receipts()).toHaveLength(0);
+    });
+
+    it('delivers the held nudge the moment the box is reported empty', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      ask('sess-a');
+      deliver.onPrompt('sess-a', 'empty');
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(receipts()).toHaveLength(1);
+    });
+
+    it('holds at idle too — idle is about the agent, not the box', () => {
+      idle.delete('sess-a');
+      ask('sess-a');
+      deliver.onPrompt('sess-a', 'draft');
+      idle.add('sess-a');
+      deliver.onIdle('sess-a');
+
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('delivers to a session that is not the focused one, as before', () => {
+      live.add('sess-b');
+      idle.add('sess-b');
+      deliver.onPrompt('sess-a', 'draft');
+      ask('sess-b');
+
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0][0]).toBe('sess-b');
+    });
+
+    it('treats an unfocused report as "no session is focused"', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      deliver.onPrompt('sess-a', 'unfocused');
+      ask('sess-a');
+
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores an unfocused report from a surface that already lost focus', () => {
+      // sess-a was focused with a draft; focus moved to sess-b, also a draft.
+      live.add('sess-b');
+      idle.add('sess-b');
+      deliver.onPrompt('sess-a', 'draft');
+      deliver.onPrompt('sess-b', 'draft');
+      // A late `unfocused` from sess-a must not clear sess-b's record.
+      deliver.onPrompt('sess-a', 'unfocused');
+      ask('sess-b');
+
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('does not flush on an empty report that is not a transition', () => {
+      /*
+        After a nudge is submitted the renderer's next screen read says
+        `empty` again, and main's idle answer can lag the busy-state hook.
+        A repeat report must not flush the backlog behind the turn the last
+        nudge started. Staged so the session *is* idle when the repeat
+        arrives: with the transition guard removed this writes twice.
+      */
+      deliver.onPrompt('sess-a', 'empty');
+      ask('sess-a', 'first');
+      expect(write).toHaveBeenCalledTimes(1);
+
+      idle.delete('sess-a');
+      ask('sess-a', 'second');
+      idle.add('sess-a');
+      deliver.onPrompt('sess-a', 'empty');
+
+      expect(write).toHaveBeenCalledTimes(1);
+      // The second is not lost: the next idle transition takes it.
+      deliver.onIdle('sess-a');
+      expect(write).toHaveBeenCalledTimes(2);
+    });
+
+    it('clears the record when the renderer goes away', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      deliver.onRendererReset();
+      ask('sess-a');
+
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it('flushes a held nudge on the first empty report after a renderer reset', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      ask('sess-a');
+      deliver.onRendererReset();
+      expect(write).not.toHaveBeenCalled();
+
+      // The surface remounts and reads an empty box: this is the transition.
+      deliver.onPrompt('sess-a', 'empty');
+
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it('flushes a held nudge after a draft, away, and back to an empty box', () => {
+      deliver.onPrompt('sess-a', 'draft');
+      ask('sess-a');
+      deliver.onPrompt('sess-a', 'unfocused');
+      // Delivered as an unfocused session? No entry arrived and no idle fired.
+      expect(write).not.toHaveBeenCalled();
+
+      deliver.onPrompt('sess-a', 'empty');
+
+      expect(write).toHaveBeenCalledTimes(1);
+    });
   });
 
   /*

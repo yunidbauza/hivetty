@@ -41,6 +41,8 @@ import type {
   SetProjectRuntimeRequest,
   SetReceiverRequest,
   SetRuntimeRequest,
+  SetSlackRequest,
+  SetSlackTokensRequest,
 } from '@shared/config-contract';
 import type {
   DirEntry,
@@ -73,6 +75,7 @@ import {
   type NotificationDeliveryStatus,
   type NotificationDismissedEvent,
   type NotificationReadEvent,
+  type PromptReport,
   type ResizeRequest,
   type SessionLostEvent,
   type SessionNameReport,
@@ -123,7 +126,13 @@ import type {
   SkillWriteRequest,
   SkillsSnapshot,
 } from '@shared/skills-contract';
-import type { SlackStatus } from '@shared/slack-contract';
+import type {
+  SlackSocketState,
+  SlackSocketStatus,
+  SlackSocketTestResult,
+  SlackStatus,
+  SlackTokensState,
+} from '@shared/slack-contract';
 import type { PickedTheme, SaveThemeRequest } from '@shared/theme-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -232,6 +241,11 @@ const bridge: HiveBridge = {
     // and is deliberately on its own namespace below.
     setJira: (request: SetJiraRequest): Promise<ConfigSnapshot> =>
       ipcRenderer.invoke(CH.configSetJira, request),
+    // HIVE-124. The socket-mode switch and the commander allow-list. The two
+    // tokens are secrets and are on the `slack` namespace below, for the same
+    // reason Jira's token is on its own.
+    setSlack: (request: SetSlackRequest): Promise<ConfigSnapshot> =>
+      ipcRenderer.invoke(CH.configSetSlack, request),
     // HIVE-131. The name a container resolves to reach this host.
     setReceiver: (request: SetReceiverRequest): Promise<ConfigSnapshot> =>
       ipcRenderer.invoke(CH.configSetReceiver, request),
@@ -266,6 +280,8 @@ const bridge: HiveBridge = {
     // `send`: an ack is a report, not a question. Awaiting one would put the
     // main process in the path of the backpressure it is measuring.
     ack: (request: AckRequest): void => ipcRenderer.send(CH.ptyAck, request),
+    // `send`, for the same reason as `ack`: a report, never a round trip.
+    prompt: (report: PromptReport): void => ipcRenderer.send(CH.ptyPrompt, report),
     onData: (callback: (event: DataEvent) => void) =>
       subscribe<DataEvent>(CH.ptyData, callback),
     onExit: (callback: (event: ExitEvent) => void) =>
@@ -461,6 +477,22 @@ const bridge: HiveBridge = {
     signIn: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackSignIn),
     signOut: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackSignOut),
     test: (): Promise<SlackStatus> => ipcRenderer.invoke(CH.slackTest),
+    /*
+      HIVE-124. Socket mode's own five: two writes of a secret, one no-argument
+      test, one mount-time read of presence and status, and a subscription.
+      There is still no verb that returns a token — every one of them answers
+      with presence alone, and `SlackTokens.read()` has no channel at all.
+    */
+    setTokens: (request: SetSlackTokensRequest): Promise<SlackTokensState> =>
+      ipcRenderer.invoke(CH.slackSetTokens, request),
+    clearTokens: (): Promise<SlackTokensState> =>
+      ipcRenderer.invoke(CH.slackClearTokens),
+    socketTest: (): Promise<SlackSocketTestResult> =>
+      ipcRenderer.invoke(CH.slackSocketTest),
+    socketState: (): Promise<SlackSocketState> =>
+      ipcRenderer.invoke(CH.slackSocketState),
+    onSocketStatus: (callback: (status: SlackSocketStatus) => void) =>
+      subscribe<SlackSocketStatus>(CH.slackSocketStatus, callback),
   },
   notifications: {
     onActivate: (callback: (event: NotificationActivateEvent) => void) =>

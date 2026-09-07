@@ -1,7 +1,23 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readSlackStatus, signIn, signOut, testSlack } from '@lib/slack';
-import type { SlackStatus } from '@shared/slack-contract';
+import {
+  clearSlackTokens,
+  readSlackSocketState,
+  readSlackStatus,
+  setSlackConfig,
+  setSlackTokens,
+  signIn,
+  signOut,
+  SLACK_BRIDGE_ERROR,
+  subscribeSlackSocketStatus,
+  testSlack,
+  testSlackSocket,
+} from '@lib/slack';
+import type {
+  SlackSocketStatus,
+  SlackStatus,
+  SlackTokensState,
+} from '@shared/slack-contract';
 
 /**
  * The renderer's Slack bridge (HIVE-123).
@@ -27,9 +43,11 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+type ConfigBridge = NonNullable<Window['hive']>['config'];
+
 /** Install a partial bridge; the cast is confined to this helper. */
-function bridge(slack: Partial<SlackBridge>): void {
-  window.hive = { slack } as unknown as NonNullable<Window['hive']>;
+function bridge(slack: Partial<SlackBridge>, config: Partial<ConfigBridge> = {}): void {
+  window.hive = { slack, config } as unknown as NonNullable<Window['hive']>;
 }
 
 describe('with no bridge', () => {
@@ -121,5 +139,198 @@ describe('with a bridge', () => {
       '[hive] slack.signIn failed:',
       '[hive] slack.signOut failed:',
     ]);
+  });
+});
+
+/**
+ * Socket mode's own wrappers (HIVE-124).
+ *
+ * The same two rules as the four above — no bridge is `null` and silent, a
+ * rejection is `null` and logged once — applied to verbs that no longer all
+ * answer with a `SlackStatus`.
+ *
+ * The three **writes** are the exception (fix-round-3): they answer with a
+ * `SlackWrite`, keeping main's refusal rather than collapsing it. A read the
+ * pane could not fetch is a status it does not know; a write main *refused* is
+ * something the user typed, and `assertCommanderId` and a missing keyring are
+ * both reachable by ordinary typing.
+ *
+ * The subscription is the one shape that is not a promise, and it has a rule of
+ * its own: with no bridge it must still hand back a disposer, or a component's
+ * cleanup path differs between the app and the browser demo.
+ */
+describe('socket mode (HIVE-124)', () => {
+  const PRESENT: SlackTokensState = {
+    hasAppToken: true,
+    hasBotToken: true,
+    encryptionAvailable: true,
+  };
+
+  describe('with no bridge', () => {
+    it('answers null rather than throwing, and logs nothing', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(testSlackSocket()).resolves.toBeNull();
+      await expect(readSlackSocketState()).resolves.toBeNull();
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    /** The writes say the same thing, in the shape a pane can render. */
+    it('answers the writes with the bridge sentence rather than null', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const unreachable = { ok: false, message: SLACK_BRIDGE_ERROR };
+
+      await expect(setSlackTokens({ appToken: 'xapp-1' })).resolves.toEqual(unreachable);
+      await expect(clearSlackTokens()).resolves.toEqual(unreachable);
+      await expect(setSlackConfig({ socketMode: true })).resolves.toEqual(unreachable);
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('still returns a disposer from the subscription', () => {
+      const stop = subscribeSlackSocketStatus(() => {});
+
+      expect(() => {
+        stop();
+      }).not.toThrow();
+    });
+  });
+
+  describe('with a bridge', () => {
+    it('forwards the tokens and answers with presence', async () => {
+      const setTokens = vi.fn(() => Promise.resolve(PRESENT));
+      bridge({ setTokens });
+
+      await expect(setSlackTokens({ appToken: 'xapp-1' })).resolves.toEqual({
+        ok: true,
+        value: PRESENT,
+      });
+      expect(setTokens).toHaveBeenCalledWith({ appToken: 'xapp-1' });
+    });
+
+    it('clears through its own verb, which takes nothing', async () => {
+      const clearTokens = vi.fn(() =>
+        Promise.resolve({ ...PRESENT, hasAppToken: false, hasBotToken: false }),
+      );
+      bridge({ clearTokens });
+
+      await clearSlackTokens();
+
+      expect(clearTokens).toHaveBeenCalledWith();
+    });
+
+    /** The switch is a config write, so it goes to `config`, not to `slack`. */
+    it('writes the switch through the config namespace', async () => {
+      const setSlack = vi.fn(() => Promise.resolve({} as never));
+      bridge({}, { setSlack });
+
+      await setSlackConfig({ socketMode: true, commanders: ['U1'] });
+
+      expect(setSlack).toHaveBeenCalledWith({
+        socketMode: true,
+        commanders: ['U1'],
+      });
+    });
+
+    it('reaches socketTest, and not the MCP server’s test', async () => {
+      const socketTest = vi.fn(() =>
+        Promise.resolve({ kind: 'ok' as const, workspace: 'acme', bot: 'hive' }),
+      );
+      const test = vi.fn(() => Promise.resolve({ kind: 'connected' as const }));
+      bridge({ socketTest, test });
+
+      await expect(testSlackSocket()).resolves.toEqual({
+        kind: 'ok',
+        workspace: 'acme',
+        bot: 'hive',
+      });
+      expect(test).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The whole point of {@link SlackWrite}: `assertCommanderId` refuses an id
+     * with whitespace in it and ordinary typing reaches that guard, so the
+     * sentence the user needs is the one main wrote. `ipcRenderer.invoke` wraps
+     * it twice on the way back — the channel, then the error class — and both
+     * wrappers are peeled, or the guard's words arrive buried in what reads as
+     * a plumbing fault.
+     */
+    it('keeps main’s refusal, unwrapped from the invoke and class prefixes', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const setSlack = vi.fn(() =>
+        Promise.reject(
+          new Error(
+            `Error invoking remote method 'config:set-slack': ` +
+              `IpcValidationError: setSlack.commanders[1]: must not contain whitespace`,
+          ),
+        ),
+      );
+      bridge({}, { setSlack: setSlack as never });
+
+      await expect(setSlackConfig({ commanders: ['a b'] })).resolves.toEqual({
+        ok: false,
+        message: 'setSlack.commanders[1]: must not contain whitespace',
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the bridge sentence when a rejection carries no words', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      const clearTokens = vi.fn(() => Promise.reject(new Error('')));
+      bridge({ clearTokens: clearTokens as never });
+
+      await expect(clearSlackTokens()).resolves.toEqual({
+        ok: false,
+        message: SLACK_BRIDGE_ERROR,
+      });
+    });
+
+    it('passes the push through and hands back the bridge’s own disposer', () => {
+      const stop = vi.fn();
+      let emit: ((status: SlackSocketStatus) => void) | undefined;
+      bridge({
+        onSocketStatus: (callback: (status: SlackSocketStatus) => void) => {
+          emit = callback;
+
+          return stop;
+        },
+      });
+
+      const seen: SlackSocketStatus[] = [];
+      const dispose = subscribeSlackSocketStatus((status) => seen.push(status));
+
+      emit?.({ kind: 'connecting' });
+      dispose();
+
+      expect(seen).toEqual([{ kind: 'connecting' }]);
+      expect(stop).toHaveBeenCalledOnce();
+    });
+
+    /**
+     * The mount-time read (fix-round-2, HIVE-124). The push it accompanies is
+     * not buffered and main suppresses a repeat of the last status, so this is
+     * the only way a pane that mounts after boot learns either fact.
+     */
+    it('reads presence and the last socket status in one call', async () => {
+      const socketState = vi.fn(() =>
+        Promise.resolve({ tokens: PRESENT, socket: { kind: 'off' as const } }),
+      );
+      bridge({ socketState });
+
+      await expect(readSlackSocketState()).resolves.toEqual({
+        tokens: PRESENT,
+        socket: { kind: 'off' },
+      });
+      expect(socketState).toHaveBeenCalledWith();
+    });
+
+    it('answers null and names the verb when a channel rejects', async () => {
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      bridge({ socketTest: () => Promise.reject(new Error('no handler')) });
+
+      await expect(testSlackSocket()).resolves.toBeNull();
+      expect(String(spy.mock.calls[0]?.[0])).toContain('slack.socketTest');
+    });
   });
 });

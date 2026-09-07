@@ -28,8 +28,26 @@ import { containerMcpConfig } from '../mcp/container-config';
  * is a directory swap rather than a per-file mapping.
  */
 
+/** The path segment every constant below is built from, host or container side. */
+const CONTAINER_SUBDIR = 'container';
+
 /** `<userData>/hive/container` — the shared, secret-free `exec-env` set. */
-export const CONTAINER_DIR = join('hive', 'container');
+export const CONTAINER_DIR = join('hive', CONTAINER_SUBDIR);
+
+/**
+ * `container/sessions`, relative to wherever `hive/` itself is mounted.
+ *
+ * The host reaches the same directory as `<userData>/hive/container/sessions`
+ * ({@link CONTAINER_SESSIONS_DIR}, which bakes that `hive/` prefix in); a
+ * container reaches it as `<config.hiveDir>/container/sessions`, where
+ * `config.hiveDir` **is** the container-side spelling of `<userData>/hive` and
+ * so must not have that prefix added a second time. Exported so
+ * `hooks/index.ts`'s `containerRoot` — the one path in a session's generated
+ * set that names where the container sees it, rather than a URL — builds it
+ * from the same three literals as the host-side constant, not a second
+ * hand-rolled copy that a rename here would leave silently stale.
+ */
+export const CONTAINER_SESSIONS_SUBDIR = join(CONTAINER_SUBDIR, 'sessions');
 
 /**
  * `<userData>/hive/container/sessions` — one directory per session, `rewrite`
@@ -45,9 +63,62 @@ export const CONTAINER_DIR = join('hive', 'container');
  */
 export const CONTAINER_SESSIONS_DIR = join(CONTAINER_DIR, 'sessions');
 
-const MCP_FILE = 'hive.mcp.json';
-const SETTINGS_FILE = 'claude-hooks.settings.json';
-const AGENT_FILE = 'claude-agent.settings.json';
+/** `container/aliases`, relative — the container-side sibling of {@link CONTAINER_SESSIONS_SUBDIR}. */
+export const CONTAINER_ALIASES_SUBDIR = join(CONTAINER_SUBDIR, 'aliases');
+
+/**
+ * `<userData>/hive/container/aliases/<alias>` — one `exec-env` set per distinct
+ * host alias (HIVE-133).
+ *
+ * The shared set at {@link CONTAINER_DIR} bakes a resolved origin, and that
+ * origin is built from *an* alias. One machine can run two runtimes — the
+ * reason `container.hostAlias` is a per-project field at all — so one baked
+ * origin cannot serve every project.
+ *
+ * Cheap and safe to duplicate: an `exec-env` set is secret-free by
+ * construction, every per-session value in it being a `${VAR}`, so a second
+ * copy carries no token and stays world-readable.
+ *
+ * Not swept at launch, unlike the session directories, and deliberately: these
+ * hold nothing secret, they are bounded by the number of distinct aliases a
+ * user has ever configured, and an orphan is four small files rather than a
+ * live credential.
+ */
+export const CONTAINER_ALIASES_DIR = join(CONTAINER_DIR, 'aliases');
+
+/** The shared `exec-env` set, addressed by one alias rather than the default. */
+export const writeAliasContainerFiles = (
+  userDataPath: string,
+  alias: string,
+  origins: ContainerOrigins,
+  options?: ContainerSetOptions,
+): Promise<void> =>
+  writeSet(
+    join(userDataPath, CONTAINER_ALIASES_DIR, alias),
+    origins,
+    'exec-env',
+    undefined,
+    options,
+  );
+
+/**
+ * Exported, unlike {@link SCRIPT_FILE} (HIVE-133,
+ * post-review fix): `sessions/index.ts` has to name these same two files when
+ * it selects `--settings` and `--mcp-config` for a container spawn, and it
+ * used to do that with its own hardcoded copies of these strings. Nothing
+ * tied the reader's path to the writer's, so a rename here would have drifted
+ * silently past every test. The agent-settings and status-line filenames have
+ * no such second reader — `writeContainerSession`'s caller never names them —
+ * so they stay private.
+ */
+export const CONTAINER_MCP_FILE = 'hive.mcp.json';
+export const CONTAINER_SETTINGS_FILE = 'claude-hooks.settings.json';
+/**
+ * The agent-space settings file in every set — the one carrying
+ * `permissions.ask: ["*"]`. Exported since HIVE-137, because a containerised
+ * agent's wake has to name it on its own command line.
+ */
+export const CONTAINER_AGENT_FILE = 'claude-agent.settings.json';
 const SCRIPT_FILE = 'statusline.sh';
 
 /** What only the caller placing these files can know (HIVE-133). */
@@ -125,7 +196,15 @@ const writeSet = async (
   await mkdir(root, { recursive: true });
 
   const mode = modeFor(identity);
-  const settings = hookSettings(origins.url, origins.readyUrl, identity);
+  /*
+    `command`, not `http`, for both files below (HIVE-137): the binary refuses
+    an http hook to any non-loopback private address, and `host.docker.internal`
+    is one — measured from inside a container, recorded on `statusCommand`. A
+    command hook is `curl` with the same headers and the payload from stdin,
+    and `curl` is what the ready and `/done` commands in this same set already
+    rely on being there.
+  */
+  const settings = hookSettings(origins.url, origins.readyUrl, identity, 'command');
 
   if (origins.metricsUrl !== undefined) {
     const scriptPath = join(root, SCRIPT_FILE);
@@ -157,21 +236,21 @@ const writeSet = async (
   }
 
   await writeFile(
-    join(root, SETTINGS_FILE),
+    join(root, CONTAINER_SETTINGS_FILE),
     `${JSON.stringify(settings, null, 2)}\n`,
     { encoding: 'utf8', mode },
   );
   await writeFile(
-    join(root, AGENT_FILE),
+    join(root, CONTAINER_AGENT_FILE),
     `${JSON.stringify(
-      agentSettings(origins.url, origins.readyUrl, identity),
+      agentSettings(origins.url, origins.readyUrl, identity, 'command'),
       null,
       2,
     )}\n`,
     { encoding: 'utf8', mode },
   );
   await writeFile(
-    join(root, MCP_FILE),
+    join(root, CONTAINER_MCP_FILE),
     containerMcpConfig(
       freshness,
       identity === undefined
@@ -202,7 +281,7 @@ const writeSet = async (
     token.
   */
   await Promise.all(
-    [SETTINGS_FILE, AGENT_FILE, MCP_FILE].map((file) =>
+    [CONTAINER_SETTINGS_FILE, CONTAINER_AGENT_FILE, CONTAINER_MCP_FILE].map((file) =>
       chmod(join(root, file), mode),
     ),
   );

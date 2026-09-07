@@ -1,4 +1,10 @@
-import { OVERMIND, type LedgerEntry, type LedgerKind } from '../../shared/ledger-contract';
+import type { PromptInput } from '../../shared/ipc-contract';
+import {
+  ledgerMarker,
+  OVERMIND,
+  type LedgerEntry,
+  type LedgerKind,
+} from '../../shared/ledger-contract';
 
 import type { Ledger } from './index';
 
@@ -7,45 +13,27 @@ import type { Ledger } from './index';
  *
  * The ledger itself has no opinion about who should be told what — it records.
  * This module is the first rule on top of it: an `ask` or an `answer` addressed
- * to a live session is written into that session's terminal as one line, at a
- * moment when the terminal is actually at an empty prompt.
+ * to a live session is announced in that session's terminal as one marker
+ * line, at a moment when the terminal is actually at an empty prompt.
+ *
+ * The line is a marker, not the entry (HIVE-138). `ledgerMarker` names the
+ * entry and carries nothing else; the receiver recognises the marker on the
+ * `UserPromptSubmit` it produces and answers with the entry whole as hook
+ * context (`electron/main/hooks/receiver.ts`, `context.ts`), untruncated and
+ * labelled as context rather than passing as the user's own words. What this
+ * module decides is only *when* the marker is written and *that* it landed.
+ *
+ * No party-authored byte reaches the pty from here any more. Before HIVE-138
+ * this was the one path that typed another party's body into a prompt
+ * terminated by `\r`, and stripping control characters from it was this
+ * module's security boundary. The marker is built from a ref or an id main
+ * minted, and the body travels as JSON the model reads, not bytes a terminal
+ * interprets, so the boundary moved out of the pty path with the body.
  *
  * Collaborators arrive as narrow functions rather than whole modules, the way
  * `createLedger` takes `knowsParty`: the tests fake them as three closures and
  * load no Electron, no pty and no session layer.
  */
-
-/** How much of a body a nudge carries. One line, and not a long one. */
-const NUDGE_BODY_MAX = 120;
-
-/**
- * Strip every control character from a body before it reaches a pty.
- *
- * **This is the security boundary of this module, not a formatting nicety.** A
- * body arrives from any party over `POST /ledger` or an MCP tool, validated
- * only as a string under a size cap — and this is the one path that writes such
- * a string into *another* session's prompt, terminated by `\r`. Left raw, a
- * body containing its own `\r` submits a second prompt with no `📒` on it,
- * indistinguishable from something the user typed; an `ESC` reaches the TUI's
- * stdin and can address the cursor or switch screens.
- *
- * The rule is the one `assertText` enforces at the IPC boundary
- * (`electron/shared/guards.ts`) and `stripControls` at the renderer's
- * (`src/lib/terminal/text.ts`): C0, DEL and C1 have no business in text that is
- * about to be typed. Restated here rather than imported because neither module
- * exports it, and `electron/main/**` may not import `src/**` regardless.
- *
- * Line breaks go with them — a nudge is one line by construction, so there is
- * nothing to preserve.
- */
-function stripControls(text: string): string {
-  return [...text]
-    .filter((char) => {
-      const code = char.codePointAt(0) ?? 0;
-      return !(code < 0x20 || (code >= 0x7f && code <= 0x9f));
-    })
-    .join('');
-}
 
 /**
  * The only kinds that reach a terminal.
@@ -79,9 +67,42 @@ export interface Deliver {
   onIdle(entityId: string): void;
   /** A session's agent came up, including after a resume. */
   onReady(entityId: string): void;
+  /**
+   * The visible terminal surface reported what its input box holds
+   * (HIVE-135). `empty` and `draft` make that session the focused one;
+   * `unfocused` releases it, if it still holds the record.
+   */
+  onPrompt(entityId: string, input: PromptInput): void;
+  /** The renderer reloaded or died: no surface is visible until one reports again. */
+  onRendererReset(): void;
 }
 
 export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions): Deliver {
+  /**
+   * The one session a user can type into, and what its box holds (HIVE-135).
+   *
+   * One record, not a map, because the stage shows one terminal at a time and
+   * a user can only type into the terminal they can see. Everything else
+   * delivers on idleness alone, as it did before this existed — the check is
+   * expensive on the renderer side and the race it guards is only possible on
+   * the visible surface.
+   *
+   * `null` until a surface reports. That is the conservative default in
+   * disguise: no surface has reported means no surface is visible, and a
+   * surface reports in the same effect that reveals it.
+   */
+  let focus: { entityId: string; input: 'empty' | 'draft' } | null = null;
+
+  /**
+   * May a line be written into this session's box right now?
+   *
+   * Refusing is always safe — a held nudge writes no receipt and the next
+   * transition retries it. Writing into a draft never is.
+   */
+  function clear(entityId: string): boolean {
+    return focus === null || focus.entityId !== entityId || focus.input === 'empty';
+  }
+
   /**
    * The short handle a person would use for this entry's conversation.
    *
@@ -90,36 +111,17 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
    * console printed. Falling back to the id is correct rather than merely safe:
    * an id always identifies the thread, it is just longer than a person wants.
    */
-  function handleFor(entry: LedgerEntry): string {
-    if (entry.kind === 'ask') return entry.ref ?? entry.id;
-
+  /** The ask an answer closes, if the log still has it. */
+  function askFor(entry: LedgerEntry): LedgerEntry | undefined {
+    if (entry.kind === 'ask') return entry;
     const threadId = entry.thread;
-    if (threadId === undefined) return entry.id;
-
-    const ask = ledger.read({ thread: threadId }).entries.find((e) => e.kind === 'ask');
-    return ask?.ref ?? threadId;
+    if (threadId === undefined) return undefined;
+    return ledger.read({ thread: threadId }).entries.find((e) => e.kind === 'ask');
   }
 
-  function nudgeLine(entry: LedgerEntry, handle: string): string {
-    /*
-      Cut at the first line break, *then* strip — in that order.
-
-      Stripping first would delete the break and splice the next line onto the
-      end of this one, turning two sentences into one run-on. Every break form
-      counts, `\r` included: it is not a newline to `split('\n')` but it is very
-      much a line break to a terminal, and it is the byte that would otherwise
-      submit a prompt of its own.
-
-      `from` is sanitised too. It is a party id rather than prose, but it
-      reaches here from a header this module does not own.
-    */
-    const firstLine = entry.body.split(/\r\n|\r|\n/u)[0] ?? '';
-    const body = stripControls(firstLine).slice(0, NUDGE_BODY_MAX);
-    const from = stripControls(entry.from);
-
-    return entry.kind === 'ask'
-      ? `📒 ${from} asks (${handle}): ${body} — reply with ledger_answer ${handle}`
-      : `📒 ${from} answered ${handle}: ${body}`;
+  function handleFor(entry: LedgerEntry): string {
+    if (entry.kind === 'ask') return entry.ref ?? entry.id;
+    return askFor(entry)?.ref ?? entry.thread ?? entry.id;
   }
 
   /**
@@ -157,7 +159,7 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
   /** Write one nudge, and record it only if it landed. Reports whether it did. */
   function deliverOne(entityId: string, entry: LedgerEntry): boolean {
     const handle = handleFor(entry);
-    if (!write(entityId, `${nudgeLine(entry, handle)}\r`)) return false;
+    if (!write(entityId, `${ledgerMarker(entry)}\r`)) return false;
 
     /*
       `from: OVERMIND` is asserted rather than derived. The party set is
@@ -195,15 +197,15 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
   /**
    * Write everything this session is owed, one nudge per idle window.
    *
-   * **`isIdle` is re-checked on every iteration, and the loop stops at the
-   * first delivery.** Each nudge ends in `\r`, which submits it — so the
-   * instant one lands the session is mid-turn, and writing the rest of the
-   * backlog behind it would break the single invariant this module exists to
-   * hold. The remainder is not lost: it has no receipt, so the next idle
-   * transition picks up exactly where this one stopped.
+   * **The preconditions are checked once, before the loop, and the loop stops
+   * at the first delivery.** Each nudge ends in `\r`, which submits it — so
+   * the instant one lands the session is mid-turn, and writing the rest of
+   * the backlog behind it would break the single invariant this module
+   * exists to hold. The remainder is not lost: it has no receipt, so the
+   * next idle transition picks up exactly where this one stopped.
    */
   function flush(entityId: string): void {
-    if (!isLive(entityId) || !isIdle(entityId)) return;
+    if (!isLive(entityId) || !isIdle(entityId) || !clear(entityId)) return;
 
     for (const entry of undelivered(entityId)) {
       if (deliverOne(entityId, entry)) return;
@@ -222,7 +224,9 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
       // An agent is woken by the scheduler (HIVE-120), not written to — it has
       // no terminal to nudge. An unknown party has nowhere to write to either.
       // A live session mid-turn is caught here too, and flushed by `onIdle`.
-      if (!isLive(to) || !isIdle(to)) return;
+      // A focused session whose box holds a draft is held here too, and
+      // flushed by onPrompt when the box clears (HIVE-135).
+      if (!isLive(to) || !isIdle(to) || !clear(to)) return;
 
       deliverOne(to, entry);
     },
@@ -233,6 +237,34 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
 
     onReady(entityId) {
       flush(entityId);
+    },
+
+    onPrompt(entityId, input) {
+      if (input === 'unfocused') {
+        // Only the holder releases the record: a late report from a surface
+        // that already lost focus must not clear a newer one.
+        if (focus?.entityId === entityId) focus = null;
+        return;
+      }
+
+      const before = focus;
+      focus = { entityId, input };
+
+      /*
+        The third flush trigger, beside idle and ready. Not on a report that
+        changes nothing: after a nudge is submitted the next screen read says
+        `empty` again while main's idle answer can lag the busy-state hook,
+        and re-running the flush then would find the backlog behind the turn
+        the last nudge started. Every other arrival at `empty` — first report,
+        after a reset, after a draft, after a focus round-trip — is a
+        transition, and the held nudge is what the user is waiting on.
+      */
+      const unchanged = before?.entityId === entityId && before.input === 'empty';
+      if (input === 'empty' && !unchanged) flush(entityId);
+    },
+
+    onRendererReset() {
+      focus = null;
     },
   };
 }

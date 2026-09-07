@@ -11,6 +11,7 @@ import {
   parseLedgerAnswerRequest,
   parseLedgerPostBody,
   parseLedgerReadQuery,
+  parsePromptReport,
   parseRemoveProjectRequest,
   parseRenameProjectRequest,
   parseReorderProjectsRequest,
@@ -18,7 +19,10 @@ import {
   parseResizeRequest,
   parseSessionPrRequest,
   parseSetProjectKeyRequest,
+  parseSetProjectRuntimeRequest,
   parseSetReceiverRequest,
+  parseSetSlackRequest,
+  parseSetSlackTokensRequest,
   parseSpawnRequest,
   parseWriteRequest,
 } from '../../../electron/shared/guards';
@@ -379,6 +383,37 @@ describe('parseResizeRequest', () => {
     ).toThrow(/unexpected key/);
     expect(() => parseResizeRequest({ sessionId: [], cols: 80, rows: 24 })).toThrow(
       /expected a string/,
+    );
+  });
+});
+
+/**
+ * The renderer's report about a session's input box (HIVE-135). Three
+ * literals and nothing else: a report is what lets main write into a
+ * terminal, so an unknown word must not be read as permission.
+ */
+describe('parsePromptReport', () => {
+  it.each(['empty', 'draft', 'unfocused'] as const)('accepts %s', (input) => {
+    expect(parsePromptReport({ sessionId: 'sess-1', input })).toEqual({
+      sessionId: 'sess-1',
+      input,
+    });
+  });
+
+  it('rejects the whole matrix', () => {
+    expect(() => parsePromptReport(null)).toThrow(IpcValidationError);
+    expect(() => parsePromptReport({ sessionId: 'sess-1' })).toThrow(/missing key "input"/);
+    expect(() => parsePromptReport({ sessionId: 'sess-1', input: 'empty', seq: 1 })).toThrow(
+      /unexpected key/,
+    );
+    expect(() => parsePromptReport({ sessionId: [], input: 'empty' })).toThrow(
+      /expected a string/,
+    );
+    expect(() => parsePromptReport({ sessionId: 'sess-1', input: 'yes' })).toThrow(
+      IpcValidationError,
+    );
+    expect(() => parsePromptReport({ sessionId: 'sess-1', input: 1 })).toThrow(
+      IpcValidationError,
     );
   });
 });
@@ -1023,5 +1058,247 @@ describe('parseSetReceiverRequest (HIVE-131)', () => {
 
   it('rejects a request that changes nothing', () => {
     expect(() => parseSetReceiverRequest({})).toThrow(/nothing to change/);
+  });
+});
+
+/**
+ * The slack switch and its commander allow-list (HIVE-124).
+ */
+describe('parseSetSlackRequest (HIVE-124)', () => {
+  it('accepts the switch alone', () => {
+    expect(parseSetSlackRequest({ socketMode: true })).toEqual({
+      socketMode: true,
+    });
+  });
+
+  it('accepts the allow-list alone, including an empty one', () => {
+    expect(parseSetSlackRequest({ commanders: ['U1', 'U2'] })).toEqual({
+      commanders: ['U1', 'U2'],
+    });
+    expect(parseSetSlackRequest({ commanders: [] })).toEqual({
+      commanders: [],
+    });
+  });
+
+  it('accepts both together', () => {
+    expect(
+      parseSetSlackRequest({ socketMode: false, commanders: ['U1'] }),
+    ).toEqual({ socketMode: false, commanders: ['U1'] });
+  });
+
+  it('rejects a non-boolean switch', () => {
+    expect(() => parseSetSlackRequest({ socketMode: 'true' })).toThrow();
+  });
+
+  it('rejects a commanders value that is not an array', () => {
+    expect(() => parseSetSlackRequest({ commanders: 'U1' })).toThrow();
+  });
+
+  it('rejects a non-string, empty, or whitespace-bearing commander id', () => {
+    expect(() => parseSetSlackRequest({ commanders: [7] })).toThrow();
+    expect(() => parseSetSlackRequest({ commanders: [''] })).toThrow();
+    expect(() => parseSetSlackRequest({ commanders: ['U 1'] })).toThrow();
+  });
+
+  it('rejects an unknown key', () => {
+    expect(() => parseSetSlackRequest({ token: 'xoxb-1' })).toThrow();
+  });
+
+  it('rejects a request that changes nothing', () => {
+    expect(() => parseSetSlackRequest({})).toThrow(/nothing to change/);
+  });
+});
+
+/**
+ * The two socket-mode tokens (HIVE-124) — the second payload in the app that
+ * carries a secret, and so the second guard whose refusals are worth pinning.
+ *
+ * `parseSetJiraTokenRequest` is the model, in `guards.jira.test.ts`. The
+ * differences from it are the decisions this block exists to hold still: both
+ * fields are optional because the pane commits one at a time and main merges;
+ * an empty payload is refused rather than read as a clear, because clearing has
+ * its own channel and a write that silently erased both is the one mistake a
+ * guard can prevent here; and `assertJiraToken`'s bounds are reused, because
+ * "printable ASCII, no spaces, bounded" is a statement about credentials in a
+ * payload rather than about Jira.
+ */
+describe('parseSetSlackTokensRequest (HIVE-124)', () => {
+  it('accepts either token alone', () => {
+    expect(parseSetSlackTokensRequest({ appToken: 'xapp-1-A' })).toEqual({
+      appToken: 'xapp-1-A',
+    });
+    expect(parseSetSlackTokensRequest({ botToken: 'xoxb-2-B' })).toEqual({
+      botToken: 'xoxb-2-B',
+    });
+  });
+
+  it('accepts both together', () => {
+    expect(
+      parseSetSlackTokensRequest({ appToken: 'xapp-1-A', botToken: 'xoxb-2-B' }),
+    ).toEqual({ appToken: 'xapp-1-A', botToken: 'xoxb-2-B' });
+  });
+
+  /** Absent is untouched, which is what makes the merge in main safe. */
+  it('leaves an absent field off the request entirely', () => {
+    expect(parseSetSlackTokensRequest({ appToken: 'xapp-1-A' })).not.toHaveProperty(
+      'botToken',
+    );
+  });
+
+  it('refuses an empty payload rather than reading it as a clear', () => {
+    expect(() => parseSetSlackTokensRequest({})).toThrow(/nothing to change/);
+  });
+
+  it('refuses an unknown key', () => {
+    expect(() =>
+      parseSetSlackTokensRequest({ appToken: 'xapp-1-A', socketMode: true }),
+    ).toThrow();
+  });
+
+  it('refuses an empty, oversized, or whitespace-bearing token', () => {
+    expect(() => parseSetSlackTokensRequest({ appToken: '' })).toThrow();
+    expect(() =>
+      parseSetSlackTokensRequest({ botToken: 'x'.repeat(1025) }),
+    ).toThrow();
+    expect(() => parseSetSlackTokensRequest({ appToken: 'xapp 1' })).toThrow();
+    expect(() => parseSetSlackTokensRequest({ botToken: 'xoxb\n1' })).toThrow();
+  });
+
+  it('refuses a non-string', () => {
+    expect(() => parseSetSlackTokensRequest({ appToken: 7 })).toThrow();
+  });
+
+  /**
+   * The prefixes are deliberately not enforced — Slack has renamed token
+   * prefixes before, and a guard that refused a valid token would be a bug the
+   * user could not work around. A wrong one fails at `auth.test` with Slack's
+   * own message, which is the better report.
+   */
+  it('does not enforce the xapp-/xoxb- prefixes', () => {
+    expect(parseSetSlackTokensRequest({ appToken: 'whatever-1' })).toEqual({
+      appToken: 'whatever-1',
+    });
+  });
+
+  /** A refusal that quoted the value would put a token in a log. */
+  it('never echoes the value it refused', () => {
+    const secret = 'sup3rsecret!'.repeat(200);
+
+    try {
+      parseSetSlackTokensRequest({ appToken: secret });
+      expect.unreachable('should have refused');
+    } catch (cause) {
+      expect(String(cause)).not.toContain('sup3rsecret');
+    }
+  });
+});
+
+describe('parseSetProjectRuntimeRequest container', () => {
+  const container = {
+    workspace: '/workspace',
+    hiveDir: '/hive',
+    envArg: '-e {name}={value}',
+    freshness: 'exec-env',
+    hostAlias: 'host.docker.internal',
+  };
+
+  it('accepts a full block', () => {
+    expect(parseSetProjectRuntimeRequest({ id: 'p', container })).toEqual({
+      id: 'p',
+      container,
+    });
+  });
+
+  it('accepts a minimal block and defaults nothing', () => {
+    // Absent means inherit. Materialising a default here would freeze today's
+    // value into the user's config file.
+    const minimal = { workspace: '/workspace', hiveDir: '/hive' };
+    expect(parseSetProjectRuntimeRequest({ id: 'p', container: minimal })).toEqual({
+      id: 'p',
+      container: minimal,
+    });
+  });
+
+  it('accepts null, which removes the override', () => {
+    expect(parseSetProjectRuntimeRequest({ id: 'p', container: null })).toEqual({
+      id: 'p',
+      container: null,
+    });
+  });
+
+  it('leaves the block alone when the key is absent', () => {
+    expect(parseSetProjectRuntimeRequest({ id: 'p', shell: '/bin/zsh' })).toEqual({
+      id: 'p',
+      shell: '/bin/zsh',
+    });
+  });
+
+  // A real command survives, exactly like every other field in the block.
+  it('accepts a probe', () => {
+    const withProbe = { ...container, probe: 'test -f /workspace/ready' };
+    expect(parseSetProjectRuntimeRequest({ id: 'p', container: withProbe })).toEqual({
+      id: 'p',
+      container: withProbe,
+    });
+  });
+
+  it.each([
+    [{ ...container, workspace: 'relative' }],
+    [{ ...container, hiveDir: '' }],
+    [{ ...container, envArg: '-e {name}' }],
+    [{ ...container, freshness: 'stale' }],
+    // The alias names a network destination; the guard is not looser than the reader.
+    [{ ...container, hostAlias: 'bad host' }],
+    [{ ...container, hostAlias: '10.0.0.5?' }],
+    // Whitespace is not a command — the exact case that would have caught a
+    // guard that trims where the reader's `isContainerProbe` does not.
+    [{ ...container, probe: '   ' }],
+    [{ ...container, probe: '' }],
+    [{ ...container, probe: 42 }],
+    // Not a block at all.
+    ['x'],
+  ])('refuses %j', (bad) => {
+    expect(() => parseSetProjectRuntimeRequest({ id: 'p', container: bad })).toThrow(
+      IpcValidationError,
+    );
+  });
+
+  /**
+   * `workspace`/`hiveDir` used to go through `isAbsoluteContainerPath` alone
+   * — unbounded length, control characters allowed — while every other
+   * string on this bridge is capped (final-review fix, Minor 7). Both end up
+   * on a spawned command line via `sessionCommand`'s `PathMap`, so a control
+   * character or an absurd length is not merely cosmetic.
+   */
+  it.each([
+    ['workspace', `/${'a'.repeat(4096)}`],
+    ['hiveDir', `/${'a'.repeat(4096)}`],
+    ['workspace', '/hive\u0007'],
+    ['hiveDir', '/hive\u0007'],
+  ] as const)('refuses a %s that isAbsoluteContainerPath alone would accept', (key, value) => {
+    expect(() =>
+      parseSetProjectRuntimeRequest({ id: 'p', container: { ...container, [key]: value } }),
+    ).toThrow(IpcValidationError);
+  });
+
+  /**
+   * `envArg` is the third string on this bridge that reaches a command line,
+   * and it was the one left out of Minor 7's fix.
+   *
+   * `isEnvArgTemplate` only asks that both placeholders are present, so on its
+   * own it accepts an unbounded template and one carrying control characters —
+   * and unlike a value, a template's own text is emitted **verbatim** by
+   * `expandEnvArgs`, never quoted, because it is the runtime's vocabulary
+   * rather than user data. `workspace`, `hiveDir` and `probe` all pair their
+   * shape check with `assertText` for exactly this reason; this one now does
+   * too.
+   */
+  it.each([
+    [`-e {name}={value} ${'x'.repeat(4096)}`],
+    ['-e {name}={value}\u0007'],
+  ])('refuses an envArg that isEnvArgTemplate alone would accept: %j', (envArg) => {
+    expect(() =>
+      parseSetProjectRuntimeRequest({ id: 'p', container: { ...container, envArg } }),
+    ).toThrow(IpcValidationError);
   });
 });

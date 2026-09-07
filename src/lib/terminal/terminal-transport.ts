@@ -1,3 +1,7 @@
+import type { PromptInput } from '@shared/ipc-contract';
+
+export type { PromptInput };
+
 /**
  * THE SEAM.
  *
@@ -14,6 +18,7 @@
  * terminal component to read the store, that story is wrong — the data belongs
  * in a transport.
  */
+
 /**
  * What a consumer does with one chunk of backend output.
  *
@@ -56,4 +61,16 @@ export interface TerminalTransport {
 
   /** Tell the backend the viewport geometry changed. */
   resize(cols: number, rows: number): void;
+
+  /**
+   * What the surface can see in the backend's input box (HIVE-135).
+   *
+   * Optional, and the second thing this interface has ever gained. `parsed`
+   * was an argument because the fact it carries rides on a chunk; this is a
+   * method because the fact stands alone — the surface learns it from its own
+   * buffer on reveal and on repaint, with no chunk in hand. A transport with
+   * no backend to protect (`StaticTransport`) omits it, and the surface
+   * checks before calling.
+   */
+  reportPrompt?(input: PromptInput): void;
 }

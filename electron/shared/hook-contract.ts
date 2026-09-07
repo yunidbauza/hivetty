@@ -125,6 +125,86 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
  */
 
 /**
+ * A hook's response puts text into the session's context. Measured, not
+ * assumed (HIVE-136).
+ *
+ * Claude Code 2.1.263, real pty, a stub receiver answering
+ * `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` with a
+ * distinct token per handler, and the model asked to echo every token it could
+ * see. `tests/live/hook-context-conformance.test.ts` is the measurement and
+ * pins each line below:
+ *
+ * ```
+ * UserPromptSubmit  http 200 + body  -> in context, echoed
+ * UserPromptSubmit  command stdout   -> in context, echoed
+ * PreToolUse        http / command   -> in context, echoed
+ * PostToolUse       http / command   -> in context, echoed
+ * SessionStart      command stdout   -> in context, echoed
+ * SessionStart      http             -> never reached the receiver (still)
+ * ```
+ *
+ * An http response is honoured exactly as a command's stdout. The transcript
+ * records it as a `hook_success` attachment with the HTTP status as `exitCode`
+ * and the body as `stdout`, then a `hook_additional_context` attachment
+ * carrying the text, which the model reads and acts on. So on those three
+ * events the receiver can carry a ledger entry whole, labelled as context
+ * rather than passing as the user's own words. The other subscribed events
+ * were not measured and are not assumed; `SessionStart` keeps the finding
+ * above.
+ *
+ * What that costs was measured in the same runs, one session each, and it is
+ * why the ten-second `timeout` in `electron/main/hooks/settings.ts` loses its
+ * rationale the moment a response carries context:
+ *
+ * ```
+ * response at once              -> turn ends +7.5s after the prompt
+ * response in 5s  (timeout 10)  -> context lands; turn ends +11.8s
+ * response in 15s (timeout 5)   -> "UserPromptSubmit hook timed out after 5s —
+ *                                  output discarded", on screen; turn ends +12.3s
+ * HTTP 500, same body           -> "UserPromptSubmit hook error · HTTP 500 from
+ *                                  <url>", on screen; body discarded; turn runs
+ * nothing listening on the port -> "UserPromptSubmit hook error · connect
+ *                                  ECONNREFUSED 127.0.0.1:<port>", on screen at
+ *                                  once, not after the timeout; turn runs
+ * 204, empty                    -> nothing drawn, as today
+ * ```
+ *
+ * **The prompt waits behind the hook.** A slow receiver adds its whole latency
+ * to every prompt round trip, and the timeout is what bounds it, at the price
+ * of a line the user sees. A receiver that has gone away costs no wait, but
+ * it is no longer silent either: the refused connection is drawn on every
+ * prompt, which is not what the `timeout` docblock in `settings.ts` promises.
+ * A non-2xx status is shown the same way, never swallowed, so a receiver with
+ * nothing to say must say 204 with nothing in it, not an error.
+ *
+ * What HIVE-138 made of it. The nudge is a marker ({@link ledgerMarker} in
+ * `ledger-contract.ts`), and the receiver answers that prompt with the entry
+ * whole as {@link HookContextReply}. The hook route answers 204 and logs
+ * where `reject()` computes a refusal, and where the body is not JSON; every
+ * other route keeps its 4xx, since curl and MCP read those and hooks do not.
+ * The one non-2xx left on the hook route is the dispatcher's 500 on a thrown
+ * handler, accepted: a handler that throws is a bug, and a line on screen is
+ * the honest signal. The timeout is 3 s, and its docblock in `settings.ts`
+ * carries the measurements above as its reason.
+ */
+
+/**
+ * What the receiver answers when a `UserPromptSubmit` prompt is a ledger
+ * marker (HIVE-138): the shape Claude Code reads from a hook's body, measured
+ * above. Typed once so the receiver and the tests that read it cannot drift.
+ */
+export interface HookContextReply {
+  hookSpecificOutput: {
+    hookEventName: 'UserPromptSubmit';
+    additionalContext: string;
+  };
+}
+
+export const hookContextReply = (additionalContext: string): HookContextReply => ({
+  hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext },
+});
+
+/**
  * The `SessionEnd` reason that means "the conversation ended, the process did
  * not". The only one this app acts on.
  */
@@ -490,6 +570,49 @@ export const READY_PATH = '/ready';
  * be loud because the session will otherwise never close. Here it should be
  * silent, because the overlay lifts on a timeout regardless.
  */
+/**
+ * A status hook as a `command`, for a set that runs **inside a container**
+ * (HIVE-137).
+ *
+ * Because the http one is refused there. Measured against Claude Code 2.1.263
+ * from inside a Docker Desktop container, in the run log of a `-p` turn:
+ *
+ * ```
+ * SessionEnd hook [http://host.docker.internal:62903/hook] failed:
+ *   HTTP hook blocked: host.docker.internal resolves to 192.168.65.254
+ *   (private/link-local address). Loopback (127.0.0.1, ::1) is allowed for local dev.
+ * ```
+ *
+ * The binary resolves an http hook's host and refuses every private or
+ * link-local address that is not loopback (`ERR_HTTP_HOOK_BLOCKED_ADDRESS`),
+ * with no environment or settings escape hatch a search of the binary could
+ * find. `host.docker.internal` is by definition such an address, so an http
+ * status hook from a container never arrives — silently, because a hook
+ * failure is not a turn failure. MCP over HTTP is unaffected, and so is a
+ * `command` hook: `curl` is not the binary's HTTP client. So the container
+ * set spells its status hooks this way, the host set keeps http, and the
+ * payload the receiver reads is the same JSON either way — a command hook
+ * gets it on stdin, and `--data-binary @-` forwards it whole.
+ *
+ * **The response body is printed, on purpose** (HIVE-138). A command hook's
+ * stdout is Claude's hook output, exactly as an http handler's body is
+ * (measured, the HIVE-136 note beside {@link HOOK_EVENTS}). The receiver
+ * answers every hook with 204 and nothing, so on every event this prints
+ * nothing; the one exception is a `UserPromptSubmit` whose prompt is a
+ * ledger marker, answered with a {@link HookContextReply} the container's
+ * model must read as surely as a host session's does. `-o /dev/null` here
+ * would carry the marker into a container and drop the entry behind it.
+ * Errors are still silenced and the exit is still zero, for the reasons
+ * {@link readyCommand} gives: a receiver that has gone away is not the
+ * agent's problem. `-m 3` matches the http handler's timeout.
+ */
+export const statusCommand = (url: string, identity?: HookIdentity): string =>
+  `curl -s -m 3 -X POST ${url}` +
+  ` -H 'content-type: application/json'` +
+  ` -H "${HOOK_HEADER_SESSION}: ${identity?.session ?? `$${HOOK_ENV_SESSION}`}"` +
+  ` -H "${HOOK_HEADER_TOKEN}: ${identity?.token ?? `$${HOOK_ENV_TOKEN}`}"` +
+  ` --data-binary @- 2>/dev/null || true`;
+
 export const readyCommand = (url: string, identity?: HookIdentity): string =>
   `curl -s -m 3 -o /dev/null -X POST ${url}` +
   ` -H "${HOOK_HEADER_SESSION}: ${identity?.session ?? `$${HOOK_ENV_SESSION}`}"` +

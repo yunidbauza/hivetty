@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,10 +7,15 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  CONTAINER_AGENT_FILE,
+  CONTAINER_ALIASES_DIR,
+  CONTAINER_DIR,
   CONTAINER_SESSIONS_DIR,
+  CONTAINER_SETTINGS_FILE,
   containerOrigins,
   removeSessionContainerFiles,
   sweepSessionContainerFiles,
+  writeAliasContainerFiles,
   writeSessionContainerFiles,
   writeSharedContainerFiles,
 } from '../../../../electron/main/container/generated';
@@ -114,6 +119,25 @@ describe('writeSharedContainerFiles', () => {
     const hive = await readdir(join(dir, 'hive'));
 
     expect(hive).toEqual(['container']);
+  });
+});
+
+describe('writeAliasContainerFiles', () => {
+  it('writes a secret-free set per alias, addressed by that alias', async () => {
+    await writeAliasContainerFiles(dir, 'gateway', containerOrigins(ORIGINS, 'gateway'));
+
+    const settings = await readFile(
+      join(dir, CONTAINER_ALIASES_DIR, 'gateway', 'claude-hooks.settings.json'),
+      'utf8',
+    );
+
+    expect(settings).toContain('gateway');
+    // exec-env keeps every per-session value a `${VAR}` — no resolved token on disk.
+    expect(settings).toContain('$HIVE_HOOK_TOKEN');
+    expect(settings).not.toContain('deadbeef');
+    await expect(
+      stat(join(dir, CONTAINER_ALIASES_DIR, 'gateway')),
+    ).resolves.toBeDefined();
   });
 });
 
@@ -378,5 +402,33 @@ describe('sweepSessionContainerFiles', () => {
 
   it('is silent when nothing has ever been written', async () => {
     await expect(sweepSessionContainerFiles(dir, [])).resolves.toBeUndefined();
+  });
+
+  /**
+   * HIVE-137. The binary refuses an http hook to `host.docker.internal`, so a
+   * set that is going to be read inside a container must not carry one — in
+   * either file, because the agent file is the session file plus a fence.
+   */
+  describe('the status hooks are commands, not http (HIVE-137)', () => {
+    it('in the shared set', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'hive-generated-hooks-'));
+      try {
+        await writeSharedContainerFiles(dir, {
+          url: 'http://host.docker.internal:7/hook',
+          origin: 'http://host.docker.internal:7',
+        });
+        for (const file of [CONTAINER_SETTINGS_FILE, CONTAINER_AGENT_FILE]) {
+          const written = JSON.parse(
+            readFileSync(join(dir, CONTAINER_DIR, file), 'utf8'),
+          ) as { hooks: Record<string, { hooks: { type: string; command?: string }[] }[]> };
+          const stop = written.hooks['Stop']![0]!.hooks[0]!;
+          expect(stop.type).toBe('command');
+          expect(stop.command).toContain('http://host.docker.internal:7/hook');
+          expect(JSON.stringify(written)).not.toContain('"type":"http"');
+        }
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });

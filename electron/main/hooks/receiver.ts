@@ -6,6 +6,7 @@ import { AGENTS_PATH, type AgentsDirectory } from '@shared/agent-contract';
 import { parseLedgerPostBody, parseLedgerReadQuery } from '@shared/guards';
 import {
   CLEAR_REASON,
+  hookContextReply,
   HOOK_HEADER_RUN,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
@@ -25,12 +26,13 @@ import {
 import {
   LEDGER_POST_PATH,
   LEDGER_READ_PATH,
+  parseLedgerMarker,
   type LedgerPostRequest,
   type LedgerReadQuery,
   type LedgerResult,
   type LedgerSnapshot,
 } from '@shared/ledger-contract';
-import { keepNewest } from '@shared/ledger-derive';
+import { keepNewest, resolveRef } from '@shared/ledger-derive';
 import {
   MCP_MAX_BODY_BYTES,
   MCP_PATH,
@@ -46,6 +48,8 @@ import {
   type SessionMetrics,
 } from '@shared/metrics-contract';
 import { sessionNameFromPrompt } from '@shared/session-contract';
+
+import { entryContext } from '../ledger/context';
 
 import { parseMetrics } from './metrics';
 import { ticketKeyFromPrompt } from './ticket-intent';
@@ -253,6 +257,21 @@ export interface Receiver {
    * sessions come and go.
    */
   tokenFor(entityId: string): string;
+  /**
+   * The grants a live agent run may exercise over `POST /mcp` (HIVE-137).
+   *
+   * The stdio host reads `HIVE_GRANTS` from its own environment; there is no
+   * environment on this side of an HTTP call, so `runs.ts` registers the same
+   * list here under the run id every request already carries in `x-hive-run`,
+   * and clears it when the run closes. A caller with no registered run — a
+   * pty session, a stale run — keeps the empty list, so `approve` fails closed
+   * for it exactly as before.
+   */
+  readonly grants: {
+    /** `owner` is the agent the run belongs to; a caller that is not it gets `[]`. */
+    set(run: string, owner: string, grants: readonly string[]): void;
+    delete(run: string): void;
+  };
   /** The URL hooks should POST to, or `null` before a successful start. */
   readonly url: string | null;
   /**
@@ -550,6 +569,16 @@ export function createReceiver(options: ReceiverOptions): Receiver {
    * a leak.
    */
   const MCP_CURSOR_MAX = 256;
+  /**
+   * Per-run grants for `approve` over HTTP (HIVE-137) — see
+   * {@link Receiver.grants}. Keyed by run rather than by session because two
+   * task runs of one agent can be live at once with different one-shot
+   * grants. Bounded like `mcpCursors`, for the same reason: the key space is
+   * every run id ever minted, and a run that crashed before `close()` cleared
+   * it must not hold a slot forever.
+   */
+  const runGrants = new Map<string, { owner: string; grants: readonly string[] }>();
+  const RUN_GRANTS_MAX = 256;
 
   /**
    * Pull the event name out of a body too large to have been kept whole.
@@ -667,6 +696,76 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     if (!knowsSession(entityId) && !knowsAgent(entityId)) return 404;
 
     return null;
+  }
+
+  /**
+   * The hook route says 204 where every other route says 4xx (HIVE-138).
+   *
+   * Measured (`hook-contract.ts`, the HIVE-136 note): a non-2xx from a hook is
+   * drawn on the user's screen, on every prompt, and its body discarded. The
+   * refusals {@link reject} computes are still refusals, and nothing behind
+   * them runs; but the one that fires on a healthy session, a hook still in
+   * flight after its session left the registry, is not something the user
+   * should read about in their terminal. So the hook route alone answers 204
+   * and says so here, once per status and identity rather than once per
+   * event, since a stale session posts a burst.
+   *
+   * The set is capped, because its keys are the caller's to choose: a
+   * loopback process minting session ids would otherwise grow it forever.
+   * Past the cap it starts over, at the price of one repeated line.
+   */
+  const REFUSED_HOOKS_MAX = 256;
+  const refusedHooks = new Set<string>();
+  function refusedHook(
+    status: number,
+    headers: Record<string, string | string[] | undefined>,
+  ): number {
+    const who = headers[HOOK_HEADER_SESSION];
+    const name = typeof who === 'string' && who !== '' ? who : '(no session)';
+    const key = `${status}:${name}`;
+    if (!refusedHooks.has(key)) {
+      if (refusedHooks.size >= REFUSED_HOOKS_MAX) refusedHooks.clear();
+      refusedHooks.add(key);
+      console.warn(`[hooks] hook from ${name} refused (${status}); answered 204`);
+    }
+    return 204;
+  }
+
+  /**
+   * The entry a marker names, rendered for the model, or nothing (HIVE-138).
+   *
+   * Resolved only among entries addressed to the caller and of a kind a nudge
+   * carries. A session typing another party's ref reads nothing, exactly as
+   * {@link visibleTo} keeps the read route honest; a marker for a `post` reads
+   * nothing because no nudge ever named one.
+   *
+   * The answer's ask is looked up the way `deliver.ts` does, for its ref and
+   * the asker's own `meta.intent`, and then held to {@link visibleTo} like
+   * everything else this receiver hands a caller. An answer may be addressed
+   * to a third party (`Ledger.append` keeps an answer's `to` as sent), and
+   * that party is owed the answer, not the question behind it: without the
+   * gate, the context would read it a ref it never saw and an intent that is
+   * not its own. An ask is also checked for openness, so a marker re-typed
+   * after the ask closed does not tell the model to answer it.
+   */
+  function markerContext(caller: string, token: string): string | undefined {
+    const snapshot = onLedgerRead(caller, { to: caller });
+    const mine = snapshot.entries.filter(
+      (entry) => entry.to === caller && (entry.kind === 'ask' || entry.kind === 'answer'),
+    );
+    const id = resolveRef(mine, token);
+    const entry = mine.find((candidate) => candidate.id === id);
+    if (entry === undefined) return undefined;
+    if (entry.kind === 'ask') {
+      return entryContext(entry, { open: snapshot.openAsks.some((ask) => ask.id === entry.id) });
+    }
+    const ask =
+      entry.thread === undefined
+        ? undefined
+        : onLedgerRead(caller, { thread: entry.thread }).entries.find(
+            (candidate) => candidate.kind === 'ask' && visibleTo(caller, candidate),
+          );
+    return entryContext(entry, { ask });
   }
 
   /**
@@ -979,12 +1078,11 @@ export function createReceiver(options: ReceiverOptions): Receiver {
    * first one's identity. Rebuilding from the headers actually presented is what
    * makes that impossible.
    *
-   * `grants` is `[]` deliberately, and it is not a stub: the stdio host reads
-   * `HIVE_GRANTS` from its environment, and `envFor` never sets that for a pty
-   * session either — so an empty list is exactly what an interactive session
-   * gets today on both transports, and `approve` fails closed for both. Handing
-   * an agent run its grants over HTTP needs a channel that does not exist yet
-   * and belongs to HIVE-133.
+   * `grants` come from {@link Receiver.grants} by the run id in `x-hive-run`
+   * (HIVE-137), and are `[]` for everyone else — which is not a stub: the stdio
+   * host reads `HIVE_GRANTS` from its environment, and `envFor` never sets that
+   * for a pty session either, so an empty list is exactly what an interactive
+   * session gets on both transports, and `approve` fails closed for both.
    */
   function handlersFor(
     headers: Record<string, string | string[] | undefined>,
@@ -1007,7 +1105,19 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       mcpCursors.set(caller, store);
     }
 
-    return createToolHandlers(clientFor(headers), [], store);
+    /*
+      By run id **and** owner. A run id is not a secret — it is on every hook
+      payload and every ledger entry the run writes — so a lookup by id alone
+      would let any authenticated caller present a sibling run's id and
+      inherit its one-shot grants. The caller's identity is what `reject`
+      already authenticated; the registration says which agent it was minted
+      for; the two must agree.
+    */
+    const run = headers[HOOK_HEADER_RUN];
+    const registered = typeof run === 'string' && run !== '' ? runGrants.get(run) : undefined;
+    const grants = registered !== undefined && registered.owner === caller ? registered.grants : [];
+
+    return createToolHandlers(clientFor(headers), grants, store);
   }
 
   /**
@@ -1146,7 +1256,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       try {
         parsed = JSON.parse(body);
       } catch {
-        return 400;
+        return refusedHook(400, { [HOOK_HEADER_SESSION]: entityId });
       }
       const fields =
         typeof parsed === 'object' && parsed !== null
@@ -1186,9 +1296,9 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     headers: Record<string, string | string[] | undefined>,
     body: string,
     truncated = false,
-  ): number {
+  ): Reply {
     const refusal = reject(headers);
-    if (refusal !== null) return refusal;
+    if (refusal !== null) return refusedHook(refusal, headers);
 
     // Narrowed by `reject`, which refused every non-string case above.
     const entityId = headers[HOOK_HEADER_SESSION] as string;
@@ -1255,7 +1365,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       try {
         parsed = JSON.parse(body);
       } catch {
-        return 400;
+        return refusedHook(400, headers);
       }
       const fields =
         typeof parsed === 'object' && parsed !== null
@@ -1322,6 +1432,32 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       return 204;
     }
 
+    /*
+      A `const` copy, because a closure does not keep a `let`'s narrowing: the
+      `SessionEnd` return above is what makes `HOOK_STATUS[event]` well-typed.
+    */
+    const status = HOOK_STATUS[event];
+    const known = event;
+    /** The status event this hook is, published once, from whichever branch ends here. */
+    const publish = (): void =>
+      onEvent({
+        entityId,
+        event: known,
+        status,
+        ...(typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {}),
+        /**
+         * Absent rather than empty when the payload did not carry one. The
+         * session layer treats absence as "nothing to look at on this tick",
+         * which is the honest reading — an empty string would be a directory.
+         */
+        ...(typeof cwd === 'string' && cwd !== '' ? { cwd } : {}),
+        ...(typeof toolUseId === 'string' ? { toolUseId } : {}),
+        ...(typeof toolName === 'string' ? { toolName } : {}),
+        ...(typeof agentId === 'string' && agentId !== '' ? { agentId } : {}),
+        ...(runInBackground === true ? { runInBackground: true } : {}),
+        ...(backgroundShells === undefined ? {} : { backgroundShells }),
+      });
+
     /**
      * The intent goes out **before** the status (HIVE-78).
      *
@@ -1333,6 +1469,24 @@ export function createReceiver(options: ReceiverOptions): Receiver {
      * caller's try.
      */
     if (event === 'UserPromptSubmit') {
+      /**
+       * A marker is not the user's prompt (HIVE-138).
+       *
+       * It is the line `deliver.ts` wrote, and what it names is answered here
+       * as context, whole, in the body of this very response. Nothing else
+       * about the prompt applies: it carries no ticket, it names nothing
+       * (`sessionNameFromPrompt('📒 a12')` would call the session `a12`), and
+       * it does not spend the first-prompt mark, so the user's own first
+       * prompt still names the session. It does count as the session working,
+       * which is what the turn it starts is.
+       */
+      const marker = typeof prompt === 'string' ? parseLedgerMarker(prompt) : undefined;
+      if (marker !== undefined) {
+        const context = markerContext(entityId, marker);
+        publish();
+        return context === undefined ? 204 : { status: 200, json: hookContextReply(context) };
+      }
+
       if (typeof prompt === 'string') {
         const key = ticketKeyFromPrompt(prompt);
         if (key !== null) onTicketIntent({ entityId, key, source: 'prompt' });
@@ -1389,28 +1543,26 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       return 204;
     }
 
-    onEvent({
-      entityId,
-      event,
-      status: HOOK_STATUS[event],
-      ...(typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {}),
-      /**
-       * Absent rather than empty when the payload did not carry one. The
-       * session layer treats absence as "nothing to look at on this tick",
-       * which is the honest reading — an empty string would be a directory.
-       */
-      ...(typeof cwd === 'string' && cwd !== '' ? { cwd } : {}),
-      ...(typeof toolUseId === 'string' ? { toolUseId } : {}),
-      ...(typeof toolName === 'string' ? { toolName } : {}),
-      ...(typeof agentId === 'string' && agentId !== '' ? { agentId } : {}),
-      ...(runInBackground === true ? { runInBackground: true } : {}),
-      ...(backgroundShells === undefined ? {} : { backgroundShells }),
-    });
+    publish();
     return 204;
   }
 
   return {
     tokenFor,
+
+    grants: {
+      set(run, owner, grants) {
+        if (runGrants.size >= RUN_GRANTS_MAX && !runGrants.has(run)) {
+          const oldest = runGrants.keys().next();
+
+          if (!oldest.done) runGrants.delete(oldest.value);
+        }
+        runGrants.set(run, { owner, grants: [...grants] });
+      },
+      delete(run) {
+        runGrants.delete(run);
+      },
+    },
 
     get url() {
       return url;
@@ -1620,6 +1772,9 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         // The stdio host's cursor dies with its process; this one dies with the
         // socket that served it, so a restart starts every caller fresh.
         mcpCursors.clear();
+        // A run's grants outlive nothing either: the run that registered them
+        // is being torn down with the socket, and a restart re-registers.
+        runGrants.clear();
         running.close(() => resolve());
         /**
          * Keep-alive sockets would otherwise hold the close open past app quit.

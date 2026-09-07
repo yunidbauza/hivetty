@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { WebClient } from '@slack/web-api';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -27,7 +28,13 @@ import { createWakeCommand } from '../../electron/main/agents/wake-command';
 import { createReceiver, type Receiver } from '../../electron/main/hooks/receiver';
 import { writeAgentSettings } from '../../electron/main/hooks/settings';
 import { runAsync } from '../../electron/main/integrations/github/run';
+import { createSlackBridge, type SlackBridge } from '../../electron/main/integrations/slack/bridge';
+import { openSlackSocket, openSlackWeb } from '../../electron/main/integrations/slack/clients';
 import { readSlackStatus } from '../../electron/main/integrations/slack/status';
+import {
+  readSubscriptions,
+  type SlackSubscriptions,
+} from '../../electron/main/integrations/slack/subscriptions';
 import { createLedger, type Ledger } from '../../electron/main/ledger';
 import { agentMcpConfigFile } from '../../electron/main/mcp';
 import { hiveServerSpec, mcpConfig } from '../../electron/main/mcp/config';
@@ -46,7 +53,12 @@ import {
 } from '../../electron/shared/hook-contract';
 import { CONFIG_PATH_ENV } from '../../electron/shared/config-contract';
 import { LEDGER_DIR, OVERMIND } from '../../electron/shared/ledger-contract';
-import { SLACK_TOOL_GLOB, SLACK_TOOL_PREFIX } from '../../electron/shared/slack-contract';
+import {
+  SLACK_TOOL_GLOB,
+  SLACK_TOOL_PREFIX,
+  SLACK_TRIGGER,
+  type SlackSocketStatus,
+} from '../../electron/shared/slack-contract';
 
 /**
  * What only a real `claude` can prove about a wake (HIVE-115).
@@ -114,6 +126,51 @@ import { SLACK_TOOL_GLOB, SLACK_TOOL_PREFIX } from '../../electron/shared/slack-
  */
 
 const LIVE = process.env['HIVE_LIVE_AGENT_PROOF'] === '1';
+
+/**
+ * The two Socket Mode tokens (HIVE-124), read explicitly rather than folded
+ * into whatever this shell already carries.
+ *
+ * `tests/live` composes every child process's environment from
+ * `process.env` verbatim (see `env: () => process.env` below), so a name this
+ * scenario shared with anything the developer's own running Hive might set
+ * would let that ambient value answer the request instead of the fixture —
+ * exactly the failure mode `readSlackStatus` above is careful to avoid by
+ * shelling out to a real `claude mcp get slack` rather than trusting a cached
+ * answer. These two names are unique to this scenario for the same reason,
+ * and their absence is what lets it skip rather than fail on a machine that
+ * has never pasted a Slack app's tokens in.
+ */
+const SOCKET_APP_TOKEN = process.env['HIVE_LIVE_SOCKET_APP_TOKEN'];
+const SOCKET_BOT_TOKEN = process.env['HIVE_LIVE_SOCKET_BOT_TOKEN'];
+
+/**
+ * A **third** credential, and the only thing that can drive the push scenario
+ * end to end (fix-round-2, HIVE-124).
+ *
+ * The first draft posted the mention with `chat.postMessage` on the *bot*
+ * token, so the message was authored by the app itself. That cannot work, for
+ * two independent reasons:
+ *
+ * 1. Slack dispatches a bot-authored mention as `app_mention` with
+ *    `subtype: 'bot_message'` — that variant is why `slackapi/java-slack-sdk`
+ *    #1279 exists at all ("No BoltEventHandler registered for event:
+ *    `app_mention:bot_message`"), and `slack-go`'s `AppMentionEvent.BotID` is
+ *    documented as "filled out when a bot triggers the app_mention event". So
+ *    the envelope carries both a `subtype` and a `bot_id`.
+ * 2. `readEnvelope` drops **any** event with either field set
+ *    (`events.ts:47-48`), unconditionally and by design: a `bot_id` drop is
+ *    what stops an agent's own Slack reply waking it to read its own words.
+ *
+ * So the bot cannot post the message this scenario needs, and the app must not
+ * accept it if it did. A `xoxp-` **user** token with `chat:write` is what posts
+ * as a person; nothing in this repo can mint one, so it is read from the
+ * environment and its absence skips, exactly as the two above do.
+ *
+ * The connection scenario below needs no such thing and is not gated on it —
+ * see the split.
+ */
+const SOCKET_USER_TOKEN = process.env['HIVE_LIVE_SOCKET_USER_TOKEN'];
 
 /**
  * How long teardown waits for a signalled child to actually be gone.
@@ -268,6 +325,22 @@ const SPECIALIST = 'probe-specialist';
  */
 const FANOUT = 'probe-fanout';
 
+/** The agent that must remember, with no memory, why it asked (HIVE-135). */
+const INTENT = 'probe-intent';
+
+/**
+ * The agent a real Socket Mode `app_mention` wakes (HIVE-124).
+ *
+ * Its own definition rather than a `wake.on` variant of {@link NAME}, for the
+ * same reason {@link SLACK} gets one: this is the only probe here whose
+ * subscription a real bridge — not this suite's `runs.run` — has to decide to
+ * wake. The scenario it drives skips (never fails) when this machine has
+ * neither Socket Mode token, and otherwise opens a real socket, posts a real
+ * `chat.postMessage` mentioning the bot, and waits for the run that socket
+ * event alone is responsible for starting.
+ */
+const SOCKET = 'probe-socket';
+
 const AGENTS = [
   NAME,
   ASKER,
@@ -280,6 +353,8 @@ const AGENTS = [
   DISCOVERER,
   SPECIALIST,
   FANOUT,
+  INTENT,
+  SOCKET,
 ];
 
 const AGENT_MD = `---
@@ -452,6 +527,51 @@ Say nothing else.
 `;
 
 /**
+ * Two wakes, and the second one is a **fresh session**: the test drops the
+ * persisted `sessionUuid` before the answer lands, so the waker cannot
+ * `--resume`. The codeword is invented at run time on wake one and written
+ * only to `meta.intent` — never to the body, never to a file — so a `done`
+ * naming it on wake two can only have come from `ledger_read` of the agent's
+ * own ask. That is what "reconstructs its intent from the ask alone" means.
+ *
+ * The body deliberately does not say where the codeword is on wake two. The
+ * preamble does. Measured 2026-09-06 against claude 2.1.263: green on both
+ * the pre-HIVE-135 preamble (two runs) and the current one (one run) — the
+ * `ledger_ask` tool's own schema already tells the model to write and read
+ * back `meta.intent` (HIVE-135's Task 6), so this probe does not discriminate
+ * the preamble wording Task 7 added on top of it. A probe that is green
+ * either way is still a valid measurement; it just measures the schema, not
+ * the prose.
+ */
+const INTENT_MD = `---
+name: ${INTENT}
+description: Asks with an intent, is answered in a fresh session, and reports the codeword.
+icon: Ghost
+model: haiku
+wake:
+  on: [ledger]
+tools: [TodoWrite]
+limits:
+  turns: 8
+  rotate_after: 50
+---
+This is a conformance probe. Do not read files, search the disk, or run
+commands — there is nothing here to find.
+
+Read your ledger inbox, then do exactly one of these and end your turn:
+
+- If your inbox contains an **answer** to an ask of yours: carry out what you
+  set out to do when you asked.
+- Otherwise: invent a codeword of six lowercase letters. Call \`ledger_ask\`
+  with \`to\` set to "overmind", the body "which branch should the probe
+  use?", and \`meta.intent\` set to exactly:
+  "post ledger_done with the body: probe intent <codeword>" (with your
+  codeword in place of <codeword>). Do not write the codeword anywhere else.
+
+Say nothing else.
+`;
+
+/**
  * The agent a session asks (HIVE-120).
  *
  * It answers rather than asks, which is the half of "a session asks an agent"
@@ -586,6 +706,29 @@ limits:
 This is a conformance probe. Do not read files or run commands. Your wake
 prompt names one word after "manual —". Report exactly that word with
 ledger_done and end your turn.
+`;
+
+/**
+ * `wake.on: [slack.app_mention]` and nothing else — no `every`, no `at`. The
+ * only way to reach this probe is the bridge's own `onWake`, which is the
+ * point: an interval or a `wake('manual', SOCKET)` would prove the scheduler,
+ * not the socket.
+ */
+const SOCKET_MD = `---
+name: ${SOCKET}
+description: Proves a real Socket Mode app_mention starts a real run.
+icon: Ghost
+model: haiku
+wake:
+  on: [slack.app_mention]
+tools: [Read, Glob, Grep, TodoWrite]
+limits:
+  turns: 8
+  rotate_after: 50
+---
+This is a conformance probe. Do not read files, search the disk, or run
+commands — there is nothing here to find. After your ledger inbox, reply with
+the single sentence "socket probe reporting in" and end your turn.
 `;
 
 /**
@@ -738,6 +881,8 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       [DISCOVERER, DISCOVERER_MD],
       [SPECIALIST, SPECIALIST_MD],
       [FANOUT, FANOUT_MD],
+      [INTENT, INTENT_MD],
+      [SOCKET, SOCKET_MD],
     ] as const) {
       await mkdir(join(agentsRoot(), name), { recursive: true });
       await writeFile(join(agentsRoot(), name, 'AGENT.md'), body, 'utf8');
@@ -880,6 +1025,11 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
         [HOOK_ENV_RECEIVER_URL]: receiver?.origin ?? '',
       }),
       claudeCommand: () => 'claude',
+      // HIVE-137. This suite's agents run on the host; the container gate is
+      // `container-conformance.test.ts`'s.
+      userDataPath: () => userDataPath,
+      hostAlias: () => 'host.docker.internal',
+      agentContainerSettingsPath: () => null,
       /*
         False, so the child inherits this shell's environment untouched — the
         same environment every other live suite spawns `claude` with. Stripping
@@ -1355,6 +1505,51 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
     expect(closed.runs[1]?.outcome).not.toBe('failed');
     // The queue is empty: this wake was immediate, never queued.
     expect(closed.pendingWake ?? []).toEqual([]);
+  }, 300_000);
+
+  /**
+   * A fresh session reconstructs its intent from its own ask alone (HIVE-135).
+   *
+   * The assertion that matters is the second run's `done`: nothing here tells
+   * that run what it asked for, or where to find out. `sessionUuid` is
+   * dropped before the answer lands, so the second wake mints a fresh
+   * `--session-id` rather than `--resume`ing the first — the only route left
+   * to the codeword is `ledger_read` of the agent's own ask, whose
+   * `meta.intent` the preamble tells a woken agent to act on.
+   */
+  it('reconstructs its intent from its own ask when woken in a fresh session (HIVE-135)', async () => {
+    await wake('manual', INTENT);
+
+    const first = await persisted(INTENT);
+    expect(first.runs[0]?.outcome).toBe('asking');
+
+    const open = ledger.read({}).openAsks.filter((ask) => ask.from === INTENT);
+    expect(open).toHaveLength(1);
+    const askEntry = ledger.read({ thread: open[0]!.id }).entries.find((e) => e.kind === 'ask');
+    const intent = askEntry?.meta?.intent;
+    expect(typeof intent, JSON.stringify(askEntry?.meta)).toBe('string');
+    const codeword = /probe intent ([a-z]{6})/u.exec(intent as string)?.[1] ?? '';
+    expect(codeword).not.toBe('');
+    // The body never names it.
+    expect(askEntry?.body).not.toContain(codeword);
+
+    // Forget the conversation: the next wake cannot --resume.
+    agentState.patch(INTENT, { sessionUuid: undefined });
+
+    const before = spawns.length;
+    const second = settled(INTENT);
+    const answered = ledger.answer({ thread: open[0]!.id, body: 'main' }, OVERMIND);
+    expect(answered.ok).toBe(true);
+    expect(spawns).toHaveLength(before + 1);
+    expect(spawns[before]?.args ?? []).not.toContain('--resume');
+
+    await second;
+
+    const done = (await onDisk()).filter(
+      (entry) => entry['from'] === INTENT && entry['kind'] === 'done',
+    );
+    expect(done, JSON.stringify(done)).toHaveLength(1);
+    expect(String(done[0]?.['body'])).toContain(`probe intent ${codeword}`);
   }, 300_000);
 
   /**
@@ -2123,6 +2318,203 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       expect(toolSearchAt).toBeGreaterThanOrEqual(0);
       expect(slackToolAt).toBeGreaterThanOrEqual(0);
       expect(toolSearchAt).toBeLessThan(slackToolAt);
+    },
+    300_000,
+  );
+
+  /**
+   * A real bridge over real Slack, and a promise that settles either way.
+   *
+   * The reject branch is the part worth naming (fix-round-2, HIVE-124). With
+   * only a `connected` resolver, a revoked or mistyped `xapp-` left this
+   * awaiting forever and the scenario died at its 300 s timeout with no
+   * message — the least useful failure available for the most likely mistake.
+   * `failed` is terminal here (the SDK's own reconnect is what `connecting`
+   * means), so it rejects by name and in seconds.
+   */
+  const openSocketBridge = (
+    appToken: string,
+    botToken: string,
+    commanders: string[] = [],
+  ): {
+    bridge: SlackBridge;
+    untilConnected: Promise<Extract<SlackSocketStatus, { kind: 'connected' }>>;
+  } => {
+    const subs: SlackSubscriptions = readSubscriptions([
+      { name: SOCKET, paused: false, valid: true, on: ['slack.app_mention'] },
+    ]);
+
+    let settle:
+      | ((status: Extract<SlackSocketStatus, { kind: 'connected' }>) => void)
+      | undefined;
+    let reject: ((error: Error) => void) | undefined;
+    const untilConnected = new Promise<
+      Extract<SlackSocketStatus, { kind: 'connected' }>
+    >((resolve, fail) => {
+      settle = resolve;
+      reject = fail;
+    });
+
+    const bridge: SlackBridge = createSlackBridge({
+      tokens: { read: () => ({ appToken, botToken }) },
+      config: () => ({ socketMode: true, commanders }),
+      subscriptions: () => subs,
+      openSocket: openSlackSocket,
+      openWeb: openSlackWeb,
+      // The one line the push scenario exists to exercise: a real socket event
+      // reaching the real scheduler by the real route, `Scheduler.onEvent`.
+      onWake: (name, entry, opts) => scheduler?.onEvent(name, entry, opts),
+      onStatus: (status) => {
+        if (status.kind === 'connected') settle?.(status);
+        if (status.kind === 'failed') {
+          reject?.(new Error(`the Slack bridge failed to connect: ${status.message}`));
+        }
+      },
+      now: () => Date.now(),
+    });
+
+    return { bridge, untilConnected };
+  };
+
+  /**
+   * A real socket, opened against real Slack with the two Hive-owned tokens
+   * (HIVE-124).
+   *
+   * Split out from the wake scenario below in fix-round-2, because the two need
+   * different credentials and folding them together made the cheaper half
+   * unreachable. This one proves what the two tokens alone can prove:
+   * `openSlackWeb` reaches `auth.test` and `conversations.list`, `openSlackSocket`
+   * completes a real Socket Mode handshake, and `bridge.sync()` drives that to
+   * a `connected` carrying the workspace Slack actually named. None of it can
+   * be faked, and all of it fails on a revoked `xapp-` — which is the failure
+   * an operator is most likely to have.
+   *
+   * Skips rather than fails without both tokens, exactly as {@link SLACK} skips
+   * without a signed-in Slack. `HIVE_LIVE_SOCKET_APP_TOKEN` and
+   * `HIVE_LIVE_SOCKET_BOT_TOKEN` are read once, at module scope, under names
+   * this scenario owns outright — see the docblock beside them.
+   */
+  it(
+    'opens a real Socket Mode connection with the two Hive-owned tokens',
+    async (ctx) => {
+      ctx.skip(
+        SOCKET_APP_TOKEN === undefined || SOCKET_BOT_TOKEN === undefined,
+        'Socket Mode is not configured on this machine (`HIVE_LIVE_SOCKET_APP_TOKEN` ' +
+          'and `HIVE_LIVE_SOCKET_BOT_TOKEN` are not both set) — this scenario needs ' +
+          'a real Slack app with both tokens and cannot fake a socket.',
+      );
+
+      const opened = openSocketBridge(SOCKET_APP_TOKEN ?? '', SOCKET_BOT_TOKEN ?? '');
+
+      try {
+        opened.bridge.sync();
+
+        const status = await opened.untilConnected;
+
+        expect(status.kind).toBe('connected');
+        // `auth.test` answered through the live socket's own web client.
+        expect(status.workspace).not.toBe('');
+        expect(status.bot).not.toBe('');
+      } finally {
+        opened.bridge.stop();
+      }
+    },
+    300_000,
+  );
+
+  /**
+   * The push half of the story (HIVE-124): everything above wakes an agent
+   * from inside this suite — `wake()`, a ledger `answer`, the scheduler's own
+   * captured tick. This is the one scenario where nothing in this file calls
+   * `runs.run` at all. A real `@slack/socket-mode` client, opened with a real
+   * `xapp-` token, is the only thing that starts this run — which is what a
+   * fake socket could never prove, the same reason {@link SLACK} above needs a
+   * real `claude mcp get slack` rather than a recorded transcript.
+   *
+   * ## Why a third credential, and why the first draft could not have passed
+   *
+   * The mention has to be posted by a **person**. Its first draft posted with
+   * `chat.postMessage` on the bot token — the bot mentioning itself — and that
+   * can never wake anything: Slack dispatches a bot-authored mention as
+   * `app_mention` with `subtype: 'bot_message'` and a `bot_id`, and
+   * `readEnvelope` drops any event carrying either (`events.ts:47-48`). The
+   * `bot_id` drop is not incidental, it is what stops an agent's own Slack
+   * reply waking it to read its own words — so the app is right and the test
+   * was wrong. See {@link SOCKET_USER_TOKEN} for the evidence.
+   *
+   * So this needs a `xoxp-` user token with `chat:write`, which nothing in this
+   * repo can mint, and it skips without one rather than pretending. The author
+   * of that message is a real human id, which is also what makes the commander
+   * allow-list below a realistic value rather than a workaround.
+   */
+  it(
+    'wakes a real run when a real Socket Mode app_mention arrives',
+    async (ctx) => {
+      ctx.skip(
+        SOCKET_APP_TOKEN === undefined ||
+          SOCKET_BOT_TOKEN === undefined ||
+          SOCKET_USER_TOKEN === undefined,
+        'the push scenario needs all three of `HIVE_LIVE_SOCKET_APP_TOKEN`, ' +
+          '`HIVE_LIVE_SOCKET_BOT_TOKEN` and `HIVE_LIVE_SOCKET_USER_TOKEN` — the ' +
+          'third is a xoxp- user token with chat:write, because a mention the ' +
+          'bot posts itself carries a bot_id and `readEnvelope` drops it by ' +
+          'design.',
+      );
+
+      const botToken = SOCKET_BOT_TOKEN ?? '';
+      const userClient = new WebClient(SOCKET_USER_TOKEN ?? '');
+
+      const web = openSlackWeb(botToken);
+      const { user: botUserId } = await web.authTest();
+      const { user_id: authorId } = await userClient.auth.test();
+      const channel = (await web.listChannels())[0];
+
+      ctx.skip(
+        channel === undefined,
+        'the bot token has no channel to post into — invite the app to at ' +
+          'least one channel before running this scenario.',
+      );
+
+      const channelId = channel?.id ?? '';
+      const opened = openSocketBridge(SOCKET_APP_TOKEN ?? '', botToken, [
+        String(authorId),
+      ]);
+
+      try {
+        opened.bridge.sync();
+        await opened.untilConnected;
+
+        const before = spawns.length;
+        const finished = settled(SOCKET);
+
+        // Posted as the human the user token belongs to, so the envelope
+        // carries neither a `subtype` nor a `bot_id`.
+        await userClient.chat.postMessage({
+          channel: channelId,
+          text: `<@${botUserId}> socket conformance probe`,
+        });
+
+        await finished;
+
+        // A real process was spawned, and this suite never called `runs.run`
+        // for it — the socket event is the only thing that could have.
+        expect(spawns.length).toBeGreaterThan(before);
+
+        const state = await persisted(SOCKET);
+
+        expect(state.runs.at(-1)?.outcome).not.toBe('failed');
+
+        // `runs.ts` writes `run.started — ${trigger}`, so this is the ledger
+        // saying the run it just recorded came in over `SLACK_TRIGGER` and
+        // not, say, `manual` — the one word that tells the two routes apart.
+        const bodies = (await onDisk())
+          .filter((entry) => entry['from'] === SOCKET)
+          .map((entry) => String(entry['body']));
+
+        expect(bodies).toContain(`run.started — ${SLACK_TRIGGER}`);
+      } finally {
+        opened.bridge.stop();
+      }
     },
     300_000,
   );

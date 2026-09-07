@@ -99,6 +99,12 @@ export interface ProjectConfig {
    * overwritten.
    */
   env?: Record<string, string>;
+  /**
+   * Present means every session for this project runs inside the container
+   * `claudeCommand` addresses (HIVE-133). Absent means a host session, whose
+   * spawn is byte-identical to what it was before this key existed.
+   */
+  container?: ContainerConfig;
 }
 
 /**
@@ -116,6 +122,17 @@ export interface EffectiveRuntime {
   /** Which of the two scalars came from the project rather than the top level. */
   shellFromProject: boolean;
   commandFromProject: boolean;
+  /**
+   * The project's container block with defaults applied, or absent for a host
+   * project (HIVE-133).
+   *
+   * Unlike {@link env} there is **no merge**: a project either is containerised
+   * or is not, and there is no top-level container block to layer under it. The
+   * one field that inherits is `hostAlias`, which falls back to
+   * `receiver.hostAlias` — and this is the only layer that can do it, because
+   * `resolveProject` sees a raw entry and never the receiver.
+   */
+  container?: ResolvedContainer;
 }
 
 /** One `PATH` entry the diagnostic looked in, and what it found. */
@@ -148,6 +165,36 @@ export interface CommandDiagnostic {
   /** The `PATH` that was searched — the merged env's, never `process.env`'s. */
   path: string;
   probes: PathProbe[];
+  /** Present only for a container project (HIVE-133). */
+  container?: ContainerDiagnostic;
+}
+
+/**
+ * Whether a container project could actually start a session (HIVE-133).
+ *
+ * Two independent preconditions, because they fail differently. A stopped
+ * container is transient and the user fixes it outside this app; a command with
+ * no `{env}` is a configuration error that would start a session which can
+ * never authenticate.
+ */
+export interface ContainerDiagnostic {
+  /** The probe that ran, or `null` when the block configures none. */
+  probe: string | null;
+  ok: boolean;
+  /** `null` when the probe was killed by a signal or timed out. */
+  exitCode: number | null;
+  /**
+   * The probe's stderr, trimmed.
+   *
+   * Reported verbatim because it is the only thing that can name the container:
+   * nothing in the config does, by design.
+   */
+  stderr: string;
+  /**
+   * `claudeCommand` has no `{env}`, so no `HIVE_*` variable would reach the
+   * container and every hook, ledger and `/done` call would 403.
+   */
+  missingEnvPlaceholder: boolean;
 }
 
 /**
@@ -455,6 +502,39 @@ export const JIRA_KEYS: readonly (keyof JiraConfig)[] = [
 ];
 
 /**
+ * Real-time Slack events (HIVE-124).
+ *
+ * The switch and the allow-list live here; the two tokens live in
+ * `slack-tokens.bin` under `userData`. Exactly the split `jira` uses, and for
+ * the same reason: a secret and a preference have different homes.
+ */
+export interface SlackConfig {
+  /** Off by default. Nothing connects and no token is required while it is. */
+  socketMode: boolean;
+  /**
+   * Slack user ids allowed to command an agent with `@hive`.
+   *
+   * **Defaults to empty, deliberately.** Nothing in this app can honestly
+   * discover the user's own Slack id: `auth.test` with the bot token returns
+   * the *bot's* identity, and the human's id is known only to the MCP server
+   * the agents talk to. Guessing it would repeat the paraphrase mistake
+   * HIVE-123 corrected. Empty means nobody can command, and the pane says so.
+   */
+  commanders: string[];
+}
+
+/** Off, and nobody allowed to command. See {@link SlackConfig.commanders}. */
+export const DEFAULT_SLACK: SlackConfig = {
+  socketMode: false,
+  commanders: [],
+};
+
+export const SLACK_KEYS: readonly (keyof SlackConfig)[] = [
+  'socketMode',
+  'commanders',
+];
+
+/**
  * How a containerised session addresses this machine (HIVE-131).
  *
  * A container cannot reach `127.0.0.1` — inside one that is the container's own
@@ -515,6 +595,111 @@ export type ContainerFreshness = 'exec-env' | 'rewrite';
 
 /** Secret-free and correct for every non-reattach runtime. */
 export const DEFAULT_FRESHNESS: ContainerFreshness = 'exec-env';
+
+/** Where a container project's expanded environment goes in its command line. */
+export const ENV_PLACEHOLDER = '{env}';
+
+/** The commonest spelling, and the one the settings placeholder shows. */
+export const DEFAULT_ENV_ARG = '-e {name}={value}';
+
+/**
+ * A project whose sessions run inside a container (HIVE-133).
+ *
+ * Its **presence is the switch** — there is no `enabled` flag. Every field is a
+ * string or an enum so a BYO runtime nobody has thought of yet needs
+ * configuration rather than code.
+ *
+ * This is the **file** shape: only `workspace` and `hiveDir` are required, and
+ * an absent field means "inherit", never "empty". `parse.ts` validates it and
+ * deliberately does not default it — `ParsedConfig` reports what the file said
+ * and the caller applies defaults, exactly as it does for `shell` and
+ * `subscriptionAuth`. {@link ResolvedContainer} is what a spawn actually uses,
+ * and `effectiveRuntime` is what turns one into the other.
+ *
+ * Hive never starts, stops or names a container. The name lives only inside
+ * `claudeCommand`, which is why {@link ContainerConfig.probe} exists rather
+ * than a `name` key.
+ */
+export interface ContainerConfig {
+  /**
+   * Container-side path of `project.path`.
+   *
+   * The host side is already known, so this is one field rather than a pair.
+   */
+  workspace: string;
+  /**
+   * Container-side path of `<userData>/hive`.
+   *
+   * Required, and the reason acceptance criterion 2 is reachable at all:
+   * `--settings`, `--mcp-config` and `--plugin-dir` all name paths under this
+   * directory and none is under {@link workspace}. The user mounts it; this
+   * says where it landed.
+   */
+  hiveDir: string;
+  /**
+   * How one variable is spelled, expanded at `{env}` in `claudeCommand`.
+   *
+   * A template so podman, devcontainer, sbx and anything else spell env
+   * injection their own way.
+   */
+  envArg?: string;
+  /**
+   * A command that must exit 0 before a session starts.
+   *
+   * Absent means no precondition. Its failure is reported with the runtime's
+   * own stderr, which names the container in the runtime's words — Hive cannot,
+   * because nothing here knows the name.
+   */
+  probe?: string;
+  /** See {@link ContainerFreshness}. Absent inherits {@link DEFAULT_FRESHNESS}. */
+  freshness?: ContainerFreshness;
+  /** Overrides `receiver.hostAlias`. Absent inherits it. */
+  hostAlias?: string;
+}
+
+/**
+ * The same block with every default applied — what a spawn actually uses.
+ *
+ * Produced by `effectiveRuntime`, which is the only layer that can: `hostAlias`
+ * falls back to `receiver.hostAlias`, and `resolveProject` sees one raw entry
+ * and never the receiver.
+ */
+export interface ResolvedContainer {
+  workspace: string;
+  hiveDir: string;
+  envArg: string;
+  probe?: string;
+  freshness: ContainerFreshness;
+  hostAlias: string;
+}
+
+/**
+ * The rules `config/parse.ts` and `guards.ts` **both** apply to a container block.
+ *
+ * One spelling each, deliberately shared, exactly as {@link isHostAlias} is. The
+ * set the file reader accepts and the set the IPC guard accepts have to be one
+ * set, or the settings pane stores a value that vanishes on the next load.
+ *
+ * The two callers still differ where they should: the reader reports and drops a
+ * bad block because a hand-edited file is a user mid-edit, and the guard throws
+ * because an IPC payload is either what the pane built or has no business being
+ * written. That difference is in the error handling, not in the rules.
+ */
+export const isAbsoluteContainerPath = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim() !== '' && value.startsWith('/');
+
+/** A template is useless without both placeholders — it would inject nothing. */
+export const isEnvArgTemplate = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.includes('{name}') &&
+  value.includes('{value}');
+
+export const isContainerFreshness = (value: unknown): value is ContainerFreshness =>
+  value === 'exec-env' || value === 'rewrite';
+
+/** A probe is a command to run; whitespace is not one. */
+export const isContainerProbe = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim() !== '';
 
 /** One DNS label: alphanumeric, inner hyphens allowed, no leading or trailing one. */
 const HOST_ALIAS_LABEL = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$/;
@@ -615,6 +800,14 @@ export interface ConfigSnapshot {
    * on one branch.
    */
   receiver: ReceiverConfig;
+  /**
+   * Real-time Slack events, always fully resolved (HIVE-124).
+   *
+   * Defaulted here for the reason `jira` and `receiver` are: main reads it on
+   * every socket decision, and a consumer that had to remember to apply
+   * defaults is one that will eventually forget on one branch.
+   */
+  slack: SlackConfig;
   /**
    * Whether sessions authenticate on the Claude.ai plan (HIVE-79).
    *
@@ -1084,6 +1277,7 @@ export function emptySnapshot(
     notifications: { ...DEFAULT_NOTIFICATIONS },
     jira: { ...DEFAULT_JIRA },
     receiver: { ...DEFAULT_RECEIVER },
+    slack: { ...DEFAULT_SLACK },
     errors: [],
   };
 }
@@ -1242,9 +1436,42 @@ export interface SetReceiverRequest {
   hostAlias?: string;
 }
 
+/**
+ * Payload of `config:set-slack` (HIVE-124).
+ *
+ * Partial in the same way {@link SetRuntimeRequest} is: only the fields named
+ * are touched, so flipping the switch never restates the allow-list. There is
+ * no `token` here for the reason {@link SetJiraRequest} states — the two Slack
+ * tokens are secrets and reach `safeStorage` through their own channel, not
+ * this one.
+ */
+export interface SetSlackRequest {
+  socketMode?: boolean;
+  /**
+   * The whole list, replacing what is stored — not a patch, exactly the shape
+   * {@link SetRuntimeRequest.env} is and for the same reason: `[]` is a real,
+   * offered value and is how the last commander is removed.
+   */
+  commanders?: string[];
+}
+
 /** Payload of `jira:set-token` (HIVE-67). The one payload carrying a secret. */
 export interface SetJiraTokenRequest {
   token: string;
+}
+
+/**
+ * Payload of `slack:set-tokens` (HIVE-124). The other payload carrying secrets.
+ *
+ * Both fields optional and **merged** rather than replacing: the pane commits
+ * one field at a time, and a save that dropped the token the user was not
+ * editing would clear half the configuration on every keystroke they finished.
+ * Clearing is {@link CH.slackClearTokens}, which takes both together — they are
+ * acquired from one Slack app and are useless apart.
+ */
+export interface SetSlackTokensRequest {
+  appToken?: string;
+  botToken?: string;
 }
 
 /**
@@ -1312,6 +1539,8 @@ export interface SetProjectRuntimeRequest {
   shell?: string | null;
   claudeCommand?: string | null;
   env?: Record<string, string> | null;
+  /** HIVE-133. `null` removes the block, exactly as it does for the three above. */
+  container?: ContainerConfig | null;
 }
 
 /** Which command to explain. Omitted id means the top-level command. */

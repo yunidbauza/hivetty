@@ -16,6 +16,7 @@ import {
   HOOK_HEADER_TOKEN,
   HOOK_MAX_BODY_BYTES,
   type HookAgentEvent,
+  type HookContextReply,
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '../../../../electron/shared/hook-contract';
@@ -1171,34 +1172,40 @@ describe('hook receiver', () => {
       { [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-gone'), [HOOK_HEADER_SESSION]: 'sess-gone' },
     );
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(204);
     expect(cleared).toEqual([]);
   });
 
-  it('rejects a request with no token', async () => {
+  /**
+   * Refused, and answered 204 (HIVE-138). A non-2xx from a hook is drawn on
+   * the user's screen, on every prompt, so the hook route alone says nothing
+   * where every other route says 4xx. What matters is that nothing below the
+   * refusal ran: no event, no clear, no name.
+   */
+  it('refuses a request with no token, silently', async () => {
     const response = await post(
       { hook_event_name: 'Stop' },
       { [HOOK_HEADER_SESSION]: 'sess-01' },
     );
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(204);
     expect(events).toEqual([]);
   });
 
-  it('rejects a request with the wrong token', async () => {
+  it('refuses a request with the wrong token, silently', async () => {
     const response = await post(
       { hook_event_name: 'Stop' },
       { [HOOK_HEADER_TOKEN]: 'not-the-token', [HOOK_HEADER_SESSION]: 'sess-01' },
     );
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(204);
     expect(events).toEqual([]);
   });
 
-  it('rejects a request naming no session', async () => {
+  it('refuses a request naming no session, silently', async () => {
     const response = await post(
       { hook_event_name: 'Stop' },
       { [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-01') },
     );
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(204);
     expect(events).toEqual([]);
   });
 
@@ -1211,8 +1218,67 @@ describe('hook receiver', () => {
       { hook_event_name: 'Stop' },
       { [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-gone'), [HOOK_HEADER_SESSION]: 'sess-gone' },
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(204);
     expect(events).toEqual([]);
+  });
+
+  it('warns once per refusal and identity, not once per event (HIVE-138)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const gone = {
+        [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-gone'),
+        [HOOK_HEADER_SESSION]: 'sess-gone',
+      };
+      // A stale session posts a burst; the log gets one line for it.
+      await post({ hook_event_name: 'Stop' }, gone);
+      await post({ hook_event_name: 'UserPromptSubmit', prompt: 'hi' }, gone);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain('404');
+      expect(String(warn.mock.calls[0]?.[0])).toContain('sess-gone');
+
+      // A different refusal is a different line.
+      await post(
+        { hook_event_name: 'Stop' },
+        { [HOOK_HEADER_TOKEN]: 'nope', [HOOK_HEADER_SESSION]: 'sess-gone' },
+      );
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(String(warn.mock.calls[1]?.[0])).toContain('403');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('caps what it remembers having refused, so a caller cannot grow it forever', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const stale = (id: string) => ({ [HOOK_HEADER_TOKEN]: 'nope', [HOOK_HEADER_SESSION]: id });
+      // 256 distinct identities fill the set; the 257th starts it over.
+      for (let index = 0; index < 257; index += 1) {
+        await post({ hook_event_name: 'Stop' }, stale(`sess-gone-${index}`));
+      }
+      expect(warn).toHaveBeenCalledTimes(257);
+      // The first identity is forgotten, so it warns again; the last is not.
+      await post({ hook_event_name: 'Stop' }, stale('sess-gone-0'));
+      expect(warn).toHaveBeenCalledTimes(258);
+      await post({ hook_event_name: 'Stop' }, stale('sess-gone-256'));
+      expect(warn).toHaveBeenCalledTimes(258);
+      expect(events).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('leaves every other route refusing aloud (HIVE-138)', async () => {
+    const response = await fetch(`${receiver.origin as string}${LEDGER_READ_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: 'not-the-token',
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: '{}',
+    });
+    expect(response.status).toBe(403);
   });
 
   it('accepts an unsubscribed event without acting on it', async () => {
@@ -1325,10 +1391,149 @@ describe('hook receiver', () => {
     });
   });
 
-  it('rejects a malformed body', async () => {
+  it('refuses a malformed body, silently', async () => {
     const response = await post('not json at all');
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(204);
     expect(events).toEqual([]);
+  });
+
+  describe('a ledger marker prompt (HIVE-138)', () => {
+    const prompt = (text: string, headers?: Record<string, string>) =>
+      post({ hook_event_name: 'UserPromptSubmit', prompt: text, session_id: 'u1' }, headers);
+
+    const context = async (response: Response): Promise<string> => {
+      const json = (await response.json()) as HookContextReply;
+      expect(json.hookSpecificOutput.hookEventName).toBe('UserPromptSubmit');
+      return json.hookSpecificOutput.additionalContext;
+    };
+
+    it("answers 200 with the ask whole when the prompt is that ask's marker", async () => {
+      const asked = ledger.append({
+        from: 'overmind',
+        to: 'sess-01',
+        kind: 'ask',
+        body: 'line one\nline two\nline three',
+        meta: { intent: 'ship it' },
+      });
+      const ref = asked.ok ? asked.ref : '';
+
+      const response = await prompt(`📒 ${ref}`);
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toBe('application/json');
+      const text = await context(response);
+      expect(text).toContain('line three');
+      expect(text).toContain('"intent":"ship it"');
+      expect(text).toContain(`thread "${ref}"`);
+      // The prompt still counts as the session working.
+      expect(events.map((e) => e.event)).toEqual(['UserPromptSubmit']);
+      expect(events[0]?.sessionUuid).toBe('u1');
+    });
+
+    it("answers 200 with an answer and the asker's intent", async () => {
+      const asked = ledger.append({
+        from: 'sess-01',
+        to: 'overmind',
+        kind: 'ask',
+        body: 'ok?',
+        meta: { intent: 'push' },
+      });
+      const answered = ledger.answer({ thread: asked.ok ? asked.id : '', body: 'yes' }, 'overmind');
+
+      const response = await prompt(`📒 ${answered.ok ? answered.id : ''}`);
+
+      expect(response.status).toBe(200);
+      const text = await context(response);
+      expect(text).toContain('From: overmind');
+      expect(text).toContain('Kind: answer, closing your ask');
+      expect(text).toContain('yes');
+      expect(text).toContain('You asked so you could: push');
+    });
+
+    it("carries an answer addressed to a third party without the ask's ref or intent", async () => {
+      /*
+        `Ledger.append` keeps an answer's `to` as sent, so a party to the
+        thread can address its answer to someone who is not. That someone is
+        owed the answer, not the question: no ref it never saw, no intent
+        that is not its own.
+      */
+      const asked = ledger.append({
+        from: 'sess-x',
+        to: 'sess-02',
+        kind: 'ask',
+        body: 'may I?',
+        meta: { intent: 'rotate the prod key' },
+      });
+      const answered = ledger.append({
+        from: 'sess-02',
+        to: 'sess-01',
+        kind: 'answer',
+        thread: asked.ok ? asked.id : '',
+        body: 'go ahead',
+      });
+      expect(answered.ok).toBe(true);
+
+      const response = await prompt(`📒 ${answered.ok ? answered.id : ''}`);
+
+      expect(response.status).toBe(200);
+      const text = await context(response);
+      expect(text).toContain('go ahead');
+      expect(text).toContain(`closing your ask ${asked.ok ? asked.id : ''}`);
+      expect(text).not.toContain(asked.ok ? `ask ${asked.ref}` : 'never');
+      expect(text).not.toContain('rotate the prod key');
+      expect(text).not.toContain('You asked so you could');
+    });
+
+    it('tells the model when the ask a marker names is no longer open', async () => {
+      const asked = ledger.append({ from: 'overmind', to: 'sess-01', kind: 'ask', body: 'still?' });
+      const ref = asked.ok ? asked.ref : '';
+      ledger.answer({ thread: asked.ok ? asked.id : '', body: 'done' }, 'sess-01');
+
+      const response = await prompt(`📒 ${ref}`);
+
+      expect(response.status).toBe(200);
+      const text = await context(response);
+      expect(text).toContain('still?');
+      expect(text).toContain('no longer open');
+      expect(text).not.toContain('ledger_answer');
+    });
+
+    it('answers 204 for a marker it cannot resolve', async () => {
+      expect((await prompt('📒 a999')).status).toBe(204);
+      expect(events).toHaveLength(1);
+    });
+
+    it('answers 204 for an entry addressed to someone else', async () => {
+      const asked = ledger.append({ from: 'overmind', to: 'sess-02', kind: 'ask', body: 'secret' });
+      expect((await prompt(`📒 ${asked.ok ? asked.ref : ''}`)).status).toBe(204);
+    });
+
+    it('answers 204 for a kind a nudge never carries', async () => {
+      const posted = ledger.append({ from: 'overmind', to: 'sess-01', kind: 'post', body: 'fyi' });
+      expect((await prompt(`📒 ${posted.ok ? posted.id : ''}`)).status).toBe(204);
+    });
+
+    it('answers 204 for a prompt that only quotes a marker', async () => {
+      const asked = ledger.append({ from: 'overmind', to: 'sess-01', kind: 'ask', body: 'q' });
+      expect((await prompt(`what was 📒 ${asked.ok ? asked.ref : ''} about?`)).status).toBe(204);
+    });
+
+    it('takes no name and no ticket intent from a marker, and leaves the first-prompt mark', async () => {
+      const asked = ledger.append({
+        from: 'overmind',
+        to: 'sess-01',
+        kind: 'ask',
+        body: 'HIVE-1 please',
+      });
+
+      await prompt(`📒 ${asked.ok ? asked.ref : ''}`);
+      expect(promptNames).toEqual([]);
+      expect(intents).toEqual([]);
+
+      // The user's own first prompt still names the session.
+      await prompt('fix the login page');
+      expect(promptNames).toEqual([{ entityId: 'sess-01', name: 'fix-login-page' }]);
+    });
   });
 
   it('still acts on an oversized body instead of rejecting it', async () => {
@@ -1518,7 +1723,7 @@ describe('hook receiver', () => {
         { [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-gone'), [HOOK_HEADER_SESSION]: 'sess-gone' },
       );
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(204);
       expect(intents).toEqual([]);
     });
   });
@@ -1761,6 +1966,13 @@ describe('hook receiver', () => {
 describe('the token binds to one session (HIVE-112)', () => {
   let receiver: Receiver;
   let dir: string;
+  /**
+   * What reached the app. Since HIVE-138 the hook route answers a refusal
+   * with the same 204 an acceptance gets, so on that route the status proves
+   * nothing and this is what the pairing check is held to: a refused pair
+   * publishes no event, a matching one publishes exactly one.
+   */
+  let events: HookStatusEvent[];
 
   const VALID_METRICS = {
     model: { display_name: 'Opus 4.5' },
@@ -1773,10 +1985,11 @@ describe('the token binds to one session (HIVE-112)', () => {
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'hive-receiver-token-binding-'));
+    events = [];
     const ledger = createLedger({ dir, knowsParty: () => true });
     receiver = createReceiver({
       onCleared: () => {},
-      onEvent: () => {},
+      onEvent: (event) => events.push(event),
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -1798,34 +2011,48 @@ describe('the token binds to one session (HIVE-112)', () => {
   /**
    * One entry per route this receiver answers. `ok` is the status a *correctly*
    * paired request gets, so the table doubles as proof that the pairing check
-   * does not accidentally break the happy path on any of them.
+   * does not accidentally break the happy path on any of them. `refused` is
+   * what a mismatched pair gets: 403 everywhere but the hook route, which
+   * refuses just the same and answers 204, because a non-2xx from a hook is
+   * drawn on the user's screen (HIVE-138). That it is a refusal and not an
+   * acceptance is what the `silently` tests in the main suite hold.
    */
-  const ROUTES: { name: string; url: (r: Receiver) => string; body: unknown; ok: number }[] = [
+  const ROUTES: {
+    name: string;
+    url: (r: Receiver) => string;
+    body: unknown;
+    ok: number;
+    refused: number;
+  }[] = [
     {
       name: '/hook',
       url: (r) => r.url as string,
       body: { hook_event_name: 'Stop' },
       ok: 204,
+      refused: 204,
     },
     {
       name: '/metrics',
       url: (r) => r.metricsUrl as string,
       body: VALID_METRICS,
       ok: 204,
+      refused: 403,
     },
-    { name: '/done', url: (r) => r.doneUrl as string, body: {}, ok: 204 },
-    { name: '/ready', url: (r) => r.readyUrl as string, body: {}, ok: 204 },
+    { name: '/done', url: (r) => r.doneUrl as string, body: {}, ok: 204, refused: 403 },
+    { name: '/ready', url: (r) => r.readyUrl as string, body: {}, ok: 204, refused: 403 },
     {
       name: '/ledger',
       url: (r) => `${r.origin as string}${LEDGER_POST_PATH}`,
       body: { kind: 'post', body: 'hi' },
       ok: 200,
+      refused: 403,
     },
     {
       name: '/ledger/read',
       url: (r) => `${r.origin as string}${LEDGER_READ_PATH}`,
       body: {},
       ok: 200,
+      refused: 403,
     },
   ];
 
@@ -1842,7 +2069,7 @@ describe('the token binds to one session (HIVE-112)', () => {
 
   it.each(ROUTES)(
     'refuses session A\'s own valid token presented as session B on $name',
-    async ({ url, body }) => {
+    async ({ url, body, refused }) => {
       const response = await send(
         url(receiver),
         receiver.tokenFor('sess-a'),
@@ -1850,25 +2077,29 @@ describe('the token binds to one session (HIVE-112)', () => {
         body,
       );
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(refused);
+      expect(events).toEqual([]);
     },
   );
 
-  it.each(ROUTES)('accepts the matching pair on $name', async ({ url, body, ok }) => {
+  it.each(ROUTES)('accepts the matching pair on $name', async ({ name, url, body, ok }) => {
     const response = await send(url(receiver), receiver.tokenFor('sess-a'), 'sess-a', body);
 
     expect(response.status).toBe(ok);
+    // The hook route's 204 is an acceptance only if the event got through.
+    if (name === '/hook') expect(events.map((e) => e.event)).toEqual(['Stop']);
   });
 
-  it.each(ROUTES)('refuses an unknown, garbage token on $name', async ({ url, body }) => {
+  it.each(ROUTES)('refuses an unknown, garbage token on $name', async ({ url, body, refused }) => {
     const response = await send(url(receiver), 'not-a-real-token', 'sess-a', body);
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(refused);
+    expect(events).toEqual([]);
   });
 
   it.each(ROUTES)(
     'refuses a token derived by a different receiver for the same session on $name',
-    async ({ url, body }) => {
+    async ({ url, body, refused }) => {
       const impostor = createReceiver({
         onCleared: () => {},
         onEvent: () => {},
@@ -1885,7 +2116,8 @@ describe('the token binds to one session (HIVE-112)', () => {
 
       const response = await send(url(receiver), impostor.tokenFor('sess-a'), 'sess-a', body);
 
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(refused);
+      expect(events).toEqual([]);
     },
   );
 
@@ -2171,10 +2403,10 @@ describe('the agent id space (HIVE-115)', () => {
     expect(response.status).toBe(204);
   });
 
-  it('still refuses an id that is neither a session nor an agent', async () => {
+  it('still refuses an id that is neither a session nor an agent, silently (HIVE-138)', async () => {
     const response = await postAs('nobody-at-all', { hook_event_name: 'Stop' });
 
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(204);
     expect(agentEvents).toEqual([]);
     expect(sessionEvents).toEqual([]);
   });
@@ -2385,7 +2617,8 @@ describe('the agent id space (HIVE-115)', () => {
       body: JSON.stringify({ hook_event_name: 'Stop' }),
     });
 
-    expect(response.status).toBe(403);
+    // Refused, and silently: the hook route answers 204 to a refusal (HIVE-138).
+    expect(response.status).toBe(204);
     expect(agentEvents).toEqual([]);
   });
 });
@@ -2841,4 +3074,72 @@ describe('the MCP route', () => {
       expect(response.status).toBe(400);
     },
   );
+
+  /**
+   * The channel the doc comment on `handlersFor` said was missing (HIVE-137).
+   *
+   * The stdio host reads `HIVE_GRANTS` from its own environment; there is no
+   * environment on this side of an HTTP call, so a run's grants are registered
+   * here under the run id every request already carries in `x-hive-run`. The
+   * only observable is `approve`'s decision, so that is what these read.
+   */
+  describe('run grants (HIVE-137)', () => {
+    const approve = (run?: string) =>
+      rpc(
+        {
+          jsonrpc: '2.0',
+          id: 9,
+          method: 'tools/call',
+          params: { name: 'approve', arguments: { tool_name: 'Read', input: {} } },
+        },
+        {
+          [HOOK_HEADER_SESSION]: CALLER,
+          ...(run === undefined ? {} : { [HOOK_HEADER_RUN]: run }),
+        },
+      );
+
+    const behaviour = async (response: Response): Promise<string> => {
+      const body = (await response.json()) as { result: { content: { text: string }[] } };
+
+      return (JSON.parse(body.result.content[0]?.text ?? '{}') as { behavior: string })
+        .behavior;
+    };
+
+    it('hands approve the grants registered for the run named in x-hive-run', async () => {
+      receiver.grants.set('run-1', CALLER, ['Read']);
+
+      expect(await behaviour(await approve('run-1'))).toBe('allow');
+    });
+
+    it('keeps an empty list for a run nobody registered, with no run at all, and after delete', async () => {
+      expect(await behaviour(await approve('run-2'))).toBe('deny');
+      expect(await behaviour(await approve())).toBe('deny');
+
+      receiver.grants.set('run-1', CALLER, ['Read']);
+      receiver.grants.delete('run-1');
+
+      expect(await behaviour(await approve('run-1'))).toBe('deny');
+    });
+
+    it('keeps an empty list for a caller that is not the run\'s owner', async () => {
+      receiver.grants.set('run-1', 'someone-else', ['Read']);
+
+      expect(await behaviour(await approve('run-1'))).toBe('deny');
+    });
+
+    it('is bounded: past the cap the oldest registration is evicted', async () => {
+      for (let i = 0; i < 257; i += 1) receiver.grants.set(`r${String(i)}`, CALLER, ['Read']);
+
+      expect(await behaviour(await approve('r0'))).toBe('deny');
+      expect(await behaviour(await approve('r256'))).toBe('allow');
+    });
+
+    it('forgets every registration when the receiver stops', async () => {
+      receiver.grants.set('run-1', CALLER, ['Read']);
+      await receiver.stop();
+      url = (await receiver.start()) as string;
+
+      expect(await behaviour(await approve('run-1'))).toBe('deny');
+    });
+  });
 });

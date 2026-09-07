@@ -8,9 +8,21 @@ import type {
   AgentRunRequest,
   AgentWriteRequest,
 } from './agent-contract';
+import {
+  NOTIFICATION_KEYS,
+  PROJECT_KEY_HINT,
+  isAbsoluteContainerPath,
+  isContainerFreshness,
+  isContainerProbe,
+  isEnvArgTemplate,
+  isHostAlias,
+  isProjectKey,
+  unsafeEnvReason,
+} from './config-contract';
 import type {
   AddProjectRequest,
   CloneRequest,
+  ContainerConfig,
   DiagnoseCommandRequest,
   DiagnoseEnvRequest,
   RemoveProjectRequest,
@@ -30,13 +42,8 @@ import type {
   SetProjectRuntimeRequest,
   SetReceiverRequest,
   SetRuntimeRequest,
-} from './config-contract';
-import {
-  NOTIFICATION_KEYS,
-  PROJECT_KEY_HINT,
-  isHostAlias,
-  isProjectKey,
-  unsafeEnvReason,
+  SetSlackRequest,
+  SetSlackTokensRequest,
 } from './config-contract';
 import type {
   ReadDirRequest,
@@ -49,6 +56,7 @@ import type {
 import { MAX_FILE_BYTES } from './fs-contract';
 import type {
   AckRequest,
+  PromptReport,
   ResizeRequest,
   SpawnRequest,
   WriteRequest,
@@ -512,6 +520,25 @@ export function parseAckRequest(input: unknown): AckRequest {
   };
 }
 
+const PROMPT_INPUTS: readonly string[] = ['empty', 'draft', 'unfocused'];
+
+/**
+ * The input-box report (HIVE-135). `input` is a closed set: this value is what
+ * lets main write into a terminal, so an unknown word is refused rather than
+ * read as either answer.
+ */
+export function parsePromptReport(input: unknown): PromptReport {
+  const raw = assertShape(input, ['sessionId', 'input'], 'prompt');
+  const state = raw.input;
+  if (typeof state !== 'string' || !PROMPT_INPUTS.includes(state)) {
+    return fail(`prompt.input: expected one of ${PROMPT_INPUTS.join(', ')}, got ${describe(state)}`);
+  }
+  return {
+    sessionId: assertId(raw.sessionId, 'prompt.sessionId'),
+    input: state as PromptReport['input'],
+  };
+}
+
 /**
  * A filesystem path arriving from the renderer (story 101).
  *
@@ -737,6 +764,100 @@ function assertEnv(value: unknown, label: string): Record<string, string> {
     env[key] = text;
   }
   return env;
+}
+
+/**
+ * HIVE-133's container block, over the bridge.
+ *
+ * The rules are `config/parse.ts`'s, deliberately: a value the settings pane
+ * stores must be a value the file reader accepts on the next load, or the UI
+ * saves something that silently disappears. `isHostAlias` is already shared for
+ * that reason; this extends the same discipline to the rest of the block.
+ *
+ * Unlike the reader, this **throws** rather than reporting and dropping. A
+ * hand-edited file is salvaged field by field because the user is mid-edit; an
+ * IPC payload is either what the pane built or something that has no business
+ * being written.
+ */
+export function assertContainer(value: unknown, label: string): ContainerConfig {
+  const raw = assertShape(value, ['workspace', 'hiveDir'], label, [
+    'envArg',
+    'probe',
+    'freshness',
+    'hostAlias',
+  ]);
+
+  /*
+    `isAbsoluteContainerPath` first — the same rule `parse.ts` applies, so a
+    value this guard accepts is a value the file reader accepts too. Then
+    `assertText`, matching how `probe` below is handled and for the same
+    reason (final-review fix): `isAbsoluteContainerPath` only checks for a
+    leading `/` on a non-empty string, so on its own it left `workspace` and
+    `hiveDir` the one pair of strings on this bridge with no length cap and no
+    ban on control characters — both of which end up on a spawned command
+    line via `sessionCommand`'s `PathMap`. `assertText` adds both without
+    touching the leading-`/` guarantee `isAbsoluteContainerPath` already gave.
+  */
+  const absolute = (key: 'workspace' | 'hiveDir'): string => {
+    if (!isAbsoluteContainerPath(raw[key])) {
+      throw new IpcValidationError(`${label}.${key} must be an absolute path`);
+    }
+    return assertText(raw[key], `${label}.${key}`);
+  };
+
+  const workspace = absolute('workspace');
+  const hiveDir = absolute('hiveDir');
+
+  /*
+    `isEnvArgTemplate` first, then `assertText` — the same pairing `workspace`,
+    `hiveDir` and `probe` use, and for a sharper version of the same reason.
+    The shape check only asks that both placeholders are present, so alone it
+    accepts an unbounded template and one carrying control characters. Unlike a
+    *value*, a template's own text is emitted **verbatim** by `expandEnvArgs`,
+    never quoted, because it is the runtime's vocabulary rather than user data
+    — so whatever survives this check is typed into a pty exactly as written.
+  */
+  if (raw.envArg !== undefined && !isEnvArgTemplate(raw.envArg)) {
+    throw new IpcValidationError(`${label}.envArg must contain {name} and {value}`);
+  }
+  /*
+    `isContainerProbe` first — the same rule `parse.ts` applies, so a value
+    this guard accepts is a value the file reader accepts too. `assertText`
+    runs *as well as*, not instead of: it adds a length cap and a
+    control-character ban that the reader does not enforce. That makes this
+    guard strictly stricter than the reader on those two axes, which is the
+    safe direction to differ in — the pane can refuse something a hand-edited
+    file would tolerate, but nothing a hand-edited file accepts is silently
+    dropped by the pane's read. Do not "fix" this back into symmetry by
+    dropping `assertText`.
+  */
+  if (raw.probe !== undefined && !isContainerProbe(raw.probe)) {
+    throw new IpcValidationError(`${label}.probe expected a non-empty string`);
+  }
+  if (raw.freshness !== undefined && !isContainerFreshness(raw.freshness)) {
+    throw new IpcValidationError(`${label}.freshness must be "exec-env" or "rewrite"`);
+  }
+  if (raw.hostAlias !== undefined && !isHostAlias(raw.hostAlias)) {
+    throw new IpcValidationError(`${label}.hostAlias is not a valid hostname`);
+  }
+
+  /*
+    Validated, never defaulted — the file shape in, the file shape out. An
+    absent field is how the pane says "inherit", and materialising a default
+    here would freeze today's value into the user's config file forever. That
+    is the same argument `setNotifications` makes for writing only the classes
+    the request names.
+  */
+  return {
+    workspace,
+    hiveDir,
+    ...(raw.envArg === undefined ? {} : { envArg: assertText(raw.envArg, `${label}.envArg`) }),
+    ...(raw.probe === undefined ? {} : { probe: assertText(raw.probe, `${label}.probe`) }),
+    ...(raw.freshness === undefined
+      ? {}
+      : { freshness: raw.freshness as ContainerConfig['freshness'] }),
+    ...(raw.hostAlias === undefined ? {} : { hostAlias: raw.hostAlias as string }),
+  };
 }
 
 /**
@@ -1104,10 +1225,98 @@ export function parseSetReceiverRequest(input: unknown): SetReceiverRequest {
   return request;
 }
 
-/** The token, on its way to `safeStorage`. The only payload carrying a secret. */
+/**
+ * A Slack user id allowed to command an agent with `@hive` (HIVE-124).
+ *
+ * Non-empty and free of whitespace: a pasted id with trailing whitespace, or
+ * two ids pasted as one string separated by a space, are both malformed
+ * inputs this guard should refuse rather than quietly repair.
+ */
+function assertCommanderId(value: unknown, label: string): string {
+  const id = assertString(value, label);
+  if (id.length === 0) return fail(`${label}: must not be empty`);
+  if (/\s/.test(id)) return fail(`${label}: must not contain whitespace`);
+  return id;
+}
+
+/**
+ * Payload of `config:set-slack` (HIVE-124).
+ *
+ * `commanders` replaces the stored list wholesale — see
+ * {@link SetSlackRequest.commanders} — so the array itself is rejected
+ * outright when it is not one, and every entry is validated individually, the
+ * same two-step shape {@link parseReorderProjectsRequest} uses for its own
+ * array.
+ */
+export function parseSetSlackRequest(input: unknown): SetSlackRequest {
+  const raw = assertShape(input, [], 'setSlack', ['socketMode', 'commanders']);
+
+  let commanders: string[] | undefined;
+  if (raw.commanders !== undefined) {
+    if (!Array.isArray(raw.commanders)) {
+      return fail(
+        `setSlack.commanders: expected an array, got ${describe(raw.commanders)}`,
+      );
+    }
+    commanders = Array.from(raw.commanders as unknown[]).map((id, index) =>
+      assertCommanderId(id, `setSlack.commanders[${index}]`),
+    );
+  }
+
+  const request: SetSlackRequest = {
+    ...(raw.socketMode !== undefined
+      ? { socketMode: assertBoolean(raw.socketMode, 'setSlack.socketMode') }
+      : {}),
+    ...(commanders !== undefined ? { commanders } : {}),
+  };
+
+  if (Object.keys(request).length === 0) {
+    return fail('setSlack: nothing to change');
+  }
+  return request;
+}
+
+/** The token, on its way to `safeStorage`. The first payload carrying a secret. */
 export function parseSetJiraTokenRequest(input: unknown): SetJiraTokenRequest {
   const raw = assertShape(input, ['token'], 'setJiraToken');
   return { token: assertJiraToken(raw.token, 'setJiraToken.token') };
+}
+
+/**
+ * The two socket-mode tokens, on their way to `safeStorage` (HIVE-124).
+ *
+ * {@link parseSetJiraTokenRequest} is the model, and {@link assertJiraToken} is
+ * reused rather than copied: "printable ASCII, no spaces, bounded" is a
+ * statement about *credentials in a payload*, not about Jira, and both `xapp-`
+ * and `xoxb-` are exactly that shape.
+ *
+ * Neither field is required and at least one must be present — the merge shape
+ * {@link SetSlackTokensRequest} describes. An empty payload is refused rather
+ * than treated as a clear: clearing has its own channel, and a write that
+ * silently erased both would be the one mistake this guard can prevent.
+ *
+ * The `xapp-` / `xoxb-` prefixes are deliberately **not** enforced. Slack has
+ * renamed token prefixes before, and a guard that refused a valid token would
+ * be a bug the user could not work around; a wrong one fails at `auth.test`
+ * with Slack's own message, which is the better report.
+ */
+export function parseSetSlackTokensRequest(input: unknown): SetSlackTokensRequest {
+  const raw = assertShape(input, [], 'setSlackTokens', ['appToken', 'botToken']);
+
+  const request: SetSlackTokensRequest = {
+    ...(raw.appToken === undefined
+      ? {}
+      : { appToken: assertJiraToken(raw.appToken, 'setSlackTokens.appToken') }),
+    ...(raw.botToken === undefined
+      ? {}
+      : { botToken: assertJiraToken(raw.botToken, 'setSlackTokens.botToken') }),
+  };
+
+  if (Object.keys(request).length === 0) {
+    return fail('setSlackTokens: nothing to change');
+  }
+
+  return request;
 }
 
 /**
@@ -1300,6 +1509,7 @@ export function parseSetProjectRuntimeRequest(
     'shell',
     'claudeCommand',
     'env',
+    'container',
   ]);
 
   const optionalText = (value: unknown, label: string): string | null =>
@@ -1324,6 +1534,14 @@ export function parseSetProjectRuntimeRequest(
             raw.env === null
               ? null
               : assertEnv(raw.env, 'setProjectRuntime.env'),
+        }
+      : {}),
+    ...(raw.container !== undefined
+      ? {
+          container:
+            raw.container === null
+              ? null
+              : assertContainer(raw.container, 'setProjectRuntime.container'),
         }
       : {}),
   };

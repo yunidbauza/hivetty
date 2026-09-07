@@ -182,25 +182,38 @@ export const AGENT_STATUSES = [
 ] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
-export type WakeOn = 'ledger' | 'slack.mention' | `slack.channel:${string}`;
+export type WakeOn =
+  | 'ledger'
+  | 'slack.mention'
+  | 'slack.app_mention'
+  | `slack.channel:${string}`;
 
 /**
- * The two wake events that are a fixed word, rather than a word plus a target.
+ * The three wake events that are a fixed word, rather than a word plus a target.
  *
- * These strings are **The Hive's**, not Slack's, and the second one is worth
- * saying out loud because it reads like an event name and is not one. Slack's
- * real `app_mention` fires for mentions of a Slack *app*, never for mentions of
- * a person, so `slack.mention` can only ever mean *search my mentions on the
- * wakes this agent already takes*. It is a poll instruction; it adds no wakes.
+ * These strings are **The Hive's**, not Slack's, and the two Slack-shaped ones
+ * are worth separating because they read like the same event and are opposites.
  *
- * `ledger` is the one that adds wakes, and it is the reason background agents
- * are addressable at all: an `ask` or `answer` whose `to` names the agent wakes
- * it, whoever wrote it — the overmind through the console's `ask` verb, a
- * terminal session through `ledger_ask`, or another agent through the same
- * tools. A broadcast (no `to`) wakes nobody, because parties read those on
+ * `slack.mention` is **not** an event. Slack has no event for mentions of a
+ * *person*, so this can only ever mean *search my mentions on the wakes this
+ * agent already takes*. It is a poll instruction; it adds no wakes.
+ *
+ * `slack.app_mention` is the one genuinely new value (HIVE-124), and it is not
+ * a rename of the above. It is Slack's real event, fires for mentions of the
+ * **app**, and is a genuine push trigger requiring the Socket Mode bridge.
+ *
+ * `ledger` is the other one that adds wakes, and it is the reason background
+ * agents are addressable at all: an `ask` or `answer` whose `to` names the
+ * agent wakes it, whoever wrote it — the overmind through the console's `ask`
+ * verb, a terminal session through `ledger_ask`, or another agent through the
+ * same tools. A broadcast (no `to`) wakes nobody, because parties read those on
  * their own schedule.
  */
-export const WAKE_ON_EVENTS = ['ledger', 'slack.mention'] as const;
+export const WAKE_ON_EVENTS = [
+  'ledger',
+  'slack.mention',
+  'slack.app_mention',
+] as const;
 
 /** `slack.channel:#incorp-dev` — the prefix, and what may follow it. */
 export const WAKE_ON_CHANNEL_PREFIX = 'slack.channel:';
@@ -288,7 +301,63 @@ export interface AgentDefinition {
     parallel: number;
   };
   body: string;
+  /** Where this agent's wakes run, when not on the host (HIVE-137). */
+  container?: AgentContainer;
 }
+
+/**
+ * Where a containerised agent runs (HIVE-137).
+ *
+ * The project block's fields, minus `probe`, plus the two a no-shell wake
+ * needs: which runtime to call and which container to name. Everything a
+ * session gets from a free-form `claudeCommand` with `{env}` an agent gets
+ * from these, because `runs.ts` builds the argv itself — a wake is spawned
+ * without a shell, so there is nothing to type a command string into.
+ *
+ * Validated, never defaulted: an absent field stays absent to
+ * `wake-command.ts`, which is the layer that knows what to inherit.
+ */
+export interface AgentContainer {
+  /** `docker`, `podman`, or an absolute path to a runtime binary. */
+  runtime: string;
+  /** The container's name, as `<runtime> exec` addresses it. */
+  name: string;
+  /** The binary inside. Absent means `claude`. */
+  command?: string;
+  /** Container-side path of the agent's workdir; the run's cwd inside. */
+  workspace: string;
+  /** Container-side path of `<userData>/hive`. */
+  hiveDir: string;
+  /** How one variable is spelled for this runtime. Absent means `-e {name}={value}`. */
+  envArg?: string;
+  /** Absent means `exec-env`. `rewrite` is accepted here and refused by the wake, this story. */
+  freshness?: 'exec-env' | 'rewrite';
+  /** How the container reaches the host. Absent means the receiver's global alias. */
+  hostAlias?: string;
+}
+
+/**
+ * One argv element with no shell to split it: no whitespace, no control
+ * characters. A value that fails this would either become two arguments or
+ * carry a byte into `docker exec`'s own argument parsing.
+ */
+const ONE_TOKEN = /^[^\s\p{Cc}]+$/u;
+
+export const isContainerRuntime = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  (value === 'docker' ||
+    value === 'podman' ||
+    // A path, which a bare `/` — the form's "other" seed — is not yet.
+    (value.length > 1 && value.startsWith('/') && ONE_TOKEN.test(value)));
+
+/** A Docker name token: alphanumeric first, then `[A-Za-z0-9_.-]`, bounded like a hostname. */
+export const isContainerName = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length <= 253 &&
+  /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value);
+
+export const isContainerCommand = (value: unknown): value is string =>
+  typeof value === 'string' && ONE_TOKEN.test(value);
 
 export interface AgentSummary {
   name: string;
@@ -528,6 +597,22 @@ export const AGENT_FIELDS: readonly FieldSpec[] = [
   { path: 'limits.daily_usd', kind: 'number', required: false },
   { path: 'limits.rotate_after', kind: 'number', required: false },
   { path: 'limits.parallel', kind: 'number', required: false },
+  /*
+    HIVE-137. `text` here means "one line"; the rules that matter are the
+    predicates `definition.ts` applies to each, shared with the settings form
+    so the two accept one set. `freshness` is the one closed vocabulary among
+    them, so it is an `enum` and needs no predicate of its own. Snake case,
+    because the grammar's `KEY` admits `[a-z0-9_-]` only — `hiveDir` would
+    never parse as a key, exactly as `budgetUsd` would not.
+  */
+  { path: 'container.runtime', kind: 'text', required: false },
+  { path: 'container.name', kind: 'text', required: false },
+  { path: 'container.command', kind: 'text', required: false },
+  { path: 'container.workspace', kind: 'text', required: false },
+  { path: 'container.hive_dir', kind: 'text', required: false },
+  { path: 'container.env_arg', kind: 'text', required: false },
+  { path: 'container.freshness', kind: 'enum', required: false, values: ['exec-env', 'rewrite'] },
+  { path: 'container.host_alias', kind: 'text', required: false },
 ];
 
 /**

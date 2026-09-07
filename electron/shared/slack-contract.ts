@@ -107,3 +107,154 @@ export type SlackStatus =
  */
 export const grantsSlackTools = (tools: readonly string[]): boolean =>
   tools.some((tool) => tool.startsWith(SLACK_TOOL_PREFIX));
+
+/* ---------------------------------------------------------------- HIVE-124 */
+
+/**
+ * The trigger name a Socket Mode wake reports (HIVE-124).
+ *
+ * Ranked between `manual` and `ledger` in `scheduler.ts`'s `triggerFor`: a
+ * person pressing Run still wins, and `ledger` would name a route the entry
+ * never took — there is no log line for `ledger_read` to find.
+ */
+export const SLACK_TRIGGER = 'slack';
+
+/** A message in a channel an agent named with `slack.channel:#x`. */
+export const SLACK_CHANNEL_KIND = 'slack.channel';
+/** An `@hive` mention with no agent name in it — a wake, not an instruction. */
+export const SLACK_MENTION_KIND = 'slack.app_mention';
+/** An `@hive <agent> <task>` from an allow-listed author — a task run. */
+export const SLACK_COMMAND_KIND = 'slack.command';
+
+/** A burst inside this window becomes one wake. */
+export const SLACK_EVENT_DEBOUNCE_MS = 3_000;
+
+/**
+ * The floor between two event wakes of the same agent.
+ *
+ * Push replaces a 5-minute tick, so without this a chatty channel spends a
+ * day's model budget before lunch. Bounds the worst case at 1440 runs a day;
+ * the agent's own `limits` remain the real backstop. A `@hive` command bypasses
+ * it — see `bridge.ts`.
+ */
+export const SLACK_EVENT_MIN_GAP_MS = 60_000;
+
+/** How much of a Slack message reaches the wake prompt. */
+export const SLACK_EVENT_TEXT_MAX = 300;
+
+/**
+ * How many `(channel, ts, agent)` keys the dedupe cache holds.
+ *
+ * An `app_mention` also arrives as a `message` in the same channel, and one
+ * Slack message must never wake **the same agent** twice. The agent is part of
+ * the key rather than absent from it: a global `(channel, ts)` would let the
+ * mention's delivery to its own subscriber consume the key and drop the channel
+ * watcher's copy, so an agent watching that channel would silently stop seeing
+ * every message that mentioned the app.
+ *
+ * The cost of that correctness is here: N agents watching one channel spend N
+ * keys per message against this ceiling, so the window this bounds is "the last
+ * 500 deliveries", not "the last 500 messages".
+ */
+export const SLACK_EVENT_DEDUPE_MAX = 500;
+
+/**
+ * How long the bridge waits before trying a connection again, per attempt.
+ *
+ * ## Why the bridge reconnects at all, rather than the SDK
+ *
+ * `@slack/socket-mode` reconnects itself, and that is precisely the problem:
+ * it does so **silently and forever**. Revoke the app token and
+ * `apps.connections.open` starts answering `invalid_auth`; the retry throws out
+ * of `delayReconnectAttempt`'s own callback, which nothing awaits, so no state
+ * is emitted, no listener fires, and the pane keeps whatever it last said. The
+ * one event that reaches a listener in that hole is `reconnecting`, which is
+ * indistinguishable from a healthy blip.
+ *
+ * So `clients.ts` passes `autoReconnectEnabled: false` and this app owns the
+ * loop. A drop then arrives as `disconnected` — an event the SDK really does
+ * emit — and a retry whose `start()` rejects rejects *into* `connect`, where
+ * the existing catch pushes `failed` with Slack's own words in it. That is the
+ * whole of the fix: the pane can say Failed because the failure now has a path
+ * to it.
+ *
+ * ## Why a ladder, and why it ends
+ *
+ * A laptop that wakes before its Wi-Fi does must not need the switch toggled,
+ * so the first rungs are seconds. A token that is genuinely revoked must not be
+ * retried until the process dies, so the ladder is finite: ~6½ minutes in five
+ * attempts, then `failed` stands. Every `sync()` — a config change, a token
+ * saved, an agent enabled — starts a fresh attempt anyway, so "ended" means
+ * "stopped retrying on its own", not "unreachable until restart".
+ */
+export const SLACK_RECONNECT_DELAYS_MS: readonly number[] = [
+  1_000, 5_000, 15_000, 60_000, 300_000,
+];
+
+/** The encrypted file under `userData`, beside Jira's `jira-credential.bin`. */
+export const SLACK_TOKENS_FILE = 'slack-tokens.bin';
+
+/** One Slack message, as this app reads it. */
+export interface SlackEvent {
+  kind: typeof SLACK_CHANNEL_KIND | typeof SLACK_MENTION_KIND;
+  /** The channel **id**, e.g. `C0123ABCD`. Slack events never carry the name. */
+  channel: string;
+  ts: string;
+  /** The parent thread, or `ts` itself for a top-level message. */
+  threadTs: string;
+  user: string;
+  text: string;
+}
+
+/** What the pane is told about the socket. Never carries a token. */
+export type SlackSocketStatus =
+  | { kind: 'off' }
+  | { kind: 'connecting' }
+  | {
+      kind: 'connected';
+      workspace: string | null;
+      bot: string | null;
+      /**
+       * Channel names from `wake.on` that resolved to no Slack channel id.
+       *
+       * Carried on the status push rather than fetched by a verb of its own:
+       * the pane has to report an unresolved name in its Wakes-on summary
+       * ("never dropped in silence"), the resolution happens in the main
+       * process, and this is the message the pane already receives.
+       */
+      unresolved: string[];
+    }
+  | { kind: 'failed'; message: string };
+
+/** Presence, never values. This is what crosses IPC. */
+export interface SlackTokensState {
+  hasAppToken: boolean;
+  hasBotToken: boolean;
+  encryptionAvailable: boolean;
+}
+
+/**
+ * What the pane reads on mount, because neither half of it can be pushed
+ * (HIVE-124).
+ *
+ * Jira's `jira:status` is the precedent and the reason this exists: that pane
+ * reads `credential` + `encryptionAvailable` when it mounts, and this one had
+ * no equivalent — socket state was push-only (and `push` suppresses a repeat,
+ * so re-emitting on subscribe would be silently dropped), and token presence
+ * had no read verb at all. After a restart a fully configured, connected
+ * bridge therefore rendered as `off` with empty placeholders, and the
+ * `unresolved` list — which rides on the `connected` push — was unreachable in
+ * the one state a user actually opens the drawer in.
+ *
+ * Presence only, like every other Slack answer: {@link SlackTokensState}
+ * carries two booleans, and {@link SlackSocketStatus} never holds a token.
+ */
+export interface SlackSocketState {
+  tokens: SlackTokensState;
+  socket: SlackSocketStatus;
+}
+
+/** What `Test` answers with. */
+export type SlackSocketTestResult =
+  | { kind: 'ok'; workspace: string; bot: string }
+  | { kind: 'error'; message: string };
