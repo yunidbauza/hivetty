@@ -1,8 +1,10 @@
+import { basename } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 import { spawn as spawnPty, type IPty } from 'node-pty';
 
 import {
+  FOREGROUND_POLL_MS,
   KILL_GRACE_MS,
   MAX_SESSIONS,
   SCROLLBACK_BYTES,
@@ -48,6 +50,8 @@ export interface SessionManagerOptions {
   control?: ProcessControl;
   /** Injected so tests never load the real native addon. */
   spawn?: typeof spawnPty;
+  /** Cadence of the foreground poll for spawns flagged `foreground`. */
+  foregroundPollMs?: number;
 }
 
 export interface SessionManager extends SessionOperations {
@@ -94,6 +98,16 @@ interface Session {
   paused: boolean;
   cols: number;
   rows: number;
+  /**
+   * The foreground poll (terminals), present only for a spawn that asked.
+   *
+   * Cleared in `handleExit`, which every ending — exit, kill, killAll —
+   * reaches through the pty's own `onExit`. A timer that outlived its session
+   * would read a closed fd once a second forever.
+   */
+  foregroundTimer?: ReturnType<typeof setInterval>;
+  /** The last name reported, so the poll emits on change only. */
+  lastForeground?: string | null;
 }
 
 /**
@@ -136,6 +150,23 @@ const TEARDOWN_BUDGET_MS = SHUTDOWN_TIMEOUT_MS - 500;
 const remaining = (deadline: number): number =>
   Math.max(0, deadline - Date.now());
 
+/**
+ * What a `sh` may call itself.
+ *
+ * `/bin/sh` is rarely its own program: on macOS it is a bash build whose comm
+ * name is `bash`, on Debian it is `dash`, on Alpine `ash`. A terminal
+ * configured with `shell: /bin/sh` would otherwise name its own prompt `bash`
+ * forever. Any other configured shell is matched by its basename alone —
+ * `/bin/zsh` is `zsh` everywhere.
+ */
+const SH_PROVIDERS: ReadonlySet<string> = new Set(['sh', 'bash', 'dash', 'ash']);
+
+/** The names the configured shell is allowed to answer the tty with. */
+function shellNamesFor(shell: string): ReadonlySet<string> {
+  const name = basename(shell);
+  return name === 'sh' ? SH_PROVIDERS : new Set([name]);
+}
+
 export function createSessionManager(
   options: SessionManagerOptions = {},
 ): SessionManager {
@@ -146,6 +177,7 @@ export function createSessionManager(
     baseEnv = process.env,
     control = processControl,
     spawn = spawnPty,
+    foregroundPollMs = FOREGROUND_POLL_MS,
   } = options;
 
   const sessions = new Map<string, Session>();
@@ -189,6 +221,58 @@ export function createSessionManager(
   const delay = (ms: number): Promise<void> =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
+  /**
+   * What owns the tty, or `null` for the shell at its prompt.
+   *
+   * node-pty's `process` getter is `tcgetpgrp` plus a `sysctl` for the name on
+   * darwin, and it returns a comm name — `zsh`, never `/bin/zsh` — so the
+   * shell is recognised by name rather than by path. Which names count is
+   * {@link shellNamesFor}'s business: the comm name is the **executable's**,
+   * and `/bin/sh` is almost never an executable called `sh`. The getter can
+   * throw on a closed fd; that is read as "unknown", which is reported as the
+   * prompt rather than as a process the row would then invent.
+   */
+  function readForeground(
+    session: Session,
+    shellNames: ReadonlySet<string>,
+  ): string | null {
+    let name: string;
+    try {
+      name = session.pty.process;
+    } catch {
+      return null;
+    }
+    if (name === '' || shellNames.has(name) || shellNames.has(basename(name))) {
+      return null;
+    }
+    return name;
+  }
+
+  function stopForegroundPoll(session: Session): void {
+    if (session.foregroundTimer === undefined) return;
+    clearInterval(session.foregroundTimer);
+    delete session.foregroundTimer;
+  }
+
+  function startForegroundPoll(session: Session, shell: string): void {
+    const shellNames = shellNamesFor(shell);
+    // Left `undefined` rather than seeded to `null`: the first read is a real
+    // read of the tty, and it must be able to report `null` (the shell at its
+    // prompt) as a change from "nothing observed yet" — seeding this to `null`
+    // would make that first, most common reading indistinguishable from no
+    // change at all, and the poll would stay silent forever.
+    session.foregroundTimer = setInterval(() => {
+      if (session.status !== 'live') {
+        stopForegroundPoll(session);
+        return;
+      }
+      const name = readForeground(session, shellNames);
+      if (name === session.lastForeground) return;
+      session.lastForeground = name;
+      session.emit({ type: 'foreground', sessionId: session.sessionId, name });
+    }, foregroundPollMs);
+  }
+
   function handleExit(
     sessionId: string,
     session: Session,
@@ -200,6 +284,7 @@ export function createSessionManager(
     // contract, which promises exit lands after the final data flush — twice
     // means the second one lands after nothing.
     if (session.status === 'exited') return;
+    stopForegroundPoll(session);
 
     // Flush whatever the decoder was still holding, so a transcript never ends
     // mid-character.
@@ -504,6 +589,8 @@ export function createSessionManager(
       });
 
       emit({ type: 'spawned', sessionId, pid: pty.pid });
+
+      if (command.foreground === true) startForegroundPoll(session, shell);
     },
 
     write(sessionId, data) {

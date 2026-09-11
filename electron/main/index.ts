@@ -1,14 +1,35 @@
 import { join } from 'node:path';
 
-import { app } from 'electron';
+import { app, powerSaveBlocker } from 'electron';
 
 import { applyDevDockIcon } from './app-icon';
+import { primaryWindow } from './aux-windows';
+import { parseInvocation } from './cli';
 import { getConfig } from './config';
 import { startLoginEnvImport } from './config/login-env';
 import { installContentSecurityPolicy } from './csp';
-import { registerIpcHandlers } from './ipc';
+import {
+  fleetIsIdle,
+  remoteListenerBindError,
+  remoteListenerBoundAddress,
+  startRemoteListener,
+} from './ipc';
+import { registerIpc, switchIpcMode } from './ipc/router';
 import { registerLifecycle } from './lifecycle';
-import { startUpdateChecks } from './updates';
+import { bindUntilBound } from './server/bind-retry';
+import {
+  pairDevice,
+  pairOutcomeMessage,
+  revokeDevice,
+  revokeOutcomeMessage,
+} from './server/devices';
+import { fileBackedIo, serverDeviceStore } from './server/file-backed-io';
+import { runOneShot } from './server/one-shot';
+import { claimServerLock } from './server/server-lock';
+import { setServerMode } from './server-mode';
+import { onShutdown } from './shutdown';
+import { createServerTray } from './tray';
+import { runHeadlessUpdate, runUnattended, startUpdateChecks } from './updates';
 import { createWindow } from './window';
 
 /**
@@ -65,8 +86,37 @@ if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
   app.setPath('userData', join(app.getPath('appData'), 'the-hive'));
 }
 
+/*
+  Before the single-instance lock, and before `whenReady`, deliberately.
+
+  On a served machine the app is always running, so a one-shot that requested
+  the lock would lose it and quit before printing anything — and Electron's
+  `second-instance` event hands argv to the first instance with no channel to
+  answer on. Before `whenReady` because it can be: minting is `randomBytes`, a
+  digest and a config write. Measured 2026-09-08 — `safeStorage` is unavailable
+  before `whenReady` even in a GUI session, which is the other half of why the
+  server stores a digest rather than a secret.
+*/
+const invocation = parseInvocation(process.argv, app.isPackaged);
+if (invocation.kind === 'update') {
+  void app
+    .whenReady()
+    // A machine whose config serves runs under launchd, which relaunches it
+    // onto the new version itself (HIVE-147).
+    .then(() => runHeadlessUpdate({ relaunch: !getConfig().server.enabled }))
+    .catch((cause: unknown) => {
+      console.log(`[hive] could not update: ${cause instanceof Error ? cause.message : String(cause)}`);
+      app.exit(1);
+    });
+} else if (invocation.kind !== 'app') {
+  process.exit(runOneShot(invocation, fileBackedIo()));
+} else {
+
 /**
- * The single-instance lock, first, before anything else is wired.
+ * The single-instance lock, before anything else is wired — everything below
+ * this point, that is. The one-shot dispatch above it runs earlier still,
+ * deliberately: see that block's own comment for why a one-shot must not
+ * wait on this lock at all.
  *
  * `requestSingleInstanceLock()` returns false in the *second* process, which
  * must exit immediately — the first process gets a `second-instance` event and
@@ -110,7 +160,110 @@ if (!app.requestSingleInstanceLock()) {
     shell: getConfig().shell,
   });
 
-  registerIpcHandlers();
+  /*
+    Through the router rather than straight to `registerIpcHandlers` (HIVE-141),
+    and local **first**, unconditionally (HIVE-144).
+
+    A window opens from `whenReady` below, and a window whose channels are not
+    bound is an app that looks alive and answers nothing — so the surface a
+    renderer can reach exists before anything is awaited. `remote` mode is
+    reached from here by the same `switchIpcMode` the settings pane calls,
+    rather than by a boot-only attach path: two paths would be two descriptions
+    of what "remote mode is bound to" means, and the difference between them
+    would first show up after a switch, which is the worst possible time to
+    find it.
+
+    Not awaited, and its failure is not fatal. `switchIpcMode` rebinds local
+    when the dial fails — a laptop that has left the tailnet, a mini that is
+    asleep — so the app boots usable either way, and Settings is where the user
+    retries. The config file is left saying `remote`, deliberately: that is
+    what they asked for, and the next launch should try again.
+  */
+  /**
+   * Server mode is `server.enabled` in the config file — set for good on the
+   * unattended Mac mini this ships to run on — **or** the one-off `--server`
+   * flag, which enables it for this run only and never writes the file
+   * (HIVE-142, spec §5.1, §3.4). Computed once, here, rather than inside
+   * `whenReady`'s callback below: `registerLifecycle` needs the same answer
+   * to decide whether its own `whenReady` handler may open a window, and
+   * racing two separate reads of `getConfig()` against two separate
+   * `whenReady` callbacks would risk the file changing under it between them.
+   *
+   * **Above the boot attach, not below it (HIVE-144 review, I3.)** It used to
+   * be computed after, which was fine while nothing read it before — and stopped
+   * being fine the moment attaching had to be refused on a serving machine.
+   * `setServerMode` is what `switchIpcMode` and `AppInfo.serving` read, and
+   * the attach two statements down is the first thing that can ask.
+   */
+  const serverMode = invocation.server || getConfig().server.enabled;
+  setServerMode(serverMode);
+
+  if (serverMode) {
+    const serverLock = claimServerLock();
+    if (serverLock.kind === 'active') {
+      console.error('[hive] cannot start server: another server is already running for this config.');
+      process.exit(1);
+    }
+    onShutdown(serverLock.release);
+    /*
+      Nobody sits at a served machine to click "Update ready", so it updates
+      itself, and only while no session or agent run would be cut off by the
+      quit (HIVE-147). Here rather than inside `whenReady` because it has to
+      land before `startUpdateChecks` builds the updater.
+
+      The config's `server.enabled`, not `serverMode`: a one-off `--server`
+      trial is run by someone sitting at the machine and supervised by nothing,
+      so it must neither install without asking nor quit expecting launchd to
+      bring it back — the same test `--update` applies above.
+    */
+    if (getConfig().server.enabled) runUnattended(fleetIsIdle);
+  }
+
+  registerIpc('local');
+  /*
+    An install is the server or a client, never both — `RemoteConfig`'s own
+    doc comment, now enforced (HIVE-144 review, I3). Skipped rather than
+    attempted-and-refused so the log line names the real reason: a serving
+    machine that also asked to attach is a config to fix, not a dial that
+    failed.
+
+    `switchIpcMode` refuses this same combination itself, which is what makes
+    the guard here a nicety rather than the enforcement — see
+    `electron/main/server-mode.ts` for what the combination actually costs.
+  */
+  if (getConfig().remote.mode === 'remote' && serverMode) {
+    console.error(
+      '[hive] not attaching at boot: this Hive is serving. An install is the ' +
+        'server or a client, never both — turn one of the two off in Settings, ' +
+        'or in config.json.',
+    );
+  } else if (getConfig().remote.mode === 'remote') {
+    void switchIpcMode('remote')
+      .then((outcome) => {
+        if (!outcome.ok) console.error('[hive] could not attach at boot:', outcome);
+      })
+      /*
+        `switchIpcMode` answers a refusal as a value, but it can still *reject*:
+        nothing wraps its unbind, and its own rebind-local arm can throw if
+        `ipcMain` refuses a channel. Unhandled, that becomes an unhandled
+        rejection at boot over precisely the state this whole story exists to
+        prevent — a window with no IPC — which is the one failure that must
+        not be silent. Logged and swallowed: there is nothing better to do
+        here, and crashing the app over a failed attach would be worse than
+        the local surface the switch has already tried to restore.
+      */
+      .catch((cause: unknown) => {
+        console.error('[hive] the boot attach threw:', cause);
+      });
+  }
+
+  /**
+   * The tray's own handle (HIVE-142 review, I2) — see the comment at its
+   * assignment below for why dropping it is not an option. Declared here,
+   * outside `whenReady`'s callback, so `onShutdown` can close over it and
+   * still see the value that callback assigns.
+   */
+  let serverTray: ReturnType<typeof createServerTray> | undefined;
 
   /**
    * The CSP has to be installed before any renderer loads, and
@@ -133,7 +286,112 @@ if (!app.requestSingleInstanceLock()) {
      * able to stop a window from opening.
      */
     startUpdateChecks();
+
+    if (serverMode) {
+      /**
+       * No renderer runs in server mode: the console is the tray, not a
+       * window (HIVE-142). Hiding the dock icon is what tells a served
+       * machine's own screen — reached only by screen-sharing into the mini —
+       * that this is a background service, not an app someone forgot to quit.
+       * `app.dock` is `undefined` off macOS, which is the only platform this
+       * app ships on today; the optional chain is defensive rather than load-
+       * bearing.
+       */
+      app.dock?.hide();
+      /*
+        What `caffeinate -i` does, without a second process to supervise
+        (HIVE-147): idle sleep would take every session and the socket with
+        it. Held for the life of the process; the OS drops it when we exit.
+      */
+      powerSaveBlocker.start('prevent-app-suspension');
+      /*
+        A bind failure is not fatal to boot (the tray still shows, and names
+        the cause), and it is not final either (HIVE-147): at login the
+        Tailscale address `server.bind.host` names may not exist yet, so the
+        bind is retried until it lands. The result is not needed here —
+        `remoteListenerBoundAddress()` below reads it back once it lands,
+        exactly as `AppInfo` reads the receiver's own `boundHost` rather than
+        the promise `hooks.start()` returned.
+      */
+      onShutdown(bindUntilBound(startRemoteListener));
+      /*
+        Held in a module-level binding, not discarded (HIVE-142 review, I2).
+        Inside `createServerTray`, the only remaining references form a
+        closed cycle — `tray` → its own `click`/`right-click` handler map →
+        `showMenu` → `tray` again — reachable from nothing outside the
+        function once its return value is dropped. A collected `Tray` takes
+        its status item down with it: the classic Electron footgun, and in
+        server mode the tray is the *only* way a human reaches Pair, Open or
+        Quit — the exact failure `createServerTray`'s own `setTitle('Hive')`
+        fallback exists to keep from being invisible, defeated a different
+        way if the whole item can vanish. `serverTray.destroy()` is also
+        registered with `onShutdown` below, so the status item is removed
+        cleanly rather than left for the OS to notice the process exited.
+      */
+      /*
+        One `DeviceStore`, shared by every call below (HIVE-142 review, N1/N2):
+        reads go through `readServerDevicesFromDisk()` (no shared-cache
+        write — see that function's own doc comment), writes through
+        `setServer`. The same collaborator backs both `devices` (display) and
+        `onPair`/`onRevoke` (mutation) below, and it is the exact shape
+        `pairDevice`/`revokeDevice` in `server/devices.ts` expect — the same
+        functions `one-shot.ts`'s `--pair`/`--revoke` call, so the duplicate-
+        name refusal, the collision retry and "persist against the roster
+        you just read" are each proven once, not reimplemented here worse.
+      */
+      const deviceStore = serverDeviceStore();
+      serverTray = createServerTray({
+        devices: deviceStore.readDevices,
+        onPair: (name) => {
+          const outcome = pairDevice(name, deviceStore);
+          if (outcome.ok) return { token: outcome.token, deviceId: outcome.device.id };
+          return { error: pairOutcomeMessage(outcome, name) };
+        },
+        onRevoke: (name) => {
+          const outcome = revokeDevice(name, deviceStore);
+          if (outcome.revoked) return { revoked: true };
+          return { error: revokeOutcomeMessage(outcome, name) };
+        },
+        /*
+          The `primaryWindow()`-first shape `second-instance` already uses in
+          `lifecycle.ts` (HIVE-142 review, I2) — this click used to call
+          `createWindow({ withSplash: true })` unconditionally, so with the
+          dock icon hidden and no Cmd-Tab entry, clicking the tray while the
+          console was merely hidden behind another window stacked a second
+          renderer, splash and all, rather than surfacing the one already
+          open. No splash on a re-open, for the same reason `second-instance`
+          has none either: the app is already running, so there is no boot
+          to cover.
+        */
+        onOpenConsole: () => {
+          const existing = primaryWindow();
+          if (existing) {
+            if (existing.isMinimized()) existing.restore();
+            existing.focus();
+            return;
+          }
+          createWindow();
+        },
+        // Both pieces sourced from what the listener actually bound, not
+        // composed from a separate config read — see that function's own
+        // doc comment (HIVE-142 review, N3).
+        boundAddress: remoteListenerBoundAddress,
+        // The cause of a bind failure, for the same reason (HIVE-142
+        // review, I3).
+        bindError: remoteListenerBindError,
+      });
+    }
   });
 
-  registerLifecycle({ createWindow });
+  /*
+    `serverTray?.` rather than a plain call: this hook is registered
+    unconditionally (every launch, not only server mode), and it runs
+    whether or not the tray was ever created — the same `?.` shape every
+    other optional-composition teardown in this codebase uses (see
+    `ipc/index.ts`'s `hooks?.`, `runs?.`, `scheduler?.`).
+  */
+  onShutdown(() => serverTray?.destroy());
+
+  registerLifecycle({ createWindow, serverMode });
+}
 }

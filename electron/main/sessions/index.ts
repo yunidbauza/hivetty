@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentsDirectory } from '@shared/agent-contract';
-import { AUTH_ENV_KEYS, ENV_PLACEHOLDER, type ConfigSnapshot } from '@shared/config-contract';
+import {
+  AUTH_ENV_KEYS,
+  ENV_PLACEHOLDER,
+  type ConfigSnapshot,
+  type ProjectConfig,
+} from '@shared/config-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
   type HookNotificationType,
@@ -19,6 +24,7 @@ import {
 } from '@shared/ipc-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
 import { MAX_SESSIONS } from '@shared/pty-host-protocol';
+import type { ResumePoint } from '@shared/remote-contract';
 import {
   spawnRefusal,
   type SessionEffort,
@@ -27,11 +33,14 @@ import {
   type SessionBranchEvent,
   type SessionClearedEvent,
   type SessionFinishedEvent,
+  type SessionForegroundEvent,
   type SessionReadyEvent,
   type SessionNameEvent,
   type SessionNameOrigin,
   type SessionStatusEvent,
+  type SessionTerminalEndedEvent,
   type SessionTicketIntentEvent,
+  type TerminalEnding,
 } from '@shared/session-contract';
 
 import { effectiveRuntime } from '../config/runtime';
@@ -47,7 +56,8 @@ import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
 import { ticketKeysFromBranch } from '../hooks/ticket-intent';
 import { createStatusTracker } from '../hooks/tracker';
-import { createPtyIpc, type PtyIpc } from '../ipc/pty';
+import { createPtyIpc, type PtyIpc, type ResumeResult } from '../ipc/pty';
+import type { SurfaceId } from '../ipc/surfaces';
 import type { McpRuntime } from '../mcp';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
 import type { SkillsRuntime } from '../skills';
@@ -92,6 +102,11 @@ export interface SessionsOptions {
    * `app` itself would drag Electron into a unit test that has none.
    */
   userDataPath: string;
+  /**
+   * Who is watching, right now (HIVE-145). Passed straight to `PtyIpc`, whose
+   * flow-control window follows the slowest of them; see `PtyIpcOptions`.
+   */
+  liveSurfaces?: () => Iterable<SurfaceId>;
   maxSessions?: number;
   /**
    * The hook pipeline, when the app has one (HIVE-62).
@@ -302,6 +317,23 @@ export interface CommandExit {
   message?: string;
 }
 
+/**
+ * A terminal: the session spawn with the bootstrap omitted (terminals).
+ *
+ * Same shell, same directory, same per-project environment as a session in
+ * this project — and then nothing is typed into it. Everything a session has
+ * on top (hooks, title, status, metrics, history) is a registration this
+ * request never makes.
+ */
+export interface OpenTerminalRequest {
+  entityId: string;
+  projectId: string;
+  cols: number;
+  rows: number;
+  /** Where the shell starts. Absent means the project's path. */
+  cwd?: string;
+}
+
 export interface Sessions {
   /** Spawn, bootstrap and attach — or attach to what is already running. */
   open(request: OpenRequest): void;
@@ -311,6 +343,12 @@ export interface Sessions {
    * loss, or a failure to start arrives first.
    */
   openCommand(request: OpenCommandRequest): void;
+  /**
+   * Spawn a terminal: the login shell in a mapped project, with nothing typed
+   * into it (terminals). Attach, never respawn — the same invariant `open`
+   * keeps for a session.
+   */
+  openTerminal(request: OpenTerminalRequest): void;
   /**
    * Type into a session's pty.
    *
@@ -322,7 +360,44 @@ export interface Sessions {
    */
   write(entityId: string, data: string): boolean;
   resize(entityId: string, cols: number, rows: number): void;
-  ack(entityId: string, seq: number): void;
+  ack(entityId: string, seq: number, surfaceId?: SurfaceId): void;
+  /** A surface went away: release whatever it was holding (HIVE-145). */
+  releaseSurface(surfaceId: SurfaceId): void;
+  /**
+   * What a reconnecting remote client missed since `from` (HIVE-143, HIVE-144).
+   *
+   * Exposed here rather than by handing `PtyIpc` out, because the id is the
+   * whole reason this method exists. `PtyIpc` is keyed by the **pty session**
+   * id, which is per generation and changes on every restart; every `pty:data`
+   * that leaves this module has had that id rewritten to the **entity** id by
+   * `forward`. A client's `resumeFrom` therefore holds entity ids, and the
+   * events it gets back must carry them too — so the translation happens in the
+   * one place that already owns it.
+   *
+   * `from.gen` is checked against the entity's **live** generation before
+   * anything else, and a mismatch answers `gap` without ever consulting
+   * `PtyIpc`'s ring — see the comment on the implementation for why a
+   * contiguous replay across a restart is the bug this exists to close.
+   *
+   * `null` for an id with no live session, which the caller reads as "skip this
+   * one" rather than as an error. See {@link ResumeResult} for the rest.
+   */
+  resume(entityId: string, from: ResumePoint): ResumeResult | null;
+  /**
+   * The generation number of this entity's **live** session, or `undefined` if
+   * it has none (HIVE-144).
+   *
+   * A thin passthrough to the registry, exposed because `ipc/index.ts`'s
+   * resume-miss handler needs it and has no reference to the registry itself
+   * — only to this `Sessions` instance. It stamps the synthetic, empty
+   * `pty:data` frame it sends on a `gap` with the entity's *current* live
+   * generation, never the stale one the reconnecting client sent: that frame
+   * is what the renderer's own generation check (see `DataEvent.gen`) first
+   * sees after the discontinuity, and it must already read as the new
+   * generation, or the very next live batch — which does carry the new
+   * generation — would look like a second, spurious break.
+   */
+  generationFor(entityId: string): number | undefined;
   kill(entityId: string): void;
   /** Kill, wait for the exit, then spawn a fresh process and bootstrap it. */
   restart(request: OpenRequest): Promise<void>;
@@ -515,6 +590,16 @@ export function createSessions(options: SessionsOptions): Sessions {
    */
   const commandEntities = new Set<string>();
 
+  /**
+   * Entities that are terminals (terminals).
+   *
+   * Like `commandEntities`, membership is what keeps the activity tracker, the
+   * bootstrap, the title scanner and history away from output that is not a
+   * Claude's. Unlike a command, a terminal has an ending the renderer needs
+   * to hear about — see `publishTerminalEnded`.
+   */
+  const terminalEntities = new Set<string>();
+
   function settleCommand(entityId: string, result: CommandExit): void {
     const onExit = commandExit.get(entityId);
     if (!onExit) return;
@@ -549,18 +634,38 @@ export function createSessions(options: SessionsOptions): Sessions {
          * tracker would publish `session:status` for an entity the store does
          * not have, and feeding the bootstrap would type `claude` into it.
          */
-        if (!commandEntities.has(entityId)) {
+        if (!commandEntities.has(entityId) && !terminalEntities.has(entityId)) {
           activity.sawOutput(entityId);
           bootstrap.sawOutput(entityId);
           // A command has no agent, so it has no name to report either.
           readTitle(entityId, data.chunk);
         }
-        send(channel, { ...data, sessionId: entityId } satisfies DataEvent);
+        /**
+         * `gen` is stamped here, beside the id rewrite this function already
+         * does, and it **replaces** whatever `ipc/pty.ts` put in `data.gen`
+         * rather than trusting it (HIVE-144). `PtyIpc` is keyed by pty session
+         * id and has no concept of "entity" or "generation" — it cannot supply
+         * this value honestly, and does not try to (see `PLACEHOLDER_GEN` in
+         * `ipc/pty.ts`). `registry.entityFor(sessionId)` having resolved above
+         * means `sessionId` is this entity's *current* live session, so
+         * `registry.generationFor(entityId)` — set in the same `open()` call
+         * that minted `sessionId` — is guaranteed defined here.
+         */
+        const gen = registry.generationFor(entityId)!;
+        send(channel, { ...data, sessionId: entityId, gen } satisfies DataEvent);
         return;
       }
       case CH.ptyExit: {
         const data = payload as ExitEvent;
         send(channel, { ...data, sessionId: entityId } satisfies ExitEvent);
+        if (terminalEntities.has(entityId)) {
+          publishTerminalEnded(
+            entityId,
+            data.signal !== undefined && data.signal !== 0
+              ? { kind: 'lost', reason: `the shell was killed by signal ${data.signal}` }
+              : { kind: 'finished' },
+          );
+        }
         settleCommand(entityId, {
           exitCode: data.exitCode,
           // `0` means no signal, which is also the right reading of an absent
@@ -574,10 +679,21 @@ export function createSessions(options: SessionsOptions): Sessions {
       case CH.ptyLost: {
         const data = payload as SessionLostEvent;
         send(channel, { ...data, sessionId: entityId } satisfies SessionLostEvent);
+        if (terminalEntities.has(entityId)) {
+          publishTerminalEnded(entityId, { kind: 'lost', reason: 'the pty host crashed' });
+        }
         // No code: nothing concluded. `-1` is the sentinel a command caller
         // reads as "did not finish", never as an exit status.
         settleCommand(entityId, { exitCode: -1, signal: 0, lost: true });
         settleExit(entityId);
+        return;
+      }
+      case CH.sessionForeground: {
+        // Only a terminal asked. Anything else on this channel is a host bug
+        // and is dropped rather than painted onto a session row.
+        if (!terminalEntities.has(entityId)) return;
+        const data = payload as { sessionId: string; name: string | null };
+        send(CH.sessionForeground, { entityId, name: data.name } satisfies SessionForegroundEvent);
         return;
       }
       default:
@@ -779,7 +895,11 @@ export function createSessions(options: SessionsOptions): Sessions {
    * activity tracker and the bootstrap above. Every reference runs inside a
    * callback, well after this line, so the cycle is only in the source order.
    */
-  const ptyIpc: PtyIpc = createPtyIpc({ supervisor, send: forward });
+  const ptyIpc: PtyIpc = createPtyIpc({
+    supervisor,
+    send: forward,
+    ...(options.liveSurfaces !== undefined ? { liveSurfaces: options.liveSurfaces } : {}),
+  });
 
   /**
    * Start reporting (HIVE-62).
@@ -1063,6 +1183,11 @@ export function createSessions(options: SessionsOptions): Sessions {
     if (event.sessionId === undefined) return;
     const entityId = registry.entityFor(event.sessionId);
     if (entityId === undefined) return;
+    if (terminalEntities.has(entityId)) {
+      publishTerminalEnded(entityId, { kind: 'lost', reason: event.message });
+      settleExit(entityId);
+      return;
+    }
     if (!commandExit.has(entityId)) return;
 
     settleCommand(entityId, {
@@ -1217,6 +1342,19 @@ export function createSessions(options: SessionsOptions): Sessions {
       entityId,
       resumable: history?.resumable(entityId) !== undefined,
     } satisfies SessionFinishedEvent);
+  }
+
+  /**
+   * A terminal's shell ended (terminals).
+   *
+   * The one thing a terminal reports that a command never does — see
+   * {@link OpenTerminalRequest}. Carries `ending` rather than an exit code
+   * because the renderer never had a code to interpret in the first place;
+   * `forward` and `supervisor.onError` translate whatever the host actually
+   * said into one of the two kinds this function forwards untouched.
+   */
+  function publishTerminalEnded(entityId: string, ending: TerminalEnding): void {
+    send(CH.sessionTerminalEnded, { entityId, ending } satisfies SessionTerminalEndedEvent);
   }
 
   /**
@@ -1622,8 +1760,9 @@ export function createSessions(options: SessionsOptions): Sessions {
     const seenBranch = lastBranch.get(entityId);
     if (seenBranch !== undefined) branches.forget(seenBranch.cwd);
     lastBranch.delete(entityId);
-    // Same reason as the data path: a command's ending is not a session's.
-    if (commandEntities.delete(entityId)) {
+    // Same reason as the data path: a command's or a terminal's ending is not
+    // a session's — see `publishTerminalEnded`.
+    if (commandEntities.delete(entityId) || terminalEntities.delete(entityId)) {
       // Nothing to tell the store about.
     } else {
       /**
@@ -1828,6 +1967,8 @@ export function createSessions(options: SessionsOptions): Sessions {
     env?: Record<string, string>;
     /** Names the host must drop from the inherited environment (HIVE-79). */
     stripEnv?: readonly string[];
+    /** Poll the foreground process group (terminals). See `PtySpawn`. */
+    foreground?: true;
   }): void {
     if (registry.size() >= maxSessions) {
       throw new Error(spawnRefusal({ reason: 'at-capacity', limit: maxSessions }));
@@ -1871,25 +2012,37 @@ export function createSessions(options: SessionsOptions): Sessions {
       ...(request.stripEnv === undefined ? {} : { stripEnv: request.stripEnv }),
       cols: request.cols,
       rows: request.rows,
+      ...(request.foreground === true ? { foreground: true } : {}),
     });
+  }
+
+  /**
+   * The project a spawn may open, or the refusal that names the file to edit.
+   *
+   * Shared by `spawn` and `openTerminal` — both resolve a project from the
+   * same snapshot the same way, and a session and a terminal give the user the
+   * identical message to act on when the id does not resolve to a usable
+   * directory. Narrows `path` to `string`, which is what every caller does
+   * with it immediately afterwards (`cwd: project.path`).
+   */
+  function requireMappedProject(
+    snapshot: ConfigSnapshot,
+    projectId: string,
+  ): ProjectConfig & { path: string } {
+    const project = snapshot.projects.find((entry) => entry.id === projectId);
+    if (!project || project.status !== 'ok' || project.path === null) {
+      throw new Error(
+        spawnRefusal({ reason: 'unmapped', projectId, configPath: snapshot.configPath }),
+      );
+    }
+    return project as ProjectConfig & { path: string };
   }
 
   /** Refuse with a message the user can act on, never a generic failure. */
   function spawn(request: OpenRequest): void {
     const snapshot = config();
 
-    const project = snapshot.projects.find(
-      (entry) => entry.id === request.projectId,
-    );
-    if (!project || project.status !== 'ok' || project.path === null) {
-      throw new Error(
-        spawnRefusal({
-          reason: 'unmapped',
-          projectId: request.projectId,
-          configPath: snapshot.configPath,
-        }),
-      );
-    }
+    const project = requireMappedProject(snapshot, request.projectId);
 
     /**
      * A new generation starts with no status history.
@@ -2389,6 +2542,37 @@ export function createSessions(options: SessionsOptions): Sessions {
       }
     },
 
+    openTerminal(request) {
+      // Attach, never respawn — the same invariant `open` keeps.
+      if (registry.sessionFor(request.entityId) !== undefined) return;
+
+      const snapshot = config();
+      const project = requireMappedProject(snapshot, request.projectId);
+      const runtime = effectiveRuntime(snapshot, project);
+
+      terminalEntities.add(request.entityId);
+      try {
+        startProcess({
+          entityId: request.entityId,
+          // "Terminal here" names a directory; every other entry point means
+          // the project root. A directory that is gone is not repaired: the
+          // host's spawn error reaches the tab with its reason.
+          cwd: request.cwd ?? project.path,
+          file: runtime.shell,
+          args: LOGIN_SHELL_ARGS,
+          cols: request.cols,
+          rows: request.rows,
+          // The project's own variables, and nothing of the hook receiver's:
+          // there is no Claude here to call it.
+          env: runtime.env,
+          foreground: true,
+        });
+      } catch (cause) {
+        terminalEntities.delete(request.entityId);
+        throw cause;
+      }
+    },
+
     open(request) {
       /**
        * **Attach, never respawn.** The invariant that makes the product work.
@@ -2438,11 +2622,93 @@ export function createSessions(options: SessionsOptions): Sessions {
       ptyIpc.resize(sessionId, cols, rows);
     },
 
-    ack(entityId, seq) {
+    ack(entityId, seq, surfaceId) {
       const sessionId = registry.sessionFor(entityId);
       if (sessionId === undefined) return;
-      ptyIpc.ack(sessionId, seq);
+      ptyIpc.ack(sessionId, seq, surfaceId);
     },
+
+    releaseSurface(surfaceId) {
+      ptyIpc.releaseSurface(surfaceId);
+    },
+
+    /**
+     * **A restart across a disconnect (HIVE-143 review; closed by HIVE-144).**
+     *
+     * The hazard this replaces: `sessionFor` always answers the **current**
+     * generation's pty session id, and `emptyChannel()` starts that
+     * generation's `seq` at 0 — so a bare `lastSeq` could be talking about a
+     * process that no longer exists without anything here being able to tell.
+     * Concretely: a client watches `hero-refresh` to seq 40 and its socket
+     * drops. While it is away the session restarts. It reconnects holding
+     * `{ seq: 40 }`, generation 2 has produced 60 batches, and the ring still
+     * reaches back past 40 — so a lookup keyed on `seq` alone would answer
+     * `replay` with generation 2's seq 41…60, **contiguous**. The client's
+     * sequence assertion is satisfied, no gap notice fires, and the restart is
+     * swallowed: the terminal shows a new process's output stitched onto the
+     * old one's transcript as though nothing happened.
+     *
+     * The fix is `from.gen`, checked below *before* `sessionId` is even handed
+     * to `ptyIpc`. `registry.generationFor` answers the live generation from
+     * state that changes atomically with every `open()`/`close()` — the same
+     * guarantee `sessionFor` already relies on — so a mismatch is detected
+     * without ever asking the ring whether it can still reach `from.seq`,
+     * which is what makes "the ring is never consulted on a mismatch" true
+     * regardless of how far back its buffer happens to reach. On a match, the
+     * client's `resumeFrom` names something that has never changed underneath
+     * it, and normal replay-or-gap arithmetic applies exactly as it did before
+     * generations crossed the wire.
+     */
+    resume(entityId, from) {
+      const sessionId = registry.sessionFor(entityId);
+      if (sessionId === undefined) return null;
+
+      /*
+        `sessionFor` having answered means `open()` minted this session for
+        this entity, which is the same call that set its `generationFor`
+        entry — the two are never out of step (see `registry.ts`), so this is
+        never the actual `undefined` case, only the type's.
+      */
+      const liveGen = registry.generationFor(entityId)!;
+
+      if (from.gen !== liveGen) {
+        /*
+          No ring lookup: `from.seq` was issued by a process that is not this
+          one, so whatever the ring can or cannot still reach is irrelevant —
+          answering from it would be exactly the swallowed-restart bug above,
+          just with extra steps. `ptyIpc.headSeq` gives the number the caller
+          needs for its marker frame without pretending a replay was
+          evaluated.
+        */
+        return { kind: 'gap', seq: ptyIpc.headSeq(sessionId) ?? 0 };
+      }
+
+      const result = ptyIpc.resume(sessionId, from.seq);
+      /*
+        A gap carries no events, so there is no id in it to translate — only a
+        seq, and a seq is a property of the stream rather than of the id it is
+        published under. It passes through unchanged and the caller stamps its
+        marker frame with the entity id it already holds.
+      */
+      if (result === null || result.kind === 'gap') return result;
+
+      /*
+        The same rewrite `forward` performs on every live `pty:data`, applied
+        to the replayed ones so a client cannot tell a replayed frame from a
+        live one. `gen` is stamped with `liveGen` for the same reason `forward`
+        stamps it there rather than trusting whatever `ipc/pty.ts` put in the
+        field (HIVE-144): this module owns the entity/generation mapping,
+        `ipc/pty.ts` does not, and `liveGen` is already proven correct by the
+        check above — the generation matched, so it is both what the client
+        asked for and what is still running.
+      */
+      return {
+        kind: 'replay',
+        events: result.events.map((event) => ({ ...event, sessionId: entityId, gen: liveGen })),
+      };
+    },
+
+    generationFor: (entityId) => registry.generationFor(entityId),
 
     kill(entityId) {
       const sessionId = registry.sessionFor(entityId);

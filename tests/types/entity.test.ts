@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  cwdTail,
   endedReason,
   entityLabel,
+  isAgent,
   isEnded,
+  isLostTerminal,
+  isSession,
+  isTerminal,
   isTerminated,
   recencyOf,
+  terminalLabel,
   type Agent,
   type Session,
+  type Terminal,
 } from '@/types/entity';
 
 /**
@@ -211,5 +218,47 @@ describe('recencyOf', () => {
 
   it('answers zero for a row nobody timestamped', () => {
     expect(recencyOf(session())).toBe(0);
+  });
+});
+
+const terminal: Terminal = {
+  kind: 'terminal',
+  id: 'term-01',
+  project: 'nova-web',
+  cwd: '/repos/nova-web',
+  status: 'prompt',
+  createdAt: 0,
+  lines: [],
+};
+
+describe('Terminal', () => {
+  it('is neither a session nor an agent, and is never terminated', () => {
+    expect(isTerminal(terminal)).toBe(true);
+    expect(isSession(terminal)).toBe(false);
+    expect(isAgent(terminal)).toBe(false);
+    expect(isTerminated(terminal)).toBe(false);
+  });
+
+  it('reads at prompt with no foreground, and the foreground name otherwise', () => {
+    expect(terminalLabel(terminal)).toBe('at prompt');
+    expect(terminalLabel({ ...terminal, status: 'running', foreground: 'vitest' })).toBe('vitest');
+  });
+
+  it('is lost only once an ending is recorded', () => {
+    expect(isLostTerminal(terminal)).toBe(false);
+    expect(isLostTerminal({ ...terminal, ended: { reason: 'x', at: 1 } })).toBe(true);
+    expect(isLostTerminal(undefined)).toBe(false);
+  });
+
+  it('shows the last path segment of its directory', () => {
+    expect(cwdTail('/repos/nova-web')).toBe('nova-web');
+    expect(cwdTail('/repos/nova-web/')).toBe('nova-web');
+    expect(cwdTail('/')).toBe('/');
+  });
+
+  it('reads lost once the shell died, whatever it was doing', () => {
+    expect(
+      terminalLabel({ ...terminal, status: 'running', foreground: 'vitest', ended: { reason: 'x', at: 1 } }),
+    ).toBe('lost');
   });
 });

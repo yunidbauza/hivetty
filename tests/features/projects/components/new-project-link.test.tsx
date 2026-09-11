@@ -1,8 +1,14 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { NewProjectLink } from '@features/projects/components/new-project-link';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
+import { emptySnapshot } from '@shared/config-contract';
 
 const chooseProjectDirectory = vi.fn();
 const addProjectToConfig = vi.fn();
@@ -15,6 +21,19 @@ vi.mock('@lib/project-config', async (importOriginal) => {
     addProjectToConfig: (request: unknown) => addProjectToConfig(request),
   };
 });
+
+/**
+ * Put this window in the attached state (HIVE-144 review, C1).
+ *
+ * The snapshot is the plain one on purpose: while attached, `config:get` is
+ * answered by the server, whose own `remote.mode` reads `'local'`. Attachment
+ * is the runtime fact beside it, and `setAttachedServerForTest` is the only
+ * place it lives.
+ */
+function attach(): void {
+  setProjectConfigForTest(emptySnapshot('/home/dev/.hive/config.json', '/bin/zsh'));
+  setAttachedServerForTest('mini.tail1234.ts.net');
+}
 
 /**
  * Mapping a project from the rail, without a detour through Settings.
@@ -107,5 +126,47 @@ describe('NewProjectLink', () => {
 
     await waitFor(() => expect(button).toBeDisabled());
     expect(chooseProjectDirectory).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * While attached to someone else's Hive, `config:choose-directory` opens on
+   * the server, which has no window. The click still never reaches the bridge;
+   * what changed in HIVE-146 is that it now reaches the server-side picker
+   * instead of nothing.
+   */
+  describe('attached to a remote server', () => {
+    afterEach(() => {
+      resetProjectConfig();
+    });
+
+    /**
+     * HIVE-144 disabled this control while attached, because the only thing it
+     * could do was fail. HIVE-146 gave it something to do, so the assertion
+     * inverts: it stays live, and a click opens the server-side picker.
+     */
+    it('stays live and opens the picker', async () => {
+      attach();
+      const user = userEvent.setup();
+
+      render(<NewProjectLink />);
+      const button = screen.getByRole('button', { name: /new project/i });
+      expect(button).toBeEnabled();
+
+      await user.click(button);
+
+      expect(
+        await screen.findByRole('dialog', { name: /Choose a project folder/i }),
+      ).toBeInTheDocument();
+    });
+
+    it('never opens the native dialog', async () => {
+      attach();
+      const user = userEvent.setup();
+
+      render(<NewProjectLink />);
+      await user.click(screen.getByRole('button', { name: /new project/i }));
+
+      expect(chooseProjectDirectory).not.toHaveBeenCalled();
+    });
   });
 });

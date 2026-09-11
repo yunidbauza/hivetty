@@ -71,6 +71,85 @@ const noAgents = {
   onAgentsList: () => Promise.reject(new Error('not exercised by this test')),
 };
 
+const VALID_METRICS = {
+  model: { display_name: 'Opus 4.5' },
+  context_window: { used_percentage: 10, context_window_size: 1_000_000 },
+  rate_limits: {
+    five_hour: { used_percentage: 1, resets_at: 1 },
+    seven_day: { used_percentage: 1, resets_at: 1 },
+  },
+};
+
+/**
+ * One entry per route this receiver answers. `ok` is the status a *correctly*
+ * paired request gets, so the table doubles as proof that the pairing check
+ * does not accidentally break the happy path on any of them. `refused` is
+ * what a mismatched pair gets: 403 everywhere but the hook route, which
+ * refuses just the same and answers 204, because a non-2xx from a hook is
+ * drawn on the user's screen (HIVE-138). That it is a refusal and not an
+ * acceptance is what the `silently` tests in the main suite hold.
+ *
+ * Module scope rather than local to one `describe`, since HIVE-134: the
+ * Origin-and-Host guard sweep at the end of this file drives off this same
+ * table, so a route added here gets guard coverage for free instead of
+ * needing a second enumeration someone has to remember to update in step.
+ */
+const ROUTES: {
+  name: string;
+  url: (r: Receiver) => string;
+  body: unknown;
+  ok: number;
+  refused: number;
+}[] = [
+  {
+    name: '/hook',
+    url: (r) => r.url as string,
+    body: { hook_event_name: 'Stop' },
+    ok: 204,
+    refused: 204,
+  },
+  {
+    // `METRICS_PATH` is `/statusline` (`metrics-contract.ts`) — the name here
+    // is a label for `it.each` titles, not a URL, so it should say what the
+    // route is actually reached at rather than the field it was named after.
+    name: '/statusline',
+    url: (r) => r.metricsUrl as string,
+    body: VALID_METRICS,
+    ok: 204,
+    refused: 403,
+  },
+  { name: '/done', url: (r) => r.doneUrl as string, body: {}, ok: 204, refused: 403 },
+  { name: '/ready', url: (r) => r.readyUrl as string, body: {}, ok: 204, refused: 403 },
+  {
+    name: '/ledger',
+    url: (r) => `${r.origin as string}${LEDGER_POST_PATH}`,
+    body: { kind: 'post', body: 'hi' },
+    ok: 200,
+    refused: 403,
+  },
+  {
+    name: '/ledger/read',
+    url: (r) => `${r.origin as string}${LEDGER_READ_PATH}`,
+    body: {},
+    ok: 200,
+    refused: 403,
+  },
+  {
+    name: '/agents',
+    url: (r) => `${r.origin as string}${AGENTS_PATH}`,
+    body: {},
+    ok: 200,
+    refused: 403,
+  },
+  {
+    name: '/mcp',
+    url: (r) => `${r.origin as string}${MCP_PATH}`,
+    body: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    ok: 200,
+    refused: 403,
+  },
+];
+
 /**
  * The receiver is exercised over a real loopback socket rather than by calling
  * its handler directly.
@@ -142,6 +221,10 @@ describe('hook receiver', () => {
 
   it('binds loopback only', () => {
     expect(url.startsWith('http://127.0.0.1:')).toBe(true);
+  });
+
+  it('reports the running bind through `boundHost` while listening', () => {
+    expect(receiver.boundHost).toBe('127.0.0.1');
   });
 
   /**
@@ -1950,6 +2033,11 @@ describe('hook receiver', () => {
     expect(response.status).toBe(500);
     await exploding.stop();
   });
+
+  it('binds loopback when no host is given, exactly as it always did', () => {
+    // The outer `beforeEach`'s receiver, built with no `host`.
+    expect(url.startsWith('http://127.0.0.1:')).toBe(true);
+  });
 });
 
 /**
@@ -1974,15 +2062,6 @@ describe('the token binds to one session (HIVE-112)', () => {
    */
   let events: HookStatusEvent[];
 
-  const VALID_METRICS = {
-    model: { display_name: 'Opus 4.5' },
-    context_window: { used_percentage: 10, context_window_size: 1_000_000 },
-    rate_limits: {
-      five_hour: { used_percentage: 1, resets_at: 1 },
-      seven_day: { used_percentage: 1, resets_at: 1 },
-    },
-  };
-
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'hive-receiver-token-binding-'));
     events = [];
@@ -1997,6 +2076,10 @@ describe('the token binds to one session (HIVE-112)', () => {
       onMetrics: () => {},
       knowsSession: (entityId) => entityId === 'sess-a' || entityId === 'sess-b',
       ...noAgents,
+      // The ROUTES table below drives `/agents` too, so unlike every other use
+      // of `noAgents` here this one needs a directory read that actually
+      // resolves rather than the loud rejection the fixture otherwise gives.
+      onAgentsList: async () => ({ agents: [] }),
       onLedgerRead: (_caller, query) => ledger.read(query),
       onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
     });
@@ -2007,54 +2090,6 @@ describe('the token binds to one session (HIVE-112)', () => {
     await receiver.stop();
     rmSync(dir, { recursive: true, force: true });
   });
-
-  /**
-   * One entry per route this receiver answers. `ok` is the status a *correctly*
-   * paired request gets, so the table doubles as proof that the pairing check
-   * does not accidentally break the happy path on any of them. `refused` is
-   * what a mismatched pair gets: 403 everywhere but the hook route, which
-   * refuses just the same and answers 204, because a non-2xx from a hook is
-   * drawn on the user's screen (HIVE-138). That it is a refusal and not an
-   * acceptance is what the `silently` tests in the main suite hold.
-   */
-  const ROUTES: {
-    name: string;
-    url: (r: Receiver) => string;
-    body: unknown;
-    ok: number;
-    refused: number;
-  }[] = [
-    {
-      name: '/hook',
-      url: (r) => r.url as string,
-      body: { hook_event_name: 'Stop' },
-      ok: 204,
-      refused: 204,
-    },
-    {
-      name: '/metrics',
-      url: (r) => r.metricsUrl as string,
-      body: VALID_METRICS,
-      ok: 204,
-      refused: 403,
-    },
-    { name: '/done', url: (r) => r.doneUrl as string, body: {}, ok: 204, refused: 403 },
-    { name: '/ready', url: (r) => r.readyUrl as string, body: {}, ok: 204, refused: 403 },
-    {
-      name: '/ledger',
-      url: (r) => `${r.origin as string}${LEDGER_POST_PATH}`,
-      body: { kind: 'post', body: 'hi' },
-      ok: 200,
-      refused: 403,
-    },
-    {
-      name: '/ledger/read',
-      url: (r) => `${r.origin as string}${LEDGER_READ_PATH}`,
-      body: {},
-      ok: 200,
-      refused: 403,
-    },
-  ];
 
   const send = (target: string, token: string, session: string, body: unknown) =>
     fetch(target, {
@@ -3141,5 +3176,665 @@ describe('the MCP route', () => {
 
       expect(await behaviour(await approve('run-1'))).toBe('deny');
     });
+  });
+});
+
+/**
+ * `ReceiverOptions.host` (HIVE-134) — the socket binds where it is told,
+ * loopback by default. Its own top-level suite and its own receiver, not the
+ * `hook receiver` describe's, because every test in that one leans on the
+ * loopback receiver its `beforeEach` builds.
+ */
+describe('a widened bind', () => {
+  let widened: Receiver;
+  let widenedUrl: string;
+
+  beforeEach(async () => {
+    widened = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: (entityId) => entityId !== 'sess-gone',
+      ...noAgents,
+      ...noLedger,
+      onMetrics: () => {},
+      /*
+        `0.0.0.0` rather than a bridge address: a unit test cannot know one,
+        and every machine has this. What is under test is that the host is
+        no longer hardcoded, not which address was chosen.
+      */
+      host: '0.0.0.0',
+    });
+    const started = await widened.start();
+    expect(started).not.toBeNull();
+    widenedUrl = started as string;
+  });
+
+  afterEach(async () => {
+    await widened.stop();
+  });
+
+  it('announces the address it was told to bind, not loopback', () => {
+    expect(widenedUrl.startsWith('http://0.0.0.0:')).toBe(true);
+    expect(widened.origin?.startsWith('http://0.0.0.0:')).toBe(true);
+  });
+
+  /*
+    `boundHost` is what the header's exposure chip is sourced from (HIVE-134):
+    the plain, unparsed `host` `listen()` actually succeeded with, not a value
+    re-derived from `origin`'s `http://host:port` shape. Asserted as an exact
+    match rather than a `startsWith`, unlike `origin` and the derived URLs
+    above — there is no port, scheme or path riding along with it to make a
+    prefix check meaningful.
+  */
+  it('reports the widened host through `boundHost`, exactly', () => {
+    expect(widened.boundHost).toBe('0.0.0.0');
+  });
+
+  /*
+    The literal was duplicated — once in `listen` and once building `origin`
+    (receiver.ts, in `start`). If only one moved, the announced URL would name
+    an address nothing is listening on, and every derived URL with it.
+  */
+  it('derives every URL from the same address', () => {
+    for (const derived of [widened.metricsUrl, widened.doneUrl, widened.readyUrl]) {
+      expect(derived?.startsWith('http://0.0.0.0:')).toBe(true);
+    }
+  });
+
+  it('really is listening there', async () => {
+    const port = new URL(widenedUrl).port;
+    const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+      method: 'POST',
+      headers: {
+        [HOOK_HEADER_TOKEN]: widened.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+    });
+    // `/ready` answers `204`, the same no-body convention `/done` follows.
+    expect(response.status).toBe(204);
+  });
+});
+
+/**
+ * `boundHost`'s lifecycle (HIVE-134).
+ *
+ * `url` and `origin` already have this shape proven on them implicitly — every
+ * other `describe` block here starts from a receiver already listening and
+ * stops it in `afterEach` — but `boundHost` is what the header's exposure chip
+ * reads through `AppInfo`, so its *own* start-to-stop journey is asserted
+ * directly rather than left to be inferred from those.
+ */
+describe('boundHost (HIVE-134)', () => {
+  it('is null before start, the bound host after a successful start, and null again after stop', async () => {
+    const fresh = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => false,
+      ...noAgents,
+      ...noLedger,
+      onMetrics: () => {},
+      host: '127.0.0.1',
+    });
+
+    // Before `start()`, nothing is listening — a socket that has never bound
+    // is exactly as unreachable as one that failed to.
+    expect(fresh.boundHost).toBeNull();
+
+    const started = await fresh.start();
+    expect(started).not.toBeNull();
+    expect(fresh.boundHost).toBe('127.0.0.1');
+
+    await fresh.stop();
+    // `stop()` closes the socket this session had open; a chip still reading
+    // the pre-stop value here would be exactly the false "still exposed"
+    // signal in the other direction from the one this story fixes.
+    expect(fresh.boundHost).toBeNull();
+  });
+
+  /**
+   * `boundHost` reports what the kernel actually bound, not the string the
+   * config named (review finding, HIVE-134). `host` names a hostname here,
+   * not a literal address — the same shape a `/etc/hosts` entry pointing a
+   * custom hostname at a loopback IP would take, which is the reviewer's
+   * `local.test` example. Using `localhost` instead proves the identical
+   * mechanism (Node resolves a hostname to a concrete bound address before
+   * `boundHost` is set) without touching `/etc/hosts`: if this field ever
+   * regressed to reporting the requested `host` string verbatim, this would
+   * see the literal `'localhost'` rather than a loopback IP, and
+   * `isLoopbackHost('localhost')` happens to already return `true` — so the
+   * assertion below is deliberately a stronger one than "not exposed": it
+   * pins the *actual* IP literal `listen()` bound, proving the field holds an
+   * address and not a hostname at all.
+   */
+  it('reports the address the kernel bound, not the hostname the config named', async () => {
+    const fresh = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => false,
+      ...noAgents,
+      ...noLedger,
+      onMetrics: () => {},
+      host: 'localhost',
+    });
+
+    const started = await fresh.start();
+    expect(started).not.toBeNull();
+
+    // Node resolves `localhost` to a concrete loopback literal before the
+    // socket binds — `127.0.0.1` or `::1` depending on this machine's
+    // resolver order — never the bare string `'localhost'` itself.
+    expect(fresh.boundHost).not.toBeNull();
+    expect(fresh.boundHost).not.toBe('localhost');
+    expect(['127.0.0.1', '::1']).toContain(fresh.boundHost);
+
+    await fresh.stop();
+  });
+});
+
+/**
+ * The token comparison (HIVE-134).
+ *
+ * `reject` now compares the presented token with `timingSafeEqual` instead of
+ * `!==`. Every case here is proven on `/ready` rather than `/hook`: since
+ * HIVE-138 the hook route turns *every* refusal into a `204` (`refusedHook`,
+ * above), so a status assertion on that route cannot tell an accepted token
+ * from a refused one. `/ready` has no such laundering — it answers `204` on
+ * success and `403` on refusal, honestly, which is exactly what a rewrite of
+ * the comparison itself needs proven.
+ *
+ * The one case also run against `/hook` is the wrong-length token, and there
+ * the proof is by side effect (did `events` grow) rather than by status, for
+ * the same reason: `/hook`'s status cannot distinguish the two outcomes.
+ */
+describe('the token comparison (HIVE-134)', () => {
+  let receiver: Receiver;
+  let dir: string;
+  let readies: string[];
+  let events: HookStatusEvent[];
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-receiver-timing-safe-'));
+    readies = [];
+    events = [];
+    const ledger = createLedger({ dir, knowsParty: () => true });
+    receiver = createReceiver({
+      onCleared: () => {},
+      onEvent: (event) => events.push(event),
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: (entityId) => readies.push(entityId),
+      onMetrics: () => {},
+      knowsSession: (entityId) => entityId === 'sess-01',
+      ...noAgents,
+      onLedgerRead: (_caller, query) => ledger.read(query),
+      onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
+    });
+    await receiver.start();
+  });
+
+  afterEach(async () => {
+    await receiver.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ready = (headers: Record<string, string> = {
+    [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-01'),
+    [HOOK_HEADER_SESSION]: 'sess-01',
+  }) =>
+    fetch(receiver.readyUrl as string, { method: 'POST', headers });
+
+  const hook = (headers: Record<string, string>) =>
+    fetch(receiver.url as string, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify({ hook_event_name: 'Stop' }),
+    });
+
+  it('still accepts the right token', async () => {
+    const response = await ready();
+
+    expect(response.status).toBe(204);
+    expect(readies).toEqual(['sess-01']);
+  });
+
+  it('refuses a token minted for a different session', async () => {
+    const response = await ready({
+      [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-02'),
+      [HOOK_HEADER_SESSION]: 'sess-01',
+    });
+
+    expect(response.status).toBe(403);
+    expect(readies).toEqual([]);
+  });
+
+  /**
+   * The case that matters most. `timingSafeEqual` throws on buffers of
+   * unequal length, and every one of these is a length other than 64 — the
+   * length of a real token. `reject` has to check the length itself, before
+   * ever calling `timingSafeEqual`, or one of these takes the whole receiver
+   * down rather than just refusing its own request. Proven on `/ready`
+   * (status) and, for one representative value, on `/hook` too (side effect):
+   * if the length check were missing, both would surface as a thrown
+   * exception instead of a clean refusal, on whichever route got there first.
+   */
+  it('refuses a token of the wrong length without throwing', async () => {
+    for (const token of ['', 'a', 'f'.repeat(63), 'f'.repeat(65), 'f'.repeat(4096)]) {
+      const response = await ready({
+        [HOOK_HEADER_TOKEN]: token,
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      });
+
+      expect(response.status).toBe(403);
+    }
+    expect(readies).toEqual([]);
+  });
+
+  it('refuses a wrong-length token on /hook too, by side effect rather than status', async () => {
+    const response = await hook({
+      [HOOK_HEADER_TOKEN]: 'f'.repeat(4096),
+      [HOOK_HEADER_SESSION]: 'sess-01',
+    });
+
+    // `/hook` answers 204 whether accepted or refused (HIVE-138) — the proof
+    // a refusal actually happened is that no event reached the app.
+    expect(response.status).toBe(204);
+    expect(events).toEqual([]);
+  });
+
+  it('refuses a missing token header', async () => {
+    const response = await ready({ [HOOK_HEADER_SESSION]: 'sess-01' } as Record<
+      string,
+      string
+    >);
+
+    expect(response.status).toBe(403);
+    expect(readies).toEqual([]);
+  });
+
+  /**
+   * A header repeated on the wire never reaches `reject` as an array: Node's
+   * http server joins duplicate values of a header like this one into a
+   * single comma-separated string (verified directly against `node:http` —
+   * this is not `set-cookie`, the one header name that becomes an array).
+   * What it does reach `reject` as is a string of the wrong length, so this
+   * is really another instance of the length guard above — but it is worth
+   * proving on the actual malformed shape a repeated header takes, rather
+   * than only on ones this suite constructs by hand.
+   */
+  it('refuses a repeated token header', async () => {
+    const port = new URL(receiver.readyUrl as string).port;
+    const response = await fetch(`http://127.0.0.1:${port}/ready`, {
+      method: 'POST',
+      headers: [
+        [HOOK_HEADER_SESSION, 'sess-01'],
+        [HOOK_HEADER_TOKEN, 'a'],
+        [HOOK_HEADER_TOKEN, 'b'],
+      ],
+    });
+
+    expect(response.status).toBe(403);
+    expect(readies).toEqual([]);
+  });
+});
+
+/**
+ * The Origin and Host guard (HIVE-134).
+ *
+ * `reject` now runs `guard` before it looks at token or session, on every
+ * route this server serves. Driven off `ROUTES` — the same table the pairing
+ * tests above sweep — rather than a second enumeration: a route added to that
+ * table gets guard coverage here for free, instead of the guard silently
+ * missing whatever a hand-maintained second list forgot to grow.
+ *
+ * `/hook` cannot report a refusal by status: `refusedHook` turns every
+ * refusal on that route into the same `204` a success gets (HIVE-138), so a
+ * red line never appears in the user's terminal over a stale session's
+ * leftover hook. A guard refusal there is proven by side effect instead —
+ * `events` stays empty — the same discipline the pairing tests above already
+ * follow for the token checks.
+ *
+ * Every request below goes through `node:http`'s `request`, not `fetch`:
+ * `Host` is the header half of what is under test, and Node's `fetch`
+ * (verified directly) silently refuses to send anything but the URL's own
+ * authority as `Host`, where it honours a caller-supplied `Origin` without
+ * complaint. One helper that is known to carry both correctly beats two paths
+ * where only one is trustworthy for the header this suite is proving.
+ */
+describe('the Origin and Host guard', () => {
+  let receiver: Receiver;
+  let dir: string;
+  let events: HookStatusEvent[];
+
+  const SESSION = 'sess-01';
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-receiver-guard-'));
+    events = [];
+    const ledger = createLedger({ dir, knowsParty: () => true });
+    receiver = createReceiver({
+      onCleared: () => {},
+      onEvent: (event) => events.push(event),
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      onMetrics: () => {},
+      // Every session is known except the one explicit stand-in for a gone
+      // one — the "before identity" test below needs a session this app has
+      // genuinely never heard of, the same convention `hook receiver` uses.
+      knowsSession: (entityId) => entityId !== 'sess-gone',
+      ...noAgents,
+      // `ROUTES` drives `/agents` too, so this needs a directory read that
+      // actually resolves rather than the loud rejection `noAgents` gives.
+      onAgentsList: async () => ({ agents: [] }),
+      onLedgerRead: (_caller, query) => ledger.read(query),
+      onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
+    });
+    await receiver.start();
+  });
+
+  afterEach(async () => {
+    await receiver.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const readyRoute = (): (typeof ROUTES)[number] => {
+    const route = ROUTES.find((candidate) => candidate.name === '/ready');
+    if (route === undefined) throw new Error('no /ready entry in ROUTES');
+    return route;
+  };
+
+  /**
+   * A `POST` to one `ROUTES` entry, with the valid token/session pair for
+   * {@link SESSION} unless `extra` overrides them, and whatever headers
+   * `extra` adds on top — `origin`, `host`, or both.
+   */
+  const send = (
+    route: (typeof ROUTES)[number],
+    extra: Record<string, string> = {},
+  ): Promise<number> => {
+    const target = new URL(route.url(receiver));
+    const payload = Buffer.from(JSON.stringify(route.body), 'utf8');
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: target.hostname,
+          port: target.port,
+          path: target.pathname,
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            [HOOK_HEADER_TOKEN]: receiver.tokenFor(SESSION),
+            [HOOK_HEADER_SESSION]: SESSION,
+            ...extra,
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end(payload);
+    });
+  };
+
+  /*
+    The generalisation. `POST /mcp` has refused a present Origin since
+    HIVE-130; the other seven routes accepted anything. A browser page that
+    resolved a hostile name to this address is what the rule is for, and that
+    page can reach every route, not just one.
+  */
+  it.each(ROUTES)(
+    'refuses a present Origin on $name, with an empty allowlist',
+    async (route) => {
+      const status = await send(route, { origin: 'http://evil.test' });
+
+      if (route.name === '/hook') {
+        expect(status).toBe(204);
+        expect(events).toEqual([]);
+      } else {
+        expect(status).toBe(403);
+      }
+    },
+  );
+
+  it.each(ROUTES)('admits a request that carries no Origin, on $name', async (route) => {
+    expect(await send(route)).toBe(route.ok);
+    // `/hook`'s `ok` is 204 — the same 204 a refusal on that route also
+    // returns (HIVE-138) — so the status alone cannot tell an admit from a
+    // silent refuse there. Its sibling test above (the present-Origin arm)
+    // already proves refusal by this side effect; an admit needs the same
+    // proof, or inverting the guard on `/hook` would leave this arm green.
+    if (route.name === '/hook') expect(events).not.toEqual([]);
+  });
+
+  it('refuses the opaque origin', async () => {
+    expect(await send(readyRoute(), { origin: 'null' })).toBe(403);
+  });
+
+  /*
+    A container addresses this app by the alias, so that is the Host header a
+    HIVE-133 session sends. Without this clause the guard 403s every
+    containerised session — the loudest possible regression, and one the live
+    container suite is the net for.
+  */
+  it('admits the configured host alias as a Host', async () => {
+    const route = readyRoute();
+    const port = new URL(route.url(receiver)).port;
+
+    expect(await send(route, { host: `host.docker.internal:${port}` })).toBe(204);
+  });
+
+  it('admits loopback spellings as a Host', async () => {
+    const route = readyRoute();
+    const port = new URL(route.url(receiver)).port;
+
+    for (const host of [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]) {
+      expect(await send(route, { host }), host).toBe(204);
+    }
+  });
+
+  it.each(ROUTES)('refuses a Host naming somewhere else, on $name', async (route) => {
+    const status = await send(route, { host: 'evil.test' });
+
+    if (route.name === '/hook') {
+      expect(status).toBe(204);
+      expect(events).toEqual([]);
+    } else {
+      expect(status).toBe(403);
+    }
+  });
+
+  /*
+    The guard runs before identity, so a hostile page learns nothing about
+    which sessions exist from the status code it gets back.
+  */
+  it('refuses on Host before it decides whether the session is known', async () => {
+    const status = await send(readyRoute(), {
+      [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-gone'),
+      [HOOK_HEADER_SESSION]: 'sess-gone',
+      host: 'evil.test',
+    });
+
+    // 403 from the guard, not the 404 an unknown-but-well-addressed session gets.
+    expect(status).toBe(403);
+  });
+});
+
+/**
+ * A diverged host alias (HIVE-134 follow-up).
+ *
+ * The shared receiver above proves `guard()` admits *one* alias — the default
+ * `host.docker.internal` — which is exactly the coverage gap the follow-up
+ * review found: a project's `container.hostAlias` or an agent's
+ * `container.host_alias` can diverge from the global setting, and a session
+ * running under a diverged alias sends *that* alias as `Host`, not the
+ * global one. `ipc/index.ts` composes the full set through
+ * `receiverHostAliases` in `config/runtime.ts`; this proves the guard's own
+ * half of the fix — that it checks membership in whatever set `hostAliases()`
+ * returns, not equality against a single string.
+ *
+ * Load-bearing: reverting `guard()`'s membership loop back to
+ * `bare === hostAliases().toLowerCase()` (a single value, the shape before
+ * this fix) makes `TypeError`s aside, `bridge` no longer match and the first
+ * test below fails, while every other guard test in this file — all of which
+ * exercise a one-member set — stays green. That is precisely the blind spot
+ * this suite closes.
+ *
+ * Its own receiver, for the same reason `an allowlisted origin` below has
+ * one: the alias set is read through a getter but never reconfigured on a
+ * live receiver, so a set with more than one member needs a fresh instance.
+ */
+describe('a diverged host alias (HIVE-134 follow-up)', () => {
+  let diverged: Receiver;
+
+  beforeEach(async () => {
+    diverged = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      onMetrics: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      ...noLedger,
+      // The shape `ipc/index.ts` composes in production: the global alias
+      // (`gateway`) plus one project's diverged alias (`bridge`).
+      hostAliases: () => new Set(['gateway', 'bridge']),
+    });
+    await diverged.start();
+  });
+
+  afterEach(async () => {
+    await diverged.stop();
+  });
+
+  const send = (host: string): Promise<number> => {
+    const target = new URL(diverged.readyUrl as string);
+    return new Promise((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: target.hostname,
+          port: target.port,
+          path: target.pathname,
+          method: 'POST',
+          headers: {
+            [HOOK_HEADER_TOKEN]: diverged.tokenFor('sess-01'),
+            [HOOK_HEADER_SESSION]: 'sess-01',
+            host,
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  };
+
+  it('admits a Host naming the project alias, not just the global one', async () => {
+    const port = new URL(diverged.readyUrl as string).port;
+
+    expect(await send(`bridge:${port}`)).toBe(204);
+  });
+
+  it('still admits the global alias alongside it', async () => {
+    const port = new URL(diverged.readyUrl as string).port;
+
+    expect(await send(`gateway:${port}`)).toBe(204);
+  });
+
+  it('still refuses a Host naming neither', async () => {
+    const port = new URL(diverged.readyUrl as string).port;
+
+    expect(await send(`evil.test:${port}`)).toBe(403);
+  });
+});
+
+/**
+ * An allowlisted origin (HIVE-134).
+ *
+ * Its own receiver rather than a reconfigured shared one: `allowedOrigins` is
+ * read once, at construction, exactly the way `host` is — there is no path to
+ * widen a live receiver's allowlist, by design (see `ReceiverOptions.host`'s
+ * doc comment for why a config value that changes a socket's behaviour has to
+ * be read once rather than on every request).
+ */
+describe('an allowlisted origin', () => {
+  let listed: Receiver;
+
+  beforeEach(async () => {
+    listed = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      onMetrics: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      ...noLedger,
+      allowedOrigins: ['http://localhost:5173'],
+    });
+    await listed.start();
+  });
+
+  afterEach(async () => {
+    await listed.stop();
+  });
+
+  const send = (target: string, origin: string) =>
+    fetch(target, {
+      method: 'POST',
+      headers: {
+        [HOOK_HEADER_TOKEN]: listed.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+        origin,
+      },
+    });
+
+  it('admits a listed origin', async () => {
+    const response = await send(listed.readyUrl as string, 'http://localhost:5173');
+
+    expect(response.status).toBe(204);
+  });
+
+  it('refuses an unlisted one', async () => {
+    const response = await send(listed.readyUrl as string, 'http://evil.test');
+
+    expect(response.status).toBe(403);
+  });
+
+  /*
+    `/mcp` keeps its own stricter rule under the MCP spec's MUST: it refuses a
+    browser-supplied Origin even when the allowlist would admit it. Its
+    legitimate callers are `claude` processes and none of them sends one.
+  */
+  it('still refuses a listed origin on /mcp', async () => {
+    const response = await send(
+      `${listed.origin as string}${MCP_PATH}`,
+      'http://localhost:5173',
+    );
+
+    expect(response.status).toBe(403);
   });
 });

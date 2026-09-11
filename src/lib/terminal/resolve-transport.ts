@@ -1,7 +1,16 @@
-import { isSession, terminalOf, type Session } from '@/types/entity';
+import {
+  isSession,
+  isTerminal,
+  terminalOf,
+  type Session,
+  type Terminal,
+} from '@/types/entity';
 
 import { isDesktop } from '@config/runtime';
-import { createPtyTransport } from '@lib/terminal/pty-transport';
+import {
+  createPtyTransport,
+  createTerminalTransport,
+} from '@lib/terminal/pty-transport';
 import {
   ORCHESTRATOR_ID,
   createStaticTransport,
@@ -19,14 +28,21 @@ import { useHiveStore } from '@stores/hive-store';
  * that is the seam doing its job, and this function is the check it exists for.
  */
 /**
- * The session behind a live terminal, or `null` if this surface is a recording.
+ * The entity behind a live pty, or `null` if this surface is a recording.
  *
  * One predicate, three consumers: the transport factory below, the `readOnly`
  * decision in `center-stage.tsx`, and the key-hint row. Splitting them would let
  * a surface become typable while its transport stayed a recording — a cursor
  * that blinks over a transcript and swallows every keystroke.
+ *
+ * **A terminal is live for as long as it exists** (terminals). It has no ending
+ * that retires its transcript the way `/clear` retires a session's: a shell the
+ * user exits is removed outright, and a shell that died unasked keeps its row so
+ * the transcript that led there can be read. The surface says so through `ended`
+ * rather than `readOnly` — flipping `readOnly` rebuilds the xterm instance, which
+ * would wipe the very output the user opened the tab to read.
  */
-function liveSession(entityId: string): Session | null {
+function liveEntity(entityId: string): Session | Terminal | null {
   /**
    * The orchestrator console is **always static**, in both targets.
    *
@@ -53,6 +69,18 @@ function liveSession(entityId: string): Session | null {
    */
   const entity = useHiveStore.getState().entities[entityId];
 
+  if (!entity) return null;
+
+  /**
+   * A terminal is live and answers no further questions (terminals).
+   *
+   * It returns *before* the session guards below on purpose: none of them apply.
+   * There is no `endedBy`, because a shell is either running or removed, and no
+   * `terminalId` indirection, because nothing retires a terminal's row onto a
+   * successor's pty.
+   */
+  if (isTerminal(entity)) return entity;
+
   /**
    * An agent never reaches this function at all any more (HIVE-116).
    *
@@ -67,7 +95,7 @@ function liveSession(entityId: string): Session | null {
    * removed the moment its caller went away is a defence that has to be
    * rediscovered when the next one arrives.
    */
-  if (!entity || !isSession(entity)) return null;
+  if (!isSession(entity)) return null;
 
   /**
    * A **cleared** session is not live — its pty belongs to the successor.
@@ -103,11 +131,34 @@ function liveSession(entityId: string): Session | null {
  * writable — and every row of that table is this predicate.
  */
 export const isLiveTerminal = (entityId: string): boolean =>
-  liveSession(entityId) !== null;
+  liveEntity(entityId) !== null;
 
 export function resolveTransport(entityId: string): TerminalTransport {
-  const session = liveSession(entityId);
-  if (!session) return createStaticTransport(entityId);
+  const entity = liveEntity(entityId);
+  if (!entity) return createStaticTransport(entityId);
+
+  /**
+   * A terminal's own factory, and the difference is the whole feature
+   * (terminals): the same pty machinery behind a spawn that types no `claude`
+   * into the shell. Its project travels as an argument for the reason every
+   * other id here does — `pty-transport.ts` reads no store.
+   */
+  if (isTerminal(entity)) {
+    // An empty `cwd` is a terminal created with no config snapshot to name
+    // one; it must not reach main as a path.
+    return createTerminalTransport(
+      entity.id,
+      entity.project,
+      entity.cwd === '' ? undefined : entity.cwd,
+    );
+  }
+
+  /**
+   * Narrowed to a {@link Session} by the branch above, which is why the rest of
+   * this function reads unchanged.
+   */
+  const session = entity;
+
   /**
    * The model and effort travel with the project, for the same reason and by
    * the same route (story 109).

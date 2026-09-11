@@ -1,7 +1,12 @@
 import {
+  BIND_KEYS,
   JIRA_KEYS,
   NOTIFICATION_KEYS,
   RECEIVER_KEYS,
+  REMOTE_KEYS,
+  SERVER_BIND_KEYS,
+  SERVER_DEVICE_KEYS,
+  SERVER_KEYS,
   SLACK_KEYS,
   SUPPORTED_CONFIG_VERSIONS,
   isAbsoluteContainerPath,
@@ -9,12 +14,21 @@ import {
   isContainerProbe,
   isEnvArgTemplate,
   isHostAlias,
+  isOrigin,
+  isRemoteTarget,
+  isServerBindHost,
   unsafeEnvReason,
   type ContainerConfig,
   type JiraConfig,
   type NotificationPrefs,
   type ProjectOrigin,
+  type ReceiverBindConfig,
   type ReceiverConfig,
+  type RemoteConfig,
+  type RemoteMode,
+  type ServerBindConfig,
+  type ServerConfig,
+  type ServerDevice,
   type SlackConfig,
 } from '@shared/config-contract';
 import { PROJECT_KEY_HINT, isProjectKey } from '@shared/config-contract';
@@ -129,8 +143,50 @@ export interface ParsedConfig {
    * `jira` is: the write path must be able to tell "the user chose this" from
    * "the file said nothing", which is what keeps an untouched file from growing
    * a block it never asked for.
+   *
+   * `bind` is partial one level down too (HIVE-134): a file that names the
+   * block but only one of its three fields must not have the other two
+   * silently promoted to "the user chose the default", which is exactly what a
+   * fully-resolved `ReceiverBindConfig` here would do the next time the file is
+   * written back.
    */
-  receiver?: Partial<ReceiverConfig>;
+  receiver?: Partial<Omit<ReceiverConfig, 'bind'>> & { bind?: Partial<ReceiverBindConfig> };
+  /**
+   * HIVE-142's server block, exactly as the file declared it.
+   *
+   * `undefined` when the file has none — which every config written before
+   * this story does. Kept partial here rather than defaulted for the same
+   * reason `receiver` is: the write path must be able to tell "the user chose
+   * this" from "the file said nothing", which is what keeps an untouched file
+   * from growing a block it never asked for.
+   *
+   * `bind` is partial one level down too, for the same reason `receiver.bind`
+   * is: a file that names the block but only one of its three fields must not
+   * have the other two silently promoted to "the user chose the default".
+   *
+   * `devices` is kept as the fully-validated array {@link optionalDevices}
+   * produces rather than partial per entry — a device with a missing field is
+   * not "half a device the caller merges a default under", it is a paired
+   * device this file cannot describe, so the whole entry is dropped rather
+   * than salvaged.
+   */
+  server?: Partial<Omit<ServerConfig, 'bind'>> & { bind?: Partial<ServerBindConfig> };
+  /**
+   * HIVE-144's remote block, exactly as the file declared it.
+   *
+   * `undefined` when the file has none — which every config written before
+   * this story does. Kept partial here rather than defaulted for the same
+   * reason `server` is: the write path must be able to tell "the user chose
+   * this" from "the file said nothing", which is what keeps an untouched file
+   * from growing a block it never asked for.
+   *
+   * `host` is validated by {@link isRemoteTarget} only when this block's own
+   * `mode` names `'remote'` — an absent or `'local'` mode leaves `host`
+   * unvalidated, which is what keeps a never-attached install's empty default
+   * from reporting an error it never earned. See `RemoteConfig.host`'s doc
+   * comment.
+   */
+  remote?: Partial<RemoteConfig>;
   /**
    * HIVE-124's slack block, exactly as the file declared it.
    *
@@ -191,6 +247,16 @@ const TOP_LEVEL_KEYS = [
   // HIVE-131, for the same reason. The container host alias — a name, never an
   // address with a port; the port belongs to the receiver.
   'receiver',
+  // HIVE-142, for the same reason. The paired-device roster included: a
+  // device's credential is a SHA-256 digest, not the token it was derived
+  // from, and a digest is not a secret — see `ServerDevice.credential` — which
+  // is why this block may hold it in a file the product invites the user to
+  // hand-edit.
+  'server',
+  // HIVE-144, for the same reason. The attach mode and where to reach a
+  // server elsewhere on the tailnet; the device credential is a secret and is
+  // deliberately not in this file — see `RemoteConfig`'s doc comment.
+  'remote',
   // HIVE-124, for the same reason. The socket-mode switch and the commander
   // allow-list; the two Slack tokens are secrets and are deliberately not in
   // this file.
@@ -417,10 +483,10 @@ function optionalContainer(
   };
 }
 
-const ORIGINS: readonly string[] = ['local', 'cloned'];
+const PROJECT_ORIGINS: readonly string[] = ['local', 'cloned'];
 
-function isOrigin(value: unknown): value is ProjectOrigin {
-  return typeof value === 'string' && ORIGINS.includes(value);
+function isProjectOrigin(value: unknown): value is ProjectOrigin {
+  return typeof value === 'string' && PROJECT_ORIGINS.includes(value);
 }
 
 /**
@@ -664,6 +730,103 @@ function optionalJira(
 }
 
 /**
+ * A TCP port from the file, or `null` for the caller's default.
+ *
+ * The first numeric value in this file, so it defines the shape rather than
+ * following one: reported and ignored on a wrong type, exactly as
+ * {@link optionalString} and {@link optionalBoolean} treat theirs, because one
+ * mistyped key must not stop the app launching.
+ *
+ * `0` is legal and means "ask the OS", which is why the range starts there
+ * rather than at 1.
+ */
+function optionalPort(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  errors: string[],
+): number | null {
+  const value = record[key];
+  if (value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 65_535) {
+    errors.push(`${label}.${key}: expected a port from 0 to 65535 — using the default`);
+    return null;
+  }
+  return value;
+}
+
+/**
+ * HIVE-134's nested bind block.
+ *
+ * Per-field salvage, like {@link optionalNotifications} and unlike
+ * {@link optionalEnv}: three independent settings, so a typo in one is no
+ * reason to restore the defaults for the other two. A bad `allowedOrigins`
+ * entry costs that entry and not the list, which is `optionalSlack`'s rule for
+ * `commanders` and for its reason — someone who typed one origin wrong should
+ * not lose the other three, and losing the whole list silently turns the
+ * allowlist into "refuse every origin", a failure that looks exactly like the
+ * feature being broken.
+ */
+function optionalBind(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): Partial<ReceiverBindConfig> | undefined {
+  const value = record.bind;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.bind: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.bind`;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      errors.push(`${at}: forbidden key "${key}" — bind ignored`);
+      return undefined;
+    }
+  }
+
+  if (!checkKeys(value, BIND_KEYS, at, errors)) return undefined;
+
+  const bind: Partial<ReceiverBindConfig> = {};
+
+  const host = value.host;
+  if (host !== undefined) {
+    if (isHostAlias(host)) {
+      bind.host = host;
+    } else {
+      errors.push(`${at}.host: expected a hostname or an IPv4 address — using the default`);
+    }
+  }
+
+  const port = optionalPort(value, 'port', at, errors);
+  if (port !== null) bind.port = port;
+
+  const origins = value.allowedOrigins;
+  if (origins !== undefined) {
+    if (!Array.isArray(origins)) {
+      errors.push(`${at}.allowedOrigins: expected an array — using the default`);
+    } else {
+      const kept: string[] = [];
+      (origins as unknown[]).forEach((entry, index) => {
+        if (isOrigin(entry)) {
+          kept.push(entry);
+          return;
+        }
+        errors.push(
+          `${at}.allowedOrigins[${index}]: expected an origin like http://localhost:5173 — entry ignored`,
+        );
+      });
+      bind.allowedOrigins = kept;
+    }
+  }
+
+  return bind;
+}
+
+/**
  * HIVE-131's receiver block.
  *
  * Structurally identical to {@link optionalJira}, including its block-scoped
@@ -674,7 +837,9 @@ function optionalReceiver(
   record: Record<string, unknown>,
   label: string,
   errors: string[],
-): Partial<ReceiverConfig> | undefined {
+):
+  | (Partial<Omit<ReceiverConfig, 'bind'>> & { bind?: Partial<ReceiverBindConfig> })
+  | undefined {
   const value = record.receiver;
   if (value === undefined) return undefined;
   if (!isPlainObject(value)) {
@@ -693,7 +858,8 @@ function optionalReceiver(
 
   if (!checkKeys(value, RECEIVER_KEYS, at, errors)) return undefined;
 
-  const receiver: Partial<ReceiverConfig> = {};
+  const receiver: Partial<Omit<ReceiverConfig, 'bind'>> & { bind?: Partial<ReceiverBindConfig> } =
+    {};
   const raw = value.hostAlias;
   if (raw !== undefined) {
     if (isHostAlias(raw)) {
@@ -704,7 +870,345 @@ function optionalReceiver(
       );
     }
   }
+
+  const bind = optionalBind(value, at, errors);
+  if (bind !== undefined) receiver.bind = bind;
+
   return receiver;
+}
+
+/** A 64-character lowercase hex digest — a SHA-256 output, as text. */
+const HEX_SHA256 = /^[0-9a-f]{64}$/;
+
+/**
+ * Why the configured `server.bind` host was refused, or `null` when it was not
+ * (HIVE-140 audit, gap 3) — read by the server listener off
+ * `ConfigSnapshot.errors`, so a refused host makes it bind nothing rather than
+ * the default `127.0.0.1`.
+ *
+ * Matched here, beside the messages {@link optionalServerBind} writes, so the
+ * two spellings cannot drift apart. Only the refusals that throw the host away
+ * count: a bad `host`, and a `bind` block ignored whole. An unknown key beside
+ * a good host is advisory and leaves the host standing, so it does not.
+ */
+export function serverBindRefusal(errors: readonly string[]): string | null {
+  return (
+    errors.find(
+      (message) =>
+        /\.server\.bind\.host: /.test(message) ||
+        /\.server\.bind: (expected an object|forbidden key)/.test(message),
+    ) ?? null
+  );
+}
+
+/**
+ * HIVE-142's nested `server.bind` block.
+ *
+ * Structurally {@link optionalBind}'s twin, with two differences the shape
+ * forces: `host` is checked against {@link isServerBindHost}, not
+ * {@link isHostAlias}, and `0.0.0.0` gets its own message naming the value
+ * rather than the generic "expected a hostname" — see
+ * {@link isServerBindHost}'s doc comment for why the wildcard is refused here
+ * and not for the receiver. `port` gets the same treatment for `0`: unlike
+ * {@link ReceiverBindConfig.port}, `server.bind.port` cannot be OS-assigned —
+ * see {@link ServerBindConfig.port}'s own doc comment for why — so `0` is
+ * refused here rather than the generic "using the default" salvage
+ * `optionalPort` would otherwise apply.
+ */
+function optionalServerBind(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): Partial<ServerBindConfig> | undefined {
+  const value = record.bind;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.bind: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.bind`;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      errors.push(`${at}: forbidden key "${key}" — bind ignored`);
+      return undefined;
+    }
+  }
+
+  if (!checkKeys(value, SERVER_BIND_KEYS, at, errors)) return undefined;
+
+  const bind: Partial<ServerBindConfig> = {};
+
+  const host = value.host;
+  if (host !== undefined) {
+    if (host === '0.0.0.0') {
+      errors.push(
+        `${at}.host: 0.0.0.0 binds every interface — name the address this machine is reached at`,
+      );
+    } else if (isServerBindHost(host)) {
+      bind.host = host;
+    } else {
+      // No "using the default" here, unlike its siblings: a refused host makes
+      // the server listen nowhere (`serverBindRefusal`), and this line is the
+      // reason the tray shows for it.
+      errors.push(
+        `${at}.host: expected a hostname or an IPv4 address — the server will not listen until it is fixed`,
+      );
+    }
+  }
+
+  if (value.port === 0) {
+    errors.push(
+      `${at}.port: 0 asks the OS for any free port, but server.bind.port must be fixed — a client's config and a LaunchAgent both have to name this port ahead of time — using the default`,
+    );
+  } else {
+    const port = optionalPort(value, 'port', at, errors);
+    if (port !== null) bind.port = port;
+  }
+
+  const origins = value.allowedOrigins;
+  if (origins !== undefined) {
+    if (!Array.isArray(origins)) {
+      errors.push(`${at}.allowedOrigins: expected an array — using the default`);
+    } else {
+      const kept: string[] = [];
+      (origins as unknown[]).forEach((entry, index) => {
+        if (isOrigin(entry)) {
+          kept.push(entry);
+          return;
+        }
+        errors.push(
+          `${at}.allowedOrigins[${index}]: expected an origin like http://localhost:5173 — entry ignored`,
+        );
+      });
+      bind.allowedOrigins = kept;
+    }
+  }
+
+  return bind;
+}
+
+/**
+ * What every `optionalDevices` rejection ends its message with (HIVE-142
+ * review, I6).
+ *
+ * A dropped entry here is not merely absent from *this* load the way a bad
+ * project or a bad origin is — `pairDevice`/`revokeDevice`
+ * (`server/devices.ts`) read the already-filtered roster and write it back
+ * wholesale (`setServer({ devices })`), so a device this parser drops is
+ * erased from the file for good the next time anyone pairs or revokes
+ * anything, not merely ignored until the typo is fixed. One hand-edit typo
+ * costs a real paired device permanently, which "device dropped" alone does
+ * not say.
+ */
+const DEVICE_LOST =
+  'device dropped, and erased for good the next time anything pairs or revokes a device';
+
+/**
+ * HIVE-142's `devices` array.
+ *
+ * Whole-entry salvage, unlike `optionalBind`'s per-field rule: a device is an
+ * identity plus a credential, and a device short one field is not "the same
+ * device with a default filled in" the way a bind missing its port is — it is
+ * a paired device this file cannot describe. A bad entry costs that entry, not
+ * the roster, the same rule `commanders` and `allowedOrigins` follow — see
+ * {@link DEVICE_LOST} for why every message below says what that cost really
+ * is, rather than just "dropped".
+ */
+function optionalDevices(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): readonly ServerDevice[] | undefined {
+  const value = record.devices;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    errors.push(`${label}.devices: expected an array — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.devices`;
+  const kept: ServerDevice[] = [];
+
+  value.forEach((entry, index) => {
+    const entryAt = `${at}[${index}]`;
+
+    if (!isPlainObject(entry)) {
+      errors.push(`${entryAt}: expected an object — ${DEVICE_LOST}`);
+      return;
+    }
+
+    for (const key of Object.keys(entry)) {
+      if (FORBIDDEN_KEYS.has(key)) {
+        errors.push(`${entryAt}: forbidden key "${key}" — ${DEVICE_LOST}`);
+        return;
+      }
+    }
+
+    if (!checkKeys(entry, SERVER_DEVICE_KEYS, entryAt, errors)) return;
+
+    if (typeof entry.id !== 'string' || entry.id.trim() === '') {
+      errors.push(`${entryAt}.id: expected a non-empty string — ${DEVICE_LOST}`);
+      return;
+    }
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') {
+      errors.push(`${entryAt}.name: expected a non-empty string — ${DEVICE_LOST}`);
+      return;
+    }
+    if (typeof entry.paired !== 'string' || entry.paired.trim() === '') {
+      errors.push(`${entryAt}.paired: expected an ISO date string — ${DEVICE_LOST}`);
+      return;
+    }
+    if (typeof entry.revoked !== 'boolean') {
+      errors.push(`${entryAt}.revoked: expected true or false — ${DEVICE_LOST}`);
+      return;
+    }
+
+    const credential = entry.credential;
+    if (
+      !isPlainObject(credential) ||
+      credential.kind !== 'sha256' ||
+      typeof credential.digest !== 'string' ||
+      !HEX_SHA256.test(credential.digest)
+    ) {
+      errors.push(
+        `${entryAt}.credential: expected { kind: "sha256", digest: <64-character hex> } — ${DEVICE_LOST}`,
+      );
+      return;
+    }
+
+    kept.push({
+      id: entry.id,
+      name: entry.name,
+      paired: entry.paired,
+      revoked: entry.revoked,
+      credential: { kind: 'sha256', digest: credential.digest },
+    });
+  });
+
+  return kept;
+}
+
+/**
+ * HIVE-142's server block.
+ *
+ * Structurally {@link optionalReceiver}'s twin: a malformed block is reported
+ * and dropped wholesale, while `bind` and `devices` salvage what they can
+ * within it.
+ */
+function optionalServer(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+):
+  | (Partial<Omit<ServerConfig, 'bind'>> & { bind?: Partial<ServerBindConfig> })
+  | undefined {
+  const value = record.server;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.server: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.server`;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      errors.push(`${at}: forbidden key "${key}" — server ignored`);
+      return undefined;
+    }
+  }
+
+  if (!checkKeys(value, SERVER_KEYS, at, errors)) return undefined;
+
+  const server: Partial<Omit<ServerConfig, 'bind'>> & { bind?: Partial<ServerBindConfig> } = {};
+
+  const enabled = optionalBoolean(value, 'enabled', at, errors);
+  if (enabled !== null) server.enabled = enabled;
+
+  const bind = optionalServerBind(value, at, errors);
+  if (bind !== undefined) server.bind = bind;
+
+  const devices = optionalDevices(value, at, errors);
+  if (devices !== undefined) server.devices = devices;
+
+  return server;
+}
+
+const REMOTE_MODES: readonly RemoteMode[] = ['local', 'remote'];
+
+/**
+ * HIVE-144's remote block.
+ *
+ * Structurally {@link optionalServer}'s twin, per-field salvage rather than
+ * whole-block: a file naming a bad `port` alongside a good `mode` and `host`
+ * should not lose the two fields it got right.
+ *
+ * `host`'s validation is the one field-order dependency in this function —
+ * `mode` is read first because Ruling 3 (HIVE-144) says `host` is checked by
+ * {@link isRemoteTarget} only when *this block's own* `mode` is `'remote'`.
+ * An absent `mode` falls back to {@link DEFAULT_REMOTE}'s `'local'` for this
+ * purpose, which is what keeps a file naming only `host` (or naming neither)
+ * from reporting an error on the empty default every never-attached install
+ * carries.
+ */
+function optionalRemote(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): Partial<RemoteConfig> | undefined {
+  const value = record.remote;
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    errors.push(`${label}.remote: expected an object — ignored`);
+    return undefined;
+  }
+
+  const at = `${label}.remote`;
+
+  for (const key of Object.keys(value)) {
+    if (FORBIDDEN_KEYS.has(key)) {
+      errors.push(`${at}: forbidden key "${key}" — remote ignored`);
+      return undefined;
+    }
+  }
+
+  if (!checkKeys(value, REMOTE_KEYS, at, errors)) return undefined;
+
+  const remote: Partial<RemoteConfig> = {};
+
+  let mode: RemoteMode | undefined;
+  if (value.mode !== undefined) {
+    if (REMOTE_MODES.includes(value.mode as RemoteMode)) {
+      mode = value.mode as RemoteMode;
+      remote.mode = mode;
+    } else {
+      errors.push(`${at}.mode: expected "local" or "remote" — using the default`);
+    }
+  }
+
+  const host = value.host;
+  if (host !== undefined) {
+    if (typeof host !== 'string') {
+      errors.push(`${at}.host: expected a string — using the default`);
+    } else if (mode !== 'remote') {
+      // Ruling 3 (HIVE-144): unvalidated outside remote mode, so the empty
+      // default every never-attached install carries is not an error.
+      remote.host = host;
+    } else if (isRemoteTarget(host)) {
+      remote.host = host;
+    } else {
+      errors.push(
+        `${at}.host: must be loopback or a tailnet address — this socket is plaintext, so anything else would send a credential to the open internet — using the default`,
+      );
+    }
+  }
+
+  const port = optionalPort(value, 'port', at, errors);
+  if (port !== null) remote.port = port;
+
+  return remote;
 }
 
 /**
@@ -822,6 +1326,8 @@ export function parseConfig(text: string, label: string): ParsedConfig {
   const notifications = optionalNotifications(document, label, errors);
   const jira = optionalJira(document, label, errors);
   const receiver = optionalReceiver(document, label, errors);
+  const server = optionalServer(document, label, errors);
+  const remote = optionalRemote(document, label, errors);
   const slack = optionalSlack(document, label, errors);
   const subscriptionAuth = optionalBoolean(
     document,
@@ -859,6 +1365,8 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       notifications,
       jira,
       receiver,
+      server,
+      remote,
       slack,
       projects: [],
       errors,
@@ -878,6 +1386,8 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       notifications,
       jira,
       receiver,
+      server,
+      remote,
       slack,
       projects: [],
       errors,
@@ -950,7 +1460,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
 
     let origin: ProjectOrigin | undefined;
     if (entry.origin !== undefined) {
-      if (!isOrigin(entry.origin)) {
+      if (!isProjectOrigin(entry.origin)) {
         errors.push(`${at}.origin: expected "local" or "cloned"`);
         return;
       }
@@ -991,6 +1501,8 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     notifications,
     jira,
     receiver,
+    server,
+    remote,
     slack,
     projects,
     errors,

@@ -1,18 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  DEFAULT_JIRA,
-  DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
+  DEFAULT_SERVER,
+  emptySnapshot,
   type ConfigSnapshot,
   type ProjectStatus,
+  type ServerDevice,
 } from '@shared/config-contract';
 
 import {
+  BOOT_READ_BACKOFF_MS,
   loadProjectConfig,
+  pairDevice,
   projectAccess,
+  projectContainerised,
   readAppInfo,
+  readLocalRemote,
+  setRemoteConfig,
   projectConfigSnapshot,
   reloadProjectConfig,
   renameProjectInConfig,
@@ -23,7 +27,9 @@ import {
   resetProjectConfig,
   resolveProjectRef,
   revealConfigFile,
+  revokeDevice,
   setProjectConfigForTest,
+  setServerConfig,
   subscribeProjectConfig,
 } from '@lib/project-config';
 
@@ -55,10 +61,7 @@ function snapshot(
   overrides: Partial<ConfigSnapshot> = {},
 ): ConfigSnapshot {
   return {
-    configPath: CONFIG_PATH,
-    templateWritten: false,
-    shell: '/bin/zsh',
-    claudeCommand: 'claude',
+    ...emptySnapshot(CONFIG_PATH, '/bin/zsh'),
     projects: projects.map(({ id, status, key, name }) => ({
       id,
       key: key ?? id.slice(0, 2),
@@ -69,15 +72,6 @@ function snapshot(
       status,
       isRepo: true,
     })),
-    env: {},
-    notifications: { ...DEFAULT_NOTIFICATIONS },
-    jira: { ...DEFAULT_JIRA },
-    receiver: { ...DEFAULT_RECEIVER },
-    slack: { ...DEFAULT_SLACK },
-    subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-    errors: [],
     ...overrides,
   };
 }
@@ -203,6 +197,72 @@ describe('loadProjectConfig', () => {
     expect(console.error).toHaveBeenCalled();
   });
 
+  /**
+   * The boot read races the boot dial (HIVE-144 review, M8).
+   *
+   * `switchIpcMode('remote')` unbinds every local channel synchronously and
+   * only rebinds when the dial settles, so a `config:get` issued in that
+   * window rejects. A single unretried read then left the snapshot `null`
+   * **permanently**, until someone found the Reload button in a pane that
+   * `null` renders as an empty state.
+   */
+  it('retries a rejected boot read until the channel answers', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const expected = snapshot([{ id: 'nova-web', status: 'ok' }]);
+    let attempts = 0;
+    withBridge(() => {
+      attempts += 1;
+      // The channel comes back on the third ask, which is inside the schedule
+      // and after more than one failure — a hook that retried exactly once
+      // would still be null here.
+      return attempts < 3
+        ? Promise.reject(new Error('No handler registered for config:get'))
+        : Promise.resolve(expected);
+    });
+
+    const loading = loadProjectConfig();
+    await vi.advanceTimersByTimeAsync(BOOT_READ_BACKOFF_MS[0] + BOOT_READ_BACKOFF_MS[1]);
+    await loading;
+
+    expect(projectConfigSnapshot()).toBe(expected);
+    vi.useRealTimers();
+  });
+
+  it('gives up after the schedule rather than retrying forever', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let attempts = 0;
+    withBridge(() => {
+      attempts += 1;
+      return Promise.reject(new Error('No handler registered for config:get'));
+    });
+
+    const loading = loadProjectConfig();
+    await vi.advanceTimersByTimeAsync(
+      BOOT_READ_BACKOFF_MS.reduce((total, delay) => total + delay, 0),
+    );
+    await loading;
+
+    // One first read plus one per backoff step, and no eighth.
+    expect(attempts).toBe(BOOT_READ_BACKOFF_MS.length + 1);
+    expect(projectConfigSnapshot()).toBeNull();
+    vi.useRealTimers();
+  });
+
+  /** A read that landed costs nothing extra — the loop is for failures only. */
+  it('does not retry once the first read has landed', async () => {
+    let attempts = 0;
+    withBridge(() => {
+      attempts += 1;
+      return Promise.resolve(snapshot());
+    });
+
+    await loadProjectConfig();
+
+    expect(attempts).toBe(1);
+  });
+
   it('stops notifying a listener that unsubscribed', async () => {
     const listener = vi.fn();
     const unsubscribe = subscribeProjectConfig(listener);
@@ -307,6 +367,222 @@ describe('managing projects', () => {
       reorderProjectsInConfig({ ids: [] }),
     ).resolves.toBeUndefined();
     expect(projectConfigSnapshot()).toBeNull();
+  });
+});
+
+/** One `ServerDevice`, for the pairing/revoking tests below. */
+function device(
+  id: string,
+  name: string,
+  revoked = false,
+): ServerDevice {
+  return {
+    id,
+    name,
+    paired: '2026-09-08',
+    revoked,
+    credential: { kind: 'sha256', digest: `${id}-digest` },
+  };
+}
+
+/**
+ * HIVE-142's server-mode verbs (review finding, Minor 3: this file gained no
+ * coverage for these when the group landed, though it gained 70 lines of
+ * real branching — no-bridge, the token branch, the re-fetch, the catch —
+ * and every sibling verb above is tested against exactly this shape).
+ */
+describe('setServerConfig (HIVE-142)', () => {
+  it('installs the snapshot main returns', async () => {
+    const next = snapshot();
+    const setServer = vi.fn().mockResolvedValue(next);
+    (window as { hive?: unknown }).hive = { config: { setServer } };
+
+    await setServerConfig({ enabled: true });
+
+    expect(setServer).toHaveBeenCalledWith({ enabled: true });
+    expect(projectConfigSnapshot()).toBe(next);
+  });
+
+  it('keeps the last good snapshot when refused', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const good = snapshot([{ id: 'alpha', status: 'ok' }]);
+    setProjectConfigForTest(good);
+    (window as { hive?: unknown }).hive = {
+      config: { setServer: vi.fn().mockRejectedValue(new Error('refused')) },
+    };
+
+    await setServerConfig({ enabled: true });
+
+    expect(projectConfigSnapshot()).toBe(good);
+  });
+
+  it('is a no-op with no bridge, like every other verb', async () => {
+    await expect(setServerConfig({ enabled: true })).resolves.toBeUndefined();
+    expect(projectConfigSnapshot()).toBeNull();
+  });
+});
+
+describe('pairDevice (HIVE-142)', () => {
+  function withServerBridge(
+    pair: ReturnType<typeof vi.fn>,
+    get: ReturnType<typeof vi.fn> = vi.fn(),
+  ) {
+    (window as { hive?: unknown }).hive = { server: { pair }, config: { get } };
+  }
+
+  it('is a no-op with no bridge', async () => {
+    await expect(pairDevice('New laptop')).resolves.toEqual({
+      error: 'No bridge available.',
+    });
+    expect(projectConfigSnapshot()).toBeNull();
+  });
+
+  it('returns the token and the device id, and re-reads the snapshot so the device list updates', async () => {
+    const afterPair = snapshot([], {
+      server: { ...DEFAULT_SERVER, devices: [device('d_1', 'New laptop')] },
+    });
+    // `deviceId` rides alongside the token (HIVE-142 review, I5) — the
+    // attach handshake needs both, and it used to be readable only inside
+    // config.json.
+    const pair = vi.fn().mockResolvedValue({ token: 'ABCD-EFGH-JKMN-PQRS', deviceId: 'd_1' });
+    const get = vi.fn().mockResolvedValue(afterPair);
+    withServerBridge(pair, get);
+    const listener = vi.fn();
+    subscribeProjectConfig(listener);
+
+    await expect(pairDevice('New laptop')).resolves.toEqual({
+      token: 'ABCD-EFGH-JKMN-PQRS',
+      deviceId: 'd_1',
+    });
+
+    expect(pair).toHaveBeenCalledWith({ name: 'New laptop' });
+    expect(projectConfigSnapshot()).toBe(afterPair);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the refusal reason without touching the snapshot, and never calls get', async () => {
+    const good = snapshot([{ id: 'alpha', status: 'ok' }]);
+    setProjectConfigForTest(good);
+    const pair = vi
+      .fn()
+      .mockResolvedValue({ error: 'A device named "New laptop" already exists.' });
+    const get = vi.fn();
+    withServerBridge(pair, get);
+
+    await expect(pairDevice('New laptop')).resolves.toEqual({
+      error: 'A device named "New laptop" already exists.',
+    });
+
+    expect(get).not.toHaveBeenCalled();
+    expect(projectConfigSnapshot()).toBe(good);
+  });
+
+  it('reports a broken channel as a pairing failure', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const pair = vi.fn().mockRejectedValue(new Error('channel gone'));
+    withServerBridge(pair);
+
+    await expect(pairDevice('New laptop')).resolves.toEqual({
+      error: 'Pairing failed.',
+    });
+    expect(console.error).toHaveBeenCalled();
+  });
+
+  /**
+   * Review finding, Minor 1. A device that minted successfully is already on
+   * disk — a `config:get` that then fails must not turn that success into an
+   * error the caller could mistake for the pair itself having failed, which
+   * would send them to retry a name `server:pair` now refuses as a
+   * duplicate.
+   */
+  it('still returns the token and the device id when the snapshot re-read fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const pair = vi.fn().mockResolvedValue({ token: 'ABCD-EFGH-JKMN-PQRS', deviceId: 'd_1' });
+    const get = vi.fn().mockRejectedValue(new Error('closed window'));
+    withServerBridge(pair, get);
+
+    await expect(pairDevice('New laptop')).resolves.toEqual({
+      token: 'ABCD-EFGH-JKMN-PQRS',
+      deviceId: 'd_1',
+    });
+    expect(console.error).toHaveBeenCalled();
+  });
+});
+
+describe('revokeDevice (HIVE-142)', () => {
+  it('is a no-op with no bridge', async () => {
+    await expect(revokeDevice('Old laptop')).resolves.toEqual({
+      ok: false,
+      error: 'No bridge available.',
+    });
+  });
+
+  it('returns ok, and re-reads the snapshot so the roster reflects the revoke', async () => {
+    const afterRevoke = snapshot([], {
+      server: { ...DEFAULT_SERVER, devices: [device('d_1', 'Old laptop', true)] },
+    });
+    const revoke = vi.fn().mockResolvedValue({ revoked: true });
+    const get = vi.fn().mockResolvedValue(afterRevoke);
+    (window as { hive?: unknown }).hive = { server: { revoke }, config: { get } };
+    const listener = vi.fn();
+    subscribeProjectConfig(listener);
+
+    await expect(revokeDevice('Old laptop')).resolves.toEqual({ ok: true });
+
+    expect(revoke).toHaveBeenCalledWith({ name: 'Old laptop' });
+    expect(projectConfigSnapshot()).toBe(afterRevoke);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Review finding, Important: the most urgent control on this pane must not
+   * fail silently. `revokeDevice` used to answer `void`; this is the
+   * assertion that would have caught it never reporting a refusal.
+   */
+  it('returns the refusal reason on a broken channel', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const revoke = vi.fn().mockRejectedValue(new Error('channel gone'));
+    (window as { hive?: unknown }).hive = {
+      server: { revoke },
+      config: { get: vi.fn() },
+    };
+
+    await expect(revokeDevice('Old laptop')).resolves.toEqual({
+      ok: false,
+      error: 'Could not revoke the device. Try again.',
+    });
+  });
+
+  /**
+   * HIVE-142 review, I7: `bridge.server.revoke`'s own resolved value used to
+   * be discarded entirely — this renderer function reported `{ ok: true }`
+   * unconditionally the instant the promise settled, whatever main actually
+   * said. A hand-edit or a rename since boot can mean the name matches
+   * nothing on main's side; this is that answer, surfaced rather than
+   * swallowed.
+   */
+  it('returns the refusal reason when main reports no matching device', async () => {
+    const revoke = vi
+      .fn()
+      .mockResolvedValue({ error: 'No device named "Old laptop" is paired.' });
+    const get = vi.fn();
+    (window as { hive?: unknown }).hive = { server: { revoke }, config: { get } };
+
+    await expect(revokeDevice('Old laptop')).resolves.toEqual({
+      ok: false,
+      error: 'No device named "Old laptop" is paired.',
+    });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('still returns ok when the snapshot re-read fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const revoke = vi.fn().mockResolvedValue({ revoked: true });
+    const get = vi.fn().mockRejectedValue(new Error('closed window'));
+    (window as { hive?: unknown }).hive = { server: { revoke }, config: { get } };
+
+    await expect(revokeDevice('Old laptop')).resolves.toEqual({ ok: true });
+    expect(console.error).toHaveBeenCalled();
   });
 });
 
@@ -437,6 +713,117 @@ describe('story 107 verbs', () => {
       appInfo: vi.fn().mockRejectedValue(new Error('channel gone')),
     };
     await expect(readAppInfo()).resolves.toBeNull();
+  });
+
+  /*
+    HIVE-149. Read over its own channel rather than off the installed snapshot,
+    and that is the whole point of the function: while attached, `config:get` is
+    answered by the server, so `ConfigSnapshot.remote` describes the far end.
+  */
+  it("readLocalRemote returns this machine's own remote block", async () => {
+    const block = { mode: 'remote', host: 'mini.tail1234.ts.net', port: 7433 };
+    (window as { hive?: unknown }).hive = {
+      config: { getRemote: vi.fn().mockResolvedValue(block) },
+    };
+
+    await expect(readLocalRemote()).resolves.toBe(block);
+  });
+
+  it('readLocalRemote answers null rather than inventing an address', async () => {
+    // No bridge: the browser demo.
+    await expect(readLocalRemote()).resolves.toBeNull();
+
+    (window as { hive?: unknown }).hive = {
+      config: { getRemote: vi.fn().mockRejectedValue(new Error('channel gone')) },
+    };
+    await expect(readLocalRemote()).resolves.toBeNull();
+  });
+});
+
+/**
+ * `setRemoteConfig`, and specifically **which snapshot it publishes** (HIVE-149).
+ *
+ * `config:set-remote` is `PROCESS_LOCAL`, so main answers it here and hands back
+ * *this* machine's `ConfigSnapshot`. Installing that is right when a mode
+ * changed. It is wrong for a write-only commit made while a socket is open —
+ * reachable only since HIVE-149 un-hid the address fields while attached —
+ * because it would republish this Mac's projects, Jira and Slack values as the
+ * whole app's config while every other pane's writes still proxy to the server,
+ * with nothing to put the server's snapshot back until a Reload or a detach.
+ *
+ * The defect was found by the whole-branch review rather than by any test, which
+ * is why these exist.
+ */
+describe('setRemoteConfig', () => {
+  const attachedInfo = { attachedServerName: 'mini' };
+  const localSnapshot = snapshot([{ id: 'on-this-mac', status: 'ok' }]);
+  const serversSnapshot = snapshot([{ id: 'on-the-server', status: 'ok' }]);
+
+  /** A bridge that is attached, and whose `setRemote` answers locally. */
+  function attachedBridge(result: {
+    switched: unknown;
+    config: ConfigSnapshot;
+    changed: unknown;
+  }) {
+    (window as { hive?: unknown }).hive = {
+      appInfo: vi.fn().mockResolvedValue(attachedInfo),
+      config: {
+        get: vi.fn().mockResolvedValue(serversSnapshot),
+        reload: vi.fn().mockResolvedValue(serversSnapshot),
+        setRemote: vi.fn().mockResolvedValue(result),
+      },
+    };
+  }
+
+  it('keeps the server’s snapshot on a write-only commit while attached', async () => {
+    attachedBridge({ switched: { ok: true }, config: localSnapshot, changed: null });
+    // The proxied snapshot, installed the way boot installs it.
+    await loadProjectConfig();
+    expect(projectConfigSnapshot()).toBe(serversSnapshot);
+
+    await setRemoteConfig({ host: 'mini.tail1234.ts.net' });
+
+    // The write happened; what must not happen is republishing this machine's
+    // config as the app's, while the socket is still open.
+    expect(projectConfigSnapshot()).toBe(serversSnapshot);
+  });
+
+  /*
+    The other half of the gate, so it cannot be satisfied by never installing:
+    a switch reports `changed`, and there the local snapshot is exactly what the
+    app should now be looking at.
+  */
+  it('installs the local snapshot when the mode actually changed', async () => {
+    attachedBridge({
+      switched: { ok: true },
+      config: localSnapshot,
+      changed: { to: 'local' },
+    });
+    await loadProjectConfig();
+    expect(projectConfigSnapshot()).toBe(serversSnapshot);
+
+    await setRemoteConfig({ mode: 'local' });
+
+    expect(projectConfigSnapshot()).toBe(localSnapshot);
+  });
+
+  it('installs on a write-only commit when this window is not attached', async () => {
+    (window as { hive?: unknown }).hive = {
+      appInfo: vi.fn().mockResolvedValue({ attachedServerName: null }),
+      config: {
+        get: vi.fn().mockResolvedValue(serversSnapshot),
+        reload: vi.fn().mockResolvedValue(serversSnapshot),
+        setRemote: vi
+          .fn()
+          .mockResolvedValue({ switched: { ok: true }, config: localSnapshot, changed: null }),
+      },
+    };
+    await loadProjectConfig();
+
+    await setRemoteConfig({ host: 'mini.tail1234.ts.net' });
+
+    // Not attached, the returned snapshot is the only one there is.
+    expect(projectConfigSnapshot()).toBe(localSnapshot);
   });
 });
 
@@ -583,5 +970,44 @@ describe('resolveProjectRef', () => {
     expect(resolveProjectRef('go', missing)).toMatchObject({
       project: { id: 'gone' },
     });
+  });
+});
+
+/**
+ * Whether a project's sessions run in a container (terminals).
+ *
+ * Read by the tree's terminal link, which says `terminal · host` for one — so
+ * the cases it has to tell apart are "the entry carries a container block" and
+ * everything else, an unknown project and an absent snapshot included.
+ */
+describe('projectContainerised', () => {
+  it('is true only for a project whose entry carries a container block', () => {
+    const base = snapshot([
+      { id: 'nova-web', status: 'ok' },
+      { id: 'boxed', status: 'ok' },
+    ]);
+    setProjectConfigForTest({
+      ...base,
+      projects: base.projects.map((project) =>
+        project.id === 'boxed'
+          ? {
+              ...project,
+              // The two fields `ContainerConfig` requires, and nothing else:
+              // presence is the switch, so the values are irrelevant here.
+              container: { workspace: '/workspace', hiveDir: '/hive' },
+            }
+          : project,
+      ),
+    });
+
+    expect(projectContainerised('boxed')).toBe(true);
+    expect(projectContainerised('nova-web')).toBe(false);
+    expect(projectContainerised('nope')).toBe(false);
+  });
+
+  it('is false with no snapshot', () => {
+    resetProjectConfig();
+
+    expect(projectContainerised('nova-web')).toBe(false);
   });
 });

@@ -13,17 +13,28 @@ import { seedDemoFleet } from '@tests/support/demo-fleet';
  * a test asked which transport it gets.
  */
 const ptyMarker = { write: vi.fn(), resize: vi.fn(), onData: vi.fn(() => vi.fn()) };
+/** The terminal factory's answer, so "which of the two" is assertable by identity. */
+const terminalMarker = {
+  write: vi.fn(),
+  resize: vi.fn(),
+  onData: vi.fn(() => vi.fn()),
+};
 vi.mock('@lib/terminal/pty-transport', () => ({
   createPtyTransport: vi.fn(() => ptyMarker),
+  createTerminalTransport: vi.fn(() => terminalMarker),
   /**
    * The store's *eager* spawn path, which `spawnSession` calls fire-and-forget.
    * Stubbed for the same reason as the transport: creating a session to test
    * how it resolves must not start a process.
    */
   requestSpawn: vi.fn(() => Promise.resolve({ ok: true })),
+  /** `spawnTerminal`'s half of the same bargain (terminals). */
+  requestSpawnTerminal: vi.fn(() => Promise.resolve({ ok: true })),
 }));
 
-const { createPtyTransport } = await import('@lib/terminal/pty-transport');
+const { createPtyTransport, createTerminalTransport } = await import(
+  '@lib/terminal/pty-transport'
+);
 
 function withBridge() {
   (window as { hive?: unknown }).hive = { appInfo: () => Promise.resolve({}) };
@@ -263,5 +274,48 @@ describe('isLiveTerminal', () => {
     // the browser target surviving at all is that it degrades visibly.
     expect(isLiveTerminal(SESSION_ID)).toBe(false);
     expect(isLiveTerminal(ORCHESTRATOR_ID)).toBe(false);
+  });
+});
+
+/**
+ * The third kind (terminals).
+ *
+ * A terminal has no `claude` in it, so it needs the other factory — and it has
+ * no ending that retires its transcript, so it stays live-resolved for its whole
+ * life. The surface reads `ended` for a lost one, exactly as it does for a
+ * session that finished, rather than flipping `readOnly` and rebuilding xterm
+ * over the transcript the user is reading to find out what happened.
+ */
+describe('terminals', () => {
+  it('hands the terminal transport the directory the terminal started in', () => {
+    withBridge();
+    const id = useHiveStore.getState().spawnTerminal('nova-web', { cwd: '/repos/nova-web/pkg' });
+    resolveTransport(id);
+    expect(createTerminalTransport).toHaveBeenCalledWith(id, 'nova-web', '/repos/nova-web/pkg');
+  });
+
+  it('gives a terminal the terminal transport on desktop, and counts it live', () => {
+    withBridge();
+    const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+    expect(resolveTransport(id)).toBe(terminalMarker);
+    // No config snapshot in this file, so the terminal has no directory to name.
+    expect(createTerminalTransport).toHaveBeenCalledWith(id, 'nova-web', undefined);
+    expect(isLiveTerminal(id)).toBe(true);
+  });
+
+  it('a lost terminal keeps its live transport — the surface reads ended, not read-only', () => {
+    withBridge();
+    const id = useHiveStore.getState().spawnTerminal('nova-web');
+    useHiveStore.getState().markTerminalLost(id, 'the pty host crashed');
+
+    expect(isLiveTerminal(id)).toBe(true);
+  });
+
+  it('keeps a terminal on a recording in the browser', () => {
+    const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+    expect(resolveTransport(id)).not.toBe(terminalMarker);
+    expect(createTerminalTransport).not.toHaveBeenCalled();
   });
 });

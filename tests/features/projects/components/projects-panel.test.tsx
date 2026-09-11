@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -118,7 +118,7 @@ describe('ProjectsPanel', () => {
     render(<ProjectsPanel />);
 
     expect(projectToggle(id)).toHaveAccessibleName(
-      `${id} ${count} active session${count === 1 ? '' : 's'}`,
+      `${id} ${count} running`,
     );
   });
 
@@ -129,7 +129,7 @@ describe('ProjectsPanel', () => {
     expect(screen.queryByText('tz-fix')).not.toBeInTheDocument();
     expect(screen.queryByText('ecs-scaling')).not.toBeInTheDocument();
     expect(projectToggle('infra-terraform')).toHaveAccessibleName(
-      'infra-terraform 0 active sessions',
+      'infra-terraform 0 running',
     );
   });
 
@@ -152,7 +152,13 @@ describe('ProjectsPanel', () => {
       (child) => child !== row,
     );
     expect(children).toHaveLength(1);
-    expect(children[0]).toHaveAccessibleName('New session in infra-terraform');
+    // The one child is the split row — a session link and a terminal link,
+    // one rule between them (terminals).
+    expect(
+      within(children[0] as HTMLElement).getByRole('button', {
+        name: 'New session in infra-terraform',
+      }),
+    ).toBeInTheDocument();
   });
 
   it('starts expanded and hides the children once collapsed', async () => {
@@ -188,7 +194,7 @@ describe('ProjectsPanel', () => {
     render(<ProjectsPanel />);
 
     expect(projectToggle('design-system')).toHaveAccessibleName(
-      'design-system 1 active session',
+      'design-system 1 running',
     );
 
     act(() => {
@@ -196,7 +202,7 @@ describe('ProjectsPanel', () => {
     });
 
     expect(projectToggle('design-system')).toHaveAccessibleName(
-      'design-system 2 active sessions',
+      'design-system 2 running',
     );
   });
 

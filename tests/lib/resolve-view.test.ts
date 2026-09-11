@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Agent, Session } from '@/types/entity';
+import type { Agent, Session, Terminal } from '@/types/entity';
 import {
   isEntityView,
   isTerminalView,
@@ -237,4 +237,13 @@ describe('isTerminalView', () => {
     expect(isTerminalView('settings')).toBe(false);
     expect(isTerminalView('editor')).toBe(false);
   });
+});
+
+const terminal = { kind: 'terminal', id: 'term-01' } as Terminal;
+
+it('shows a terminal for a terminal entity, and it is both an entity view and a terminal view', () => {
+  const view = resolveView({ activeTab: 'term-01', picker: false, settings: false, entity: terminal, editorFull: false });
+  expect(view).toBe('terminal');
+  expect(isEntityView(view)).toBe(true);
+  expect(isTerminalView(view)).toBe(true);
 });

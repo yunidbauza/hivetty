@@ -4,13 +4,16 @@
   it.
 */
 import type { ProjectRow as ProjectRowData } from '@/types/entity';
+import { isTerminal } from '@/types/entity';
 
 import { Icon } from '@components/ui/icon';
 import { Tag } from '@components/ui/tag';
 import { NewSessionLink } from '@features/projects/components/new-session-link';
+import { NewTerminalLink } from '@features/projects/components/new-terminal-link';
 import { SessionRow } from '@features/projects/components/session-row';
+import { TerminalRow } from '@features/projects/components/terminal-row';
 import { useProjectAccess } from '@hooks/use-project-config';
-import { useProjectSessions } from '@stores/hive-store';
+import { useEntity, useProjectLiveCount, useProjectSessions } from '@stores/hive-store';
 import { useProjectCollapsed, useToggleProject } from '@stores/ui-store';
 
 interface ProjectRowProps {
@@ -31,7 +34,20 @@ interface ProjectRowProps {
 }
 
 /**
- * One project and, when expanded, its live sessions.
+ * One entry of a project's list, by kind (terminals).
+ *
+ * The list selector returns ids of both kinds in start order; the kind is read
+ * here rather than returned beside the id so the selector's shape — and every
+ * consumer counting its length — stays what it was.
+ */
+function ProjectEntryRow({ id }: { id: string }) {
+  const entity = useEntity(id);
+  if (!entity) return null;
+  return isTerminal(entity) ? <TerminalRow id={id} /> : <SessionRow id={id} />;
+}
+
+/**
+ * One project and, when expanded, its live sessions and terminals.
  *
  * The whole row is the toggle — a `<button>` rather than a div with an onClick,
  * so it is reachable by keyboard and `aria-expanded` tells a screen reader which
@@ -43,6 +59,7 @@ interface ProjectRowProps {
  */
 export function ProjectRow({ project }: ProjectRowProps) {
   const sessionIds = useProjectSessions(project.id);
+  const liveCount = useProjectLiveCount(project.id);
   const collapsed = useProjectCollapsed(project.id);
   const toggleProject = useToggleProject();
   const access = useProjectAccess(project.id);
@@ -118,17 +135,21 @@ export function ProjectRow({ project }: ProjectRowProps) {
           empty state) rather than losing the pill entirely.
         */}
         <span className="shrink-0 rounded-full bg-chip px-2 py-0.5 font-mono text-[11px] text-muted">
-          {sessionIds.length}
-          <span className="sr-only">
-            {sessionIds.length === 1 ? ' active session' : ' active sessions'}
-          </span>
+          {liveCount}
+          {/*
+            `running`, not `active session(s)` (terminals): the list holds
+            sessions *and* terminals now, so a word that names one kind would
+            be wrong about the other — and it needs no plural, which is the
+            other reason it is the right word.
+          */}
+          <span className="sr-only"> running</span>
         </span>
       </button>
 
       {/*
-        Sessions, then the way to start another — last child of the expanded
-        region either way, so it sits directly under the folder when nothing is
-        running and under the final session when something is.
+        Entries, then the two ways to start another — last child of the
+        expanded region either way, so it sits directly under the folder when
+        nothing is running and under the final entry when something is.
 
         Only when expanded: a collapsed project is a summary, and its count pill
         already says what is happening inside it. Hanging a control off a closed
@@ -137,9 +158,25 @@ export function ProjectRow({ project }: ProjectRowProps) {
       {expanded ? (
         <>
           {sessionIds.map((id) => (
-            <SessionRow key={id} id={id} />
+            <ProjectEntryRow key={id} id={id} />
           ))}
-          <NewSessionLink projectId={project.id} projectName={project.name} />
+          {/*
+            The split row: a session on the left, a terminal on the right, one
+            rule between them. Still the last child, still under the final
+            entry; the session link keeps its indent and the terminal link
+            hangs off the rule.
+          */}
+          <div className="flex items-center">
+            <NewSessionLink projectId={project.id} projectName={project.name} />
+            <span
+              aria-hidden="true"
+              className="mx-1 h-3 w-px shrink-0 bg-border-soft"
+            />
+            <NewTerminalLink
+              projectId={project.id}
+              projectName={project.name}
+            />
+          </div>
         </>
       ) : null}
     </div>

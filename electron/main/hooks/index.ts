@@ -1,7 +1,13 @@
 import { join } from 'node:path';
 
 import type { AgentContainer, AgentsDirectory } from '@shared/agent-contract';
-import { DEFAULT_RECEIVER, type ResolvedContainer } from '@shared/config-contract';
+import {
+  DEFAULT_BIND,
+  DEFAULT_RECEIVER,
+  isLoopbackHost,
+  type ReceiverBindConfig,
+  type ResolvedContainer,
+} from '@shared/config-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_SESSION,
@@ -29,7 +35,7 @@ import type { Ledger } from '../ledger';
 
 import { withHostAlias } from './container-origin';
 import { createReceiver, type Receiver } from './receiver';
-import { writeAgentSettings, writeHookSettings } from './settings';
+import { type HookTransport, writeAgentSettings, writeHookSettings } from './settings';
 
 /**
  * The hook pipeline, as one thing the session layer can hold (HIVE-62).
@@ -93,6 +99,25 @@ export interface HookRuntimeOptions {
    */
   hostAlias?: () => string;
   /**
+   * Every hostname the receiver's `Host` guard must admit, or the default
+   * single-alias set when omitted (HIVE-134 follow-up).
+   *
+   * Deliberately **not** {@link HookRuntimeOptions.hostAlias} widened in
+   * place: that field is *the global alias*, used above to decide what a
+   * generated file's URLs are addressed to, and it stays singular because a
+   * project's or an agent's own generated set already carries its own
+   * diverged alias — there is nothing plural for file generation to do with
+   * a set. The guard's question is different: "does this `Host` header name
+   * *any* alias this app could have handed out", which is exactly what a set
+   * answers and a single string cannot. `ipc/index.ts` composes it with
+   * `receiverHostAliases(getConfig(), agentHostAliases)` from
+   * `config/runtime.ts`, folding in every project's effective alias and
+   * every agent's, on top of the global one this option's default falls back
+   * to. Passed straight through to `createReceiver`'s own `hostAliases` — see
+   * its doc comment on `ReceiverOptions` for why one alias was never enough.
+   */
+  hostAliases?: () => ReadonlySet<string>;
+  /**
    * A project's resolved container block, or `undefined` for a host project
    * (HIVE-133).
    *
@@ -108,6 +133,14 @@ export interface HookRuntimeOptions {
   containerFor?: (projectId: string | null) => ResolvedContainer | undefined;
   /** Overridable for tests; `0` asks the OS for a free port. */
   port?: number;
+  /**
+   * Where the receiver listens, from `receiver.bind` (HIVE-134).
+   *
+   * A value rather than a getter, unlike {@link HookRuntimeOptions.hostAlias}
+   * beside it — see `ReceiverOptions.host` for why the two differ. Partial
+   * so a caller may name one field; the rest come from {@link DEFAULT_BIND}.
+   */
+  bind?: Partial<ReceiverBindConfig>;
 }
 
 /**
@@ -218,6 +251,31 @@ export interface HookRuntime {
    */
   doneUrl(): string | null;
   /**
+   * The host the receiver's socket is actually bound to right now, or `null`
+   * when nothing is listening — before the bind, after a failed one, or after
+   * `stop()` (HIVE-134).
+   *
+   * Not gated on `settingsPath` the way {@link HookRuntime.doneUrl} is:
+   * `doneUrl` cares whether a session has a token to present, but this answers
+   * a narrower, purely socket-shaped question — is the process reachable off
+   * loopback — that does not depend on whether the settings file also wrote
+   * successfully. A receiver that bound but then had its container-file write
+   * fail still had a real, listening, possibly-non-loopback socket for the
+   * moments before `stop()` closed it; this getter reports exactly that
+   * lifetime, no more and no less.
+   *
+   * **Not** a read through {@link HookRuntime}'s own `receiver` variable —
+   * that was the review-round bug (HIVE-134). `receiver` is not assigned until
+   * after a sweep and two settings-file writes have all resolved, so a socket
+   * bound wide could sit open for that whole window while a `receiver`-backed
+   * `boundHost()` still answered `null`, and a renderer's one-shot `AppInfo`
+   * read has no way to notice it changed underneath it. The implementation
+   * instead mirrors {@link Receiver.boundHost} into its own local the instant
+   * `start()` resolves, so this is truthful from the same tick the socket
+   * actually starts listening — independent of every write still to come.
+   */
+  boundHost(): string | null;
+  /**
    * The receiver's origin as a *container* must address it, addressed by the
    * **global** alias, or `null` before the bind (HIVE-132).
    *
@@ -272,13 +330,34 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
     port,
     sessionMetrics = () => true,
     hostAlias = () => DEFAULT_RECEIVER.hostAlias,
+    // Falls back to a set of exactly the global alias, through the same
+    // getter file generation already reads — not `DEFAULT_RECEIVER.hostAlias`
+    // directly, so a caller that supplies `hostAlias` but not `hostAliases`
+    // (every test in this file predating this option, and any future one
+    // that only cares about the single-alias case) still gets a guard that
+    // admits the alias it actually configured.
+    hostAliases = () => new Set([hostAlias()]),
     containerFor,
     ledger,
+    bind,
   } = options;
 
   let receiver: Receiver | null = null;
   let settingsPath: string | null = null;
   let agentSettingsPath: string | null = null;
+  /**
+   * The receiver's `boundHost`, captured independently of `receiver` itself
+   * (HIVE-134 review). `boundHost()` used to read straight through `receiver`,
+   * which is not assigned until well after the bind succeeds — a sweep and two
+   * file writes still stand between `created.start()` resolving and
+   * `receiver = created` below. For that whole window the socket was already
+   * listening, possibly off loopback, while `boundHost()` answered `null`: the
+   * exact false-safe signal this story exists to remove, just moved one level
+   * up. Set the instant `start()` resolves, so a renderer that reads `AppInfo`
+   * during the sweep gets the truth instead of a `null` a one-shot fetch would
+   * then cache for the rest of the session.
+   */
+  let liveBoundHost: string | null = null;
 
   /**
    * The receiver's URLs as the *host* addresses them, gated on
@@ -321,6 +400,12 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onDone,
       onReady,
     }) {
+      /*
+        Resolved here rather than trusted: `bind` arrives partial, and a caller
+        naming only `host` must not lose the default port.
+      */
+      const resolvedBind = { ...DEFAULT_BIND, ...bind };
+
       const created = createReceiver({
         onEvent,
         onAgentEvent,
@@ -347,16 +432,55 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onAgentsList,
         knowsSession,
         knowsAgent,
-        ...(port === undefined ? {} : { port }),
+        /*
+          `port` stays the test override it has always been and wins when given,
+          so a spec that pins a port is not fighting a config default. Config
+          supplies it otherwise.
+        */
+        port: port ?? resolvedBind.port,
+        host: resolvedBind.host,
+        allowedOrigins: resolvedBind.allowedOrigins,
+        hostAliases,
       });
 
       const url = await created.start();
+      /*
+        Captured here, before anything else in this function runs — not after
+        `receiver = created` below, and not read lazily through `receiver` at
+        call time. `created.boundHost` is already correct the instant `start()`
+        resolves (`null` on a failed bind, the bound host on a successful one),
+        so mirroring it into a local now is what keeps `boundHost()` honest
+        during the sweep and the two settings writes still to come.
+      */
+      liveBoundHost = created.boundHost;
       if (url === null) {
         console.info(
           '[hive] hook receiver could not bind — session status falls back to pty activity',
         );
         return;
       }
+
+      /*
+        `command` only once the address the kernel actually bound is
+        demonstrably off loopback (HIVE-134) — never derived from `resolvedBind`
+        or any other pre-bind config, so a host alias, a DNS quirk or a bind
+        that silently fell back to a different address can never disagree with
+        what gets written below. `liveBoundHost` is the same value just
+        captured above, before the sweep and these two writes, and by the time
+        `url` is non-null it is guaranteed non-null too — `receiver.ts` only
+        ever resolves them together (both set, or both cleared on a bind
+        `error`) — but the `null` arm still reads `'http'`, the byte-identical
+        default, rather than assume that invariant here a second time.
+
+        Getting this wrong in either direction is a real regression: `'http'`
+        on a widened bind silently kills status, the inbox, the header gauges
+        and `/done` for every host session (Claude Code refuses an http hook to
+        a non-loopback private/link-local address with no visible error — see
+        `writeHookSettings`'s doc comment); `'command'` on the default loopback
+        bind changes the bytes this PR promises stay identical.
+      */
+      const transport: HookTransport =
+        liveBoundHost !== null && !isLoopbackHost(liveBoundHost) ? 'command' : 'http';
 
       try {
         /*
@@ -394,6 +518,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
             `direnv` again.
           */
           created.readyUrl ?? undefined,
+          transport,
         );
         /*
           Written right after its sibling, with the same `url`/`readyUrl` — the
@@ -401,11 +526,17 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           status line (HIVE-119). Unlike `settingsPath`, this file's content is
           fixed once the receiver is up: no wake ever calls this again, so
           there is nothing here to keep in sync on a later re-bind.
+
+          Same `transport` as its sibling above, and for the same reason: an
+          agent's headless turn (`writeAgentSettings` docs it) reports through
+          this exact receiver, so a widened bind refuses its http hooks exactly
+          as it refuses the interactive set's.
         */
         const newAgentSettingsPath = await writeAgentSettings(
           userDataPath,
           url,
           created.readyUrl ?? undefined,
+          transport,
         );
 
         /*
@@ -500,6 +631,9 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         await created.stop();
         settingsPath = null;
         agentSettingsPath = null;
+        // The socket really is closed now — `created.stop()` just ran — so
+        // `null` here is the true state, not a premature guess at it.
+        liveBoundHost = null;
         console.info(
           `[hive] hook settings could not be written — session status falls back to pty activity (${String(cause)})`,
         );
@@ -517,6 +651,10 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       const running = receiver;
       if (running === null || settingsPath === null) return null;
       return running.doneUrl;
+    },
+
+    boundHost(): string | null {
+      return liveBoundHost;
     },
 
     agentContainerSettingsPathFor(config) {
@@ -691,6 +829,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       receiver = null;
       settingsPath = null;
       agentSettingsPath = null;
+      liveBoundHost = null;
       if (running !== null) await running.stop();
     },
   };

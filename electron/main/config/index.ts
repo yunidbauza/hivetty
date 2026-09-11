@@ -2,15 +2,19 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 
 import {
+  DEFAULT_BIND,
   DEFAULT_CLAUDE_COMMAND,
   DEFAULT_IMPORT_LOGIN_ENV,
   DEFAULT_JIRA,
   DEFAULT_RECEIVER,
+  DEFAULT_REMOTE,
+  DEFAULT_SERVER,
   DEFAULT_SESSION_METRICS,
   DEFAULT_SLACK,
   DEFAULT_SUBSCRIPTION_AUTH,
   DEFAULT_PROJECT_ICON,
   emptySnapshot,
+  isRemoteTarget,
   projectAliases,
   type AddProjectRequest,
   type ConfigSnapshot,
@@ -26,7 +30,9 @@ import {
   type SetProjectKeyRequest,
   type SetProjectRuntimeRequest,
   type SetReceiverRequest,
+  type SetRemoteRequest,
   type SetRuntimeRequest,
+  type SetServerRequest,
   type SetSlackRequest,
 } from '@shared/config-contract';
 import { resolveNotificationPrefs } from '@shared/notification-contract';
@@ -41,6 +47,7 @@ import {
   WriteRefused,
   writeConfig,
   type ConfigDocument,
+  type Mutation,
   type WriteResult,
 } from './write';
 
@@ -111,6 +118,12 @@ export function loadConfig(): ConfigSnapshot {
 
   const parsed = parseConfig(text, LABEL);
   const projects = resolveProjects(parsed.projects, parsed.errors);
+  // Computed once and read twice below — `attachedServer` derives from the
+  // same value `remote` resolves to, and a second `{ ...DEFAULT_REMOTE,
+  // ...parsed.remote }` here would be the "second place for the same fact to
+  // drift from this one" `ConfigSnapshot.remote`'s own doc comment warns
+  // against.
+  const remote = { ...DEFAULT_REMOTE, ...parsed.remote };
 
   const snapshot: ConfigSnapshot = {
     configPath: path,
@@ -142,8 +155,42 @@ export function loadConfig(): ConfigSnapshot {
     // still answers for both fields (HIVE-67).
     jira: { ...DEFAULT_JIRA, ...parsed.jira },
     // Defaults *under* whatever the file named, exactly as `jira` does above
-    // (HIVE-131). A plain spread suffices — there is no legacy shape to migrate.
-    receiver: { ...DEFAULT_RECEIVER, ...parsed.receiver },
+    // (HIVE-131).
+    receiver: {
+      ...DEFAULT_RECEIVER,
+      ...parsed.receiver,
+      /*
+        Two levels, because `bind` is a block and a one-level spread would let a
+        file naming only `bind.host` erase the default port and origin list.
+        `jira` and `notifications` are flat and need only one.
+      */
+      bind: { ...DEFAULT_BIND, ...parsed.receiver?.bind },
+    },
+    // Defaults *under* whatever the file named, exactly as `receiver` does
+    // above (HIVE-142) and for the same reason: `bind` is a nested block, so a
+    // one-level spread would let a file naming only `bind.host` erase the
+    // default port and origin list. `devices` gets the same explicit
+    // fallback for a different reason: `DEFAULT_SERVER.devices` is one array
+    // instance, and a bare `...DEFAULT_SERVER` spread would hand that same
+    // instance to every snapshot that names no roster — exactly what
+    // `readServerDevicesFromDisk`'s own doc comment says to avoid.
+    server: {
+      ...DEFAULT_SERVER,
+      ...parsed.server,
+      bind: { ...DEFAULT_SERVER.bind, ...parsed.server?.bind },
+      devices: parsed.server?.devices ?? [],
+    },
+    // Defaults *under* whatever the file named, exactly as `jira` and
+    // `receiver` do above (HIVE-144) — a plain spread suffices, since `remote`
+    // has no nested block and no array field the way `server` does. Every
+    // config written before this story has no `remote` key at all, so this is
+    // the line that makes `DEFAULT_REMOTE` — `mode: 'local'`, no target — the
+    // outcome for every existing install rather than `undefined`.
+    remote,
+    // `remote.host` is the only handle the file carries for the far end — see
+    // `ConfigSnapshot.attachedServer`'s own doc comment for why this is a
+    // config-derived control's readout, not the header chip's runtime one.
+    attachedServer: remote.mode === 'remote' ? { name: remote.host, host: remote.host } : null,
     // Defaults *under* whatever the file named, exactly as `jira` and
     // `receiver` do above (HIVE-124). A plain spread suffices here too.
     slack: { ...DEFAULT_SLACK, ...parsed.slack },
@@ -826,16 +873,16 @@ export function setJira(request: SetJiraRequest): ConfigSnapshot {
 }
 
 /**
- * Change the container host alias (HIVE-131).
+ * Change the container host alias and/or the bind block (HIVE-131, HIVE-134).
  *
  * The block is spread, never rebuilt, for the same reason every other verb
- * spreads its target: a key this build has not heard of — the opt-in `bind`
- * this story deferred, hand-written in the meantime — must survive a save made
- * by this one.
+ * spreads its target: a key this build has not heard of — hand-written in the
+ * meantime — must survive a save made by this one. `bind` gets the same
+ * treatment one level down: see the comment at its merge below.
  *
- * There is no clearing arm. An unset alias is not a meaningful state, so the
- * renderer sends {@link DEFAULT_RECEIVER}'s value when the field is emptied
- * rather than asking for the key to be removed.
+ * There is no clearing arm for `hostAlias`. An unset alias is not a meaningful
+ * state, so the renderer sends {@link DEFAULT_RECEIVER}'s value when the field
+ * is emptied rather than asking for the key to be removed.
  */
 export function setReceiver(request: SetReceiverRequest): ConfigSnapshot {
   return commit(
@@ -852,7 +899,202 @@ export function setReceiver(request: SetReceiverRequest): ConfigSnapshot {
 
       if (request.hostAlias !== undefined) current.hostAlias = request.hostAlias;
 
+      /*
+        Merged into, not replaced. The same promise the block-level spread
+        above makes and for the same reason: a key this build has not heard of
+        — hand-written inside `bind` — must survive a save made by this one.
+        Settings writes one field at a time, so replacing the block would
+        silently drop the other two.
+      */
+      if (request.bind !== undefined) {
+        const currentBind =
+          typeof current.bind === 'object' &&
+          current.bind !== null &&
+          !Array.isArray(current.bind)
+            ? { ...(current.bind as Record<string, unknown>) }
+            : {};
+        current.bind = { ...currentBind, ...request.bind };
+      }
+
       return { ...draft, receiver: current };
+    }),
+  );
+}
+
+/**
+ * {@link setServer}'s mutation, factored out (HIVE-142 review, C1) so
+ * {@link setServerReportingWrite} can run the identical merge and still see
+ * `writeConfig`'s own `WriteResult.ok` — the boolean `commit` computes from
+ * it and `setServer` itself has always discarded.
+ *
+ * The block is spread, never rebuilt, for the same reason every other verb
+ * spreads its target: a key this build has not heard of — hand-written in the
+ * meantime — must survive a save made by this one. `bind` gets the same
+ * treatment one level down: see the comment at its merge below.
+ *
+ * `devices` replaces the stored roster wholesale rather than merging into it —
+ * the same rule `setSlack` applies to `commanders`, because a roster is one
+ * list the caller already has in full.
+ */
+function serverMutation(request: SetServerRequest): Mutation {
+  return (draft) => {
+    // A non-object block is replaced rather than merged into. The reader has
+    // already reported it, and merging onto a string would produce something
+    // neither the user nor the parser meant.
+    const current =
+      typeof draft.server === 'object' &&
+      draft.server !== null &&
+      !Array.isArray(draft.server)
+        ? { ...(draft.server as Record<string, unknown>) }
+        : {};
+
+    if (request.enabled !== undefined) current.enabled = request.enabled;
+
+    /*
+      Merged into, not replaced. The same promise the block-level spread
+      above makes and for the same reason: a key this build has not heard of
+      — hand-written inside `bind` — must survive a save made by this one.
+      Settings writes one field at a time, so replacing the block would
+      silently drop the other two.
+    */
+    if (request.bind !== undefined) {
+      const currentBind =
+        typeof current.bind === 'object' &&
+        current.bind !== null &&
+        !Array.isArray(current.bind)
+          ? { ...(current.bind as Record<string, unknown>) }
+          : {};
+      current.bind = { ...currentBind, ...request.bind };
+    }
+
+    if (request.devices !== undefined) current.devices = request.devices;
+
+    return { ...draft, server: current };
+  };
+}
+
+/**
+ * Change whether the server is on, where it listens, and/or the paired-device
+ * roster (HIVE-142).
+ *
+ * There is no credential here and never will be. A device's digest is not a
+ * secret, but minting one is pairing's job, not Settings', and this verb only
+ * ever writes what is already resolved.
+ *
+ * Every other `config:set-*` caller is a fire-and-forget settings save the
+ * renderer re-reads afterward regardless of whether it landed — this is that
+ * shape. A caller that must fail closed on a silent write failure — pairing
+ * and revoking a device, HIVE-142 review C1 — wants
+ * {@link setServerReportingWrite} instead.
+ */
+export function setServer(request: SetServerRequest): ConfigSnapshot {
+  return commit(writeConfig(serverMutation(request)));
+}
+
+/**
+ * The same write as {@link setServer}, but with the boolean `commit` already
+ * computes and `setServer` discards (HIVE-142 review, C1).
+ *
+ * `pairDevice`/`revokeDevice` (`server/devices.ts`) go through this via
+ * `server/file-backed-io.ts`'s `DeviceStore.writeDevices`, and both fail
+ * closed when `ok` comes back `false`: a config write never throws at a
+ * caller (`writeConfig` reports failure instead, see its own doc comment),
+ * so `setServer` alone gives every caller a `ConfigSnapshot` whether or not
+ * anything was actually written — fine for an ordinary settings save the
+ * renderer re-reads regardless, wrong for a security control (revoking a
+ * device) or a credential mint that must not be handed out for something
+ * that was never persisted.
+ */
+export function setServerReportingWrite(
+  request: SetServerRequest,
+): { ok: boolean; snapshot: ConfigSnapshot } {
+  const result = writeConfig(serverMutation(request));
+  return { ok: result.ok, snapshot: commit(result) };
+}
+
+/**
+ * Change whether this window is a client and where it attaches (HIVE-144).
+ *
+ * {@link setServer}'s mirror, field for field: the block is spread rather than
+ * rebuilt so a key this build has not heard of survives a save made by this
+ * one, and there is no credential key here — `remote:pair`'s job, stored in
+ * `safeStorage`, never in this file.
+ *
+ * ## The invariant this function owns (fix-round 2)
+ *
+ * **After this write, if the effective mode is `'remote'`, the effective host
+ * satisfies {@link isRemoteTarget}. No payload shape, and no sequence of
+ * payloads, may leave the stored config in violation.** "Effective" means the
+ * merged `current` below — what is actually about to be written — not
+ * whatever subset of fields this one call's `request` happens to carry.
+ *
+ * Two review rounds each closed one payload shape that violated an earlier,
+ * narrower version of this rule (checking only `request.mode` against
+ * `request.host`, inside `parseSetRemoteRequest`): `{ host }` alone while the
+ * stored config was already remote, and `{ mode: 'remote' }` alone after an
+ * earlier call had legitimately stored an unvalidated host under `'local'`.
+ * Both are the same defect through a different door — a per-shape check can
+ * always be walked around by a sequence of calls that assembles the forbidden
+ * pair one field at a time, because no single call ever carries the pair
+ * `parseSetRemoteRequest` would have refused if it saw both fields at once.
+ *
+ * So the check moved here, to the one place that actually holds the merged,
+ * about-to-be-written state, and runs exactly once against it — not per field,
+ * not per payload shape. `parseSetRemoteRequest` now validates only that
+ * `host` is a well-formed string and `mode` is `'local'` or `'remote'`; it no
+ * longer refuses a host-only payload, because that refusal bought nothing
+ * once this invariant holds: a host-only payload while the config is
+ * genuinely local is harmless (Ruling 3), and one that would leave the
+ * effective state remote-with-a-bad-host is caught right here, on the merged
+ * result, regardless of which field this particular call carried.
+ *
+ * `WriteRefused` — the same mechanism `addLocalDirectory`'s duplicate-path
+ * check and every duplicate-id check in this file use — because this is a
+ * check that "must see the current file" (`write.ts`'s own doc comment): the
+ * cached snapshot can be older than the file, so the merge has to happen
+ * against what `writeConfig` just re-read from disk, not against a payload in
+ * isolation. `writeConfig` converts the throw into an ordinary
+ * `{ ok: false, reason }` — nothing here throws at the user's data, and the
+ * old file is untouched on disk when this fires.
+ *
+ * Ruling 3 is otherwise unchanged: a config genuinely staying in `'local'`
+ * mode with an empty or unvalidated host produces no error, here or anywhere
+ * else — this function only ever refuses a merge whose *effective* mode is
+ * `'remote'`.
+ */
+export function setRemote(request: SetRemoteRequest): ConfigSnapshot {
+  return commit(
+    writeConfig((draft) => {
+      // A non-object block is replaced rather than merged into. The reader has
+      // already reported it, and merging onto a string would produce something
+      // neither the user nor the parser meant.
+      const current =
+        typeof draft.remote === 'object' &&
+        draft.remote !== null &&
+        !Array.isArray(draft.remote)
+          ? { ...(draft.remote as Record<string, unknown>) }
+          : {};
+
+      if (request.mode !== undefined) current.mode = request.mode;
+      if (request.host !== undefined) current.host = request.host;
+      if (request.port !== undefined) current.port = request.port;
+
+      // The invariant, checked once against the merged result — see this
+      // function's own doc comment. `current.mode === 'remote'` rather than
+      // `!== 'local'`: anything else (absent, a hand-edited typo, a stale
+      // value from a build that predates this key) is not the literal string
+      // `'remote'` and resolves to `'local'` on read, the identical fallback
+      // `optionalRemote` (`config/parse.ts`) applies — the writer and the
+      // reader have to agree on what "effectively remote" means, or a value
+      // this function let through could still be refused, or the reverse,
+      // the moment the file is reloaded.
+      if (current.mode === 'remote' && !isRemoteTarget(current.host)) {
+        throw new WriteRefused(
+          `remote.host must be loopback or a tailnet address before mode can be "remote" — this socket is plaintext, so anything else would send a credential to the open internet`,
+        );
+      }
+
+      return { ...draft, remote: current };
     }),
   );
 }

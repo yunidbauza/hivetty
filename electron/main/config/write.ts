@@ -14,12 +14,15 @@ import { dirname, join } from 'node:path';
 
 import {
   CONFIG_VERSION,
+  DEFAULT_BIND,
   DEFAULT_CLAUDE_COMMAND,
   DEFAULT_IMPORT_LOGIN_ENV,
   DEFAULT_SESSION_METRICS,
   DEFAULT_SUBSCRIPTION_AUTH,
   DEFAULT_JIRA,
   DEFAULT_RECEIVER,
+  DEFAULT_REMOTE,
+  DEFAULT_SERVER,
   DEFAULT_SLACK,
   type ConfigSnapshot,
 } from '@shared/config-contract';
@@ -249,6 +252,11 @@ export function writeConfig(
   }
 
   const projects = resolveProjects(validated.projects, validated.errors);
+  // Computed once and read twice below, for the same reason `loadConfig`
+  // hoists it: `attachedServer` derives from the same value `remote` resolves
+  // to, and a second `{ ...DEFAULT_REMOTE, ...validated.remote }` here would
+  // be a second place for that fact to drift from this one.
+  const remote = { ...DEFAULT_REMOTE, ...validated.remote };
 
   return {
     ok: true,
@@ -291,7 +299,48 @@ export function writeConfig(
         block resolved on only the read path would leave every settings write
         answering with a partial `receiver`.
       */
-      receiver: { ...DEFAULT_RECEIVER, ...validated.receiver },
+      receiver: {
+        ...DEFAULT_RECEIVER,
+        ...validated.receiver,
+        /*
+          Two levels, because `bind` is a block and a one-level spread would let
+          a file naming only `bind.host` erase the default port and origin list.
+          `jira` and `notifications` are flat and need only one.
+        */
+        bind: { ...DEFAULT_BIND, ...validated.receiver?.bind },
+      },
+      /*
+        Resolved here as well as in `loadConfig` (HIVE-142), for the same
+        reason `receiver` is: this snapshot is the one every mutating verb
+        returns and becomes the cache, and a block resolved on only the read
+        path would leave every settings write answering with a partial
+        `server`. Two levels, for the same reason `receiver`'s comment above
+        states: `bind` is a nested block, and a one-level spread would let a
+        write naming only `bind.host` erase the default port and origin list.
+        `devices` gets the same explicit fallback `loadConfig` uses, for the
+        same reason: `DEFAULT_SERVER.devices` is one array instance, and a
+        bare `...DEFAULT_SERVER` spread would hand every snapshot that names
+        no roster that same shared instance.
+      */
+      server: {
+        ...DEFAULT_SERVER,
+        ...validated.server,
+        bind: { ...DEFAULT_SERVER.bind, ...validated.server?.bind },
+        devices: validated.server?.devices ?? [],
+      },
+      /*
+        Resolved here as well as in `loadConfig` (HIVE-144), for the same
+        reason `receiver` and `server` are: this snapshot is the one every
+        mutating verb returns and becomes the cache, and a block resolved on
+        only the read path would leave every settings write answering with a
+        partial `remote`. A plain spread suffices — no nested block, no array
+        field the way `server` has.
+      */
+      remote,
+      // `remote.host` is the only handle the file carries for the far end —
+      // see `ConfigSnapshot.attachedServer`'s own doc comment.
+      attachedServer:
+        remote.mode === 'remote' ? { name: remote.host, host: remote.host } : null,
       /*
         Resolved here as well as in `loadConfig` (HIVE-124), for the same
         reason `receiver` is: this snapshot is the one every mutating verb

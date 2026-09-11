@@ -3,10 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_JIRA,
-  DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
+  emptySnapshot,
   type ConfigSnapshot,
   type ProjectStatus,
 } from '@shared/config-contract';
@@ -511,10 +508,7 @@ describe('NewSessionPicker · unmapped projects', () => {
     overrides: Partial<ConfigSnapshot> = {},
   ): ConfigSnapshot {
     return {
-      configPath: CONFIG_PATH,
-      templateWritten: false,
-      shell: '/bin/zsh',
-      claudeCommand: 'claude',
+      ...emptySnapshot(CONFIG_PATH, '/bin/zsh'),
       projects: projects.map(({ id, status }) => ({
         id,
         name: id,
@@ -525,15 +519,6 @@ describe('NewSessionPicker · unmapped projects', () => {
         key: testProjectKey(id),
         isRepo: true,
       })),
-      env: {},
-      notifications: { ...DEFAULT_NOTIFICATIONS },
-      jira: { ...DEFAULT_JIRA },
-      receiver: { ...DEFAULT_RECEIVER },
-      slack: { ...DEFAULT_SLACK },
-      subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-      errors: [],
       ...overrides,
     };
   }

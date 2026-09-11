@@ -1,6 +1,6 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -15,6 +15,7 @@ import {
   type IpcMainInvokeEvent,
 } from 'electron';
 
+import { SNAPSHOT_READ_BUDGET_MS, createRemoteListener } from '@remote-host/listener';
 import {
   AGENT_LIMIT_DEFAULTS,
   formatRunCost,
@@ -27,10 +28,12 @@ import {
 } from '@shared/agent-contract';
 import { AUTH_ENV_KEYS } from '@shared/config-contract';
 import type {
+  BrowseListing,
   CloneStartResult,
   CommandDiagnostic,
   ConfigSnapshot,
   EnvDiagnostic,
+  SetRemoteResult,
 } from '@shared/config-contract';
 import type {
   DirEntry,
@@ -51,6 +54,7 @@ import {
   parseAgentRunRequest,
   parseAgentWriteRequest,
   parseAddProjectRequest,
+  parseBrowseDirRequest,
   parseCloneRequest,
   parseDiagnoseCommandRequest,
   parseReadDirRequest,
@@ -61,6 +65,7 @@ import {
   parseWriteFileRequest,
   parseDiagnoseEnvRequest,
   parseSpawnRequest,
+  parseSpawnTerminalRequest,
   parseKillRequest,
   parseLedgerAnswerRequest,
   parseLedgerPostBody,
@@ -80,18 +85,26 @@ import {
   parseSetJiraRequest,
   parseSetJiraTokenRequest,
   parseSetReceiverRequest,
+  parseSetServerRequest,
   parseSetSlackRequest,
   parseSetSlackTokensRequest,
   parseDismissRequest,
   parseMarkReadRequest,
   parseNotificationAction,
+  parsePairDeviceRequest,
+  parseRevokeDeviceRequest,
   parseSetNotificationsRequest,
   parseSetProjectRuntimeRequest,
   parseSetRuntimeRequest,
   parseSearchPrsRequest,
   parseSessionNoteRequest,
   parseSessionPrRequest,
+  parseSkillDropRequest,
+  parseSkillFileWriteRequest,
+  parseSkillImportRequest,
+  parseSkillMoveRequest,
   parseSkillNameRequest,
+  parseSkillPathRequest,
   parseSkillRenameRequest,
   parseSkillWriteRequest,
   parseWriteRequest,
@@ -99,12 +112,14 @@ import {
 import {
   CH,
   type AppInfo,
+  type Channel,
   type IntegrationsStatus,
   type LoginEnvStatus,
   type NotificationActivateEvent,
-  type NotificationDeliveryStatus,
   type NotificationDismissedEvent,
   type NotificationReadEvent,
+  type RemoteLinkStatus,
+  type LocalRemoteState,
 } from '@shared/ipc-contract';
 import type {
   JiraComment,
@@ -117,6 +132,11 @@ import type {
   JiraTransition,
 } from '@shared/jira-contract';
 import { LEDGER_DIR, OVERMIND } from '@shared/ledger-contract';
+import {
+  isThisMachineAction,
+  type NotificationAction,
+} from '@shared/notification-contract';
+import { SNAPSHOT_CHANNELS } from '@shared/remote-contract';
 import { SESSION_NAME_DISPLAY_MAX } from '@shared/session-contract';
 import {
   SESSION_HISTORY_FILE,
@@ -132,6 +152,11 @@ import {
 } from '@shared/slack-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
+import {
+  createTokenStore,
+  type StoredDeviceCredential,
+  type TokenStore,
+} from '../../remote-client/token-store';
 import { createAgentsRuntime, type AgentRegistry } from '../agents';
 import { resolveClaude } from '../agents/claude-path';
 import { agentsDirectoryFor } from '../agents/directory';
@@ -169,13 +194,15 @@ import {
   setProjectRuntime,
   setReceiver,
   setRuntime,
+  setServer,
   setSlack,
 } from '../config';
 import { diagnoseEnv } from '../config/env-diagnostic';
 import { loginEnvStatus } from '../config/login-env';
-import { diagnoseCommand, effectiveRuntime } from '../config/runtime';
-import { isSafeExternalUrl } from '../external-links';
+import { serverBindRefusal } from '../config/parse';
+import { diagnoseCommand, effectiveRuntime, receiverHostAliases } from '../config/runtime';
 import {
+  browseHomeDirectory,
   createFsWatchLayer,
   forgetProbedRoots,
   readDirectory,
@@ -210,8 +237,27 @@ import {
   createNotificationHub,
   createNotifier,
   createSessionNames,
+  createToastQueue,
+  createToastRoute,
 } from '../notifications';
+import {
+  activateOnThisMachine,
+  focusThisMachine,
+} from '../notifications/activate-here';
+import {
+  notificationDelivery,
+  recordNotificationRefusal,
+} from '../notifications/delivery';
+import { badgeDock, clearDockBadge } from '../notifications/dock-badge';
 import { registerPtyHost } from '../pty-host';
+import {
+  pairDevice,
+  pairOutcomeMessage,
+  revokeDevice,
+  revokeOutcomeMessage,
+} from '../server/devices';
+import { readServerDevicesFromDisk, serverDeviceStore } from '../server/file-backed-io';
+import { isServerMode } from '../server-mode';
 import { createSessions, type Sessions } from '../sessions';
 import {
   createSessionHistory,
@@ -220,16 +266,25 @@ import {
 import { onShutdown } from '../shutdown';
 import { createSkillsRuntime, type SkillsRuntime } from '../skills';
 import { PLUGIN_DIR } from '../skills/paths';
-import { parseSaveThemeRequest, pickTheme, saveTheme } from '../theme';
 import {
   checkForUpdatesInteractively,
-  downloadUpdate,
-  installUpdate,
   setUpdateNotificationSink,
   updateStatus,
 } from '../updates';
 
+import { createBindings } from './bindings';
+import { createWindowBroadcaster, type Broadcaster } from './broadcaster';
+import { readLocalRemote } from './get-remote';
+import { createIpcRegistry, type CallHandler, type RemoteReporter } from './registry';
+import { createRemoteDispatch } from './remote-dispatch';
+import { applyRemoteForget, applyRemotePair } from './remote-pairing';
 import { assertSender } from './sender';
+import { applySetRemote, type AttachedSnapshot, type ModeSwitcher } from './set-remote';
+import {
+  createFanOutBroadcaster,
+  createSocketBroadcaster,
+} from './socket-broadcaster';
+import { createSurfaceRegistry, type SurfaceId } from './surfaces';
 
 /**
  * Channel handlers (story 082).
@@ -241,6 +296,195 @@ import { assertSender } from './sender';
  * `app:info` proved the path in story 082; `config:*` landed in 090; the PTY
  * channels and their flow control are story 093's.
  */
+
+/**
+ * Which handler answers which channel, for the remote path (HIVE-143).
+ *
+ * Module scope beside {@link remoteListener} and for the same reason: both are
+ * process-wide, both are built by `registerIpcHandlers`, and both must be torn
+ * down by `resetIpcHandlers` or a suite leaks them into the next one.
+ *
+ * Declared here rather than beside `remoteListener` itself only because `on`
+ * and `handle` below are what fill it, and a reader of those two lines should
+ * not have to go looking.
+ */
+const remoteRegistry = createIpcRegistry();
+
+/**
+ * Who is looking at this Hive, and how to reach exactly one of them
+ * (HIVE-145).
+ *
+ * Attached sockets *and* local windows, in one registry, because the state
+ * this file keys by surface — the input-box record, the foreground terminal,
+ * the ack window, the fs watch — is written by both. It replaced a bare
+ * `Set<AttachedSocket>` here: a second registry of the same connections is
+ * exactly the disagreement this story exists to close.
+ *
+ * Module scope for the reason `remoteRegistry` is: `registerIpcHandlers` fills
+ * it, and a live mode switch tears down and re-registers around it.
+ */
+const surfaces = createSurfaceRegistry();
+
+/**
+ * Interruptions raised while nobody was looking (HIVE-145).
+ *
+ * Only the kinds a person must answer, bounded by age and by subject — see the
+ * module for why a faithful replay would be the worse product. Flushed the
+ * moment a surface arrives.
+ *
+ * Module scope beside `surfaces`, and for the same two reasons: it holds
+ * nothing that belongs to one registration, and `resetIpcHandlers` has to be
+ * able to empty it. A mode switch that left it full would raise the departed
+ * mode's questions at the machine you just attached to.
+ */
+const toastQueue = createToastQueue();
+
+/**
+ * The surface behind an IPC event, registering it on first sight.
+ *
+ * Named for what it answers rather than for `trackWindow`, which it calls,
+ * because it cannot mislabel a socket: a notify dispatched from an attached
+ * socket arrives with the socket itself as `event.sender`
+ * (`recordNotify` below wraps it as `{ sender: reporter }`), and that object is
+ * already tracked as a `socket` surface by `onAttach`. `trackWindow` then
+ * returns the existing id, kind intact.
+ */
+const surfaceFor = (sender: unknown): SurfaceId =>
+  surfaces.trackWindow(sender, (channel, payload) => {
+    const contents = sender as { send?: (channel: string, payload: unknown) => void };
+    contents.send?.(channel, payload);
+  });
+
+/**
+ * Every channel this process has bound (HIVE-144). Module scope for the same
+ * reason `remoteRegistry` is: `registerIpcHandlers` fills it, and a live mode
+ * switch must be able to empty it from outside that function.
+ */
+const bindings = createBindings(ipcMain);
+
+/**
+ * How many channels this process has bound locally (HIVE-144).
+ *
+ * Test-only, in the same register as {@link remoteRegistrySize} below and
+ * `remoteProxyBindingsSize` in `remote-proxy.ts` — and it is what makes a
+ * refused mode switch *provably* free. Invoking one channel and finding it
+ * alive is necessary and not sufficient: half an unbound surface answers that
+ * one channel too. A count is what distinguishes "still works" from "still
+ * entirely intact".
+ */
+export function ipcBindingsSize(): number {
+  return bindings.size();
+}
+
+/**
+ * The device credential this machine was handed when it attached to someone
+ * else's Hive (HIVE-144) — composed exactly as Jira's is: `safeStorage` and a
+ * file under `userData`, both injected, so `token-store.ts` can be answered by
+ * a unit test without a keyring.
+ *
+ * A function rather than a module-scope constant because `app.getPath` is only
+ * answerable after the app exists, and this module is imported long before
+ * that. One function rather than two construction sites because
+ * `remote:pair`'s handler writes through it and {@link readRemoteCredential}
+ * reads through it, and a second spelling of that filename is a credential
+ * written to one path and looked for at another.
+ *
+ * **Exported since HIVE-153, and the rule above is why.** Both channels are on
+ * `PROCESS_LOCAL` now, so `router.ts` answers them from the proxy — from a
+ * process where the `remoteTokenStore` below no longer exists. It builds its
+ * own store *through this factory* rather than composing one, because the
+ * failure that rule guards against is exactly the one two surfaces invite: a
+ * credential paired from the local handler and looked for by the proxy at
+ * another path. There is still one spelling of the filename, in one function.
+ */
+export function remoteCredentialStore(): TokenStore {
+  return createTokenStore({
+    safeStorage,
+    filePath: join(app.getPath('userData'), 'remote-credential.bin'),
+  });
+}
+
+/**
+ * The stored device credential, or `null` when there is none this machine can
+ * use (HIVE-144).
+ *
+ * Exported for exactly one caller: `ipc/router.ts`'s `switchIpcMode`, which
+ * needs it to dial and has no business composing the store itself — Ruling 2
+ * put the read on the switch rather than inside `connectRemote`, precisely so
+ * the socket module stays free of Electron's `safeStorage`.
+ *
+ * Still not reachable from the renderer: no IPC verb returns this, and none
+ * may. `remote:pair` writes the credential and `remote:forget` clears it;
+ * neither hands it back.
+ */
+export function readRemoteCredential(): StoredDeviceCredential | null {
+  return remoteCredentialStore().read();
+}
+
+/**
+ * How `config:set-remote` asks this process to change mode (HIVE-144).
+ *
+ * Re-exported rather than declared here since Ruling 28: the verb's body moved
+ * to `./set-remote` so `registerRemoteProxy` can answer it too, and the type
+ * moved with it. Both callers name the same one, which is the point — a second
+ * structural declaration would be free to drift from the switcher it describes.
+ */
+export type { ModeSwitcher };
+
+/**
+ * The default {@link ModeSwitcher}: a loud failure, never a quiet success.
+ *
+ * Reached only by a suite that calls `registerIpcHandlers` directly —
+ * `registerIpc` always passes the real one, so production cannot land here.
+ * It throws rather than answering `{ ok: true }` because a silent success
+ * would let `config:set-remote` write `mode: "remote"` to disk over a switch
+ * that never happened, which is the exact state Ruling 19 exists to make
+ * impossible.
+ */
+const noModeSwitcher: ModeSwitcher = () => {
+  throw new Error(
+    'config:set-remote reached a registration with no mode switcher. ' +
+      'registerIpcHandlers was called directly rather than through registerIpc.',
+  );
+};
+
+/**
+ * The event object handed to a call handler reached over a socket.
+ *
+ * There is no `IpcMainInvokeEvent` to give it — no renderer, no window — so
+ * this is a synthetic one carrying the **socket** as its `sender`, exactly as
+ * the notify path below has always done. That is what makes a call able to ask
+ * *which surface* it came from, and it is a correction rather than an addition:
+ * this was `{}` until HIVE-145, and the first channel to key anything by
+ * surface found the hole. `fs:watch` arriving over a socket installed a
+ * watcher belonging to a surface that did not exist, so every `fs:changed` it
+ * produced was addressed to nobody and the remote explorer never refreshed.
+ *
+ * **The attach snapshot is built before the socket is tracked.**
+ * `listener.ts` calls `buildSnapshot(socketHandle)` ahead of `onAttach`, so a
+ * `SNAPSHOT_CHANNELS` handler that called `surfaceFor` would register the
+ * socket through `trackWindow` and have it graded a `window` surface — after
+ * which `isForegroundFor` would read the *server's* `BrowserWindow` focus for a
+ * device four time zones away. None of the six does today. One that grows the
+ * dependency has to be tracked at attach instead.
+ *
+ * What is still absent is a **window**, and that is the fence that matters:
+ * five call channels dereference the event to resolve a parent `BrowserWindow`
+ * for a native dialog or to reach the server's own desktop, and all five are in
+ * `WINDOW_BOUND`, refused before `remote-dispatch` ever reaches a handler. A
+ * sixth growing that dependency must be added to that table in the same commit.
+ *
+ * **And the rule is checked, not merely stated (HIVE-143 review).**
+ * `remote-composition.test.ts` reads this file as source text, finds every
+ * `handle`/`on` site that binds an `event` parameter it actually uses, and
+ * fails if that set is anything other than `WINDOW_BOUND`'s channels plus the
+ * handful adapted to a surface — the ones that want an identity rather than a
+ * window, which a socket now genuinely supplies. That test is what makes the
+ * paragraph above enforceable; the `_event` naming convention every other
+ * handler follows is what makes it readable.
+ */
+const remoteInvokeEvent = (reporter: RemoteReporter): IpcMainInvokeEvent =>
+  ({ sender: reporter }) as unknown as IpcMainInvokeEvent;
 
 /**
  * Fire-and-forget channels (story 093).
@@ -265,6 +509,19 @@ function on(
       console.error(`[hive] rejected ${channel}:`, cause);
     }
   });
+  /*
+    Recorded once at registration, never inside the `ipcMain` callback above —
+    a record per invocation would rewrite the same entry on every keystroke.
+    `remote-dispatch.ts` owns the refusals; this stores and nothing else.
+  */
+  remoteRegistry.recordNotify(channel as Channel, (payload, reporter) => {
+    // The reporter stands in for `event.sender`. Only `pty:prompt` reads it,
+    // through `watchReporter`, which already accepts anything with an `.on`.
+    handler({ sender: reporter } as unknown as IpcMainEvent, payload);
+  });
+  // HIVE-144: so a later mode switch can unbind this channel from `ipcMain`
+  // and register it again against a different set of layers.
+  bindings.record(channel);
 }
 
 /** Wrap a handler so sender validation cannot be forgotten on a new channel. */
@@ -276,24 +533,188 @@ function handle<T>(
     assertSender(event);
     return handler(event, payload);
   });
+  // Registration-time, as in `on` above. `assertSender` is deliberately absent:
+  // there is no sender to assert, and the socket's own gate is the handshake
+  // plus `remote-dispatch.ts` — the one remote gate, kept out of the local path.
+  remoteRegistry.recordCall(channel as Channel, (payload, reporter) =>
+    handler(remoteInvokeEvent(reporter), payload),
+  );
+  // HIVE-144: so a later mode switch can unbind this channel from `ipcMain`
+  // and register it again against a different set of layers.
+  bindings.record(channel);
 }
 
 /**
- * Why the OS last refused a desktop notification, or `null`.
+ * The payload each {@link SNAPSHOT_CHANNELS} entry is read with — the same one
+ * `electron/preload/index.ts` sends for it, defaulting to `undefined` (HIVE-144).
  *
- * Module scope rather than a field on the hub, because it is not a fact about
- * notifications — it is a fact about **this operating system's answer to this
- * process**, learned the only way it can be learned, by trying. The hub is
- * deliberately ignorant of how a notification is presented, and giving it
- * somewhere to store a macOS authorization error would be the first crack in
- * that.
- *
- * Never reset. A refusal is not transient in the case that produces it — an
- * unsigned bundle stays unsigned for the life of the process — and clearing it
- * on the next successful send would mean the settings pane flickered between
- * two accounts of the same system.
+ * Every one of the six is called with no argument from the renderer at boot
+ * *except* `ledger:list`: its bridge method is `(query?) =>
+ * ipcRenderer.invoke(CH.ledgerList, query ?? {})`, so `undefined` never
+ * actually crosses that wire, and `parseLedgerReadQuery` — correctly — refuses
+ * it with `TypeError: ledger query must be an object` when it does. Read that
+ * refusal here (`{}`, not the whole map's default) rather than silently
+ * matching what `guards.ts` will accept: this is one bridge's own choice of
+ * default, not a rule every channel happens to share.
  */
-let systemNotificationRefusal: string | null = null;
+const SNAPSHOT_PAYLOAD: Partial<Record<Channel, unknown>> = {
+  [CH.ledgerList]: {},
+};
+
+/**
+ * Races one {@link SNAPSHOT_CHANNELS} read against
+ * {@link SNAPSHOT_READ_BUDGET_MS}, resolving `[channel, value]` on a timely
+ * answer and `null` on anything else — a throw, a rejection, or simply
+ * running out of time (HIVE-144 review; Ruling 15 extended: a slow read is
+ * dropped exactly like a broken one, because a client waiting on either
+ * cannot tell them apart).
+ *
+ * **Never rejects.** Every path resolves, which is what lets
+ * {@link buildAttachSnapshot} run all six of these concurrently with a plain
+ * `Promise.all` — one slow or broken read cannot take the others down with
+ * it, and cannot make them wait for it either.
+ *
+ * `handler` may be `null` — a channel `handle()` has not registered yet — and
+ * that is deliberately not special-cased with its own branch. Calling `null`
+ * as a function throws a `TypeError` that reaches the same `.catch` below a
+ * broken *registered* handler's error would, and the observable outcome —
+ * the key is omitted, the reason is logged — is identical either way. A
+ * dedicated `if (handler === null)` here would be the same unfalsifiable
+ * shape `electron/remote-host/listener.ts`'s deleted `fitSnapshot` fast path
+ * was (HIVE-144 review): nothing distinguishes its own correctness from the
+ * shared catch path that already covers it.
+ */
+function raceSnapshotRead(
+  channel: Channel,
+  handler: CallHandler | null,
+  reporter: RemoteReporter,
+): Promise<readonly [Channel, unknown] | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      /*
+        Unreachable by contract, not merely unlikely (HIVE-144 review — three
+        guards examined for the shape Task 6's deleted `.catch()` check was:
+        argued as covered, actually exercised by nothing).
+
+        The only way `settled` could already be `true` here is the read
+        having settled first — and both branches below call `clearTimeout(timer)`
+        in the same synchronous turn they set `settled`, before this callback
+        could ever be dispatched. `clearTimeout` guarantees a cleared timer's
+        callback never runs at all, not merely that it early-returns if it
+        does — so by the time either branch below finishes, this callback has
+        already been prevented from firing, on this event loop or any other.
+        Kept rather than deleted: it is the one line standing between "provably
+        unreachable today" and "silently double-resolves if a future edit ever
+        reorders `clearTimeout` after `resolve`" — a correctness note a reader
+        can verify against the two branches below, not a test that can ever
+        exercise it.
+      */
+      if (settled) return;
+      settled = true;
+      console.error(
+        `[hive] attach snapshot read for ${channel} exceeded ${String(SNAPSHOT_READ_BUDGET_MS)}ms; omitted`,
+      );
+      resolve(null);
+    }, SNAPSHOT_READ_BUDGET_MS);
+
+    Promise.resolve()
+      // The cast is the point, not a workaround for one: see the null branch
+      // above. `await` on a non-promise is a no-op, so this one `.then` covers
+      // both `github:prs` (genuinely asynchronous) and the five that are not.
+      .then(() => (handler as CallHandler)(SNAPSHOT_PAYLOAD[channel], reporter))
+      .then((value) => {
+        /*
+          Reachable — the timeout can fire first on a genuinely slow read —
+          but with no observable effect once it does (HIVE-144 review): a
+          `Promise` settles at most once by spec, so the `resolve` three lines
+          down is silently ignored either way, and `clearTimeout` on a timer
+          that already fired is a documented no-op. Nothing this branch does
+          past this line can be told apart, by any test, from this branch not
+          running at all. Contrast the `.catch` branch below, which is the one
+          of these three where skipping it is actually visible.
+        */
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve([channel, value]);
+      })
+      .catch((cause: unknown) => {
+        /*
+          The one of these three guards with a real, tested effect (HIVE-144
+          review): without it, a read that times out and *later* rejects logs
+          twice for the same channel — the timeout's own "exceeded ...ms;
+          omitted" line, and this catch's "could not read" line for a failure
+          nobody is still waiting to hear about. `tests/electron/main/ipc/remote-composition.test.ts`
+          drives this exact ordering (a hung read that times out, then rejects
+          well after) and asserts the second log never happens.
+        */
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        console.error(`[hive] attach snapshot could not read ${channel}:`, cause);
+        resolve(null);
+      });
+  });
+}
+
+/**
+ * Builds `AttachAccepted.snapshot` — the six {@link SNAPSHOT_CHANNELS} reads a
+ * joining client needs to render the fleet without six round trips (HIVE-144).
+ *
+ * Calls each channel's handler through `remoteRegistry.call`, the exact
+ * function a socket's own `call` frame would reach — the same one `handle`
+ * above records — so there is no second source of truth for what a channel
+ * answers. Read with {@link SNAPSHOT_PAYLOAD}'s entry for the channel, or
+ * `undefined` when it has none — the payload every one of these six takes at
+ * boot in the renderer.
+ *
+ * A snapshot is a convenience, not a precondition (Ruling 15, HIVE-144
+ * review, and extended in review): a channel whose handler is not yet
+ * registered is omitted, one whose handler throws or rejects is omitted, and
+ * one that simply takes longer than {@link SNAPSHOT_READ_BUDGET_MS} is
+ * omitted too — a slow read costs the same key a broken one would, never the
+ * whole snapshot, and never the handshake itself. All six race that budget
+ * **concurrently** (`raceSnapshotRead`, via `Promise.all`), not one after
+ * another: a sequential sum of six "safe" per-channel waits could still blow
+ * past the handshake's own deadline on its own, which a single shared budget
+ * bounding the whole call cannot.
+ *
+ * Sizing the resulting frame against the wire's ceiling is deliberately not
+ * this function's job — it returns whatever it could read, and
+ * `electron/remote-host/listener.ts`'s `fitSnapshot` is what weighs the
+ * accept frame this becomes and drops keys if a busy server's answer would
+ * not otherwise fit.
+ */
+async function buildAttachSnapshot(
+  reporter: RemoteReporter,
+): Promise<Partial<Record<Channel, unknown>>> {
+  const results = await Promise.all(
+    SNAPSHOT_CHANNELS.map((channel) =>
+      raceSnapshotRead(channel, remoteRegistry.call(channel), reporter),
+    ),
+  );
+  const snapshot: Partial<Record<Channel, unknown>> = {};
+  for (const result of results) {
+    if (result !== null) snapshot[result[0]] = result[1];
+  }
+  return snapshot;
+}
+
+/**
+ * The server-mode socket (HIVE-142), constructed unconditionally below but
+ * only ever `start()`-ed by `index.ts`, and only in server mode. `null` here
+ * means "not yet composed" (before `registerIpcHandlers` runs, or in a test
+ * that never calls it) — `startRemoteListener` and `remoteListenerBoundAddress`
+ * both treat that the same as "not listening" rather than throwing.
+ */
+let remoteListener: ReturnType<typeof createRemoteListener> | null = null;
+/**
+ * The port `remoteListener` was actually constructed with (HIVE-142 review,
+ * N3) — captured once, beside `remoteListener` itself, rather than read
+ * again later through `getConfig()`. See the assignment site's own comment.
+ */
+let remoteListenerPort: number | null = null;
 
 let sessions: Sessions | null = null;
 /**
@@ -439,6 +860,39 @@ const agentSchedules = new Map<
  */
 const agentParallel = new Map<string, number>();
 /**
+ * Every valid agent's own `container.host_alias`, for the receiver's `Host`
+ * guard (HIVE-134 follow-up).
+ *
+ * A cache beside the three above and filled in the same pass, for the same
+ * reason: the guard is consulted **synchronously**, on every request the
+ * receiver serves, and `agents.list()` is a promise that re-reads and
+ * re-parses every definition on disk. An agent with no `container.host_alias`
+ * of its own contributes nothing here — it inherits the global alias, which
+ * `hostAliases` below always includes on its own.
+ *
+ * Absent from `AgentSummary` until this cache needed it, hence
+ * `AgentSummary.container` (HIVE-134 follow-up): a definition fact like
+ * `rotateAfter` and `dailyUsd` beside it, carried from `registry.list()` the
+ * same way they are.
+ */
+const agentHostAliases = new Set<string>();
+/**
+ * Every hostname the receiver's guard must admit as a `Host` header
+ * (HIVE-134 follow-up), read fresh on every call.
+ *
+ * A getter passed straight to `createHookRuntime`, exactly as
+ * `hostAlias: () => getConfig().receiver.hostAlias` beside it always has
+ * been — a config reload has to be picked up while the socket stays open,
+ * which is the whole reason that one was a getter rather than a captured
+ * value. `receiverHostAliases` itself is pure and cheap (it only iterates
+ * `getConfig().projects`, already in memory), so there is nothing to memoise
+ * on this side; the one genuinely expensive input — every agent's alias — is
+ * `agentHostAliases` above, already kept live off the folder watcher rather
+ * than reread here.
+ */
+const hostAliases = (): ReadonlySet<string> =>
+  receiverHostAliases(getConfig(), agentHostAliases);
+/**
  * Whether {@link agentSchedules} has been filled at least once.
  *
  * An empty map means two very different things, and the scheduler must not
@@ -480,6 +934,7 @@ function refreshKnownAgents(): void {
       ledgerAgents.clear();
       agentSchedules.clear();
       agentParallel.clear();
+      agentHostAliases.clear();
 
       for (const agent of snapshot.agents) {
         if (agent.invalid !== undefined) continue;
@@ -502,6 +957,13 @@ function refreshKnownAgents(): void {
           agent.name,
           agent.parallel ?? AGENT_LIMIT_DEFAULTS.parallel,
         );
+        // The receiver's `Host` guard (HIVE-134 follow-up), asked just as
+        // synchronously as the two above. Absent means this agent inherits
+        // the global alias, which `hostAliases` always admits on its own —
+        // nothing to add here for the common case.
+        if (agent.container?.hostAlias !== undefined) {
+          agentHostAliases.add(agent.container.hostAlias);
+        }
       }
 
       for (const name of runs?.live() ?? []) knownAgents.add(name);
@@ -561,14 +1023,37 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
- * The terminal on the centre stage, as the renderer last reported it (HIVE-81).
+ * What each surface has on its centre stage, and whether that surface is
+ * focused (HIVE-81, HIVE-145).
  *
- * Module scope for the reason `systemNotificationRefusal` is: it is a fact
- * about this process's window, not about notifications, and the hub is
- * deliberately ignorant of what the user is looking at. The hub asks a
- * predicate; it never holds this.
+ * Module scope for the reason the refusal in `notifications/delivery.ts` is:
+ * it is a fact about who is looking at this process, not about notifications,
+ * and the hub is deliberately ignorant of what the user is looking at. The hub
+ * asks a predicate; it never holds this.
+ *
+ * **A map, because one value could not be true of two devices.** It was a
+ * single `foregroundTerminalId`, and every attached socket sends
+ * `ui:foreground` down the same notify channel a renderer does — so it held
+ * whatever the last surface to change stage said. With two devices attached,
+ * one switching tabs rewrote the other's answer: a notification for the session
+ * device A was watching got suppressed because device B happened to be on it,
+ * or — worse, because it is the case the suppression exists for — was *raised*
+ * while A was watching it, because B moved on.
+ *
+ * **`focused` travels with it, and only a socket's is read.** `windowFocused()`
+ * is a fact about *this* machine's windows, and a served Mac usually has none,
+ * so it is the wrong question to ask of a remote surface. A window surface
+ * therefore still reads its focus live from `BrowserWindow` — a renderer-published
+ * boolean goes stale in exactly the case the feature exists for — while a socket
+ * reports its own, stamped by the client's main process, which is the only
+ * process that can see that machine's windows.
+ *
+ * Absent `focused` means **not** focused. That is the conservative default: the
+ * failure it produces is a toast for a session the user was already watching,
+ * and the one the opposite default produces is silence about a session nobody
+ * is looking at.
  */
-let foregroundTerminalId: string | null = null;
+const foreground = new Map<SurfaceId, { terminalId: string | null; focused: boolean }>();
 
 /**
  * Whether **any** window of this app has focus right now.
@@ -600,14 +1085,61 @@ const windowFocused = (): boolean =>
   );
 
 /**
- * Is this terminal the one the user is already looking at?
+ * Is this terminal the one **that surface** is already looking at?
  *
- * Both halves, and neither alone is the question. A matching id with every
- * window of ours behind another app is precisely when the notification is
- * worth raising. See {@link windowFocused} for what "focused" counts as.
+ * Both halves, and neither alone is the question. A matching id with the
+ * surface behind another app is precisely when the notification is worth
+ * raising.
+ *
+ * Where "focused" comes from depends on the kind, and that asymmetry is the
+ * whole design (HIVE-145). A window's is read live from `BrowserWindow`,
+ * because a renderer-published boolean goes stale in exactly the case the
+ * feature exists for — the window hidden, the app in the background — since the
+ * renderer stops running to update it. A socket's is whatever it reported,
+ * because this machine's windows say nothing about a laptop four time zones
+ * away, and a served Mac has no windows at all.
+ *
+ * This is the per-surface question, which is what decides whether *this*
+ * surface gets a toast. {@link isForeground} is the any-surface one.
+ */
+const isForegroundFor = (surfaceId: SurfaceId, terminalId: string): boolean => {
+  const held = foreground.get(surfaceId);
+  if (held === undefined || held.terminalId !== terminalId) return false;
+  return surfaces.get(surfaceId)?.kind === 'window' ? windowFocused() : held.focused;
+};
+
+/**
+ * Is **any** surface already looking at this terminal?
+ *
+ * The re-arm's question (`notifications/index.ts`'s `reevaluateForeground`):
+ * is *somebody* still attending this session, making a promotion a nag about a
+ * row an attended device can already see. "Any" is its right answer with two
+ * devices attached; "which one" is only the toast's question
+ * ({@link isForegroundFor}), and "everybody" is the row's
+ * ({@link isForegroundEverywhere}).
  */
 export const isForeground = (terminalId: string): boolean =>
-  windowFocused() && foregroundTerminalId === terminalId;
+  surfaces.all().some((surface) => isForegroundFor(surface.id, terminalId));
+
+/**
+ * Is **every** surface already looking at this terminal?
+ *
+ * The inbox row's question (HIVE-154): may a notification be written
+ * already-read, and may an arrival row be swept, on the strength of the
+ * fleet's attention. "Every" is the only honest answer with two devices
+ * attached — a row one device is staring at and the other has never seen is
+ * not a seen row.
+ *
+ * Vacuous truth is a lie here: with no surfaces at all — a headless server
+ * before its first attach — the answer must be `false`, or every row would
+ * arrive already-read to an empty room.
+ */
+export const isForegroundEverywhere = (terminalId: string): boolean => {
+  const all = surfaces.all();
+  return (
+    all.length > 0 && all.every((surface) => isForegroundFor(surface.id, terminalId))
+  );
+};
 
 /** Told when foreground state changes, so the re-arm can run (HIVE-81). */
 const foregroundListeners = new Set<() => void>();
@@ -756,7 +1288,122 @@ export function sessionsLayer(): Sessions | null {
   return sessions;
 }
 
-export function registerIpcHandlers(): void {
+/**
+ * Whether nothing on this machine would be cut off by the app quitting: no
+ * live session and no agent run in flight. What a server asks before it
+ * installs an update on its own (HIVE-147).
+ */
+export function fleetIsIdle(): boolean {
+  return (sessions?.entities().length ?? 0) === 0 && (runs?.live().length ?? 0) === 0;
+}
+
+/**
+ * Starts the server-mode socket (HIVE-142). Resolves the bound `ws://` URL,
+ * or `null` on bind failure — see {@link createRemoteListener}'s own `start`.
+ *
+ * Called from `index.ts`, and only when this run is server mode; every other
+ * launch leaves {@link remoteListener} constructed but never started, so no
+ * port is ever bound on a machine that never asked for one.
+ */
+export function startRemoteListener(): Promise<string | null> {
+  return remoteListener ? remoteListener.start() : Promise.resolve(null);
+}
+
+/**
+ * `host:port`, for the tray's informational item — both pieces sourced from
+ * what the listener actually bound, not composed from a separate config read
+ * (HIVE-142 review, N3). An earlier revision built the displayed address
+ * from a host-only accessor plus a fresh `getConfig().server.bind.port`
+ * read; that agreed with the socket only by coincidence, because nothing
+ * else here reads `server.bind` a second time after construction — a
+ * hand-edited port would show in the tray while the already-listening
+ * socket, which cannot rebind without a restart, kept answering on the old
+ * one. `remoteListenerPort` is the exact number `createRemoteListener` was
+ * given, captured once beside it.
+ */
+export function remoteListenerBoundAddress(): string | null {
+  const host = remoteListener?.boundHost ?? null;
+  return host === null || remoteListenerPort === null ? null : `${host}:${String(remoteListenerPort)}`;
+}
+
+/**
+ * Why nothing is bound yet, for the tray's own informational item (HIVE-142
+ * review, I3) — `null` on every launch that is not server mode, exactly like
+ * {@link remoteListenerBoundAddress} above, since `remoteListener` is
+ * constructed unconditionally but only ever started in server mode.
+ */
+export function remoteListenerBindError(): string | null {
+  return remoteListener?.lastBindError ?? null;
+}
+
+/**
+ * @param broadcaster Where main → renderer pushes go (HIVE-141). Defaults to
+ * the windows of this process, which is every caller today; server mode passes
+ * one that also writes to attached sockets. Optional rather than required so the
+ * boot path and eight existing suites call this exactly as they did.
+ *
+ * @param switchMode How `config:set-remote` changes this process's IPC mode
+ * (HIVE-144). See {@link ModeSwitcher} for why it arrives as an argument
+ * rather than as an import, and {@link noModeSwitcher} for why its default
+ * throws instead of quietly succeeding.
+ *
+ * @param attachedServerName What `AppInfo.attachedServerName` answers
+ * (HIVE-144 Task 13) — `router.ts`'s own `attachedServerName()`, handed down
+ * for the identical reason `switchMode` is: `router.ts` already imports this
+ * module, so importing it back would close a cycle. Defaults to a function
+ * that always answers `null`, matching what a process with no `router.ts`
+ * wrapping it (every existing test that calls this directly) actually is —
+ * never attached to anything.
+ *
+ * @param attachedSnapshot What the attached socket's accept frame carried, or
+ * `null` when this process is not attached (HIVE-144 review, I1) —
+ * `router.ts`'s own `attachedSnapshot()`, handed down for the same reason
+ * `attachedServerName` is. `applySetRemote` calls it either side of the
+ * switch, which is how a mode change becomes something the renderer can act
+ * on rather than a snapshot the server built and nobody read.
+ *
+ * @returns `buildAppInfo`, the exact closure this call bound to `CH.appInfo` —
+ * over *this* call's own `hooks`, `remoteListener`, `sessions` and
+ * `attachedServerName` (HIVE-144, Ruling 24). `router.ts`'s `registerIpc('local',
+ * ...)` captures it and later hands it to `registerRemoteProxy` as
+ * `localAppInfo`, so `CH.appInfo` answers locally rather than being proxied
+ * once this process attaches — see `isProcessLocal`'s own doc comment
+ * (`@shared/remote-contract`) for why that channel may never cross the
+ * socket. Ignored by every test that calls this function directly for its
+ * side effects alone, which is every test on this branch until this one.
+ */
+export function registerIpcHandlers(
+  broadcaster: Broadcaster = createWindowBroadcaster(),
+  switchMode: ModeSwitcher = noModeSwitcher,
+  attachedServerName: () => string | null = () => null,
+  attachedSnapshot: AttachedSnapshot = () => null,
+  /**
+   * What the attachment is doing, for {@link AppInfo.remoteLink} (HIVE-150).
+   *
+   * Handed down beside `attachedServerName` and for the identical reason: it is
+   * `router.ts`'s own runtime fact, and importing it back would close a cycle.
+   * A window that has just opened has no pushed status yet, and this is how it
+   * learns one without waiting for the next transition — which, after a
+   * terminal disconnect, never comes.
+   */
+  attachedLink: () => RemoteLinkStatus | null = () => null,
+): () => AppInfo {
+  /*
+    Both surfaces, always (HIVE-143). In local mode the socket half iterates an
+    empty set and costs a function call per push; in server mode it is how an
+    attached client gets its 22 events. One composition shape rather than a
+    mode branch here, because the mode already has exactly one home —
+    `registerIpc` in `./router.ts` — and a second one would be the thing that
+    drifts.
+
+    The set is resolved per emit rather than captured, which is the whole point:
+    a client attaches long after this line has run.
+  */
+  const fanOut = createFanOutBroadcaster([
+    broadcaster,
+    createSocketBroadcaster(() => surfaces.sockets()),
+  ]);
+
   const supervisor = registerPtyHost();
 
   /*
@@ -767,10 +1414,29 @@ export function registerIpcHandlers(): void {
   slackChildren = new AbortController();
 
   /**
-   * One window by design (story 000), so a broadcast reaches exactly the
-   * renderer that owns every session. Resolved per send rather than captured:
-   * the window is created after this runs, and on macOS it can be closed and
-   * re-created while the app keeps running.
+   * One push, every surface — a local window and every attached client alike.
+   *
+   * This said "one window by design (story 000)" until HIVE-145, and it was
+   * true for long enough to be worth recording why it stopped being: a
+   * broadcast reached exactly the renderer that owned every session, because
+   * there was exactly one. Delivery is still resolved per send rather than
+   * captured, for a reason that never changed — the window is created after
+   * this runs, on macOS it can be closed and re-created while the app keeps
+   * running, and a client attaches whenever it likes.
+   *
+   * HIVE-141 moved the loop itself into `Broadcaster.emit`. What stayed here is
+   * the *tap*, because it is the tap that must not reach every push — see the
+   * hub's `broadcast` below.
+   *
+   * HIVE-143 made the delivery `fanOut` rather than the injected `broadcaster`
+   * alone, so the same push reaches attached sockets. The tap is untouched by
+   * that: it still runs exactly once, here, before any surface.
+   *
+   * **Not everything main pushes comes through here.** Two things are targeted
+   * at one surface rather than broadcast (HIVE-145): `fs:changed`, which
+   * belongs to the surface whose explorer asked for the watch, and
+   * `notifications:toast`, which belongs to whoever is not already looking at
+   * the session it is about. Both go through `Surface.send`.
    */
   const send = (channel: string, payload: unknown): void => {
     // Story 106 taps the broadcast here rather than at each source, so an event
@@ -778,10 +1444,7 @@ export function registerIpcHandlers(): void {
     // failed notification must not cost a `pty:data`.
     notifier.observe(channel, payload);
 
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (window.isDestroyed()) continue;
-      window.webContents.send(channel, payload);
-    }
+    fanOut.emit(channel, payload);
   };
 
   /**
@@ -798,9 +1461,24 @@ export function registerIpcHandlers(): void {
    */
   const sessionNames = createSessionNames();
 
-  const hub = createNotificationHub({
-    prefs: () => getConfig().notifications,
-    present: ({ title, body, onClick }) => {
+  /**
+   * Raise a toast on **this machine's** desktop.
+   *
+   * Named and lifted out of the hub's options in HIVE-145: it is no longer the
+   * whole of what presenting means. The hub now hands its toasts to
+   * `createToastRoute`, which decides which surfaces should be interrupted and
+   * calls this only for a local window — an attached client raises its own,
+   * because a served Mac's desktop is not where the user is.
+   */
+  const presentLocally = ({
+    title,
+    body,
+    onClick,
+  }: {
+    title: string;
+    body: string;
+    onClick: () => void;
+  }): void => {
       // False on a Linux box with no notification daemon. Checked per send
       // rather than once at boot: the daemon can arrive or go away while the
       // app is running, and constructing one when unsupported throws.
@@ -825,8 +1503,7 @@ export function registerIpcHandlers(): void {
        */
       notification.on('failed', (_event, error) => {
         const reason = String(error);
-        if (systemNotificationRefusal === reason) return;
-        systemNotificationRefusal = reason;
+        if (!recordNotificationRefusal(reason)) return;
         console.error(
           `[hive] the OS refused a desktop notification — the inbox still has it (${reason})`,
         );
@@ -858,56 +1535,39 @@ export function registerIpcHandlers(): void {
        * notification is entitled to; the **badge** is the part that persists,
        * and it persists honestly because it is a count rather than an alarm.
        */
-      app.dock?.bounce('informational');
-    },
-    /**
-     * Straight to the renderer, not through `send` (HIVE-75).
-     *
-     * `send` taps the notifier, and the notifier produces into the hub — so
-     * broadcasting a notification through it would feed the hub's own output
-     * back into its input. `observe` ignores the channel, so nothing would
-     * actually loop today, but the cycle would be one `if` away from existing
-     * and nobody would see it coming.
-     */
-    broadcast: (notification) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed()) continue;
-        window.webContents.send(CH.notificationsNew, notification);
+    app.dock?.bounce('informational');
+  };
+
+  /**
+   * Open whatever a notification is about.
+   *
+   * Lifted out of the hub's options in HIVE-145 for the reason `presentLocally`
+   * was: the toast queue's flush needs the same behaviour on a click, and a
+   * held toast that activated differently from a live one would be a second
+   * definition of what clicking a notification means.
+   */
+  const activateNotification = (action: NotificationAction): void => {
+      /**
+       * Split by machine before anything else (HIVE-151).
+       *
+       * The three actions that reach hardware — a browser, this process's
+       * updater — belong to `activate-here.ts`, which takes a type admitting
+       * only those. Everything past this point resolves against fleet state
+       * and reaches the renderer through `CH.notificationsActivate`.
+       *
+       * The same split is what `remote-proxy.ts` routes on, so a click made on
+       * an attached client runs its hardware half *there* rather than on the
+       * machine that happens to answer the socket. Keeping the branch here
+       * rather than at each call site is what makes the row and the desktop
+       * toast agree about what one notification means.
+       *
+       * A `none` action has nowhere to go and is satisfied by the focus below.
+       */
+      if (isThisMachineAction(action)) {
+        activateOnThisMachine(action);
+        return;
       }
-    },
-    announceRead: (id, unread) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed()) continue;
-        window.webContents.send(CH.notificationsRead, {
-          id,
-          unread,
-        } satisfies NotificationReadEvent);
-      }
-    },
-    announceDismissed: (id) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed()) continue;
-        window.webContents.send(CH.notificationsDismissed, {
-          id,
-        } satisfies NotificationDismissedEvent);
-      }
-    },
-    /**
-     * The count on the dock icon.
-     *
-     * Empty string, not `'0'`, clears it — that is Electron's API, and a badge
-     * reading `0` is a worse lie than no badge, because it says the app has
-     * something to report and the something is nothing.
-     *
-     * Off macOS `app.dock` is undefined and this is a no-op. Windows has a
-     * taskbar overlay that would serve the same purpose and needs an icon
-     * rather than a string, so it is left for whoever ships a Windows build
-     * rather than approximated here.
-     */
-    announceUnread: (count) => {
-      app.dock?.setBadge(count > 0 ? String(count) : '');
-    },
-    activate: (action) => {
+
       /**
        * Main focuses the window; the renderer opens the session.
        *
@@ -915,43 +1575,7 @@ export function registerIpcHandlers(): void {
        * renderer knows what opening a session means — and a minimised window
        * has to be restored first, or focusing it does nothing visible.
        */
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (window.isDestroyed()) continue;
-        if (window.isMinimized()) window.restore();
-        window.focus();
-      }
-
-      /**
-       * A `url` action goes to the user's browser, through the same allowlist
-       * every other outbound link uses (story 081).
-       *
-       * `isSafeExternalUrl` is not optional politeness here: `shell.openExternal`
-       * will happily launch a `file:` URL or a custom scheme registered by some
-       * other application, and a notification's URL is data rather than a
-       * constant. A `none` action has nowhere to go and is satisfied by the
-       * focus above.
-       */
-      if (action.type === 'url') {
-        if (isSafeExternalUrl(action.url)) void shell.openExternal(action.url);
-        return;
-      }
-
-      /**
-       * The update actions carry no data at all, which is what makes them safe
-       * to accept from a renderer without validating anything beyond the tag.
-       * The updater already holds the version it found; these say only "do the
-       * thing you offered", and a stale row clicked after the updater has moved
-       * on is answered by whatever the updater's state actually is now.
-       */
-      if (action.type === 'update.download') {
-        void downloadUpdate();
-        return;
-      }
-
-      if (action.type === 'update.install') {
-        void installUpdate();
-        return;
-      }
+      focusThisMachine();
 
       /**
        * An `ask` answers nothing from here (HIVE-118) — it *reveals* the card.
@@ -1010,14 +1634,94 @@ export function registerIpcHandlers(): void {
         type: 'entity',
         entityId: action.entityId,
       } satisfies NotificationActivateEvent);
+  };
+
+  /**
+   * Declared before the hub so the arrival flush below can reach it, and
+   * before `presentLocally`'s consumer for the same reason: `createToastRoute`
+   * closes over collaborators that are all already built by this line.
+   */
+  const routeToast = createToastRoute({
+    surfaces: () => surfaces.all(),
+    isForegroundFor,
+    present: presentLocally,
+    queue: (payload) => { toastQueue.push(payload); },
+    /*
+      Read from `BrowserWindow`, not from the registry: a surface registers
+      lazily on its first report, so "no surface" and "no window" are different
+      states and only the second is an empty room.
+    */
+    hasWindow: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed()),
+  });
+
+  const hub = createNotificationHub({
+    prefs: () => getConfig().notifications,
+    /**
+     * Who gets interrupted (HIVE-145).
+     *
+     * The hub decides *whether* a notification is worth a toast — prefs,
+     * delivery, supersession — and that stays here. This decides *who*, which
+     * is a question that did not exist while there was one surface: it
+     * suppresses per surface rather than globally, sends an attached client the
+     * toast to raise itself, and holds the interruption when nobody is looking
+     * at all.
+     */
+    present: routeToast,
+    /**
+     * Straight to the surfaces, not through `send` (HIVE-75).
+     *
+     * `send` taps the notifier, and the notifier produces into the hub — so
+     * broadcasting a notification through it would feed the hub's own output
+     * back into its input. `observe` ignores the channel, so nothing would
+     * actually loop today, but the cycle would be one `if` away from existing
+     * and nobody would see it coming.
+     *
+     * `fanOut.emit` rather than a hand-rolled window loop (HIVE-141): the
+     * bypass is of the *tap*, not of the fan-out. A remote client that never
+     * received these three would show an empty inbox on a busy server, which is
+     * exactly the bug a second copy of the loop invites.
+     */
+    broadcast: (notification) => {
+      fanOut.emit(CH.notificationsNew, notification);
     },
+    announceRead: (id, unread) => {
+      fanOut.emit(CH.notificationsRead, {
+        id,
+        unread,
+      } satisfies NotificationReadEvent);
+    },
+    announceDismissed: (id) => {
+      fanOut.emit(CH.notificationsDismissed, {
+        id,
+      } satisfies NotificationDismissedEvent);
+    },
+    /**
+     * The count on the dock icon.
+     *
+     * Written by `notifications/dock-badge.ts`, which owns Electron's contract
+     * (an empty string clears, `'0'` would not). Off macOS `app.dock` is
+     * undefined and this is a no-op. Windows has a taskbar overlay that would
+     * serve the same purpose and needs an icon rather than a string, so it is
+     * left for whoever ships a Windows build rather than approximated here.
+     *
+     * **Not on a serving machine (HIVE-159).** The count is the fleet's, but
+     * the badge describes one screen. Each attached client badges its own dock
+     * from its own renderer, so a server writing the same number onto its own
+     * dock was showing a count on somebody else's behalf, on a dock that
+     * server mode has hidden anyway.
+     */
+    announceUnread: (count) => {
+      if (isServerMode()) return;
+      badgeDock(count);
+    },
+    activate: activateNotification,
     now: () => Date.now(),
-    isForeground: (action) =>
-      action.type === 'session' && isForeground(action.entityId),
+    isForegroundEverywhere: (action) =>
+      action.type === 'session' && isForegroundEverywhere(action.entityId),
     subjectName: (terminalId) => sessionNames.get(terminalId),
   });
 
-  const notifier = createNotifier({ hub, isForeground });
+  const notifier = createNotifier({ hub, isForeground, isForegroundEverywhere });
 
   /**
    * Ledger entries into inbox cards (HIVE-118).
@@ -1057,18 +1761,30 @@ export function registerIpcHandlers(): void {
    *
    * `integrationsStatus` carries the same two facts and **executes `gh`** to
    * build the rest of its answer. The Notifications pane has to re-ask this
-   * while it is open — `systemNotificationRefusal` is only knowable once a
-   * delivery has been attempted and turned down — and putting that on the
-   * integrations handler would spawn a process every few seconds to read a
-   * variable.
+   * while it is open — a refusal is only knowable once a delivery has been
+   * attempted and turned down — and putting that on the integrations handler
+   * would spawn a process every few seconds to read a variable.
+   *
+   * Answered by `notifications/delivery.ts` rather than from here, and named
+   * in `PROCESS_LOCAL` (HIVE-151): both facts describe the OS of whichever
+   * process answers, and since HIVE-145 the toast is raised on the *client's*
+   * desktop. Proxied, this told an attached user about the server's OS.
    */
-  handle(
-    CH.notificationsDelivery,
-    (): NotificationDeliveryStatus => ({
-      supported: Notification.isSupported(),
-      refused: systemNotificationRefusal,
-    }),
-  );
+  handle(CH.notificationsDelivery, () => notificationDelivery());
+
+  /**
+   * Heard and ignored (HIVE-159).
+   *
+   * The renderer reports its unread count whatever mode it is in, and only an
+   * attached process acts on it — `remote-proxy.ts` answers it by badging this
+   * machine's dock, because no hub runs there. Here the hub does run, counts
+   * its own buffer, and badges the dock through `announceUnread` above. Two
+   * writers of one badge would race, so in this mode the hub is the only one.
+   *
+   * Bound rather than left unbound so the renderer's call resolves instead of
+   * rejecting with "no handler registered".
+   */
+  handle(CH.notificationsBadge, () => undefined);
 
   handle(CH.notificationsList, () => hub.list());
   handle(CH.notificationsMarkRead, (_event, payload) =>
@@ -1209,24 +1925,85 @@ export function registerIpcHandlers(): void {
     write: (id, text) => sessions?.write(id, text) ?? false,
   });
 
-  /**
-   * `webContents` already watched for a reset (HIVE-135). A `WeakSet` so a
-   * closed window's contents can be collected; `on` is checked because the
-   * unit suites hand in a bare object as the event sender.
-   */
-  const watchedReporters = new WeakSet<object>();
-  const watchReporter = (sender: unknown): void => {
-    if (typeof sender !== 'object' || sender === null) return;
-    if (watchedReporters.has(sender)) return;
-    const contents = sender as {
-      on?: (event: string, listener: () => void) => unknown;
-    };
-    if (typeof contents.on !== 'function') return;
-    watchedReporters.add(sender);
-    for (const event of ['did-start-loading', 'render-process-gone', 'destroyed']) {
-      contents.on(event, () => deliver.onRendererReset());
+  /*
+    A surface going away resets what it was holding (HIVE-135, HIVE-145).
+
+    This was `watchReporter`: a `WeakSet` of senders, each wired to call
+    `deliver.onRendererReset()` on reload, crash or close. The dedupe, the
+    duck-typed `on` and the three lifetime events all moved into
+    `createSurfaceRegistry`, which does the same job for one more reason —
+    every other per-surface consumer needs the same announcement, and five
+    private copies of this loop would be five chances to disagree about who is
+    live.
+  */
+  /*
+    Somebody is looking again, so raise what was held while nobody was
+    (HIVE-145).
+
+    On the empty-to-non-empty edge, not on every arrival: a second device
+    attaching to a server the first is already watching has missed nothing, and
+    replaying to it would interrupt about events the surface beside it was told
+    of at the time. The queue is emptied by the flush, so the toasts route
+    exactly once.
+
+    **The arriving surface's own foreground state cannot suppress these**, and
+    that is a property of when this fires rather than an oversight: `onFirst`
+    runs from inside `track()`, so for a socket it is before any
+    `ui:foreground` has crossed, and for a window it is inside the very handler
+    that is about to write one. `foreground.get(id)` is `undefined` either way,
+    so a device attaching while sitting on the session in question is
+    interrupted about it once. The alternative — deferring the flush until a
+    stage report arrives — trades a redundant interruption for a queue that
+    never drains when the arriving surface has nothing on stage.
+  */
+  surfaces.onFirst(() => {
+    for (const held of toastQueue.flush()) {
+      routeToast({
+        ...held,
+        /*
+          The same click behaviour a live toast has, built from the same two
+          pieces (HIVE-81, HIVE-118): dismiss the row, except for an `ask`,
+          whose click reveals the card rather than answering it and must not
+          delete the thing it was meant to reveal.
+        */
+        onClick: () => {
+          if (held.action.type !== 'ask') hub.dismiss(held.id);
+          activateNotification(held.action);
+        },
+      });
     }
-  };
+  });
+
+  surfaces.onGone((surfaceId) => {
+    deliver.onSurfaceGone(surfaceId);
+    /*
+      Release whatever this surface was holding of every session's flow-control
+      window (HIVE-145). Without it a slow client could freeze a session for
+      everyone else simply by disconnecting: its mark would sit at the bottom
+      of the window forever, and nothing would ever release the bytes it was
+      never going to acknowledge.
+    */
+    sessions?.releaseSurface(surfaceId);
+    /*
+      And its watcher, or the mini accumulates one recursive `FSEvents` stream
+      over a whole repository per device that ever attached.
+    */
+    fsWatch?.release(surfaceId);
+    /*
+      A surface that has gone is looking at nothing, so its stage must not go
+      on suppressing notifications for the session it last had (HIVE-145).
+      Announced, because the hub's re-arm is what re-raises a row this surface's
+      presence was holding down.
+
+      Announced even when it never reported a foreground at all (HIVE-154).
+      Under the every-surface reading a silent surface is enough to hold
+      `isForegroundEverywhere` false for the whole fleet, so its departure can
+      be the moment everyone left is watching, and the arrival sweep must run
+      then rather than at the next tab switch.
+    */
+    foreground.delete(surfaceId);
+    notifyForegroundChange();
+  });
 
   /**
    * One entry landed, from any party — pushed the way `notifications:new` is
@@ -1240,10 +2017,10 @@ export function registerIpcHandlers(): void {
    * instead — the broadcast lands first, then delivery, then the notifier.
    */
   ledger.onChange((entry) => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (window.isDestroyed()) continue;
-      window.webContents.send(CH.ledgerChanged, entry);
-    }
+    // Not `send`: the notifier reads the ledger through its own subscription
+    // below, and tapping here would show it every entry twice. HIVE-141 routes
+    // the fan-out through the broadcaster all the same.
+    fanOut.emit(CH.ledgerChanged, entry);
     /**
      * Neither delivery nor the notifier may fail the write that triggered them.
      *
@@ -1346,6 +2123,16 @@ export function registerIpcHandlers(): void {
     sessionMetrics: () => getConfig().sessionMetrics,
     // The same, for the hostname a container reaches this machine by (HIVE-132).
     hostAlias: () => getConfig().receiver.hostAlias,
+    // Every hostname the guard admits, not just the global one — see
+    // `hostAliases`'s own doc comment above for why (HIVE-134 follow-up).
+    hostAliases,
+    /*
+      Read once, not per call like `hostAlias` above it. A socket that is already
+      listening cannot be moved, so a getter here would imply a rebind that never
+      happens — Settings tells the user it takes effect at next launch, and this
+      is why (HIVE-134).
+    */
+    bind: getConfig().receiver.bind,
     /*
       Resolved through the same `effectiveRuntime` the spawn path uses
       (HIVE-133), so `writeContainerSession` writes for exactly the project a
@@ -1362,6 +2149,219 @@ export function registerIpcHandlers(): void {
       ).container,
     ledger,
   });
+
+  /**
+   * The server-mode socket (HIVE-142), constructed beside the receiver
+   * above: same file, same composition pass, same reason for existing —
+   * paired devices reach this Hive over the network the way Claude Code's
+   * hooks reach the receiver.
+   *
+   * Built unconditionally, on every launch, but only `start()`-ed from
+   * `index.ts` when this run is server mode — see {@link startRemoteListener}.
+   * `bind` is read once, not through a getter, for the same reason `hooks`'s
+   * `bind` above is: an already-listening socket cannot be moved, and
+   * Settings says as much (HIVE-134's rule, restated for HIVE-142).
+   */
+  /*
+    Captured once, not read again later through `getConfig()` — this is the
+    exact `port` `createRemoteListener` below binds to, and it is what
+    `remoteListenerBoundAddress()` (below `registerIpcHandlers`) composes the
+    tray's displayed address from (HIVE-142 review, N3). Before that fix, the
+    tray built its address from a *separate*, later `getConfig().server.bind.port`
+    read — harmless while the config cache was frozen for the process's whole
+    life, but no longer once reads elsewhere started calling `reloadConfig()`:
+    a hand-edited port would then show in the tray while the socket, which
+    cannot rebind without a restart, kept listening on the old one.
+  */
+  const serverBind = getConfig().server.bind;
+  remoteListenerPort = serverBind.port;
+  remoteListener = createRemoteListener({
+    bind: serverBind,
+    // A refused host binds nothing, never the default (HIVE-140 audit, gap 3).
+    refusal: serverBindRefusal(getConfig().errors),
+    /*
+      `readServerDevicesFromDisk()`, not `getConfig()`/`reloadConfig()`
+      (HIVE-142 review, N1). `getConfig()` answers this process's cached
+      `ConfigSnapshot`, permanently frozen at boot; `reloadConfig()` re-reads
+      the file but also **installs the result as that same shared cache** —
+      and this getter is called from `listener.ts`'s connection handler
+      *before* `verifyDevice`, i.e. from an unauthenticated peer that has
+      merely reached the socket. Swapping `projects`, `env`, `shell`, `jira`,
+      `slack` and `receiver` for every subsystem in this process from a path
+      nothing has vouched for yet is not a contract this story gets to
+      change — and `reloadConfig()` skips the invalidations a real reload
+      performs (`forgetProbedRoots()`, `slackBridge?.sync()`, below), so its
+      result could visibly disagree with the rest of the process besides.
+      `readServerDevicesFromDisk()` (`server/file-backed-io.ts`) reads the
+      file itself and returns only `server.devices`, installing nothing.
+    */
+    devices: readServerDevicesFromDisk,
+    // What a client's header indicator renders: "attached · <serverName>".
+    // The machine's own hostname identifies *which* served Mac a client is
+    // looking at, which matters once more than one exists.
+    serverName: hostname(),
+    /*
+      The module-scope registry (HIVE-143) — the same one `handle` and `on`
+      above record into, which is what makes a socket's `call` reach the
+      handler a renderer's `invoke` would have reached. It is fully populated
+      by the time any socket can attach: `registerIpcHandlers` fills it as it
+      registers, and `startRemoteListener` is called later, from
+      `electron/main/index.ts`. A registry built here instead would be empty
+      forever and every call would answer `not-ready`.
+    */
+    dispatch: createRemoteDispatch(remoteRegistry),
+    // What `AttachAccepted.snapshot` carries (HIVE-144) — built fresh per
+    // attach, over the same `remoteRegistry` `dispatch` reads.
+    buildSnapshot: buildAttachSnapshot,
+    onAttach: (socket, resumeFrom) => {
+      /*
+        Added to the set **before** anything is replayed. A `pty:data` landing
+        during the loop below is then delivered after the frames it follows —
+        out of order would be worse than a gap, because the client's seq
+        assertion would fire on a discontinuity that never happened.
+      */
+      surfaces.trackSocket(socket);
+      if (resumeFrom === undefined) return;
+
+      /*
+        Captured into a local so it narrows to non-null across the whole loop
+        below (HIVE-144 review). `sessions` is a mutable module-scope `let`;
+        TypeScript will not carry a null check on it across the `.resume` call
+        two lines down, so without this every later read would still be
+        `Sessions | null` and need its own `?.` — which is exactly what
+        produced the `?? point.gen` fallback this review flagged as
+        disagreeing with its own comment. A server with no `sessions` at all
+        has nothing to replay, which is the same outcome the old per-entity
+        `?? null` produced, just decided once instead of on every entity.
+      */
+      const activeSessions = sessions;
+      if (activeSessions === null) return;
+
+      for (const [sessionId, point] of Object.entries(resumeFrom)) {
+        /*
+          Keyed by **entity** id, which is what a client's `pty:data` frames
+          carry: `sessions/index.ts`'s `forward` rewrites the pty session id to
+          the entity id on the way out, so the ids a client holds are the ones
+          `Sessions.resume` maps back. `point` is `{ gen, seq }` (HIVE-144) —
+          see `AttachRequest.resumeFrom` for why a bare seq was insufficient.
+        */
+        const result = activeSessions.resume(sessionId, point);
+        /*
+          `null` — no such live session on this server. The client is holding a
+          session id from a previous run, or from one that has since exited;
+          nothing to send, and its own exit handling already covers a session
+          that never reappears.
+        */
+        if (result === null) continue;
+
+        if (result.kind === 'replay') {
+          for (const event of result.events) {
+            socket.send({ kind: 'event', channel: CH.ptyData, payload: event });
+          }
+          continue;
+        }
+
+        /*
+          `gap` — the ring no longer reaches back to `lastSeq`, so what this
+          client missed cannot be handed to it. One **empty** `pty:data`,
+          stamped at the session's current head seq, is what it gets instead
+          (HIVE-143 review).
+
+          That single frame does two things and nothing else. Its seq is not
+          `lastSeq + 1`, so the client's existing discontinuity check fires the
+          moment the frame lands and writes the gap notice into the transcript
+          in the place the hole actually is (`src/lib/terminal/pty-transport.ts`);
+          and its chunk is empty, so the write that follows the check puts
+          nothing on screen. No new frame type, no protocol change — the client
+          already handles exactly this shape.
+
+          The alternative this replaces was to send nothing and let the next
+          live batch raise the notice, which is right only while there *is* a
+          next batch. Reattaching to a session that has gone idle — a build that
+          finished while the client was away is the ordinary case — produced no
+          frames at all, so the client redrew its cached transcript with an
+          unmarked hole in it, and the notice arrived much later, if ever,
+          reading as a new gap rather than as this reconnect's.
+
+          The design sketched a different fallback — resend the whole
+          transcript, stamped with the ring's head seq — and that is still
+          deliberately **not** implemented, for two reasons that point the same
+          way. Mechanically, there is no transcript in main to send:
+          `PtyHostSupervisor` has no `replay`, the only `replay()` in the tree is
+          `SessionManager`'s inside the pty-host **child process** with no
+          protocol message to reach it, and the design is equally explicit that
+          `pty-host-protocol.ts` does not change here. Adding one would also make
+          this callback asynchronous and cost the ordering guarantee above.
+          Behaviourally, it would be wrong even if it were free: this is a
+          *reconnecting* client that already rendered everything up to `lastSeq`
+          into its own terminal, so a whole transcript would duplicate hundreds
+          of lines rather than fill a hole. A client with nothing on screen sends
+          no `resumeFrom` at all.
+
+          `gen` on this frame is the entity's **live** generation
+          (`activeSessions.generationFor`), never `point.gen` — the client's
+          own value is exactly the stale one a restart invalidated, whether
+          the gap here came from a generation mismatch or from the ring simply
+          not reaching back far enough within the same generation. Stamping
+          anything else would hand a discontinuity check keyed on `gen` a
+          value it will never see again: the very next live batch already
+          carries the true live generation, and a mismatch between *that* and
+          a wrong marker would read as a second, spurious gap on top of the
+          real one (HIVE-144).
+
+          The `!` is not a shortcut past a real "no generation" case: `result`
+          is non-null here, which `activeSessions.resume` only answers once
+          `registry.sessionFor(sessionId)` has already resolved — the same
+          lookup `generationFor` reads its answer from (`registry.ts` keeps
+          the two in step) — so this entity is provably live one line above.
+          `generationFor`'s return type stays `number | undefined` because
+          most of its callers *do* need to ask about an entity that might not
+          be, and narrowing it to `number` just for this call site would only
+          move the lie into the type instead of removing it.
+        */
+        socket.send({
+          kind: 'event',
+          channel: CH.ptyData,
+          payload: { sessionId, chunk: '', seq: result.seq, gen: activeSessions.generationFor(sessionId)! },
+        });
+      }
+    },
+    /*
+      One removal, two triggers (HIVE-145). The listener's `close` handler
+      fires the socket's own `destroyed` listeners and then calls this, and
+      both converge on `untrack`, which is idempotent — so `onGone` reaches
+      every per-surface consumer exactly once however the socket went away.
+
+      Both are kept rather than one, because they cover different holes: the
+      `destroyed` path is what a surface with a lifetime announces for itself,
+      and this is what removes a handle that never had one.
+    */
+    onDetach: (socket) => {
+      surfaces.untrack(socket);
+    },
+  });
+  /*
+    Registered here, immediately, rather than folded into the large combined
+    teardown hook below that finalizes every live run and calls `closeAll` —
+    the ordering this file documents throughout (HIVE-120, HIVE-124):
+    `runShutdown` invokes every hook body, in registration order, before
+    awaiting any of them. Registering the socket's teardown first means its
+    synchronous work — terminating every attached client — runs before that
+    later hook's synchronous steps do, so nothing can arrive on this socket
+    asking for something `closeAll` is already tearing down.
+
+    That stopped being a precaution with HIVE-143 and became the thing keeping
+    this safe. `dispatch` above is a real router now, and `DEVICE_GRANT` in
+    `remote-dispatch.ts` is `'execute'` — so a paired device reaches `pty:spawn`
+    and `agents:run` over this socket, and either can start a process. What
+    makes the ordering sufficient rather than merely first: `listener.stop()`
+    terminates every attached client synchronously, inside its own promise
+    executor, so by the time `runShutdown` reaches the combined hook there is no
+    socket left to deliver a frame; and `agents:run` awaits the memoised
+    `mcp.start()`, so even a call already in flight cannot reach a spawn ahead
+    of a teardown that has begun.
+  */
+  onShutdown(() => remoteListener?.stop());
 
   skills = createSkillsRuntime({
     userDataPath: app.getPath('userData'),
@@ -1404,10 +2404,7 @@ export function registerIpcHandlers(): void {
   agents.onChange(() => {
     refreshKnownAgents();
 
-    for (const window of BrowserWindow.getAllWindows()) {
-      if (window.isDestroyed()) continue;
-      window.webContents.send(CH.agentsChanged);
-    }
+    fanOut.emit(CH.agentsChanged, undefined);
   });
 
   refreshKnownAgents();
@@ -1883,6 +2880,13 @@ export function registerIpcHandlers(): void {
     supervisor,
     config: getConfig,
     send,
+    /*
+      The flow-control window follows the slowest surface watching (HIVE-145).
+      Resolved per call rather than captured: a client attaches long after this
+      line has run, and a captured list would gate forever on a set that never
+      changes.
+    */
+    liveSurfaces: () => surfaces.all().map((surface) => surface.id),
     // Where the generated sets live (HIVE-133) — the same value `hooks`,
     // `skills` and `mcp` are each handed below, so a container project's
     // per-session directory and its host counterpart resolve against the
@@ -1969,14 +2973,26 @@ export function registerIpcHandlers(): void {
   });
 
   /**
-   * The project watcher, constructed here for the same reason the clone flow
-   * is: it needs `send`, and `send` resolves windows per call rather than
-   * capturing one. A watcher holding a stale `webContents` would emit into a
-   * destroyed renderer after a window reload.
+   * The project watchers, one per surface (HIVE-145).
+   *
+   * Constructed here for the same reason the clone flow is: it needs a way to
+   * push, and that has to be resolved per call rather than captured. A watcher
+   * holding a stale `webContents` would emit into a destroyed renderer after a
+   * window reload.
+   *
+   * **Targeted, not broadcast.** This went through `send` — the fan-out — so
+   * every surface received every surface's tree churn and an explorer reacted
+   * to a project it was not showing. With two clients on different projects
+   * that is not merely wasteful: each one's tree re-reads its expanded
+   * directories on a flush about the other's repository. A surface whose
+   * watcher fired is the only one that asked, so it is the only one told.
+   *
+   * A dropped surface's own release closes its watcher; the lookup returning
+   * `undefined` here is the harmless race where a flush lands in the same tick.
    */
-  fsWatch = createFsWatchLayer((event: FsChangedEvent) =>
-    send(CH.fsChanged, event),
-  );
+  fsWatch = createFsWatchLayer((surfaceId, event: FsChangedEvent) => {
+    surfaces.get(surfaceId)?.send(CH.fsChanged, event);
+  });
 
   /**
    * Drop this layer's timers on quit.
@@ -2159,7 +3175,17 @@ export function registerIpcHandlers(): void {
     history.record(request.entityId, { pr: request.pr });
   });
 
-  handle(CH.appInfo, (): AppInfo => {
+  /*
+    A named function rather than an inline `handle(CH.appInfo, () => {...})`
+    (HIVE-144, Ruling 24): `registerIpcHandlers` returns it, below, so
+    `router.ts` can hand the *exact same* closure to `registerRemoteProxy` as
+    `localAppInfo` — the answer `CH.appInfo` gets while attached, computed
+    locally rather than proxied to the far end. See `isProcessLocal`'s own doc
+    comment (`@shared/remote-contract`) for why this channel is one of the six
+    this file answers that must never be forwarded: every field below describes
+    *this* process, not the fleet it may be attached to.
+  */
+  function buildAppInfo(): AppInfo {
     const { electron, chrome, node } = process.versions;
     const diagnostics = sessions?.diagnostics() ?? [];
     return {
@@ -2170,11 +3196,47 @@ export function registerIpcHandlers(): void {
       platform: process.platform,
       // Reported, never written to — this app logs to stdout. See `AppInfo`.
       logPath: app.getPath('logs'),
+      // `hooks?.` rather than `hooks.`, matching every other read through this
+      // runtime on this file: `null` is the correct answer for a receiver that
+      // never bound, exactly as `boundHost()` itself already returns for that
+      // case, so there is nothing here to distinguish "no runtime" from "no
+      // bind" — both mean the same thing to a caller asking whether the
+      // process is reachable off loopback right now.
+      receiverBoundHost: hooks?.boundHost() ?? null,
+      // Same shape, same reason: `remoteListener` exists on every launch
+      // (constructed unconditionally), but only ever bound in server mode —
+      // `?.boundHost` is `null` on every other launch, which is the correct
+      // answer for "is anything reachable off this socket right now."
+      serverBoundHost: remoteListener?.boundHost ?? null,
+      // Read fresh on every call, from disk, not from `getConfig()` — the
+      // same `readServerDevicesFromDisk()` `remoteListener`'s own `devices`
+      // getter uses, so a `--pair` run in another process is reflected
+      // without a restart. Not gated on `remoteListener?.boundHost`: paired
+      // devices exist whether or not the socket happens to be listening this
+      // instant, and the header's serving chip already gates its own
+      // rendering on `serverBoundHost`, so nothing here needs to duplicate
+      // that check.
+      servingDeviceCount: readServerDevicesFromDisk().length,
+      // `router.ts`'s own runtime fact, handed down rather than imported —
+      // see `registerIpcHandlers`'s own doc comment on this parameter, and
+      // `AppInfo.attachedServerName`'s for the config-versus-runtime split
+      // this answers the runtime half of.
+      attachedServerName: attachedServerName(),
+      // The runtime *status* beside the runtime name — see `AppInfo.remoteLink`
+      // for why the name alone told a freshly-opened window the wrong thing.
+      remoteLink: attachedLink(),
+      // Intent, not a bound socket — see `AppInfo.serving`. Imported rather
+      // than handed down like the two above, because `server-mode.ts` is a
+      // leaf that imports nothing and closes no cycle, and because the fact
+      // it holds is the *process's*, not any one registration's.
+      serving: isServerMode(),
       // Omitted rather than empty when nothing has run, so the field's presence
       // means something.
       ...(diagnostics.length > 0 ? { pty: diagnostics } : {}),
     };
-  });
+  }
+
+  handle(CH.appInfo, buildAppInfo);
 
   /**
    * The workspace config (story 090).
@@ -2243,6 +3305,23 @@ export function registerIpcHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0] ?? null;
   });
+
+  /**
+   * The server-side counterpart to the dialog above (HIVE-146).
+   *
+   * `_event`, and it has to stay that way. `remote-composition.test.ts` scans
+   * this file as source text for handlers that bind a *used* `event`, and
+   * asserts the set is exactly `WINDOW_BOUND` minus `configReveal`, plus
+   * `pty:prompt`. A browse handler that touched the event would fail it, and
+   * rightly: a remotely-dispatched call is handed a synthetic empty event
+   * object, so anything read off it would be silently wrong rather than loudly
+   * refused.
+   */
+  handle(
+    CH.configBrowseDirectory,
+    (_event, payload): Promise<FsResult<BrowseListing>> =>
+      browseHomeDirectory(parseBrowseDirRequest(payload)),
+  );
 
   handle(
     CH.configAddProject,
@@ -2484,7 +3563,6 @@ export function registerIpcHandlers(): void {
     return {
       gh: readGhStatus(env, runCommand),
       loginEnv,
-      notificationsSupported: Notification.isSupported(),
     };
   });
 
@@ -2525,6 +3603,23 @@ export function registerIpcHandlers(): void {
     config: getConfig,
     fetch: (url, init) => globalThis.fetch(url, init),
   });
+
+  /**
+   * The device credential this machine was handed when it attached to
+   * someone else's Hive (HIVE-144).
+   *
+   * {@link remoteCredentialStore} rather than a `createTokenStore` call here,
+   * so the filename exists in one place: the mode switch reads this same
+   * credential through `readRemoteCredential`, and a second spelling of that
+   * path would be a credential written by `remote:pair` and looked for
+   * somewhere else at attach time.
+   *
+   * `read()` is main-internal — see `electron/remote-client/token-store.ts`'s
+   * own doc comment for why this is a distinct module from `jira/auth.ts`
+   * rather than a shared helper. No IPC verb returns the token; `remote:pair`
+   * below only ever writes it, and `remote:forget` only ever clears it.
+   */
+  const remoteTokenStore = remoteCredentialStore();
 
   /**
    * The PR poller's read — the app's second handler that executes a binary,
@@ -2632,6 +3727,163 @@ export function registerIpcHandlers(): void {
   handle(CH.configSetReceiver, (_event, payload): ConfigSnapshot =>
     setReceiver(parseSetReceiverRequest(payload)),
   );
+  /**
+   * HIVE-142. Whether server mode is on, and where it listens — an ordinary
+   * settings write, exactly like `config:set-receiver` above. There is no
+   * credential in this payload: `parseSetServerRequest` refuses one, and
+   * pairing is `server:pair`'s job below.
+   */
+  handle(CH.configSetServer, (_event, payload): ConfigSnapshot =>
+    setServer(parseSetServerRequest(payload)),
+  );
+  /**
+   * Mint a device credential, and answer its plaintext once (HIVE-142).
+   *
+   * Goes through `pairDevice` — the same implementation `--pair` and the
+   * server-mode tray's "Pair a device…" call (`server/devices.ts`) — so the
+   * duplicate-name refusal, the collision-safe retry and "persist against
+   * the roster just read" are proven once, not reimplemented a third time
+   * here. The plaintext is the return value and nothing else: it is never
+   * written into the config, a store, or a log line — the server keeps only
+   * the digest `pairDevice` computed.
+   *
+   * `deviceId` rides alongside the token (HIVE-142 review, I5): `AttachRequest`
+   * needs both, and until now the id was readable only inside `config.json`.
+   * A write failure (C1) is reported through the same `{ error }` shape a
+   * duplicate name or a minting collision already uses — the pane shows the
+   * reason instead of the token panel either way.
+   */
+  handle(
+    CH.serverPair,
+    (_event, payload): { token: string; deviceId: string } | { error: string } => {
+      const { name } = parsePairDeviceRequest(payload);
+      const outcome = pairDevice(name, serverDeviceStore());
+      if (outcome.ok) return { token: outcome.token, deviceId: outcome.device.id };
+      return { error: pairOutcomeMessage(outcome, name) };
+    },
+  );
+  /**
+   * Revoke a paired device by name (HIVE-142). A no-op, not a refusal, if no
+   * device holds that name — the same `revokeDevice` implementation `--revoke`
+   * and the tray's "Revoke" both call.
+   *
+   * Reports the outcome rather than answering `void` (HIVE-142 review, I7,
+   * same family as C1): a hand-edit or a rename since boot can mean this
+   * name matches nothing, or the write itself can fail, and either way the
+   * renderer's `revokeDevice` (`project-config.ts`) must not tell the pane
+   * "done" for a revoke that changed nothing on disk.
+   */
+  handle(
+    CH.serverRevoke,
+    (_event, payload): { revoked: true } | { error: string } => {
+      const { name } = parseRevokeDeviceRequest(payload);
+      const outcome = revokeDevice(name, serverDeviceStore());
+      if (outcome.revoked) return { revoked: true };
+      return { error: revokeOutcomeMessage(outcome, name) };
+    },
+  );
+  /**
+   * HIVE-144. Whether this window is a client and where it attaches — and,
+   * unlike `config:set-server` above, a verb that *acts* as well as writes:
+   * attaching applies immediately, where a listening socket cannot be moved
+   * without a relaunch.
+   *
+   * ## Validate, then switch, then write only on success (Ruling 19)
+   *
+   * `parseSetRemoteRequest` checks the payload's shape. `switchMode` checks
+   * the target — a plaintext socket carries this machine's device credential,
+   * so an unvalidated host is a credential handed to whoever answers — and
+   * only then dials. `setRemote` runs last, and only when the switch
+   * succeeded.
+   *
+   * The order is the whole point. Writing first and being refused would leave
+   * `config.json` saying `remote` while this process is bound local, and the
+   * *next launch* would attach to a server the user was just told it could not
+   * attach to. There is no revert path here because there is nothing to
+   * revert: a refused or failed switch never reaches `setRemote`, so the file
+   * is untouched and disk and runtime never disagree.
+   *
+   * ## The merge, and why the switch is told a target
+   *
+   * All three fields are optional and merged into the stored block, so the
+   * *effective* mode and address are what this handler acts on — not whatever
+   * subset this one call carried. The merged target is passed to the switch
+   * explicitly rather than left to its own default, precisely because the
+   * config file must not yet contain it.
+   *
+   * A request that changes nothing about the effective mode or target still
+   * reaches the switch, and `switchIpcMode` answers it without touching a
+   * binding — see its own local-when-already-local guard. That is what keeps
+   * a user typing in the address field while in local mode from tearing down
+   * and rebuilding every session layer on each committed keystroke.
+   *
+   * ## Answering after tearing down the surface this handler is bound to
+   *
+   * A successful switch unbinds this very channel before this function
+   * returns. That is safe rather than lucky: `ipcMain` has already captured
+   * the reply for the invocation in flight, and everything after the `await`
+   * is a module import rather than a closure over the registration that has
+   * gone — so the renderer gets its answer even though nothing would answer a
+   * *second* call on this channel.
+   *
+   * `parseSetRemoteRequest` never lets a token through this payload, so this
+   * handler never touches `remoteTokenStore` — writing the credential is
+   * `remote:pair`'s job below, not this one's.
+   */
+  /*
+    The body lives in `./set-remote` since Ruling 28, not here, because
+    `registerRemoteProxy` has to answer this same channel from a process whose
+    local handlers have already been torn down — see {@link applySetRemote}
+    for why that is the one verb with two answering surfaces, and why copying
+    it into the proxy instead would have been a client that detaches
+    differently depending on the mode it asked from.
+  */
+  handle(CH.configSetRemote, (_event, payload): Promise<SetRemoteResult> =>
+    applySetRemote(payload, switchMode, attachedSnapshot),
+  );
+  /*
+    HIVE-149. `config:set-remote`'s read half, and registered here in local
+    mode for the reason every `PROCESS_LOCAL` channel is: that list decides who
+    answers while *attached*, and says nothing about the local binding, which
+    must still answer it. Both bindings call the one exported reader, so the two
+    modes cannot drift into answering the same question differently.
+  */
+  handle(CH.configGetRemote, (): LocalRemoteState =>
+    readLocalRemote(remoteCredentialStore().read() !== null),
+  );
+  /**
+   * Store the device credential a `server:pair` mint on some *other* Hive
+   * handed back (HIVE-144) — the opposite direction from `server:pair` above,
+   * see `CH.remotePair`'s own doc comment for why the two are not one verb.
+   *
+   * Answers `{ paired: true } | { error }` rather than a bare `void`
+   * (fix-round review, Important-2): unlike `server:pair` there is no
+   * plaintext to hand back — it arrived *in* this payload rather than being
+   * minted by this call — but `remoteTokenStore.write` can still no-op on a
+   * locked keychain, and `read()` is main-internal, so this handler is the
+   * renderer's only way to learn that. A bare `void` return let a pairing
+   * dialog report success over a credential that was never written.
+   */
+  /*
+    The bodies of this channel and `remote:forget` below live in
+    `./remote-pairing` since HIVE-153, for the reason `config:set-remote`'s
+    lives in `./set-remote`: both are on `PROCESS_LOCAL`, so the proxy answers
+    them from a process where `remoteTokenStore` is gone. What that fixed is
+    not a hypothetical — while they were proxied, a Forget click on an attached
+    client cleared the *server's* credential.
+  */
+  handle(CH.remotePair, (_event, payload): { paired: true } | { error: string } =>
+    applyRemotePair(payload, remoteTokenStore),
+  );
+  /**
+   * Discard the credential `remote:pair` stored (HIVE-144). Idempotent, and
+   * takes no payload — there is exactly one credential on this machine to
+   * forget, never a name to disambiguate by, which is what separates this
+   * from `server:revoke` above.
+   */
+  handle(CH.remoteForget, (): void => {
+    applyRemoteForget(remoteTokenStore);
+  });
 
   /**
    * Slack's MCP server (HIVE-123) — four verbs, none taking a payload.
@@ -2898,23 +4150,27 @@ export function registerIpcHandlers(): void {
    * render its failure into. The explorer treats a rejection as "no live
    * updates" and keeps its manual refresh, which is the honest degradation.
    */
-  handle(CH.fsWatch, async (_event, payload): Promise<void> => {
+  handle(CH.fsWatch, async (event, payload): Promise<void> => {
     const request = parseWatchRequest(payload);
-    await fsWatch?.watchProject(request.projectId, request.sessionId);
+    await fsWatch?.watchProject(surfaceFor(event.sender), request.projectId, request.sessionId);
   });
 
-  handle(CH.fsUnwatch, (): void => {
-    fsWatch?.unwatch();
+  handle(CH.fsUnwatch, (event): void => {
+    fsWatch?.unwatch(surfaceFor(event.sender));
   });
 
   /**
-   * Custom skills (HIVE-96, HIVE-99).
+   * Custom skills (HIVE-96, HIVE-99, HIVE-148).
    *
    * The `fs` block above validates twice — a string-shape guard here, then real
    * containment in `fs/paths.ts` — because it accepts a path. These five
    * validate once, and that is not a weaker design: `assertSkillName` admits
    * only `[a-z0-9-]+`, which cannot name a directory other than the one main
    * chooses, so there is no second question to ask. See `skills-contract.ts`.
+   *
+   * The seven bundle verbs below (HIVE-148) validate twice, the same way `fs`
+   * does — see the docblock just above `CH.skillsFileRead` — because a skill
+   * became a folder and a path is exactly how something inside one is named.
    *
    * `skills` is non-null from registration onward; the optional chaining is for
    * the window between module load and `registerIpc`, which is the same reason
@@ -2938,6 +4194,73 @@ export function registerIpcHandlers(): void {
   handle(CH.skillsRename, (_event, payload) => {
     const request = parseSkillRenameRequest(payload);
     return skills?.rename(request.from, request.to);
+  });
+
+  /**
+   * The bundle verbs (HIVE-148).
+   *
+   * `skills:read`/`write`/`remove`/`rename` above validate once, because
+   * `assertSkillName` cannot express anything but the one directory main
+   * chose. These seven cannot make that claim — a path is exactly the thing a
+   * bundle's own SKILL.md, scripts and references are addressed by — so each
+   * validates the request's *shape* here and then leans on
+   * `resolveInSkill`'s `realpath` containment check inside `SkillsRuntime`
+   * for the *disk*. Neither layer substitutes for the other; see
+   * `electron/main/skills/paths.ts`.
+   */
+  handle(CH.skillsFileRead, (_event, payload) => {
+    const request = parseSkillPathRequest(payload);
+    return skills?.readFile(request.name, request.path);
+  });
+
+  handle(CH.skillsFileWrite, (_event, payload) => {
+    const request = parseSkillFileWriteRequest(payload);
+    return skills?.writeFile(request.name, request.path, request.body);
+  });
+
+  handle(CH.skillsFileMkdir, (_event, payload) => {
+    const request = parseSkillPathRequest(payload);
+    return skills?.makeDir(request.name, request.path);
+  });
+
+  handle(CH.skillsFileRemove, (_event, payload) => {
+    const request = parseSkillPathRequest(payload);
+    return skills?.removeFile(request.name, request.path);
+  });
+
+  handle(CH.skillsFileMove, (_event, payload) => {
+    const request = parseSkillMoveRequest(payload);
+    return skills?.moveFile(request.name, request.from, request.to);
+  });
+
+  handle(CH.skillsFileImport, (event, payload) => {
+    const request = parseSkillImportRequest(payload);
+    return skills?.importFiles(request.name, request.dir, async () => {
+      /*
+        Main opens the picker, so no source path crosses IPC inward, and that
+        is the reason `import` is a verb of its own rather than a second shape
+        of `drop`.
+
+        It is also why this channel is in `WINDOW_BOUND`: main is the wrong
+        machine to open a picker on whenever the user is attached to a server.
+        The theme verbs used to share the arrangement and HIVE-146 deleted them
+        for exactly that, moving the read into the renderer. This one cannot
+        follow: the files being added belong beside the skill on the server, so
+        a renderer-side picker would offer the wrong machine's disk. `drop`
+        already carries the user's own files, and the refusal names it.
+      */
+      const window = BrowserWindow.fromWebContents(event.sender);
+      if (window === null) return [];
+      const result = await dialog.showOpenDialog(window, {
+        properties: ['openFile', 'openDirectory', 'multiSelections'],
+      });
+      return result.canceled ? [] : result.filePaths;
+    });
+  });
+
+  handle(CH.skillsFileDrop, (_event, payload) => {
+    const request = parseSkillDropRequest(payload);
+    return skills?.dropFiles(request.name, request.dir, request.sources);
   });
 
   /**
@@ -3268,38 +4591,47 @@ export function registerIpcHandlers(): void {
   });
 
   /**
-   * Getting a theme file on and off disk (HIVE-80).
-   *
-   * Neither verb takes a payload that names a destination: `pick` returns
-   * whatever the open dialog chose, and `save`'s only renderer-supplied fields
-   * are the file's contents and a suggested name for the save dialog — see
-   * `parseSaveThemeRequest` for why both still need validating even though
-   * neither is a path.
-   */
-  handle(CH.themePick, (event) => pickTheme(event));
-  handle(CH.themeSave, (event, payload) =>
-    saveTheme(event, parseSaveThemeRequest(payload)),
-  );
-
-  /**
    * What the renderer is showing (HIVE-81). Guarded to reject rather than
    * sanitise: a malformed payload is dropped and logged (see `on()` above),
    * never coerced into `null` — a compromised or buggy renderer must not be
    * able to make a fabricated shape read as "nothing on stage".
    */
-  on(CH.uiForeground, (_event, payload) => {
+  on(CH.uiForeground, (event, payload) => {
     if (!isRecord(payload)) throw new Error('ui:foreground expects an object');
     const keys = Object.keys(payload);
-    if (keys.length !== 1 || keys[0] !== 'terminalId') {
-      throw new Error('ui:foreground expects exactly { terminalId }');
+    /*
+      `focused` is optional and only a socket sends it (HIVE-145): the client's
+      main process stamps it while proxying, because it is the only process
+      that can see that machine's windows. A local renderer sends the one-key
+      shape it always did, and a window surface's focus is read live from
+      `BrowserWindow` regardless of what arrives here.
+    */
+    if (keys.length === 0 || keys.length > 2) {
+      throw new Error('ui:foreground expects { terminalId } or { terminalId, focused }');
+    }
+    for (const key of keys) {
+      if (key !== 'terminalId' && key !== 'focused') {
+        throw new Error('ui:foreground expects { terminalId } or { terminalId, focused }');
+      }
+    }
+    if (!('terminalId' in payload)) {
+      throw new Error('ui:foreground expects a terminalId');
     }
     const { terminalId } = payload;
     if (terminalId !== null && typeof terminalId !== 'string') {
       throw new Error('ui:foreground expects a string terminalId or null');
     }
+    const reportedFocus = payload.focused;
+    if (reportedFocus !== undefined && typeof reportedFocus !== 'boolean') {
+      throw new Error('ui:foreground expects a boolean focused');
+    }
+    // Absent means not focused — the conservative default. See `foreground`.
+    const focused = reportedFocus ?? false;
 
-    if (foregroundTerminalId === terminalId) return;
-    foregroundTerminalId = terminalId;
+    const surfaceId = surfaceFor(event.sender);
+    const before = foreground.get(surfaceId);
+    if (before?.terminalId === terminalId && before.focused === focused) return;
+    foreground.set(surfaceId, { terminalId, focused });
     notifyForegroundChange();
   });
 
@@ -3451,6 +4783,20 @@ export function registerIpcHandlers(): void {
     });
   });
 
+  handle(CH.ptySpawnTerminal, async (_event, payload) => {
+    const request = parseSpawnTerminalRequest(payload);
+    // The login-shell import is the only precondition a plain shell shares
+    // with a session: no skills sync, no MCP config, no container files.
+    await loginEnvStatus();
+    sessions?.openTerminal({
+      entityId: request.sessionId,
+      projectId: request.projectId,
+      cols: request.cols,
+      rows: request.rows,
+      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    });
+  });
+
   handle(CH.ptyRestart, async (_event, payload) => {
     const request = parseSpawnRequest(payload);
     // Same fork race as `ptySpawn` above: a restart can be the call that first
@@ -3516,28 +4862,138 @@ export function registerIpcHandlers(): void {
     sessions?.resize(request.sessionId, request.cols, request.rows);
   });
 
-  on(CH.ptyAck, (_event, payload) => {
+  /**
+   * The renderer — or an attached socket — says xterm has parsed up to `seq`,
+   * which is what releases those bytes from the flow-control window
+   * (`ipc/pty.ts`).
+   *
+   * **Keyed by the surface that acked (HIVE-145).** The window used to be per
+   * *session* and an ack released it for everyone: with two surfaces watching
+   * one terminal, the first to finish parsing a batch unpaused the producer for
+   * both, so a fast client on a fast link let the pty outrun a slow one, whose
+   * frames queued in `ws`'s own send buffer — which nothing here bounds — until
+   * it was arbitrarily far behind or the process was holding megabytes for it.
+   *
+   * It follows the **slowest** surface now, and a surface that goes away
+   * releases whatever it was holding, or a slow client could pause a session
+   * forever by disconnecting. `ipc/pty.ts` holds the arithmetic and the two
+   * cases that are easy to get wrong: a newcomer seeded at the head rather than
+   * at zero, and an empty set releasing everything.
+   *
+   * `pty-transport.ts` records the same shape for split panes ("backpressure
+   * follows the fastest pane"). That one is still open and still harmless for
+   * the reason this one was until HIVE-144: both panes are the same surface, on
+   * the same link, so there is no slow consumer for the fast one to outrun.
+   */
+  on(CH.ptyAck, (event, payload) => {
     const request = parseAckRequest(payload);
-    sessions?.ack(request.sessionId, request.seq);
+    sessions?.ack(request.sessionId, request.seq, surfaceFor(event.sender));
   });
 
   /**
    * The input-box report (HIVE-135). Session ids arriving from the renderer are
    * entity ids, as they are for `ack`; `deliver` keys its record by the same.
    *
-   * The reporter is watched for its own reload, crash and close: a record left
-   * behind by a renderer that no longer exists would hold every nudge to that
+   * Keyed by the surface that sent it (HIVE-145), which is also what registers
+   * that surface's lifetime: a record left behind by a renderer that no longer
+   * exists — or by a socket that dropped — would hold every nudge to that
    * session forever, since nothing would ever report it empty.
+   *
+   * `surfaceFor` cannot mislabel an attached socket as a window: the socket is
+   * its own reporter and `onAttach` tracked it before any notify from it could
+   * arrive, so this resolves to the existing surface, kind intact.
    */
   on(CH.ptyPrompt, (event, payload) => {
-    watchReporter(event.sender);
     const report = parsePromptReport(payload);
-    deliver.onPrompt(report.sessionId, report.input);
+    deliver.onPrompt(surfaceFor(event.sender), report.sessionId, report.input);
   });
+
+  /*
+    Returned rather than left as a private closure (HIVE-144, Ruling 24):
+    `router.ts`'s own `registerIpc('local', ...)` captures this and hands it
+    to `registerRemoteProxy` as `localAppInfo` the next time this process
+    attaches, so `CH.appInfo` keeps answering from *this* process's `hooks`,
+    `remoteListener` and `sessions` — the exact instances this call just
+    built — rather than from whatever the far end's own instances say.
+  */
+  return buildAppInfo;
 }
 
-/** Test-only: drop the sessions layer and its timers. */
-export function resetIpcHandlers(): void {
+/**
+ * Drop the sessions layer, its timers, and every `ipcMain` binding this
+ * process made.
+ *
+ * Was test-only until HIVE-144: the production mode switch calls this too,
+ * to leave `ipcMain` clean before `registerIpcHandlers` runs again against a
+ * different set of layers. See the `bindings.unbindAll()` comment below for
+ * why the switch can trust this path.
+ *
+ * ## `flush`, and why a live switch is not a test teardown (HIVE-144, fix round 1)
+ *
+ * `history` and `agentState` both write on a 400 ms debounce, and this function
+ * has always **cancelled** that timer rather than letting it fire —
+ * deliberately, because a test's paths point at whatever `configPath()` and
+ * `app.getPath` were stubbed to return, and writing there on teardown is how a
+ * unit test comes to leave a file behind.
+ *
+ * That was correct while the only caller was a teardown. It stopped being
+ * correct the moment a live mode switch called it: `runs?.closeAll('reset')`
+ * below finalises every headless run in flight and schedules an `agents.json`
+ * write carrying that run's summary, its `runsSinceRotate`, its `nextRunAt` —
+ * and its `sessionUuid`, which is what the next wake `--resume`s from
+ * (`agents/runs.ts`). The very next statement then cancelled it. A user who
+ * attached, detached, or simply suffered a failed attach while an agent was
+ * mid-run lost that conversation's continuity with no error anywhere: the next
+ * wake would start a fresh conversation instead of resuming.
+ *
+ * The tell was that the shutdown hook (`onShutdown`, above) already performs
+ * this exact sequence with `flush()` — one path flushed and the other dropped,
+ * for the same data. So the choice is now the caller's, and the two production
+ * callers make the same one.
+ *
+ * The default is **drop**, which keeps every existing suite writing nothing,
+ * and `unbindEverything` in `ipc/router.ts` is the one caller that opts in.
+ * The flush sits exactly where the shutdown hook's does — *after*
+ * `runs.closeAll`, never before, or it would write the state as it was before
+ * the run was finalised, which is the same loss with an extra file.
+ */
+export function resetIpcHandlers(options: { flush?: boolean } = {}): void {
+  const { flush = false } = options;
+  /*
+    HIVE-159. A teardown is also every mode switch — `unbindEverything` calls
+    this in both directions — and whichever mode comes next inherits a badge
+    written by a writer that no longer exists: the hub disposed below, or the
+    renderer's reports to an attachment that has ended. The next writer states
+    its own count: a fresh hub starts from an empty buffer, and the renderer
+    re-reports when its link changes (`useDockBadge`).
+  */
+  clearDockBadge();
+  /*
+    HIVE-142. Most tests never call `startRemoteListener`, so this is usually
+    stopping a socket that was never bound — cheap, per `listener.ts`'s own
+    `stop()`. The ones that do start it (a live suite, or a future test of
+    this composition) must not leak a bound port into the next test.
+  */
+  void remoteListener?.stop();
+  remoteListener = null;
+  /*
+    HIVE-143. Both are module scope and both are filled by
+    `registerIpcHandlers`, so both leak into the next suite if they are not
+    dropped here. An emptied registry is also the honest state for a socket
+    that somehow outlives this teardown: `remote-dispatch.ts` answers
+    `not-ready` rather than reaching a handler wired to a disposed layer.
+  */
+  remoteRegistry.clear();
+  surfaces.clear();
+  toastQueue.clear();
+  /*
+    HIVE-144. This makes the test-only reset and the production mode switch
+    the same path: a live switch calls this to leave `ipcMain` clean before
+    `registerIpcHandlers` runs again against a different set of layers, and it
+    can trust that path precisely because every test in this suite already
+    exercises it on every teardown.
+  */
+  bindings.unbindAll();
   sessions?.dispose();
   sessions = null;
   cloneFlow?.dispose();
@@ -3552,7 +5008,12 @@ export function resetIpcHandlers(): void {
     `dispose()` rather than just dropping the reference — the debounce timer
     closes over the write directly, so an unreferenced history still fires one
     last `writeFileSync` at that stubbed path.
+
+    Unless the caller asked for a flush (HIVE-144) — a live mode switch is not
+    a teardown, and the fleet as it stood a moment before the switch is the
+    fleet the next launch should show.
   */
+  if (flush) history?.flush();
   history?.dispose();
   history = null;
   /*
@@ -3612,6 +5073,19 @@ export function resetIpcHandlers(): void {
   permissions = null;
   runs?.closeAll('reset');
   runs = null;
+  /*
+    **After `closeAll`, never before** (HIVE-144, fix round 1). `closeAll`
+    finalises every live run synchronously, and `finalizeRun` writes that run's
+    summary and its `sessionUuid` into this state on the way — so a flush that
+    ran first would write the state as it was *before* the run was finalised,
+    which loses exactly what this flush exists to keep and leaves a file behind
+    to prove it did something.
+
+    This is the same statement, in the same position, as the shutdown hook's
+    own `runs?.closeAll('app-closed'); agentState?.flush();`. The two paths
+    finally agree.
+  */
+  if (flush) agentState?.flush();
   agentState?.dispose();
   agentState = null;
   /*
@@ -3636,7 +5110,7 @@ export function resetIpcHandlers(): void {
   // no listeners left over from a previous test — including the app-level
   // focus wiring and any tick it has already scheduled, which would otherwise
   // fire into the next test's handlers.
-  foregroundTerminalId = null;
+  foreground.clear();
   foregroundListeners.clear();
   unwatchWindowFocus?.();
   if (foregroundTick !== null) {
@@ -3645,4 +5119,29 @@ export function resetIpcHandlers(): void {
   }
 }
 
+/**
+ * Test-only: how many handlers the remote registry holds (HIVE-143).
+ *
+ * In the same register as {@link resetIpcHandlers} above — exported for the
+ * composition suite and for nothing else. It is the one assertion that can
+ * catch a channel added without a handler, a handler recorded twice, or a
+ * registry that is populated in the wrong order relative to `startRemoteListener`.
+ */
+export function remoteRegistrySize(): number {
+  return remoteRegistry.size();
+}
+
+/*
+  There is deliberately no `attachForTest` here (HIVE-143 review).
+
+  It existed so the composition suite could reach `attachedSockets` without a
+  real `ws` server, and it was documented test-only — but a documented
+  convention is not a fence. As an ordinary export it let any caller add an
+  arbitrary object to the fan-out set, which is push access to every attached
+  client's stream, from a module the whole main process already imports. The
+  suite reaches the same set through the production door instead: it stands in
+  for the listener, captures the real `onAttach` this file hands
+  `createRemoteListener`, and calls that — which is also a stronger test, since
+  it now covers the callback rather than bypassing it.
+*/
 export { assertSender, isTrustedSender, IpcSenderError } from './sender';

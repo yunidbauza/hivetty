@@ -1,12 +1,18 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ThemeGallery } from '@features/settings/components/theme-gallery';
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
 import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
 import { PickThemeFailure, pickThemeFile, saveThemeFile } from '@lib/theme/files';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 import { themeToJson } from '@lib/theme/template';
+import { emptySnapshot } from '@shared/config-contract';
 import { useAppearanceStore } from '@stores/appearance-store';
 
 // `importOriginal` keeps the real `PickThemeFailure` (and `sanitizeFileName`,
@@ -31,6 +37,10 @@ describe('ThemeGallery', () => {
     useAppearanceStore.getState().reset();
     vi.mocked(pickThemeFile).mockReset();
     vi.mocked(saveThemeFile).mockReset();
+  });
+
+  afterEach(() => {
+    resetProjectConfig();
   });
 
   it('shows every theme that ships in the bundle', () => {
@@ -312,5 +322,70 @@ describe('ThemeGallery', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /dismiss/i }));
     expect(screen.queryByText('Nord imported and activated')).toBeNull();
+  });
+});
+
+/**
+ * The same three controls HIVE-144 disabled while attached, asserted the other
+ * way round (HIVE-146).
+ *
+ * `theme:pick` and `theme:save` were `WINDOW_BOUND` because they opened a
+ * dialog on the server. Both channels are gone: `files.ts` reads and writes
+ * through the File API, in the renderer, which is on the machine the user is
+ * sitting at in either mode. So attachment is no longer a reason to refuse
+ * anything here, and this block exists to fail if a capability gate is ever
+ * reintroduced — the state is still set up exactly as it was.
+ */
+describe('ThemeGallery — attached to a remote server', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAppearanceStore.getState().reset();
+    vi.mocked(pickThemeFile).mockReset();
+    vi.mocked(saveThemeFile).mockReset();
+    setProjectConfigForTest({
+      ...emptySnapshot('/tmp/hive/config.json'),
+    });
+    // Attached is a runtime fact, never a config one: while attached
+    // `config:get` is answered by the server, whose own `remote.mode`
+    // reads 'local' (HIVE-144 review, C1).
+    setAttachedServerForTest('mini.tail1234.ts.net');
+  });
+
+  afterEach(() => {
+    resetProjectConfig();
+  });
+
+  it('leaves Import theme… live and opens the picker', async () => {
+    vi.mocked(pickThemeFile).mockResolvedValue(null);
+    render(<ThemeGallery />);
+
+    const button = screen.getByRole('button', { name: 'Import theme…' });
+    expect(button).toBeEnabled();
+
+    await userEvent.click(button);
+    expect(pickThemeFile).toHaveBeenCalled();
+  });
+
+  it('leaves Download template live and writes a file', async () => {
+    render(<ThemeGallery />);
+
+    const button = screen.getByRole('button', { name: 'Download template' });
+    expect(button).toBeEnabled();
+
+    await userEvent.click(button);
+    expect(saveThemeFile).toHaveBeenCalled();
+  });
+
+  it('leaves Export… live on every card and writes a file', async () => {
+    render(<ThemeGallery />);
+
+    await userEvent.click(
+      screen.getAllByRole('button', { name: /actions$/ })[0],
+    );
+    const item = screen.getByRole('menuitem', { name: 'Export…' });
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+
+    await userEvent.click(item);
+    expect(saveThemeFile).toHaveBeenCalled();
   });
 });

@@ -1,19 +1,16 @@
-import { render, screen } from '@testing-library/react';
+import { render, renderHook, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_JIRA,
-  DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
+  emptySnapshot,
   type ConfigSnapshot,
   type ProjectStatus,
 } from '@shared/config-contract';
 
 import { ProjectRow } from '@features/projects/components/project-row';
 import { resetProjectConfig, setProjectConfigForTest } from '@lib/project-config';
-import { useHiveStore } from '@stores/hive-store';
+import { useHiveStore, useProjectSessions } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
 
@@ -46,11 +43,7 @@ const PROJECT = {
 
 function snapshot(projects: { id: string; status: ProjectStatus }[]): ConfigSnapshot {
   return {
-    configPath: CONFIG_PATH,
-    templateWritten: false,
-    shell: '/bin/zsh',
-    claudeCommand: 'claude',
-    env: {},
+    ...emptySnapshot(CONFIG_PATH, '/bin/zsh'),
     projects: projects.map(({ id, status }) => ({
       id,
       path: status === 'ok' ? `/repos/${id}` : null,
@@ -61,14 +54,6 @@ function snapshot(projects: { id: string; status: ProjectStatus }[]): ConfigSnap
       key: testProjectKey(id),
       isRepo: true,
     })),
-    notifications: { ...DEFAULT_NOTIFICATIONS },
-    jira: { ...DEFAULT_JIRA },
-    receiver: { ...DEFAULT_RECEIVER },
-    slack: { ...DEFAULT_SLACK },
-    subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-    errors: [],
   };
 }
 
@@ -189,7 +174,7 @@ describe('ProjectRow', () => {
     // surprised when the picker refuses.
     expect(
       screen.getByRole('button', { expanded: true }),
-    ).toHaveAccessibleName('NOVA Web unmapped 3 active sessions');
+    ).toHaveAccessibleName('NOVA Web unmapped 3 running');
   });
 
   /**
@@ -202,6 +187,17 @@ describe('ProjectRow', () => {
    */
   describe('the new-session link', () => {
     const LINK = 'New session in NOVA Web';
+    const TERMINAL_LINK = 'Terminal in NOVA Web';
+
+    /**
+     * The last child is the split row, not the session link (terminals).
+     *
+     * A session on the left, a terminal on the right, one rule between them —
+     * so the placement claim is now about the row that holds both, and the
+     * session link is found inside it rather than at the top level.
+     */
+    const lastRow = (container: HTMLElement) =>
+      container.firstElementChild?.lastElementChild as HTMLElement;
 
     it('follows the last session', () => {
       setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
@@ -209,9 +205,13 @@ describe('ProjectRow', () => {
       const { container } = render(<ProjectRow project={PROJECT} />);
 
       const rows = container.firstElementChild;
-      // Header button, three fixture sessions, then the link.
+      // Header button, three fixture sessions, then the split row.
       expect(rows?.children).toHaveLength(5);
-      expect(rows?.lastElementChild).toHaveAccessibleName(LINK);
+      expect(within(lastRow(container)).getByRole('button', { name: LINK }))
+        .toBeInTheDocument();
+      expect(
+        within(lastRow(container)).getByRole('button', { name: TERMINAL_LINK }),
+      ).toBeInTheDocument();
     });
 
     it('sits directly under a project with nothing running', () => {
@@ -222,7 +222,8 @@ describe('ProjectRow', () => {
 
       const rows = container.firstElementChild;
       expect(rows?.children).toHaveLength(2);
-      expect(rows?.lastElementChild).toHaveAccessibleName(LINK);
+      expect(within(lastRow(container)).getByRole('button', { name: LINK }))
+        .toBeInTheDocument();
     });
 
     it('is gone when the project is collapsed', async () => {
@@ -235,5 +236,35 @@ describe('ProjectRow', () => {
       // running inside it.
       expect(screen.queryByRole('button', { name: LINK })).not.toBeInTheDocument();
     });
+  });
+
+  /**
+   * A terminal is one of the project's entries (terminals).
+   *
+   * The list selector returns ids of both kinds in start order and the row
+   * dispatches on kind, so the claims are: the terminal is drawn, the count
+   * pill grew by one, and the split row is still the way to start either.
+   */
+  it('lists a terminal among the sessions, counts it, and ends with the split row', () => {
+    setProjectConfigForTest(snapshot([{ id: 'nova-web', status: 'ok' }]));
+
+    const { result, unmount } = renderHook(() => useProjectSessions('nova-web'));
+    const before = result.current.length;
+    unmount();
+
+    const id = useHiveStore.getState().spawnTerminal('nova-web');
+    render(<ProjectRow project={PROJECT} />);
+
+    expect(screen.getByText(id)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'New session in NOVA Web' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Terminal in NOVA Web' }),
+    ).toBeInTheDocument();
+    // The pill counts both kinds, and its sr-only word is true of both.
+    expect(screen.getByRole('button', { expanded: true })).toHaveAccessibleName(
+      `NOVA Web ${before + 1} running`,
+    );
   });
 });

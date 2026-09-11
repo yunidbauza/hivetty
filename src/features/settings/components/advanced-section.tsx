@@ -7,11 +7,19 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
+import { REMOTE_DISABLED_REASON } from '@config/runtime';
 import { ConfigResetConfirm } from '@features/settings/components/config-reset-confirm';
 import { ContainerAliasGroup } from '@features/settings/components/container-alias-group';
+import { ServerModeGroup } from '@features/settings/components/server-mode-group';
 import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
-import { useProjectConfig } from '@hooks/use-project-config';
+import {
+  useAttachedServer,
+  useLocalRemote,
+  useProjectConfig,
+  useRemoteCapabilities,
+  useServing,
+} from '@hooks/use-project-config';
 import {
   readAppInfo,
   reloadProjectConfig,
@@ -21,6 +29,7 @@ import {
 import { checkForUpdates, readUpdateStatus } from '@lib/updates';
 import type { AppInfo, PtyDiagnostics } from '@shared/ipc-contract';
 import type { UpdateStatus } from '@shared/update-contract';
+import { useRemoteLink } from '@stores/hive-store';
 
 /**
  * Advanced & diagnostics (story 107).
@@ -183,6 +192,35 @@ function updateLine(
 
 export function AdvancedSection() {
   const snapshot = useProjectConfig();
+  const { revealConfig } = useRemoteCapabilities();
+  /*
+    The runtime half of the attach half's state (Ruling 29). Read through the
+    shared hook rather than off `info` below, which is this section's own
+    one-shot `app:info` for the About box: that read never repeats, and this
+    value changes the moment a socket opens or closes.
+  */
+  const attachedServerName = useAttachedServer();
+  /*
+    What that attachment is doing, for the pane's status line (HIVE-150).
+    `attachedServerName` above answers *whether* this window drives another
+    machine; this answers whether that machine is reachable right now, which
+    only the status line asks.
+  */
+  const remoteLink = useRemoteLink();
+  /*
+    The third runtime-derived field the attach half needs (HIVE-144 review,
+    I3) — whether *this* process was launched to serve. Not
+    `snapshot.server.enabled` beside it, which while attached describes the
+    server's file: see `ServerModeGroupProps.serving`.
+  */
+  const serving = useServing();
+  /*
+    The only one of these that is config rather than runtime status (HIVE-149):
+    this machine's own `remote` block, for the two address fields whose subject
+    is this window. `snapshot.remote` below cannot answer them while attached,
+    because that snapshot comes from the server.
+  */
+  const localRemote = useLocalRemote();
   const downloadingPhrase = useSwarmPhrase('loading.update');
   const readyPhrase = useSwarmPhrase('complete.update');
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -319,8 +357,13 @@ export function AdvancedSection() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void revealConfigFile()}
-            className="flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink"
+            onClick={() => {
+              if (!revealConfig) return;
+              void revealConfigFile();
+            }}
+            disabled={!revealConfig}
+            title={revealConfig ? undefined : REMOTE_DISABLED_REASON.revealConfig}
+            className="flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:opacity-60"
           >
             <FolderOpen size={12} weight="bold" />
             {fileManager(info?.platform)}
@@ -345,7 +388,32 @@ export function AdvancedSection() {
         )}
       </SettingsGroup>
 
-      <ContainerAliasGroup hostAlias={snapshot.receiver.hostAlias} />
+      <ContainerAliasGroup
+        hostAlias={snapshot.receiver.hostAlias}
+        bind={snapshot.receiver.bind}
+      />
+
+      {/*
+        `attachedServerName` comes from the runtime, not the snapshot beside
+        it (HIVE-144, Ruling 29) — see `ServerModeGroupProps`' own two doc
+        comments for why the attach half needs both sources and which question
+        each one answers. `useLocalRemote` is the newest of them (HIVE-149):
+        the address fields describe this window, which `snapshot.remote` cannot
+        say while attached. `useAttachedServer` is the same hook the header chip
+        reads, so the pane and the chip can never disagree about whether a
+        socket is open.
+      */}
+      <ServerModeGroup
+        enabled={snapshot.server.enabled}
+        bind={snapshot.server.bind}
+        devices={snapshot.server.devices}
+        remote={snapshot.remote}
+        localRemote={localRemote}
+        attachedServer={snapshot.attachedServer}
+        attachedServerName={attachedServerName}
+        serving={serving}
+        link={remoteLink}
+      />
 
       <SettingsGroup
         title="Reset"

@@ -9,7 +9,11 @@ import {
 } from '@shared/config-contract';
 
 import { ProjectsSection } from '@features/settings/components/projects-section';
-import { resetProjectConfig, setProjectConfigForTest } from '@lib/project-config';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
@@ -155,6 +159,37 @@ describe('ProjectsSection', () => {
 
       // The only path that reaches main is the one the dialog returned.
       expect(addProjectToConfig).toHaveBeenCalledWith({ path: '/tmp/picked' });
+    });
+
+    /**
+     * While attached to someone else's Hive, `config:choose-directory` opens on
+     * the server, which has no window — see `WINDOW_BOUND`
+     * (`electron/shared/remote-contract.ts`). HIVE-144 disabled the button for
+     * that; HIVE-146 gave it the server-side picker instead, so the control
+     * stays live and the click still never reaches the bridge.
+     */
+    it('opens the picker rather than the dialog while attached', async () => {
+      const user = userEvent.setup();
+      const snapshot: ConfigSnapshot = {
+        ...emptySnapshot('/tmp/hive/config.json'),
+        projects: [entry({ id: 'the-hive' })],
+      };
+      setProjectConfigForTest(snapshot);
+      // Attached is a runtime fact, never a config one: while attached
+      // `config:get` is answered by the server, whose own `remote.mode`
+      // reads 'local' (HIVE-144 review, C1).
+      setAttachedServerForTest('mini.tail1234.ts.net');
+
+      render(<ProjectsSection />);
+      const button = screen.getByRole('button', { name: /add project/i });
+      expect(button).toBeEnabled();
+
+      await user.click(button);
+
+      expect(
+        await screen.findByRole('dialog', { name: /Choose a project folder/i }),
+      ).toBeInTheDocument();
+      expect(chooseProjectDirectory).not.toHaveBeenCalled();
     });
   });
 

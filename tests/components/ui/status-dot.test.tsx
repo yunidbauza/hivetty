@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import {
+  STATUS_FILL,
   STATUS_LABEL,
   STATUS_TEXT,
   StatusDot,
@@ -258,5 +259,17 @@ describe('StatusDot', () => {
     expect(statusText('idle', 'script')).toBe(STATUS_TEXT.working);
     expect(statusText('idle')).toBe(STATUS_TEXT.idle);
     expect(statusText('terminated')).toBe(STATUS_TEXT.terminated);
+  });
+});
+
+describe('terminal statuses', () => {
+  it('paints prompt subtle and running brand — never green, never amber', () => {
+    expect(STATUS_FILL.prompt).toBe('bg-subtle');
+    expect(STATUS_FILL.running).toBe('bg-brand');
+    expect(STATUS_TEXT.prompt).toBe('text-subtle');
+    expect(STATUS_TEXT.running).toBe('text-brand');
+    expect(STATUS_LABEL.prompt).toBe('at prompt');
+    expect(STATUS_LABEL.running).toBe('running');
+    expect(statusLabel('prompt')).toBe('at prompt');
   });
 });

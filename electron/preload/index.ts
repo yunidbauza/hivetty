@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 
 
 import type {
@@ -16,15 +16,19 @@ import type {
 } from '@shared/agent-contract';
 import type {
   AddProjectRequest,
+  BrowseDirRequest,
+  BrowseListing,
   CloneDoneEvent,
   CloneRequest,
   CloneStartResult,
   CommandDiagnostic,
   ConfigSnapshot,
+  DeviceNameRequest,
   DiagnoseCommandRequest,
   DiagnoseEnvRequest,
   EnvDiagnostic,
   RemoveProjectRequest,
+  RemotePairRequest,
   RenameProjectRequest,
   ReorderProjectsRequest,
   AddJiraCommentRequest,
@@ -40,7 +44,10 @@ import type {
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
+  SetRemoteRequest,
+  SetRemoteResult,
   SetRuntimeRequest,
+  SetServerRequest,
   SetSlackRequest,
   SetSlackTokensRequest,
 } from '@shared/config-contract';
@@ -76,11 +83,14 @@ import {
   type NotificationDismissedEvent,
   type NotificationReadEvent,
   type PromptReport,
+  type RemoteLinkStatus,
   type ResizeRequest,
   type SessionLostEvent,
   type SessionNameReport,
   type SpawnRequest,
+  type SpawnTerminalRequest,
   type WriteRequest,
+  type LocalRemoteState,
 } from '@shared/ipc-contract';
 import type {
   JiraComment,
@@ -109,9 +119,11 @@ import type {
   SessionBranchEvent,
   SessionClearedEvent,
   SessionFinishedEvent,
+  SessionForegroundEvent,
   SessionReadyEvent,
   SessionNameEvent,
   SessionStatusEvent,
+  SessionTerminalEndedEvent,
   SessionTicketIntentEvent,
 } from '@shared/session-contract';
 import type {
@@ -120,8 +132,14 @@ import type {
   SessionPrRequest,
 } from '@shared/session-history-contract';
 import type {
+  SkillDropRequest,
   SkillFile,
+  SkillFileRead,
+  SkillFileWriteRequest,
+  SkillImportRequest,
+  SkillMoveRequest,
   SkillNameRequest,
+  SkillPathRequest,
   SkillRenameRequest,
   SkillWriteRequest,
   SkillsSnapshot,
@@ -133,7 +151,6 @@ import type {
   SlackStatus,
   SlackTokensState,
 } from '@shared/slack-contract';
-import type { PickedTheme, SaveThemeRequest } from '@shared/theme-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
 /**
@@ -189,6 +206,35 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
   };
 }
 
+/**
+ * Paths the browser gave us, keyed by an id the renderer can hold (HIVE-148).
+ *
+ * `skills.fileDrop` has to reach real files, and the renderer must not be able
+ * to name one. `webUtils.getPathForFile` answers only for a `File` the browser
+ * itself produced from a drop and returns `''` for one the page constructed, so
+ * preload is the only place a real path can appear. Keeping the path *here* and
+ * handing out an opaque id means a renderer that invents an id gets nothing —
+ * the difference between a bounded verb and a read-anywhere primitive.
+ *
+ * Entries are consumed on use, so an id is a one-shot ticket rather than a
+ * durable handle to a file the user has since moved on from.
+ */
+const droppedPaths = new Map<string, string>();
+
+/**
+ * An id, from the **Web** Crypto global rather than `node:crypto`.
+ *
+ * This preload runs with `sandbox: true` (`electron/main/window.ts:176`), and a
+ * sandboxed preload has no Node APIs at all. `import { randomUUID } from
+ * 'node:crypto'` therefore throws while the module is still loading, which
+ * takes down the *entire* bridge — every feature in the app, not just this one
+ * — and leaves the renderer in its no-bridge browser-demo state with no error
+ * anyone would connect to skills. It shipped that way once; the unit suites
+ * could not see it, because they mock this module, and only the built app
+ * shows it. `globalThis.crypto` is a browser global and is present.
+ */
+const mintId = (): string => globalThis.crypto.randomUUID();
+
 const bridge: HiveBridge = {
   appInfo: (): Promise<AppInfo> => ipcRenderer.invoke(CH.appInfo),
   config: {
@@ -199,6 +245,12 @@ const bridge: HiveBridge = {
     // follow a write with a reload.
     chooseDirectory: (): Promise<string | null> =>
       ipcRenderer.invoke(CH.configChooseDirectory),
+    // HIVE-146. Directories only, never a file's contents, and every path it
+    // returns has been contained under home by main before it leaves.
+    browseDirectory: (
+      request: BrowseDirRequest,
+    ): Promise<FsResult<BrowseListing>> =>
+      ipcRenderer.invoke(CH.configBrowseDirectory, request),
     addProject: (request: AddProjectRequest): Promise<ConfigSnapshot> =>
       ipcRenderer.invoke(CH.configAddProject, request),
     removeProject: (request: RemoveProjectRequest): Promise<ConfigSnapshot> =>
@@ -249,6 +301,27 @@ const bridge: HiveBridge = {
     // HIVE-131. The name a container resolves to reach this host.
     setReceiver: (request: SetReceiverRequest): Promise<ConfigSnapshot> =>
       ipcRenderer.invoke(CH.configSetReceiver, request),
+    // HIVE-142. Whether server mode is on, and where it listens. No
+    // credential here — pairing is the `server` namespace's job, below.
+    setServer: (request: SetServerRequest): Promise<ConfigSnapshot> =>
+      ipcRenderer.invoke(CH.configSetServer, request),
+    // HIVE-144. Whether this window is a client and where it attaches. No
+    // credential here either — storing one is the `remote` namespace's job,
+    // below, and is a deliberately different verb from `server.pair` above:
+    // that one mints a credential this machine hands out; this one stores
+    // one this machine was handed.
+    setRemote: (request: SetRemoteRequest): Promise<SetRemoteResult> =>
+      ipcRenderer.invoke(CH.configSetRemote, request),
+    /*
+      HIVE-149. `setRemote`'s read half, and written with no parameter list at
+      all for the reason `revealConfig` below is: nothing arrives from the
+      renderer, so there is nothing a later careless edit could forward.
+
+      It answers the question `get` above cannot while attached — that channel
+      is proxied, so its `remote` block is the server's. The credential is not
+      in the answer, because `RemoteConfig` has never held one.
+    */
+    getRemote: (): Promise<LocalRemoteState> => ipcRenderer.invoke(CH.configGetRemote),
     /*
       Story 107. Neither takes an argument — see the contract for why that is
       the security design and not an oversight. Written with no parameter list
@@ -266,9 +339,46 @@ const bridge: HiveBridge = {
     onCloneDone: (callback: (event: CloneDoneEvent) => void) =>
       subscribe<CloneDoneEvent>(CH.configCloneDone, callback),
   },
+  // HIVE-142. Pairing and revoking a device for server mode — its own
+  // namespace because neither verb is an ordinary settings write; see the
+  // contract for why.
+  server: {
+    pair: (
+      request: DeviceNameRequest,
+    ): Promise<{ token: string; deviceId: string } | { error: string }> =>
+      ipcRenderer.invoke(CH.serverPair, request),
+    revoke: (
+      request: DeviceNameRequest,
+    ): Promise<{ revoked: true } | { error: string }> =>
+      ipcRenderer.invoke(CH.serverRevoke, request),
+  },
+  // HIVE-144. Storing and forgetting the credential this machine was handed
+  // to attach outward, as a client, to someone else's server. Its own
+  // namespace and not `server` above, on purpose: `server.pair`/`.revoke`
+  // mint or destroy a credential this machine hands out to devices it
+  // admits; `remote.pair`/`.forget` hold a credential this machine was
+  // given, in the opposite direction. Two verbs named "pair" pointing
+  // opposite ways would read as one feature — they are two.
+  remote: {
+    pair: (
+      request: RemotePairRequest,
+    ): Promise<{ paired: true } | { error: string }> =>
+      ipcRenderer.invoke(CH.remotePair, request),
+    forget: (): Promise<void> => ipcRenderer.invoke(CH.remoteForget),
+    /**
+     * What this window's attachment is doing (HIVE-150).
+     *
+     * A subscription rather than a read because the socket changes state on its
+     * own — the same reason `slack.onSocketStatus` beside it is one.
+     */
+    onLinkStatus: (callback: (status: RemoteLinkStatus | null) => void) =>
+      subscribe<RemoteLinkStatus | null>(CH.remoteLinkStatus, callback),
+  },
   pty: {
     spawn: (request: SpawnRequest): Promise<void> =>
       ipcRenderer.invoke(CH.ptySpawn, request),
+    spawnTerminal: (request: SpawnTerminalRequest): Promise<void> =>
+      ipcRenderer.invoke(CH.ptySpawnTerminal, request),
     // `send`, not `invoke`: keystrokes and resizes are fire-and-forget, and
     // awaiting a round-trip per keypress would put the main process in the
     // typing latency path.
@@ -320,12 +430,16 @@ const bridge: HiveBridge = {
       subscribe<FsChangedEvent>(CH.fsChanged, callback),
   },
   /*
-    HIVE-96, and HIVE-99's `rename`. Five verbs, and not one of them names a
-    path — `rename` names two skills, which is still none — see the contract for
-    why that is the whole security design rather than one layer of it, and
-    `BRIDGE_SKILLS_KEYS` for the argument the fifth verb had to make. There is
-    no `onChanged` here on purpose: the pane is the only writer, and every
-    mutating verb answers with the fresh snapshot.
+    HIVE-96, HIVE-99's `rename`, and HIVE-148's eight bundle verbs. The
+    original five still name only a skill, never a path — `rename` names two
+    of them, which is still none. The eight `file*` verbs carry a
+    skill-relative path (`assertSkillPath`/`assertSkillDir` at the boundary,
+    `resolveInSkill`'s `realpath` containment behind it), except `fileDrop`,
+    whose `sources` are absolute — and the only reason that is safe is
+    `pathToken` below, which is the one verb here that never touches IPC at
+    all. See `skills-contract.ts` and `BRIDGE_SKILLS_KEYS` for the full
+    argument. There is no `onChanged` here on purpose: the pane is the only
+    writer, and every mutating verb answers with the fresh snapshot.
   */
   skills: {
     list: (): Promise<SkillsSnapshot> => ipcRenderer.invoke(CH.skillsList),
@@ -337,6 +451,71 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.skillsRemove, request),
     rename: (request: SkillRenameRequest): Promise<SkillsSnapshot> =>
       ipcRenderer.invoke(CH.skillsRename, request),
+    /**
+     * Mint an opaque, one-shot id for a `File` a real drop produced (HIVE-148).
+     *
+     * `webUtils.getPathForFile` answers a real path only for a `File` the
+     * browser itself built from a drop, and `''` for one a web page
+     * constructed — so this is the one place a real path can appear at all.
+     * The path is kept in {@link droppedPaths} and never returned; only the id
+     * crosses back to the renderer, which is what keeps `fileDrop` from being
+     * a read-anywhere primitive.
+     */
+    pathToken: (file: File): string | null => {
+      const path = webUtils.getPathForFile(file);
+      if (path === '') return null;
+      const id = mintId();
+      droppedPaths.set(id, path);
+      return id;
+    },
+    fileRead: (request: SkillPathRequest): Promise<SkillFileRead> =>
+      ipcRenderer.invoke(CH.skillsFileRead, request),
+    fileWrite: (request: SkillFileWriteRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsFileWrite, request),
+    fileMkdir: (request: SkillPathRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsFileMkdir, request),
+    fileRemove: (request: SkillPathRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsFileRemove, request),
+    fileMove: (request: SkillMoveRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsFileMove, request),
+    fileImport: (request: SkillImportRequest): Promise<SkillsSnapshot> =>
+      ipcRenderer.invoke(CH.skillsFileImport, request),
+    /**
+     * Resolve each token back to the real path it was minted for, consuming
+     * it, and only then call main (HIVE-148).
+     *
+     * A token that is not in the map — already consumed, or never minted —
+     * is silently dropped rather than turned into a request-shaped hole: the
+     * request main receives holds only paths this process actually vouches
+     * for.
+     */
+    fileDrop: (request: { name: string; dir: string; tokens: string[] }): Promise<SkillsSnapshot> => {
+      const sources: string[] = [];
+      for (const token of request.tokens) {
+        const path = droppedPaths.get(token);
+        if (path === undefined) continue;
+        droppedPaths.delete(token);
+        sources.push(path);
+      }
+      /*
+        Every token named was already consumed, or never minted. Invoking main
+        with `sources: []` would answer with a fresh snapshot indistinguishable
+        from a drop that actually copied something — refusing here, before the
+        round trip, is what makes "nothing happened" visible rather than
+        looking like success. A *partial* resolution still proceeds with
+        whatever did resolve; this is only the case where none did.
+      */
+      if (sources.length === 0 && request.tokens.length > 0) {
+        return Promise.reject(
+          new Error('Nothing to drop — every file had already been used or was never received.'),
+        );
+      }
+      return ipcRenderer.invoke(CH.skillsFileDrop, {
+        name: request.name,
+        dir: request.dir,
+        sources,
+      } satisfies SkillDropRequest);
+    },
   },
   /*
     HIVE-114. The same five path-free verbs as `skills`, plus `onChanged` —
@@ -529,6 +708,9 @@ const bridge: HiveBridge = {
     /** Hand a clicked row's action back to main to carry out. */
     act: (action: NotificationAction): Promise<void> =>
       ipcRenderer.invoke(CH.notificationsAct, action) as Promise<void>,
+    /** This window's unread count, for this machine's dock (HIVE-159). */
+    badge: (count: number): Promise<void> =>
+      ipcRenderer.invoke(CH.notificationsBadge, count) as Promise<void>,
   },
   ledger: {
     /** The log main holds. Hydration on mount. */
@@ -567,6 +749,10 @@ const bridge: HiveBridge = {
       subscribe<SessionTicketIntentEvent>(CH.sessionTicketIntent, callback),
     onMetrics: (callback: (event: SessionMetricsEvent) => void) =>
       subscribe<SessionMetricsEvent>(CH.sessionMetrics, callback),
+    onForeground: (callback: (event: SessionForegroundEvent) => void) =>
+      subscribe<SessionForegroundEvent>(CH.sessionForeground, callback),
+    onTerminalEnded: (callback: (event: SessionTerminalEndedEvent) => void) =>
+      subscribe<SessionTerminalEndedEvent>(CH.sessionTerminalEnded, callback),
     // HIVE-87. The namespace's first invoking verbs — everything above is a
     // subscription. `history` is read once at boot; `note` and `pr` carry the
     // two facts about a session that main cannot establish for itself.
@@ -576,13 +762,6 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.sessionNote, request),
     pr: (request: SessionPrRequest): Promise<void> =>
       ipcRenderer.invoke(CH.sessionPr, request),
-  },
-  // HIVE-80. Neither verb takes a destination path — the dialog chooses it —
-  // so this does not widen the bridge into a general file picker.
-  theme: {
-    pick: (): Promise<PickedTheme | null> => ipcRenderer.invoke(CH.themePick),
-    save: (request: SaveThemeRequest): Promise<string | null> =>
-      ipcRenderer.invoke(CH.themeSave, request),
   },
   // HIVE-81. `send`, not `invoke`: it fires on every tab switch and overlay
   // toggle and has no answer worth waiting for.

@@ -286,6 +286,7 @@ export function createContext() {
     env = {},
     cols = 80,
     rows = 24,
+    foreground = false,
   } = {}) {
     const sessionId = `s${(counter += 1)}`;
     const state = {
@@ -296,10 +297,23 @@ export function createContext() {
       pid: null,
       exit: null,
       errors: [],
+      // `undefined` until the host reports, so "never polled" and "polled and
+      // found the prompt" (`null`) stay distinguishable.
+      foreground: undefined,
     };
 
     manager.spawn(
-      { type: 'spawn', sessionId, shell, args, cwd, env, cols, rows },
+      {
+        type: 'spawn',
+        sessionId,
+        shell,
+        args,
+        cwd,
+        env,
+        cols,
+        rows,
+        ...(foreground ? { foreground: true } : {}),
+      },
       (message) => {
         switch (message.type) {
           case 'spawned':
@@ -308,6 +322,9 @@ export function createContext() {
           case 'data':
             state.chunks.push(message.chunk);
             state.output += message.chunk;
+            return;
+          case 'foreground':
+            state.foreground = message.name;
             return;
           case 'exit':
             state.exit = { code: message.exitCode, signal: message.signal };
@@ -334,6 +351,9 @@ export function createContext() {
       },
       get errors() {
         return state.errors;
+      },
+      get foreground() {
+        return state.foreground;
       },
       /** Type a line, the way a person would: text then carriage return. */
       send: (line) => manager.write(sessionId, `${line}\r`),
@@ -368,6 +388,12 @@ export function createContext() {
             )}\n  --- end ---`,
           },
         ),
+      /** Wait until the reported foreground satisfies the predicate. */
+      waitForForeground: (predicate, options = {}) =>
+        waitFor(() => predicate(state.foreground), {
+          message: `foreground to satisfy ${predicate.toString()}`,
+          ...options,
+        }),
       waitForExit: (options = {}) =>
         waitFor(() => state.exit, { message: 'the process to exit', ...options }),
     };

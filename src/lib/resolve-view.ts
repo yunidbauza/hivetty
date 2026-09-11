@@ -10,7 +10,8 @@ export type ViewState =
   | 'editor'
   | 'orchestrator'
   | 'session'
-  | 'agent';
+  | 'agent'
+  | 'terminal';
 
 /** The orchestrator's reserved tab id. */
 export const ORCH_TAB = 'orch';
@@ -77,7 +78,21 @@ export function resolveView({
   if (activeTab === ORCH_TAB) return 'orchestrator';
   if (!entity) return 'orchestrator';
 
-  return entity.kind === 'agent' ? 'agent' : 'session';
+  switch (entity.kind) {
+    case 'agent':
+      return 'agent';
+    case 'session':
+      return 'session';
+    case 'terminal':
+      return 'terminal';
+    default: {
+      // A fourth kind has no case above, so `entity` is no longer `never` and
+      // the build fails — the silent fall-through to 'session' this replaced
+      // is exactly how a terminal would have been drawn as a Claude.
+      const exhaustive: never = entity;
+      return exhaustive;
+    }
+  }
 }
 
 /**
@@ -89,7 +104,7 @@ export function resolveView({
  * do with which kind of entity is on screen.
  */
 export function isEntityView(view: ViewState): boolean {
-  return view === 'session' || view === 'agent';
+  return view === 'session' || view === 'agent' || view === 'terminal';
 }
 
 /**
@@ -106,7 +121,11 @@ export function isEntityView(view: ViewState): boolean {
  * Widening this one again would put two places to type on one stage — the bug
  * the message row was removed from live sessions to avoid. Widening the other
  * is harmless; they are separate on purpose.
+ *
+ * A terminal is a terminal view: it shows the terminal region and, having no
+ * session behind it, no meta bar — the bar's own `isSession` gate keeps it
+ * off.
  */
 export function isTerminalView(view: ViewState): boolean {
-  return view === 'session';
+  return view === 'session' || view === 'terminal';
 }

@@ -1,11 +1,13 @@
 import { ArrowLeft, FolderOpen } from '@phosphor-icons/react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { TerminalSurface } from '@/components/terminal/terminal-surface';
 import { cancelClone, onCloneDone, startClone } from '@/lib/clone-repo';
-import { chooseProjectDirectory } from '@/lib/project-config';
 
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
+import { DirectoryPicker } from '@features/shared/components/directory-picker';
+import { useChooseDirectory } from '@hooks/use-choose-directory';
+import { useAttachedServer } from '@hooks/use-project-config';
 import {
   createCloneTransport,
   resetCloneChannel,
@@ -63,13 +65,13 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
    * handed a palette, never the name of a mode.
    */
   const { palette } = useTerminalAppearance();
+  const attachedServer = useAttachedServer();
 
   const [url, setUrl] = useState('');
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [phase, setPhase] = useState<Phase>('compose');
   const [error, setError] = useState<string | null>(null);
   const [targetPath, setTargetPath] = useState<string | null>(null);
-  const [choosing, setChoosing] = useState(false);
 
   /**
    * Built once. A transport rebuilt on re-render would drop the surface's
@@ -95,18 +97,23 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
   const preview = previewName(url);
   const ready = preview !== null && parentPath !== null;
 
-  const onChoose = async () => {
-    if (choosing) return;
-    setChoosing(true);
-    try {
-      const chosen = await chooseProjectDirectory();
-      // Cancelled, or no bridge to ask. The user closed a dialog they opened.
-      if (chosen === null) return;
-      setParentPath(chosen);
-    } finally {
-      setChoosing(false);
-    }
-  };
+  /**
+   * Where the clone lands, chosen from whichever machine will run it.
+   *
+   * The clone happens wherever the sessions do, so while attached the
+   * destination is a folder on the *server* — which is exactly what the picker
+   * offers and what the native dialog could never have reached (HIVE-146).
+   */
+  const {
+    choose,
+    choosing,
+    picking,
+    cancelPicking,
+    onPicked,
+  } = useChooseDirectory(useCallback((path: string) => setParentPath(path), []));
+
+  // No context to carry: there is one destination being chosen.
+  const onChoose = useCallback(() => choose(), [choose]);
 
   const onClone = async () => {
     if (!ready || parentPath === null) return;
@@ -186,7 +193,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
               </span>
               <button
                 type="button"
-                onClick={() => void onChoose()}
+                onClick={onChoose}
                 disabled={choosing}
                 className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:opacity-60"
               >
@@ -269,6 +276,17 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
           </button>
         </div>
       ) : null}
+
+      <DirectoryPicker
+        open={picking}
+        onOpenChange={(next) => {
+          if (!next) cancelPicking();
+        }}
+        onChoose={onPicked}
+        serverName={attachedServer ?? 'the server'}
+        title="Choose where the clone lands"
+        confirmLabel="Clone into this folder"
+      />
     </div>
   );
 }

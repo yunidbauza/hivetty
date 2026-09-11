@@ -167,3 +167,36 @@ describe('ProjectRowMenu · Change key…', () => {
     await waitFor(() => expect(trigger).not.toHaveFocus());
   });
 });
+
+/**
+ * *Change folder…* has no attached state left (HIVE-144, undone by HIVE-146).
+ *
+ * It used to take `canRepoint` and `repointDisabledReason`, computed by
+ * `projects-list.tsx` from `can.chooseDirectory()`, because
+ * `config:choose-directory` opens a dialog on the server and a server has no
+ * window. Repointing now opens the server-side picker instead, and a folder on
+ * the server is the *right* answer for a project that lives there — so the two
+ * props are gone and the item is unconditional.
+ *
+ * Kept as a test rather than deleted: an unconditional menu item is a claim
+ * worth holding, and this is what fails if a capability gate is reintroduced.
+ */
+describe('Change folder…', () => {
+  it('is always enabled, with no refusal to carry', async () => {
+    setup();
+    await open();
+
+    const item = screen.getByRole('menuitem', { name: /change folder/i });
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+    expect(item).not.toHaveAttribute('title');
+  });
+
+  it('fires its handler', async () => {
+    const props = setup();
+    await open();
+
+    await userEvent.click(screen.getByRole('menuitem', { name: /change folder/i }));
+
+    expect(props.onRepoint).toHaveBeenCalled();
+  });
+});

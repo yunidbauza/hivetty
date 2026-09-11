@@ -1,10 +1,15 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProjectConfig } from '@shared/config-contract';
+import { emptySnapshot, type ProjectConfig } from '@shared/config-contract';
 
 import { ProjectsList } from '@features/settings/components/projects-list';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 import { useHiveStore } from '@stores/hive-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
 
@@ -277,6 +282,63 @@ describe('ProjectsList', () => {
       await choose(/change folder/i);
 
       expect(repointProjectInConfig).not.toHaveBeenCalled();
+    });
+
+    /**
+     * While attached to someone else's Hive (HIVE-144): `config:choose-directory`
+     * opens on the server, which has no window — see `WINDOW_BOUND`
+     * (`electron/shared/remote-contract.ts`). Disabled with that table's own
+     * reason, and the click never reaches the bridge.
+     */
+    describe('attached to a remote server', () => {
+      afterEach(() => {
+        resetProjectConfig();
+      });
+
+      /**
+       * A project mapped on the server lives on the server, so the folder it
+       * gets repointed at is a folder there. HIVE-144 disabled this because
+       * only a native dialog could answer it; HIVE-146 gave it the picker,
+       * which asks the machine that actually holds the files.
+       */
+      it('opens the picker rather than disabling Change folder…', async () => {
+        setProjectConfigForTest({
+          ...emptySnapshot('/tmp/hive/config.json'),
+        });
+        // Attached is a runtime fact, never a config one: while attached
+        // `config:get` is answered by the server, whose own `remote.mode`
+        // reads 'local' (HIVE-144 review, C1).
+        setAttachedServerForTest('mini.tail1234.ts.net');
+
+        render(<ProjectsList entries={[entry({ id: 'a' })]} />);
+        await openMenu('a');
+
+        const item = screen.getByRole('menuitem', { name: /change folder/i });
+        expect(item).not.toHaveAttribute('aria-disabled', 'true');
+
+        await userEvent.click(item);
+
+        expect(
+          await screen.findByRole("dialog", { name: /Choose the project.s new folder/i }),
+        ).toBeInTheDocument();
+      });
+
+      it('never opens the dialog', async () => {
+        setProjectConfigForTest({
+          ...emptySnapshot('/tmp/hive/config.json'),
+        });
+        // Attached is a runtime fact, never a config one: while attached
+        // `config:get` is answered by the server, whose own `remote.mode`
+        // reads 'local' (HIVE-144 review, C1).
+        setAttachedServerForTest('mini.tail1234.ts.net');
+
+        render(<ProjectsList entries={[entry({ id: 'a' })]} />);
+        await openMenu('a');
+        await choose(/change folder/i);
+
+        expect(chooseProjectDirectory).not.toHaveBeenCalled();
+        expect(repointProjectInConfig).not.toHaveBeenCalled();
+      });
     });
   });
 

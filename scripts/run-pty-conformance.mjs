@@ -31,6 +31,7 @@ const MODULES = [
   'lifecycle',
   'descendants',
   'bootstrap',
+  'foreground',
 ];
 
 const BUILT = join(import.meta.dirname, '../out/main/session-manager.js');

@@ -50,8 +50,14 @@ test('the tree starts a session, and the link stays below the last one', async (
     const link = page.getByRole('button', { name: 'New session in nova-web' });
 
     // Nothing is running, so the link sits directly under the folder row.
+    //
+    // The last row is the *split* row now (terminals) — a session link, a
+    // rule, and a terminal link — so the claim is that the session link is
+    // inside it rather than that it is the row.
     await expect(rows).toHaveCount(2);
-    await expect(rows.last()).toHaveAccessibleName('New session in nova-web');
+    await expect(
+      rows.last().getByRole('button', { name: 'New session in nova-web' }),
+    ).toBeVisible();
 
     /**
      * The regression this whole arrangement is guarding.
@@ -87,9 +93,11 @@ test('the tree starts a session, and the link stays below the last one', async (
     const terminal = page.locator('[data-terminal-id^="sess-"]').last();
     await expect(terminal).toBeVisible();
 
-    // And the tree grew a session row *above* the link, which stays last.
+    // And the tree grew a session row *above* the split row, which stays last.
     await expect(rows).toHaveCount(3);
-    await expect(rows.last()).toHaveAccessibleName('New session in nova-web');
+    await expect(
+      rows.last().getByRole('button', { name: 'New session in nova-web' }),
+    ).toBeVisible();
 
     await rail.screenshot({
       path: 'test-results/evidence/projects-new-session-running.png',

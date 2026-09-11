@@ -79,4 +79,28 @@ describe('ThemeCard', () => {
     await userEvent.click(screen.getByRole('button', { name: /actions$/ }));
     expect(onActivate).not.toHaveBeenCalled();
   });
+
+  /**
+   * The inverse of a test HIVE-144 added and HIVE-146 deleted.
+   *
+   * Export used to be disabled whenever this window was attached, because
+   * `theme:save` opened a dialog on the server. That channel is gone: the
+   * renderer writes the file itself, on the machine the user is sitting at, in
+   * both modes. So there is no attached state in which Export should refuse,
+   * and this asserts the item is always live — which is what would break if
+   * someone reintroduced a capability gate here.
+   */
+  it('leaves Export… enabled and calls onExport', async () => {
+    const onExport = vi.fn();
+    render(
+      <ThemeCard {...base} id="hive" isActive isBuiltIn onExport={onExport} />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /actions$/ }));
+
+    const item = screen.getByRole('menuitem', { name: 'Export…' });
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+
+    await userEvent.click(item);
+    expect(onExport).toHaveBeenCalledWith('hive');
+  });
 });

@@ -6,12 +6,15 @@ import { READY_SETTLE_MS } from '@features/sessions/hooks/use-session-boot';
 import {
   useClearSession,
   useFinishSession,
-  useRenameSession,
   useMarkSessionReady,
+  useMarkTerminalLost,
+  useRemoveTerminal,
+  useRenameSession,
   useSetSessionBranch,
   useSetSessionMetrics,
   useSetSessionStatus,
   useSetSessionTicket,
+  useSetTerminalForeground,
 } from '@stores/hive-store';
 
 /**
@@ -66,6 +69,9 @@ export function useSessionStatus(): void {
   const markSessionReady = useMarkSessionReady();
   const setSessionTicket = useSetSessionTicket();
   const setSessionMetrics = useSetSessionMetrics();
+  const setTerminalForeground = useSetTerminalForeground();
+  const markTerminalLost = useMarkTerminalLost();
+  const removeTerminal = useRemoveTerminal();
 
   useEffect(() => {
     // No bridge is the browser demo, where every transcript is a recording and
@@ -166,6 +172,22 @@ export function useSessionStatus(): void {
     });
 
     /**
+     * Terminals. The foreground report is a fact about the tty, not a status
+     * — the store derives `prompt` versus `running` from it. An ending is one
+     * of two: a shell that left on its own is removed with nothing kept, and
+     * one that died unasked stays on screen with the reason.
+     */
+    const disposeForeground = bridge.session.onForeground(({ entityId, name }) => {
+      setTerminalForeground(entityId, name);
+    });
+    const disposeTerminalEnded = bridge.session.onTerminalEnded(
+      ({ entityId, ending }) => {
+        if (ending.kind === 'finished') removeTerminal(entityId);
+        else markTerminalLost(entityId, ending.reason);
+      },
+    );
+
+    /**
      * Cancelled on unmount, so a late Jira answer cannot write to a store the
      * app has finished with — and, more usefully, cannot rename a session in a
      * test that has already torn down.
@@ -239,6 +261,8 @@ export function useSessionStatus(): void {
       disposeBranch();
       disposeTicketIntent();
       disposeMetrics();
+      disposeForeground();
+      disposeTerminalEnded();
     };
   }, [
     setSessionStatus,
@@ -249,5 +273,8 @@ export function useSessionStatus(): void {
     markSessionReady,
     setSessionTicket,
     setSessionMetrics,
+    setTerminalForeground,
+    markTerminalLost,
+    removeTerminal,
   ]);
 }

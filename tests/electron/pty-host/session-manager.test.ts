@@ -920,3 +920,104 @@ describe('exit', () => {
     expect(kinds.indexOf('data')).toBeLessThan(kinds.lastIndexOf('exit'));
   });
 });
+
+describe('foreground (terminals)', () => {
+  const TERMINAL: SpawnCommand = { ...SPAWN, sessionId: 'term-01', foreground: true };
+
+  const foregroundNames = (): (string | null)[] =>
+    sent.filter((m) => m.type === 'foreground').map((m) => m.name);
+
+  it('polls nothing for a spawn that did not ask', () => {
+    vi.useFakeTimers();
+    manager.spawn(SPAWN, emit);
+
+    pty().process = 'vim';
+    vi.advanceTimersByTime(5_000);
+
+    expect(foregroundNames()).toEqual([]);
+  });
+
+  it('reports null while the shell itself holds the tty', () => {
+    vi.useFakeTimers();
+    manager.spawn(TERMINAL, emit);
+
+    // The mock's `process` is the spawned file, `/bin/zsh`; the real getter
+    // returns the comm name `zsh`. Both must read as the prompt.
+    vi.advanceTimersByTime(1_000);
+
+    expect(foregroundNames()).toEqual([null]);
+  });
+
+  it('reports a name when something else takes the tty, and only on change', () => {
+    vi.useFakeTimers();
+    manager.spawn(TERMINAL, emit);
+    vi.advanceTimersByTime(1_000);
+
+    pty().process = 'vitest';
+    vi.advanceTimersByTime(3_000);
+    pty().process = 'zsh';
+    vi.advanceTimersByTime(1_000);
+
+    expect(foregroundNames()).toEqual([null, 'vitest', null]);
+  });
+
+  /**
+   * The defect a real pty found, and the reason the comparison is a *set*.
+   *
+   * The comm name is the executable's, and `/bin/sh` is almost never an
+   * executable called `sh`: on macOS it is a bash build, on Debian dash, on
+   * Alpine ash. Matching the configured path's basename alone made a terminal
+   * configured with `shell: /bin/sh` report its own idle prompt as a running
+   * program called `bash`, once a second, for as long as it lived.
+   */
+  it('reads a sh that calls itself bash as the prompt', () => {
+    vi.useFakeTimers();
+    manager.spawn({ ...TERMINAL, shell: '/bin/sh' }, emit);
+
+    pty().process = 'bash';
+    vi.advanceTimersByTime(1_000);
+    expect(foregroundNames()).toEqual([null]);
+
+    pty().process = 'vitest';
+    vi.advanceTimersByTime(1_000);
+    expect(foregroundNames()).toEqual([null, 'vitest']);
+  });
+
+  /**
+   * The other half, which is what stops the fix from being a blanket amnesty:
+   * the widening applies to a shell configured as `sh` and to nothing else. A
+   * `bash` started inside a zsh terminal is a program the user ran, and the row
+   * should name it.
+   */
+  it('names a nested shell in a terminal that is not a sh', () => {
+    vi.useFakeTimers();
+    manager.spawn(TERMINAL, emit);
+    vi.advanceTimersByTime(1_000);
+
+    pty().process = 'bash';
+    vi.advanceTimersByTime(1_000);
+
+    expect(foregroundNames()).toEqual([null, 'bash']);
+  });
+
+  it('stops polling on exit and never emits after the exit message', () => {
+    vi.useFakeTimers();
+    manager.spawn(TERMINAL, emit);
+    vi.advanceTimersByTime(1_000);
+
+    pty().emitExit(0);
+    pty().process = 'vim';
+    vi.advanceTimersByTime(5_000);
+
+    expect(sent.at(-1)?.type).toBe('exit');
+  });
+
+  it('reads at the configured cadence', () => {
+    vi.useFakeTimers();
+    manager = build({ foregroundPollMs: 250 });
+    manager.spawn(TERMINAL, emit);
+
+    vi.advanceTimersByTime(250);
+    expect(foregroundNames()).toEqual([null]);
+  });
+});

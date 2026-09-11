@@ -1,8 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ContainerAliasGroup } from '@features/settings/components/container-alias-group';
 import { setReceiverConfig } from '@lib/project-config';
+import type { ReceiverBindConfig } from '@shared/config-contract';
 
 vi.mock('@lib/project-config', () => ({
   setReceiverConfig: vi.fn(() => Promise.resolve()),
@@ -16,13 +18,22 @@ vi.mock('@lib/project-config', () => ({
  * write per character (`text-field.tsx:24`).
  */
 
+/**
+ * `bind` is required on `ContainerAliasGroup` (HIVE-134): it renders a
+ * security-relevant switch, and a caller that forgot to pass it must fail to
+ * compile rather than silently render "not exposed" over a config that may
+ * say otherwise. The alias-only tests below predate the off-loopback bind
+ * and are not testing it, so they all pass this shared shipped-default value.
+ */
+const LOOPBACK: ReceiverBindConfig = { host: '127.0.0.1', port: 0, allowedOrigins: [] };
+
 describe('ContainerAliasGroup', () => {
   beforeEach(() => {
     vi.mocked(setReceiverConfig).mockClear();
   });
 
   it('renders the resolved alias', () => {
-    render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
 
     expect(screen.getByLabelText('Host alias')).toHaveValue(
       'host.docker.internal',
@@ -30,7 +41,7 @@ describe('ContainerAliasGroup', () => {
   });
 
   it('does not write on every keystroke', () => {
-    render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
 
     fireEvent.change(screen.getByLabelText('Host alias'), {
       target: { value: 'host.containers.internal' },
@@ -40,7 +51,7 @@ describe('ContainerAliasGroup', () => {
   });
 
   it('commits on blur', () => {
-    render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
     const field = screen.getByLabelText('Host alias');
 
     fireEvent.change(field, { target: { value: 'host.containers.internal' } });
@@ -52,7 +63,7 @@ describe('ContainerAliasGroup', () => {
   });
 
   it('commits on Enter', () => {
-    render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
     const field = screen.getByLabelText('Host alias');
 
     fireEvent.change(field, { target: { value: 'gateway' } });
@@ -62,7 +73,7 @@ describe('ContainerAliasGroup', () => {
   });
 
   it('does not write when the value did not change', () => {
-    render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
 
     fireEvent.blur(screen.getByLabelText('Host alias'));
 
@@ -70,7 +81,7 @@ describe('ContainerAliasGroup', () => {
   });
 
   it('trims before comparing, so re-committing padding writes nothing', () => {
-    render(<ContainerAliasGroup hostAlias="gateway" />);
+    render(<ContainerAliasGroup hostAlias="gateway" bind={LOOPBACK} />);
     const field = screen.getByLabelText('Host alias');
 
     fireEvent.change(field, { target: { value: '  gateway  ' } });
@@ -86,7 +97,7 @@ describe('ContainerAliasGroup', () => {
    * default rather than clearing the key.
    */
   it('restores the default when the field is emptied', () => {
-    render(<ContainerAliasGroup hostAlias="gateway" />);
+    render(<ContainerAliasGroup hostAlias="gateway" bind={LOOPBACK} />);
     const field = screen.getByLabelText('Host alias');
 
     fireEvent.change(field, { target: { value: '   ' } });
@@ -114,7 +125,7 @@ describe('ContainerAliasGroup', () => {
       ['credentials', 'user@evil.com'],
       ['a backslash', 'evil.com\\x'],
     ])('is not sent — %s', (_label, value) => {
-      render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
       const field = screen.getByLabelText('Host alias');
 
       fireEvent.change(field, { target: { value } });
@@ -124,7 +135,7 @@ describe('ContainerAliasGroup', () => {
     });
 
     it('says so, and keeps what was typed so it can be corrected', () => {
-      render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
       const field = screen.getByLabelText('Host alias');
 
       fireEvent.change(field, { target: { value: '10.0.0.5?' } });
@@ -135,7 +146,7 @@ describe('ContainerAliasGroup', () => {
     });
 
     it('clears the complaint as soon as the value is edited again', () => {
-      render(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
       const field = screen.getByLabelText('Host alias');
 
       fireEvent.change(field, { target: { value: 'bad:1234' } });
@@ -159,10 +170,10 @@ describe('ContainerAliasGroup', () => {
    */
   describe('when the snapshot changes underneath it', () => {
     it('follows the new value', () => {
-      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" />);
+      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" bind={LOOPBACK} />);
       expect(screen.getByLabelText('Host alias')).toHaveValue('gateway');
 
-      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
 
       expect(screen.getByLabelText('Host alias')).toHaveValue(
         'host.docker.internal',
@@ -170,26 +181,216 @@ describe('ContainerAliasGroup', () => {
     });
 
     it('does not write a stale draft back after a reset', () => {
-      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" />);
+      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" bind={LOOPBACK} />);
 
       // The reset lands while the field still shows the old value.
-      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
       fireEvent.blur(screen.getByLabelText('Host alias'));
 
       expect(setReceiverConfig).not.toHaveBeenCalled();
     });
 
     it('drops a pending edit rather than resurrecting it', () => {
-      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" />);
+      const { rerender } = render(<ContainerAliasGroup hostAlias="gateway" bind={LOOPBACK} />);
       fireEvent.change(screen.getByLabelText('Host alias'), {
         target: { value: 'half-typed' },
       });
 
-      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" />);
+      rerender(<ContainerAliasGroup hostAlias="host.docker.internal" bind={LOOPBACK} />);
 
       expect(screen.getByLabelText('Host alias')).toHaveValue(
         'host.docker.internal',
       );
     });
+  });
+});
+
+describe('the off-loopback bind', () => {
+  beforeEach(() => {
+    vi.mocked(setReceiverConfig).mockClear();
+  });
+
+  const renderGroup = (bind: ReceiverBindConfig = LOOPBACK) =>
+    render(<ContainerAliasGroup hostAlias="host.docker.internal" bind={bind} />);
+
+  it('is off, and hides its fields, on the shipped default', () => {
+    renderGroup();
+
+    expect(screen.getByRole('switch', { name: /off loopback/i })).not.toBeChecked();
+    expect(screen.queryByLabelText(/bind address/i)).not.toBeInTheDocument();
+  });
+
+  it('is on, and shows the address, when the bind is widened', () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    expect(screen.getByRole('switch', { name: /off loopback/i })).toBeChecked();
+    expect(screen.getByLabelText(/bind address/i)).toHaveValue('172.17.0.1');
+  });
+
+  /*
+    Turning it on reveals the fields and writes NOTHING. Committing an address
+    the user has not chosen is the one mistake this control must not make — a
+    switch that exposed the socket the instant it was flipped would be a
+    one-click mistake with no undo before the next launch.
+  */
+  it('writes nothing when switched on', async () => {
+    renderGroup();
+
+    await userEvent.click(screen.getByRole('switch', { name: /off loopback/i }));
+
+    expect(screen.getByLabelText(/bind address/i)).toBeInTheDocument();
+    expect(setReceiverConfig).not.toHaveBeenCalled();
+  });
+
+  it('writes loopback back when switched off', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    await userEvent.click(screen.getByRole('switch', { name: /off loopback/i }));
+
+    expect(setReceiverConfig).toHaveBeenCalledWith({ bind: { host: '127.0.0.1' } });
+  });
+
+  /**
+   * The bug this guards against (HIVE-134 review, finding 2): the switch used
+   * to reopen itself on the very render right after the user turned it off,
+   * because that render still saw the *old*, widened `bind` prop — the write
+   * `onCheckedChange` triggers is async and has not round-tripped back
+   * through the snapshot yet. A bare `if (exposed && !open) setOpen(true)`,
+   * recomputed fresh every render from `bind.host` alone, could not tell "the
+   * prop genuinely changed" apart from "the prop hasn't changed yet", so it
+   * flipped the switch straight back on a moment after the click closed it —
+   * and on a write that never lands at all (a read-only config file, EPERM),
+   * it stayed stuck on forever, since nothing ever changes `bind` to make the
+   * check pass a second time in the other direction.
+   *
+   * No `rerender` here, deliberately: this is the render immediately after
+   * the click, with `bind` still exactly what it was passed in as — the
+   * window the bug lived in. `writes loopback back when switched off` above
+   * covers that the write itself still fires; this covers that the control
+   * does not lie about its own state in the meantime.
+   */
+  it('stays off immediately after the user turns it off, before the snapshot catches up', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    await userEvent.click(screen.getByRole('switch', { name: /off loopback/i }));
+
+    expect(screen.getByRole('switch', { name: /off loopback/i })).not.toBeChecked();
+    expect(setReceiverConfig).toHaveBeenCalledWith({ bind: { host: '127.0.0.1' } });
+  });
+
+  it('commits an address on blur', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/bind address/i);
+    await userEvent.clear(field);
+    await userEvent.type(field, '10.0.0.5');
+    await userEvent.tab();
+
+    expect(setReceiverConfig).toHaveBeenCalledWith({ bind: { host: '10.0.0.5' } });
+  });
+
+  it('refuses to send an address the guard would reject', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/bind address/i);
+    await userEvent.clear(field);
+    await userEvent.type(field, '10.0.0.5?');
+    await userEvent.tab();
+
+    expect(setReceiverConfig).not.toHaveBeenCalled();
+    expect(screen.getByText(/hostname or an IPv4 address/i)).toBeInTheDocument();
+  });
+
+  it('commits an empty port as any free port', async () => {
+    renderGroup({ host: '172.17.0.1', port: 63999, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/^port$/i);
+    await userEvent.clear(field);
+    await userEvent.tab();
+
+    expect(setReceiverConfig).toHaveBeenCalledWith({ bind: { port: 0 } });
+  });
+
+  /*
+    The IPC boundary already refuses a bad port (`parseSetReceiverRequest`
+    calls `assertPort`, `guards.ts:1292`, before `setReceiver` ever sees the
+    payload), so this client-side guard is not the only thing standing
+    between a bad value and the file. It exists for UX: without it, a bad
+    port would be sent, refused at the bridge, and swallowed by `mutate`
+    into `console.error` (`project-config.ts:117-119`) — leaving the field
+    showing a value that was never actually saved, with no on-screen sign
+    anything went wrong.
+  */
+  it.each([
+    ['out of range', '99999'],
+    ['not an integer', '12.5'],
+    /*
+      `Number('0x1f')` is 31 and `Number('1e3')` is 1000 — both pass
+      `Number.isInteger` and the 0..65535 range check, so a bare `Number(raw)`
+      let hex and exponent notation slip through a field labelled "Port"
+      untouched (not a security issue, since the result is still a valid
+      port, but a text field for decimal digits should mean decimal digits).
+    */
+    ['hex notation', '0x1f'],
+    ['exponent notation', '1e3'],
+  ])('refuses to send a port that is %s', async (_label, value) => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/^port$/i);
+    await userEvent.clear(field);
+    await userEvent.type(field, value);
+    await userEvent.tab();
+
+    expect(setReceiverConfig).not.toHaveBeenCalled();
+    expect(screen.getByText(/port from 0 to 65535/i)).toBeInTheDocument();
+  });
+
+  it('splits allowed origins on commas and drops the blanks', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/allowed origins/i);
+    await userEvent.type(field, 'http://localhost:5173, , https://a.test');
+    await userEvent.tab();
+
+    expect(setReceiverConfig).toHaveBeenCalledWith({
+      bind: { allowedOrigins: ['http://localhost:5173', 'https://a.test'] },
+    });
+  });
+
+  it('refuses to send an origin that is not one', async () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    const field = screen.getByLabelText(/allowed origins/i);
+    await userEvent.type(field, 'http://ok.test, nope');
+    await userEvent.tab();
+
+    expect(setReceiverConfig).not.toHaveBeenCalled();
+    expect(screen.getByText(/scheme and a host/i)).toBeInTheDocument();
+  });
+
+  it('says the change takes effect at next launch', () => {
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+
+    expect(screen.getByText(/next launch/i)).toBeInTheDocument();
+  });
+
+  it('warns only while the bind is actually widened', () => {
+    const { unmount } = renderGroup();
+    expect(screen.queryByText(/may attempt to talk to the receiver/i)).not.toBeInTheDocument();
+    unmount();
+
+    renderGroup({ host: '172.17.0.1', port: 0, allowedOrigins: [] });
+    expect(screen.getByText(/may attempt to talk to the receiver/i)).toBeInTheDocument();
+  });
+
+  it('still commits the host alias, unchanged by any of this', async () => {
+    renderGroup();
+
+    const field = screen.getByLabelText(/host alias/i);
+    await userEvent.clear(field);
+    await userEvent.type(field, 'host.containers.internal');
+    await userEvent.tab();
+
+    expect(setReceiverConfig).toHaveBeenCalledWith({ hostAlias: 'host.containers.internal' });
   });
 });

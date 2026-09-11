@@ -69,6 +69,7 @@ vi.mock('electron', () => ({
       onHandlers.set(channel, fn);
     },
     removeHandler: vi.fn(),
+    removeAllListeners: vi.fn(),
   },
   session: { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } },
 }));
@@ -86,6 +87,7 @@ vi.mock('../../../../electron/main/pty-host', () => ({
     onSpawned: () => () => {},
     onError: () => () => {},
     onSessionLost: () => () => {},
+    onForeground: () => () => {},
     shutdown: async () => {},
     isRunning: () => true,
     isBlocked: () => false,
@@ -98,16 +100,17 @@ vi.mock('../../../../electron/main/shutdown', () => ({
 }));
 
 /**
- * The real `isForeground` composition (HIVE-81) — `action.type === 'session'
- * && isForeground(action.entityId)` in `ipc/index.ts` — is the one line that
- * makes "non-session kinds are never gated" true in the shipped app. Asserting
- * it by inspection is not enough, so this mocks the hub *factory* rather than
- * the hub itself: `registerIpcHandlers` still runs for real, still resolves
- * the real `isForeground` from module scope, still composes the real
- * predicate — this only intercepts the options object handed to
+ * The real `isForegroundEverywhere` composition (HIVE-81, widened to the fleet
+ * in HIVE-154) — `action.type === 'session' &&
+ * isForegroundEverywhere(action.entityId)` in `ipc/index.ts` — is the one line
+ * that makes "non-session kinds are never gated" true in the shipped app.
+ * Asserting it by inspection is not enough, so this mocks the hub *factory*
+ * rather than the hub itself: `registerIpcHandlers` still runs for real, still
+ * resolves the real `isForegroundEverywhere` from module scope, still composes
+ * the real predicate — this only intercepts the options object handed to
  * `createNotificationHub` so the predicate can be called directly.
  */
-let capturedIsForeground:
+let capturedIsForegroundEverywhere:
   | ((action: import('../../../../electron/shared/notification-contract').NotificationAction) => boolean)
   | undefined;
 
@@ -136,17 +139,22 @@ vi.mock('../../../../electron/main/notifications', async () => {
 
   return {
     createNotificationHub: (options: {
-      isForeground?: (
+      isForegroundEverywhere?: (
         action: import('../../../../electron/shared/notification-contract').NotificationAction,
       ) => boolean;
       subjectName?: (terminalId: string) => string;
     }) => {
-      capturedIsForeground = options.isForeground;
+      capturedIsForegroundEverywhere = options.isForegroundEverywhere;
       capturedSubjectName = options.subjectName;
       return fakeHub;
     },
     createNotifier: () => ({ observe: vi.fn(), reevaluateForeground: vi.fn() }),
     createSessionNames: actual.createSessionNames,
+    // Real (HIVE-145): this suite fakes the hub to capture the predicate it is
+    // handed, and the router is a consumer of that predicate rather than
+    // something standing between this test and it.
+    createToastRoute: actual.createToastRoute,
+    createToastQueue: actual.createToastQueue,
   };
 });
 
@@ -167,16 +175,38 @@ vi.mock('../../../../electron/main/config/index', () => ({
 }));
 
 const { CH } = await import('../../../../electron/shared/ipc-contract');
-const { registerIpcHandlers, resetIpcHandlers, isForeground } = await import(
-  '../../../../electron/main/ipc'
-);
+const {
+  registerIpcHandlers,
+  resetIpcHandlers,
+  isForeground,
+  isForegroundEverywhere,
+} = await import('../../../../electron/main/ipc');
 
 /**
  * `assertSender` compares `senderFrame` to `sender.mainFrame` by **identity**,
  * so a trusted event has to share one object rather than two equal literals.
  */
 const mainFrame = { url: 'file:///out/renderer/index.html' };
-const trustedEvent = { senderFrame: mainFrame, sender: { mainFrame } } as never;
+
+/**
+ * A trusted event from one surface.
+ *
+ * `sender` carries an `on` because a real `WebContents` does, and since
+ * HIVE-145 that is what the surface registry keys by: a sender with no
+ * lifetime to watch is not tracked as a surface at all, exactly as
+ * `watchReporter` refused to watch one before it.
+ */
+const senderWith = (frame: { url: string }): never =>
+  ({
+    senderFrame: frame,
+    sender: { mainFrame: frame, on: () => undefined },
+  }) as never;
+
+const trustedEvent = senderWith(mainFrame);
+
+/** A second surface — another window, or a device attached over a socket. */
+const secondFrame = { url: 'file:///out/renderer/index.html' };
+const secondEvent = senderWith(secondFrame);
 
 /** A window that has, or has not, OS focus right now. */
 const fakeWindow = (focused: boolean) => ({
@@ -186,6 +216,11 @@ const fakeWindow = (focused: boolean) => ({
 
 const report = (payload: unknown) => {
   onHandlers.get(CH.uiForeground)!(trustedEvent, payload);
+};
+
+/** The same report, from the other surface. */
+const reportFromSecond = (payload: unknown) => {
+  onHandlers.get(CH.uiForeground)!(secondEvent, payload);
 };
 
 const reportName = (payload: unknown) => {
@@ -226,6 +261,115 @@ describe('ui:foreground', () => {
     report({ terminalId: 'term-1' });
 
     expect(isForeground('term-1')).toBe(true);
+  });
+
+  it('accepts a payload that also reports its own focus', () => {
+    report({ terminalId: 'term-1', focused: true });
+
+    expect(isForeground('term-1')).toBe(true);
+  });
+
+  it('rejects a non-boolean focused', () => {
+    report({ terminalId: 'term-1', focused: 'yes' });
+
+    expect(isForeground('term-1')).toBe(false);
+  });
+
+  /**
+   * One value, many surfaces — the hazard this story closes (HIVE-145).
+   *
+   * Every attached socket sends `ui:foreground` down the same notify channel a
+   * renderer does. Held as a single value, it said whatever the last surface to
+   * change stage said: one device switching tabs rewrote the other's answer, so
+   * a notification for the session device A is watching was suppressed because
+   * device B happened to be on it — or raised while A was watching it, because
+   * B moved on.
+   */
+  describe('two surfaces', () => {
+    it('does not let one surface clobber the other', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-2' });
+
+      /*
+        Both true at once, which a single value could never express: under the
+        old `foregroundTerminalId` the second report overwrote the first and
+        `term-1` went false the moment the other device changed tabs.
+
+        "Any surface" is the re-arm's reading of it — somebody still watching
+        is reason enough not to nag. The row's own questions — arriving
+        already-read, being swept — moved to `isForegroundEverywhere`
+        (HIVE-154, one describe down), and the per-surface reading belongs to
+        toast suppression, which is `isForegroundFor`'s job (see the toast
+        router).
+      */
+      expect(isForeground('term-1')).toBe(true);
+      expect(isForeground('term-2')).toBe(true);
+    });
+
+    it('keeps the survivor\'s stage when the other surface reports away', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-2' });
+
+      reportFromSecond({ terminalId: null });
+
+      expect(isForeground('term-1')).toBe(true);
+      expect(isForeground('term-2')).toBe(false);
+    });
+
+    it('forgets a surface\'s stage when that surface goes away', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-2' });
+
+      resetIpcHandlers();
+      registerIpcHandlers();
+
+      expect(isForeground('term-1')).toBe(false);
+      expect(isForeground('term-2')).toBe(false);
+    });
+  });
+
+  /**
+   * The fleet question (HIVE-154). `isForeground` asks whether *anybody* is
+   * looking — the re-arm's question. This one asks whether *everybody* is —
+   * the row's question: may a notification be written already-read, and may
+   * an arrival row be swept, on the strength of the fleet's attention.
+   */
+  describe('isForegroundEverywhere', () => {
+    it('answers false with no surfaces at all', () => {
+      // `[].every(...)` is vacuously true, and here that is a lie: a headless
+      // server with nothing attached would pre-read every row into an empty
+      // room.
+      expect(isForegroundEverywhere('term-1')).toBe(false);
+    });
+
+    it('answers true when the one surface is watching', () => {
+      report({ terminalId: 'term-1' });
+
+      expect(isForegroundEverywhere('term-1')).toBe(true);
+    });
+
+    it('answers false when one of two surfaces is watching something else', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-2' });
+
+      expect(isForegroundEverywhere('term-1')).toBe(false);
+    });
+
+    it('answers true when both surfaces watch the same terminal', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-1' });
+
+      expect(isForegroundEverywhere('term-1')).toBe(true);
+    });
+
+    it('drops to false the moment either surface looks away', () => {
+      report({ terminalId: 'term-1' });
+      reportFromSecond({ terminalId: 'term-1' });
+
+      reportFromSecond({ terminalId: null });
+
+      expect(isForegroundEverywhere('term-1')).toBe(false);
+    });
   });
 
   it('rejects a payload with an extra key', () => {
@@ -441,33 +585,83 @@ describe('window focus drives the re-arm', () => {
   });
 });
 
-describe('the isForeground predicate composed for the notification hub (HIVE-81)', () => {
+/**
+ * A surface leaving is a foreground change even when it never reported one
+ * (HIVE-154 self review).
+ *
+ * Under the any-surface reading, removing a surface that was watching nothing
+ * could never change an answer, so the release only announced a surface that
+ * had held a foreground entry. Under every-surface it can: one silent surface
+ * is enough to hold `isForegroundEverywhere` false for everybody, and its
+ * departure is the moment the fleet becomes all-watching. The sweep must run
+ * then, not at the next tab switch.
+ */
+describe('a surface that never reported leaving', () => {
+  let onForegroundChange: (listener: () => void) => unknown;
+
+  beforeEach(async () => {
+    ({ onForegroundChange } = await import('../../../../electron/main/ipc'));
+  });
+
+  it('announces a foreground change, since it was holding the fleet answer down', () => {
+    /*
+      A renderer that has sent an input-box report but never a foreground:
+      tracked, with a lifetime the registry watches, and no `foreground`
+      entry to delete.
+    */
+    const lifetime = new Map<string, () => void>();
+    const silentFrame = { url: 'file:///out/renderer/index.html' };
+    const silentEvent = {
+      senderFrame: silentFrame,
+      sender: {
+        mainFrame: silentFrame,
+        on: (event: string, listener: () => void) => {
+          lifetime.set(event, listener);
+        },
+      },
+    } as never;
+    onHandlers.get(CH.ptyPrompt)!(silentEvent, { sessionId: 'term-1', input: 'empty' });
+
+    report({ terminalId: 'term-1' });
+    expect(isForegroundEverywhere('term-1')).toBe(false);
+
+    const listener = vi.fn();
+    onForegroundChange(listener);
+
+    lifetime.get('destroyed')!();
+
+    expect(isForegroundEverywhere('term-1')).toBe(true);
+    expect(listener).toHaveBeenCalled();
+  });
+});
+
+describe('the isForegroundEverywhere predicate composed for the notification hub (HIVE-81, HIVE-154)', () => {
   const session = (entityId: string) => ({ type: 'session' as const, entityId });
 
   it('is true for a session action naming the reported terminal while focused', () => {
     report({ terminalId: 'term-1' });
 
-    expect(capturedIsForeground?.(session('term-1'))).toBe(true);
+    expect(capturedIsForegroundEverywhere?.(session('term-1'))).toBe(true);
   });
 
   it('is false while the window is blurred', () => {
     windows = [fakeWindow(false)];
     report({ terminalId: 'term-1' });
 
-    expect(capturedIsForeground?.(session('term-1'))).toBe(false);
+    expect(capturedIsForegroundEverywhere?.(session('term-1'))).toBe(false);
   });
 
   it('is false for a session action naming a different terminal', () => {
     report({ terminalId: 'term-1' });
 
-    expect(capturedIsForeground?.(session('term-2'))).toBe(false);
+    expect(capturedIsForegroundEverywhere?.(session('term-2'))).toBe(false);
   });
 
   it('is false for a non-session action, even while a session is foreground', () => {
     report({ terminalId: 'term-1' });
 
-    expect(capturedIsForeground?.({ type: 'url', url: 'https://example.test' })).toBe(false);
-    expect(capturedIsForeground?.({ type: 'none' })).toBe(false);
+    expect(capturedIsForegroundEverywhere?.({ type: 'url', url: 'https://example.test' })).toBe(false);
+    expect(capturedIsForegroundEverywhere?.({ type: 'none' })).toBe(false);
   });
 });
 

@@ -18,7 +18,7 @@ import { can } from '@config/runtime';
 import { OptionStepper } from '@features/sessions/components/option-stepper';
 import { useProjectAccess, useProjectConfig } from '@hooks/use-project-config';
 import {
-  useProjectSessions,
+  useProjectLiveCount,
   useProjects,
   useSpawnSession,
   useTicket,
@@ -372,7 +372,7 @@ function ProjectRow({
     special, and the workaround goes with the prop list.
   */
   const { id, name, key: projectKey, icon } = project;
-  const sessions = useProjectSessions(id);
+  const live = useProjectLiveCount(id);
   const access = useProjectAccess(id);
 
   return (
@@ -411,7 +411,7 @@ function ProjectRow({
         sessions it is running (story 090).
       */}
       <span className="shrink-0 font-mono text-[11px] text-subtle">
-        {access.spawnable ? `${sessions.length} active` : 'unmapped'}
+        {access.spawnable ? `${live} active` : 'unmapped'}
       </span>
     </button>
   );

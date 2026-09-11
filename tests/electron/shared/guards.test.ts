@@ -6,6 +6,7 @@ import { CLONE_ENTITY_ID } from '../../../electron/shared/config-contract';
 import {
   IpcValidationError,
   parseAddProjectRequest,
+  parseBrowseDirRequest,
   parseCloneRequest,
   parseKillRequest,
   parseLedgerAnswerRequest,
@@ -15,15 +16,21 @@ import {
   parseRemoveProjectRequest,
   parseRenameProjectRequest,
   parseReorderProjectsRequest,
+  parsePairDeviceRequest,
+  parseRemotePairRequest,
   parseRepointProjectRequest,
   parseResizeRequest,
+  parseRevokeDeviceRequest,
   parseSessionPrRequest,
   parseSetProjectKeyRequest,
   parseSetProjectRuntimeRequest,
   parseSetReceiverRequest,
+  parseSetRemoteRequest,
+  parseSetServerRequest,
   parseSetSlackRequest,
   parseSetSlackTokensRequest,
   parseSpawnRequest,
+  parseSpawnTerminalRequest,
   parseWriteRequest,
 } from '../../../electron/shared/guards';
 
@@ -433,6 +440,80 @@ describe('parseKillRequest', () => {
     expect(() => parseKillRequest({ toString: () => 'sess-1' })).toThrow(
       /expected a string/,
     );
+  });
+});
+
+describe('parseBrowseDirRequest', () => {
+  it('accepts an absolute path', () => {
+    expect(parseBrowseDirRequest({ path: '/Users/me/Projects' })).toEqual({
+      path: '/Users/me/Projects',
+    });
+  });
+
+  /**
+   * The one place this guard deliberately differs from
+   * `parseAddProjectRequest`: an empty string is how the picker asks for home
+   * on its first call, where for `addProject` it would mean the caller named
+   * nowhere.
+   */
+  it('accepts an empty path and a bare tilde, both meaning home', () => {
+    expect(parseBrowseDirRequest({ path: '' })).toEqual({ path: '' });
+    expect(parseBrowseDirRequest({ path: '~' })).toEqual({ path: '~' });
+  });
+
+  it('rejects __proto__', () => {
+    expect(() =>
+      parseBrowseDirRequest(JSON.parse('{"path":"/x","__proto__":{}}')),
+    ).toThrow(/forbidden key/);
+  });
+
+  it('rejects a non-object, a missing path, a non-string path and an extra key', () => {
+    expect(() => parseBrowseDirRequest(42)).toThrow(/expected an object/);
+    expect(() => parseBrowseDirRequest(null)).toThrow(/expected an object/);
+    expect(() => parseBrowseDirRequest([])).toThrow(/expected an object/);
+    expect(() => parseBrowseDirRequest({})).toThrow(/missing key "path"/);
+    expect(() => parseBrowseDirRequest({ path: 7 })).toThrow(/expected a string/);
+    expect(() => parseBrowseDirRequest({ path: '/x', depth: 3 })).toThrow(
+      /unexpected key/,
+    );
+  });
+
+  it('rejects a path past the length bound', () => {
+    expect(() => parseBrowseDirRequest({ path: `/${'x'.repeat(4096)}` })).toThrow(
+      /too long/,
+    );
+  });
+
+  /**
+   * Neither is a containment hole — `browseHomeDirectory` refuses both once it
+   * resolves them — but a NUL only reaches the caller as a flattened
+   * `EUNKNOWN`, and a newline reaches the syscall layer intact and forges a
+   * second line in anything that logs the path. Refused before either happens.
+   */
+  it.each([
+    ['a NUL', '/Users/me\u0000/etc'],
+    ['a newline', '/Users/me\nProjects'],
+    ['a carriage return', '/Users/me\rProjects'],
+    ['a DEL', '/Users/me\u007fProjects'],
+  ])('rejects %s in the path', (_label, path) => {
+    expect(() => parseBrowseDirRequest({ path })).toThrow(/control character/);
+  });
+
+  it('allows the characters a real path actually contains', () => {
+    const path = '/Users/me/Projects/my app (2) — copy.d/ünïcode';
+    expect(parseBrowseDirRequest({ path })).toEqual({ path });
+  });
+
+  /**
+   * Traversal is not this guard's job and must not become it. `..` is
+   * syntactically a fine path; what refuses it is `browseHomeDirectory`
+   * resolving and containing the result. Two validators with different ideas
+   * about what a path may contain is how a rule gets quietly relaxed.
+   */
+  it('passes traversal through untouched, for main to resolve and refuse', () => {
+    expect(parseBrowseDirRequest({ path: '/Users/me/../../etc' })).toEqual({
+      path: '/Users/me/../../etc',
+    });
   });
 });
 
@@ -1052,12 +1133,409 @@ describe('parseSetReceiverRequest (HIVE-131)', () => {
     expect(() => parseSetReceiverRequest({ hostAlias: at254 })).toThrow();
   });
 
-  it('rejects an unknown key', () => {
-    expect(() => parseSetReceiverRequest({ bind: {} })).toThrow();
+  /*
+    `bind` is a legal key from HIVE-134 on, so an empty block is not an unknown
+    key any more — it is a value that itself carries nothing, and falls into
+    the same "nothing to change" bucket as an entirely empty payload.
+  */
+  it('treats an empty bind block as nothing to change', () => {
+    expect(() => parseSetReceiverRequest({ bind: {} })).toThrow(/nothing to change/);
   });
 
   it('rejects a request that changes nothing', () => {
     expect(() => parseSetReceiverRequest({})).toThrow(/nothing to change/);
+  });
+});
+
+describe('parseSetReceiverRequest and the bind (HIVE-134)', () => {
+  it('accepts a full bind', () => {
+    expect(
+      parseSetReceiverRequest({
+        bind: { host: '172.17.0.1', port: 63999, allowedOrigins: ['http://localhost:5173'] },
+      }),
+    ).toEqual({
+      bind: { host: '172.17.0.1', port: 63999, allowedOrigins: ['http://localhost:5173'] },
+    });
+  });
+
+  it('accepts one field of it, so Settings can write a field at a time', () => {
+    expect(parseSetReceiverRequest({ bind: { host: '127.0.0.1' } })).toEqual({
+      bind: { host: '127.0.0.1' },
+    });
+  });
+
+  it('still accepts an alias alone, and both together', () => {
+    expect(parseSetReceiverRequest({ hostAlias: 'host.containers.internal' })).toEqual({
+      hostAlias: 'host.containers.internal',
+    });
+    expect(parseSetReceiverRequest({ hostAlias: 'gateway', bind: { port: 0 } })).toEqual({
+      hostAlias: 'gateway',
+      bind: { port: 0 },
+    });
+  });
+
+  /*
+    The authority-terminating delimiters `isHostAlias` was rewritten to refuse.
+    A bind host names a socket rather than a URL authority, but it is validated
+    by the same predicate, so the same set has to bounce here.
+  */
+  it('refuses a bind host that is not a hostname', () => {
+    for (const host of ['10.0.0.5?', 'evil.com/x', '10.0.0.5:80', 'a b', '', '::1']) {
+      expect(() => parseSetReceiverRequest({ bind: { host } })).toThrow(/setReceiver\.bind\.host/);
+    }
+  });
+
+  it('refuses a port that is not one', () => {
+    for (const port of [-1, 70_000, 1.5, '8080', null]) {
+      expect(() => parseSetReceiverRequest({ bind: { port } })).toThrow(/setReceiver\.bind\.port/);
+    }
+  });
+
+  it('refuses an origin that is not one, naming the entry', () => {
+    expect(() =>
+      parseSetReceiverRequest({ bind: { allowedOrigins: ['http://ok.test', 'nope'] } }),
+    ).toThrow(/setReceiver\.bind\.allowedOrigins\[1\]/);
+  });
+
+  it('refuses an allowedOrigins that is not an array', () => {
+    expect(() =>
+      parseSetReceiverRequest({ bind: { allowedOrigins: 'http://ok.test' } }),
+    ).toThrow(/setReceiver\.bind\.allowedOrigins/);
+  });
+
+  /* `assertShape`'s rule: an unlisted key means the two sides disagree. */
+  it('refuses an unexpected key at either level', () => {
+    expect(() => parseSetReceiverRequest({ nope: 1 })).toThrow(/unexpected key/);
+    expect(() => parseSetReceiverRequest({ bind: { enabled: true } })).toThrow(/unexpected key/);
+  });
+
+  it('refuses a forbidden key inside bind', () => {
+    expect(() =>
+      parseSetReceiverRequest(JSON.parse('{"bind":{"__proto__":{"host":"evil"}}}')),
+    ).toThrow(/forbidden key/);
+  });
+
+  it('refuses a bind that is not an object', () => {
+    expect(() => parseSetReceiverRequest({ bind: '172.17.0.1' })).toThrow(/setReceiver\.bind/);
+  });
+});
+
+/**
+ * Server mode: on/off and its bind (HIVE-142).
+ *
+ * Shaped exactly like `parseSetReceiverRequest`'s own two `describe` blocks,
+ * because `parseSetServerRequest` is that guard's sibling field for field —
+ * see its own doc comment for why.
+ */
+describe('parseSetServerRequest (HIVE-142)', () => {
+  it('accepts enabled alone', () => {
+    expect(parseSetServerRequest({ enabled: true })).toEqual({ enabled: true });
+    expect(parseSetServerRequest({ enabled: false })).toEqual({ enabled: false });
+  });
+
+  it('refuses a non-boolean enabled', () => {
+    for (const enabled of ['true', 1, null]) {
+      expect(() => parseSetServerRequest({ enabled })).toThrow(/setServer\.enabled/);
+    }
+  });
+
+  it('accepts a full bind', () => {
+    expect(
+      parseSetServerRequest({
+        bind: { host: '100.64.1.2', port: 7433, allowedOrigins: [] },
+      }),
+    ).toEqual({
+      bind: { host: '100.64.1.2', port: 7433, allowedOrigins: [] },
+    });
+  });
+
+  it('accepts one field of it, so Settings can write a field at a time', () => {
+    expect(parseSetServerRequest({ bind: { host: '100.64.1.2' } })).toEqual({
+      bind: { host: '100.64.1.2' },
+    });
+  });
+
+  it('accepts enabled and bind together', () => {
+    expect(
+      parseSetServerRequest({ enabled: true, bind: { port: 7433 } }),
+    ).toEqual({ enabled: true, bind: { port: 7433 } });
+  });
+
+  /**
+   * The one field `setReceiver`'s bind does not refuse and this one must:
+   * `0.0.0.0` is a legal hostname by `isHostAlias`'s own rule, and
+   * `isServerBindHost` is the predicate that carves it back out — see its
+   * doc comment for why a served machine has nothing to gain from it.
+   */
+  it('refuses the wildcard bind', () => {
+    expect(() => parseSetServerRequest({ bind: { host: '0.0.0.0' } })).toThrow(
+      /setServer\.bind\.host/,
+    );
+  });
+
+  /**
+   * HIVE-142 review, I1: `0`, `00`, `0x0` and `000.000.000.000` are all
+   * legal hostname shapes by `isHostAlias`'s rule, and all four are spellings
+   * of the same wildcard `dns.lookup`/`net.Server.listen` resolve `0.0.0.0`
+   * to — not just the one literal string this guard used to refuse.
+   */
+  it('refuses every numeral spelling of the wildcard bind, not just the literal string', () => {
+    for (const host of ['0', '00', '0x0', '0X0', '000.000.000.000']) {
+      expect(() => parseSetServerRequest({ bind: { host } })).toThrow(
+        /setServer\.bind\.host/,
+      );
+    }
+  });
+
+  it('refuses a bind host that is not a hostname', () => {
+    for (const host of ['10.0.0.5?', 'evil.com/x', '10.0.0.5:80', 'a b', '']) {
+      expect(() => parseSetServerRequest({ bind: { host } })).toThrow(
+        /setServer\.bind\.host/,
+      );
+    }
+  });
+
+  it('refuses a port that is not one', () => {
+    for (const port of [-1, 70_000, 1.5, '8080', null]) {
+      expect(() => parseSetServerRequest({ bind: { port } })).toThrow(
+        /setServer\.bind\.port/,
+      );
+    }
+  });
+
+  /**
+   * The one port `setReceiver`'s bind accepts and this one must not
+   * (HIVE-142 review, I3): `0` asks the OS for any free port, but a client's
+   * config and a LaunchAgent both have to be told `server.bind.port` ahead
+   * of time — neither can be handed a number the kernel only picks at boot.
+   */
+  it('refuses 0, unlike the receiver bind', () => {
+    expect(() => parseSetServerRequest({ bind: { port: 0 } })).toThrow(
+      /setServer\.bind\.port/,
+    );
+  });
+
+  it('refuses an origin that is not one, naming the entry', () => {
+    expect(() =>
+      parseSetServerRequest({ bind: { allowedOrigins: ['http://ok.test', 'nope'] } }),
+    ).toThrow(/setServer\.bind\.allowedOrigins\[1\]/);
+  });
+
+  it('refuses a devices key — replacing the roster is pairDevice/revokeDevice’s job', () => {
+    expect(() => parseSetServerRequest({ devices: [] })).toThrow(/unexpected key/);
+  });
+
+  it('refuses an unexpected key at either level', () => {
+    expect(() => parseSetServerRequest({ nope: 1 })).toThrow(/unexpected key/);
+    expect(() => parseSetServerRequest({ bind: { enabled: true } })).toThrow(
+      /unexpected key/,
+    );
+  });
+
+  it('refuses a forbidden key inside bind', () => {
+    expect(() =>
+      parseSetServerRequest(JSON.parse('{"bind":{"__proto__":{"host":"evil"}}}')),
+    ).toThrow(/forbidden key/);
+  });
+
+  it('treats an empty bind block as nothing to change', () => {
+    expect(() => parseSetServerRequest({ bind: {} })).toThrow(/nothing to change/);
+  });
+
+  it('rejects a request that changes nothing', () => {
+    expect(() => parseSetServerRequest({})).toThrow(/nothing to change/);
+  });
+});
+
+/**
+ * Pairing and revoking a device (HIVE-142).
+ *
+ * A device name is free text, run through the same `assertText` bound every
+ * other pasted string on this bridge takes — not `assertAgentName`'s closed
+ * grammar, because "Yunid's MacBook" is a legitimate name and is not lowercase
+ * letters, digits and dashes.
+ */
+describe('parsePairDeviceRequest and parseRevokeDeviceRequest (HIVE-142)', () => {
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s accepts a free-text name', (_label, parse) => {
+    expect(parse({ name: "Yunid's MacBook" })).toEqual({
+      name: "Yunid's MacBook",
+    });
+  });
+
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s refuses an empty name', (_label, parse) => {
+    expect(() => parse({ name: '' })).toThrow(/must not be empty/);
+  });
+
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s refuses a non-string name', (_label, parse) => {
+    expect(() => parse({ name: 7 })).toThrow();
+  });
+
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s refuses a control character', (_label, parse) => {
+    expect(() => parse({ name: 'ab' })).toThrow(/control characters/);
+  });
+
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s refuses an unexpected key', (_label, parse) => {
+    expect(() => parse({ name: 'a', extra: 1 })).toThrow(/unexpected key/);
+  });
+
+  it.each([
+    ['pair', parsePairDeviceRequest],
+    ['revoke', parseRevokeDeviceRequest],
+  ] as const)('%s refuses a missing name', (_label, parse) => {
+    expect(() => parse({})).toThrow(/missing key/);
+  });
+});
+
+/**
+ * `config:set-remote` (HIVE-144) — `setServer`'s mirror, and Ruling 3's rule
+ * applied to a live payload rather than a hand-edited file: `host` is
+ * checked against `isRemoteTarget` only when *this same request's* `mode`
+ * names `'remote'`.
+ */
+/**
+ * Fix-round 2: this guard validates shape only — `mode` is an enum, `host` is
+ * a string, `port` is in range. The Ruling 3 / `isRemoteTarget` invariant no
+ * longer lives here at all; it moved to `setRemote`
+ * (`electron/main/config/index.ts`), checked once against the merged result,
+ * because a guard that sees one payload can never resolve "effective mode"
+ * from that payload alone — see `parseSetRemoteRequest`'s own doc comment and
+ * `tests/electron/main/config/remote.test.ts`'s sequence-table coverage of
+ * the invariant itself.
+ */
+describe('parseSetRemoteRequest (HIVE-144)', () => {
+  it('accepts mode alone', () => {
+    expect(parseSetRemoteRequest({ mode: 'local' })).toEqual({ mode: 'local' });
+    expect(parseSetRemoteRequest({ mode: 'remote' })).toEqual({ mode: 'remote' });
+  });
+
+  it('refuses a mode that is neither local nor remote', () => {
+    expect(() => parseSetRemoteRequest({ mode: 'both' })).toThrow(/setRemote\.mode/);
+  });
+
+  /**
+   * Ruling 3, the case the ticket calls out by name: every install that has
+   * never attached carries `mode: 'local'` alongside `DEFAULT_REMOTE`'s empty
+   * `host`, and a payload restating that pair is the ordinary state, not a
+   * malformed request.
+   */
+  it('accepts an empty host when mode is local', () => {
+    expect(parseSetRemoteRequest({ mode: 'local', host: '' })).toEqual({
+      mode: 'local',
+      host: '',
+    });
+  });
+
+  /**
+   * The fix-round-1 refusal (host requires mode in the same payload) is gone
+   * as of fix-round 2: it bought nothing once `setRemote` checks the merged
+   * result, and a bare `{ host }` while the config is genuinely local is
+   * Ruling 3's ordinary case. This guard accepts any well-formed string here,
+   * host validity included — `setRemote`'s sequence-table tests are what
+   * prove a bad value can never reach disk paired with `mode: 'remote'`.
+   */
+  it('accepts host without mode — shape only; the invariant is setRemote’s job now', () => {
+    expect(parseSetRemoteRequest({ host: '' })).toEqual({ host: '' });
+    expect(parseSetRemoteRequest({ host: 'evil.example.com' })).toEqual({
+      host: 'evil.example.com',
+    });
+  });
+
+  it('accepts any well-formed host string alongside mode: remote — value validity is setRemote’s job', () => {
+    expect(parseSetRemoteRequest({ mode: 'remote', host: '127.0.0.1' })).toEqual({
+      mode: 'remote',
+      host: '127.0.0.1',
+    });
+    expect(
+      parseSetRemoteRequest({ mode: 'remote', host: 'evil.example.com' }),
+    ).toEqual({ mode: 'remote', host: 'evil.example.com' });
+  });
+
+  it('refuses a non-string host', () => {
+    expect(() => parseSetRemoteRequest({ host: 7 })).toThrow(/setRemote\.host/);
+  });
+
+  it('accepts a port alone', () => {
+    expect(parseSetRemoteRequest({ port: 7433 })).toEqual({ port: 7433 });
+  });
+
+  it('refuses a port out of range', () => {
+    expect(() => parseSetRemoteRequest({ port: 70_000 })).toThrow(/setRemote\.port/);
+  });
+
+  it('does not salvage the good fields when one is bad — the whole request fails', () => {
+    expect(() =>
+      parseSetRemoteRequest({ mode: 'both', host: '127.0.0.1', port: 7433 }),
+    ).toThrow(/setRemote\.mode/);
+  });
+
+  it('refuses a token key — there is no route for a credential on this channel', () => {
+    expect(() => parseSetRemoteRequest({ token: 'secret' })).toThrow(/unexpected key/);
+  });
+
+  it('refuses an unexpected key', () => {
+    expect(() => parseSetRemoteRequest({ nope: 1 })).toThrow(/unexpected key/);
+  });
+
+  it('rejects a request that changes nothing', () => {
+    expect(() => parseSetRemoteRequest({})).toThrow(/nothing to change/);
+  });
+});
+
+/**
+ * `remote:pair` (HIVE-144) — the opposite direction from
+ * `parsePairDeviceRequest`: this one takes the `deviceId`/`token` pair a
+ * `server:pair` mint on some *other* machine handed back, not a free-text
+ * name typed by a person.
+ */
+describe('parseRemotePairRequest (HIVE-144)', () => {
+  it('accepts a well-formed pair', () => {
+    expect(
+      parseRemotePairRequest({ deviceId: 'dev-1', token: 'K7QM-3XTV-9WHZ-2BNP' }),
+    ).toEqual({ deviceId: 'dev-1', token: 'K7QM-3XTV-9WHZ-2BNP' });
+  });
+
+  it('refuses a malformed deviceId', () => {
+    expect(() =>
+      parseRemotePairRequest({ deviceId: '../etc', token: 'tok' }),
+    ).toThrow(/remotePair\.deviceId/);
+  });
+
+  it('refuses an empty token', () => {
+    expect(() => parseRemotePairRequest({ deviceId: 'dev-1', token: '' })).toThrow(
+      /remotePair\.token/,
+    );
+  });
+
+  it('refuses a token with non-printable-ASCII content', () => {
+    expect(() =>
+      parseRemotePairRequest({ deviceId: 'dev-1', token: 'has space' }),
+    ).toThrow(/remotePair\.token/);
+  });
+
+  it('refuses a missing key', () => {
+    expect(() => parseRemotePairRequest({ deviceId: 'dev-1' })).toThrow(/missing key/);
+    expect(() => parseRemotePairRequest({ token: 'tok' })).toThrow(/missing key/);
+  });
+
+  it('refuses an unexpected key', () => {
+    expect(() =>
+      parseRemotePairRequest({ deviceId: 'dev-1', token: 'tok', extra: 1 }),
+    ).toThrow(/unexpected key/);
   });
 });
 
@@ -1300,5 +1778,66 @@ describe('parseSetProjectRuntimeRequest container', () => {
     expect(() =>
       parseSetProjectRuntimeRequest({ id: 'p', container: { ...container, envArg } }),
     ).toThrow(IpcValidationError);
+  });
+});
+
+const validTerminal = { sessionId: 'term-01', projectId: 'proj-1', cols: 80, rows: 24 };
+
+describe('parseSpawnTerminalRequest', () => {
+  describe('cwd (entry points)', () => {
+    it('passes an absolute directory through', () => {
+      expect(
+        parseSpawnTerminalRequest({ ...validTerminal, cwd: '/repos/x/.claude/worktrees/y' }).cwd,
+      ).toBe('/repos/x/.claude/worktrees/y');
+    });
+
+    it('is absent when not sent', () => {
+      expect(parseSpawnTerminalRequest({ ...validTerminal })).not.toHaveProperty('cwd');
+    });
+
+    it('refuses a relative path, an empty one, and control characters', () => {
+      expect(() => parseSpawnTerminalRequest({ ...validTerminal, cwd: 'repos/x' })).toThrow(
+        /spawn-terminal\.cwd/,
+      );
+      expect(() => parseSpawnTerminalRequest({ ...validTerminal, cwd: '' })).toThrow(
+        /spawn-terminal\.cwd/,
+      );
+      expect(() => parseSpawnTerminalRequest({ ...validTerminal, cwd: '/repos/x\n' })).toThrow(
+        /spawn-terminal\.cwd/,
+      );
+    });
+  });
+
+  it('accepts a well-formed request and returns exactly its four fields', () => {
+    expect(parseSpawnTerminalRequest({ ...validTerminal })).toEqual(validTerminal);
+    expect(Object.keys(parseSpawnTerminalRequest({ ...validTerminal })).sort()).toEqual([
+      'cols',
+      'projectId',
+      'rows',
+      'sessionId',
+    ]);
+  });
+
+  it('rejects a missing field', () => {
+    const { rows: _rows, ...missing } = validTerminal;
+    expect(() => parseSpawnTerminalRequest(missing)).toThrow(/missing key "rows"/);
+  });
+
+  it('rejects an extra field — a terminal takes no task, model or effort', () => {
+    expect(() => parseSpawnTerminalRequest({ ...validTerminal, task: 'x' })).toThrow(
+      /unexpected key "task"/,
+    );
+  });
+
+  it('rejects a prototype-polluting key', () => {
+    expect(() =>
+      parseSpawnTerminalRequest(JSON.parse('{"sessionId":"t","projectId":"p","cols":1,"rows":1,"__proto__":{}}')),
+    ).toThrow(IpcValidationError);
+  });
+
+  it('rejects a non-string sessionId', () => {
+    expect(() => parseSpawnTerminalRequest({ ...validTerminal, sessionId: 7 })).toThrow(
+      /spawn-terminal\.sessionId/,
+    );
   });
 });

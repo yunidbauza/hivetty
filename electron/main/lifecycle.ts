@@ -19,6 +19,16 @@ export interface LifecycleDeps {
   createWindow: (options?: { withSplash?: boolean }) => unknown;
   platform?: NodeJS.Platform;
   isDev?: boolean;
+  /**
+   * Server mode boots with no window at all (HIVE-142).
+   *
+   * `index.ts` decides *whether* this run is server mode before either of
+   * these handlers exists, so the mode has to travel in rather than be raced:
+   * without this flag, `whenReady`'s own `createWindow({ withSplash: true })`
+   * below would open the console on every boot regardless of what `index.ts`
+   * branched on, defeating the entire feature.
+   */
+  serverMode?: boolean;
 }
 
 /** Set once `before-quit` fires, so teardown runs exactly once. */
@@ -33,21 +43,52 @@ export function registerLifecycle({
   createWindow,
   platform = process.platform,
   isDev = Boolean(process.env.ELECTRON_RENDERER_URL),
+  serverMode = false,
 }: LifecycleDeps): void {
   const isMac = platform === 'darwin';
 
   /**
-   * Focus the existing window instead of opening a second one.
+   * Whether boot's own window-or-no-window decision (below, in `whenReady`)
+   * has been made yet.
+   *
+   * `activate` is registered here, synchronously, before `whenReady` has
+   * resolved — and Electron's own docs list "launching the application for
+   * the first time" among `activate`'s triggers, so a race is at least
+   * documented as possible even though a manual `--server` launch on this
+   * machine (HIVE-142 review, I1) did not reproduce it: `whenReady` resolved
+   * with no `activate` seen in the following 20+ seconds. Guarding anyway
+   * costs one flag and closes a real hole either way: in ordinary mode, an
+   * `activate` that *did* race ahead of boot would find zero app windows and
+   * call `createWindow()` a second time, right before boot's own
+   * `createWindow({ withSplash: true })` ran — two windows from one launch.
+   * In server mode the same race would open the console the instant server
+   * mode had decided not to. This flag closes both.
+   */
+  let booting = true;
+
+  /**
+   * Focus the existing window instead of opening a second one — or, on a
+   * served machine, open the console for the first time.
    *
    * Mandatory, not optional. Once story 092 lands, a second instance means a
    * second set of PTYs running `claude` against the same repositories — two
    * agents editing one working tree. The lock has to exist *before* PTYs do.
+   *
+   * A windowless app is now a real state (HIVE-142, server mode), not merely
+   * a gap between windows — so "no window" here means "open one", not
+   * "nothing to focus". Without this, screen-sharing into a served Mac mini
+   * and launching the app a second time did nothing at all, silently: the
+   * single-instance lock handed this process the event, `primaryWindow()`
+   * answered `undefined`, and the handler returned.
    */
   app.on('second-instance', () => {
     // The *app's* window, not merely the first one open — with the About panel
     // up and the main window closed, the first one is the panel.
     const existing = primaryWindow();
-    if (!existing) return;
+    if (!existing) {
+      createWindow();
+      return;
+    }
     if (existing.isMinimized()) existing.restore();
     existing.focus();
   });
@@ -75,18 +116,38 @@ export function registerLifecycle({
     }
     /**
      * The only launch that gets the splash — this is the cold start it covers.
+     *
+     * Skipped in server mode (HIVE-142): the console is the tray, not a
+     * window, and `index.ts` composes the listener and the tray itself once
+     * this promise resolves. Without this branch, server mode would open a
+     * window on every boot no matter what `index.ts` decided, because this
+     * handler runs unconditionally on its own `whenReady`.
      */
-    createWindow({ withSplash: true });
+    if (!serverMode) createWindow({ withSplash: true });
+    // Boot's own decision is made — see `booting`'s doc comment above.
+    booting = false;
   });
 
   /**
-   * macOS: clicking the dock icon with no windows open re-creates one.
+   * Re-creates a window when there is none — a dock icon click with no
+   * window open in ordinary mode, or (deliberately, HIVE-142) any equivalent
+   * of that in server mode, where the dock icon is hidden but a re-activation
+   * attempt is still a request to see the console, the same reasoning
+   * `second-instance` above already applies. Not guarded by `serverMode`
+   * itself — server mode's own boot leaves `appWindows()` at zero exactly
+   * like a closed-everything ordinary session does, so the same check below
+   * already does the right thing in both.
    *
-   * Deliberately without the splash. The app is already running; there is no
-   * boot to cover, and a chamber that opened every time the dock was clicked
-   * would turn a two-and-a-half second launch flourish into a recurring toll.
+   * Deliberately without the splash: the app is already running (or, in
+   * server mode, already listening); there is no boot to cover, and a
+   * chamber that opened every time would turn a launch flourish into a
+   * recurring toll.
+   *
+   * Guarded by `booting` because this handler is registered before
+   * `whenReady` — see that flag's own doc comment for the race it closes.
    */
   app.on('activate', () => {
+    if (booting) return;
     /**
      * Counted over the app's own windows, not every window that exists.
      *

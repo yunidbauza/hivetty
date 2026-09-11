@@ -18,6 +18,7 @@ import type {
   AgentSummary,
   RunSummary,
 } from '@shared/agent-contract';
+import type { RemoteLinkStatus } from '@shared/ipc-contract';
 import { LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
 import { isDesktop } from '@config/runtime';
 import { peek, stamp } from '@lib/fake-clock';
@@ -27,7 +28,12 @@ import {
   setProjectConfigForTest,
 } from '@lib/project-config';
 import { noteSessionTicket } from '@lib/session-history';
-import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
+import {
+  closeChannel,
+  reopenChannel,
+  requestSpawn,
+  requestSpawnTerminal,
+} from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 
 import { useAppearanceStore } from '@stores/appearance-store';
@@ -46,14 +52,20 @@ import {
   useAgentsByGroup,
   useAgentThread,
   useDisplayName,
+  useCounts,
   useEndedSessions,
   currentRowFor,
   useHiveStore,
+  useProjectLiveCount,
+  useProjectSessions,
+  useReattachEpoch,
+  useRemoteLink,
   useIsAgentId,
   useLedgerEntries,
   useNavOrder,
   useOpenAskCount,
   useSessionNameReports,
+  useTerminalHostIds,
   useThread,
 } from '@stores/hive-store';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
@@ -85,6 +97,10 @@ vi.mock('@lib/terminal/session-input', () => ({
 
 vi.mock('@lib/terminal/pty-transport', () => ({
   requestSpawn: vi.fn(() => Promise.resolve({ ok: true })),
+  /** The same fire-and-forget bargain for a plain shell (terminals). */
+  requestSpawnTerminal: vi.fn(() => Promise.resolve({ ok: true })),
+  /** `removeTerminal` ends the channel with the row (terminals). */
+  closeChannel: vi.fn(),
   sessionChannelState: vi.fn(() => 'live'),
   resetPtyChannels: vi.fn(),
   // HIVE-93: `resumeSession` clears the renderer's exit latch before asking
@@ -134,6 +150,7 @@ describe('hive-store', () => {
     vi.mocked(isDesktop).mockReturnValue(false);
     vi.mocked(sendToSession).mockReturnValue({ ok: true });
     vi.mocked(requestSpawn).mockResolvedValue({ ok: true });
+    vi.mocked(requestSpawnTerminal).mockResolvedValue({ ok: true });
   });
 
   describe('fixtures', () => {
@@ -1067,6 +1084,109 @@ describe('hive-store', () => {
           ],
         });
       };
+
+      describe('term', () => {
+        it('opens a terminal in a project named by key, id or quoted name', () => {
+          seedDistinctProject();
+          run('term hive');
+          const id = useHiveStore.getState().order.at(-1)!;
+          expect(useHiveStore.getState().entities[id]).toMatchObject({ kind: 'terminal', project: 'the-hive' });
+          expect(useUiStore.getState().activeTab).toBe(id);
+
+          run('term "The Hive"');
+          expect(useHiveStore.getState().entities[useHiveStore.getState().order.at(-1)!]).toMatchObject({
+            kind: 'terminal',
+            project: 'the-hive',
+          });
+        });
+
+        it('refuses an unknown project with the message spawn gives', () => {
+          const before = useHiveStore.getState().order.length;
+          run('term nope');
+          expect(useHiveStore.getState().order).toHaveLength(before);
+          expect(lastLine()).toMatchObject({
+            text: `  unknown project: nope — try a key from Settings › Projects (${projectKeys().join(', ')})`,
+            color: 'red',
+          });
+        });
+
+        it('with no argument opens a terminal beside the selected session, at its directory', () => {
+          act(() =>
+            useHiveStore
+              .getState()
+              .setSessionBranch('hero-refresh', 'feat/x', '/repos/nova-web/.claude/worktrees/x'),
+          );
+          useUiStore.getState().setSelId('hero-refresh');
+          run('term');
+          const id = useHiveStore.getState().order.at(-1)!;
+          expect(useHiveStore.getState().entities[id]).toMatchObject({
+            kind: 'terminal',
+            project: 'nova-web',
+            cwd: '/repos/nova-web/.claude/worktrees/x',
+          });
+        });
+
+        it('with no argument and a selected terminal opens a sibling', () => {
+          const first = useHiveStore.getState().spawnTerminal('nova-web', { cwd: '/repos/nova-web/pkg' });
+          useUiStore.getState().setSelId(first);
+          run('term');
+          const id = useHiveStore.getState().order.at(-1)!;
+          expect(id).not.toBe(first);
+          expect(useHiveStore.getState().entities[id]).toMatchObject({ kind: 'terminal', cwd: '/repos/nova-web/pkg' });
+        });
+
+        it('with no argument and nothing selected prints the usage line', () => {
+          useUiStore.getState().setSelId(null);
+          const before = useHiveStore.getState().order.length;
+          run('term');
+          expect(useHiveStore.getState().order).toHaveLength(before);
+          expect(lastLine()).toMatchObject({
+            text: '  usage: term [<project>] — or select a session first',
+            color: 'red',
+          });
+        });
+
+        it('with no argument and an agent selected prints the usage line', () => {
+          useUiStore.getState().setSelId('slack-agent');
+          const before = useHiveStore.getState().order.length;
+          run('term');
+          expect(useHiveStore.getState().order).toHaveLength(before);
+          expect(lastLine()).toMatchObject({ text: '  usage: term [<project>] — or select a session first' });
+        });
+      });
+
+      describe('spawnTerminalBeside', () => {
+        it("uses a session's observed cwd, or its project path before one is observed", () => {
+          const fresh = useHiveStore.getState().spawnSession('nova-web');
+          const id = useHiveStore.getState().spawnTerminalBeside(fresh);
+          expect(useHiveStore.getState().entities[id!]).toMatchObject({ project: 'nova-web', cwd: '/repos/nova-web' });
+        });
+
+        it('uses the host project path, not the observed cwd, for a container session', () => {
+          const current = projectConfigSnapshot()!;
+          setProjectConfigForTest({
+            ...current,
+            projects: current.projects.map((project) =>
+              project.id === 'nova-web'
+                ? { ...project, container: { workspace: '/workspace', hiveDir: '/hive' } }
+                : project,
+            ),
+          });
+          const boxed = useHiveStore.getState().spawnSession('nova-web');
+          act(() => useHiveStore.getState().setSessionBranch(boxed, 'main', '/workspace'));
+
+          const id = useHiveStore.getState().spawnTerminalBeside(boxed);
+
+          expect(useHiveStore.getState().entities[id!]).toMatchObject({ cwd: '/repos/nova-web' });
+        });
+
+        it('answers null for an agent and for an unknown id, opening nothing', () => {
+          const before = useHiveStore.getState().order.length;
+          expect(useHiveStore.getState().spawnTerminalBeside('slack-agent')).toBeNull();
+          expect(useHiveStore.getState().spawnTerminalBeside('nope')).toBeNull();
+          expect(useHiveStore.getState().order).toHaveLength(before);
+        });
+      });
 
       it('creates a session on a known project and opens it', () => {
         const before = useHiveStore.getState().order.length;
@@ -3845,6 +3965,240 @@ describe('hive-store', () => {
       expect(useHiveStore.getState().entities['old-live']).toBeDefined();
     });
   });
+
+  /**
+   * Terminals: a session that never had `claude` typed into it.
+   *
+   * Seeded per test rather than into the demo fleet, deliberately — the fixture
+   * counts above pin `order` and `entities`, and a terminal in the fleet would
+   * make every one of them a statement about this feature.
+   */
+  describe('terminals', () => {
+    it('spawnTerminal records and sends a directory when given one', () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      const id = useHiveStore.getState().spawnTerminal('nova-web', { cwd: '/repos/nova-web/pkg' });
+      expect(useHiveStore.getState().entities[id]).toMatchObject({ cwd: '/repos/nova-web/pkg' });
+      expect(requestSpawnTerminal).toHaveBeenCalledWith(id, 'nova-web', '/repos/nova-web/pkg');
+    });
+
+    it('spawnTerminal without a directory sends none and records the project path', () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      expect(useHiveStore.getState().entities[id]).toMatchObject({ cwd: '/repos/nova-web' });
+      expect(requestSpawnTerminal).toHaveBeenCalledWith(id, 'nova-web', undefined);
+    });
+
+    it('spawnTerminal mints term-NN, opens the tab, and asks for a plain shell on desktop', () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      const entity = useHiveStore.getState().entities[id];
+
+      expect(id).toMatch(/^term-[0-9a-z]{2,}$/u);
+      expect(entity).toMatchObject({
+        kind: 'terminal',
+        project: 'nova-web',
+        // Read from the config, not invented: `seedDemoProjectConfig` maps
+        // `nova-web` here, and the row's `cwd` tail is drawn from it.
+        cwd: '/repos/nova-web',
+        status: 'prompt',
+        lines: [],
+      });
+      // Absent, not `undefined`: the row renders `at prompt` from its absence.
+      expect(entity).not.toHaveProperty('foreground');
+      expect(useHiveStore.getState().order.at(-1)).toBe(id);
+      expect(useUiStore.getState().activeTab).toBe(id);
+      expect(requestSpawnTerminal).toHaveBeenCalledWith(id, 'nova-web', undefined);
+      // The one mistake that would put `claude` in a window opened as a shell.
+      expect(requestSpawn).not.toHaveBeenCalled();
+    });
+
+    it('spawnTerminal creates the entity in the browser but asks nothing of a bridge', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      expect(useHiveStore.getState().entities[id]?.kind).toBe('terminal');
+      expect(requestSpawnTerminal).not.toHaveBeenCalled();
+    });
+
+    it('terminal ids never collide with session ids or each other', () => {
+      const a = useHiveStore.getState().spawnTerminal('nova-web');
+      const b = useHiveStore.getState().spawnTerminal('nova-web');
+      const s = useHiveStore.getState().spawnSession('nova-web');
+
+      expect(new Set([a, b, s]).size).toBe(3);
+      expect(s.startsWith('sess-')).toBe(true);
+    });
+
+    it('a refused spawn is written to the console in red', async () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      vi.mocked(requestSpawnTerminal).mockResolvedValue({
+        ok: false,
+        reason: 'session limit reached (24)',
+      });
+
+      useHiveStore.getState().spawnTerminal('nova-web');
+
+      await vi.waitFor(() => {
+        expect(useHiveStore.getState().orchLines.at(-1)).toEqual({
+          text: '  session limit reached (24)',
+          color: 'red',
+        });
+      });
+    });
+
+    it('setTerminalForeground derives the status from the name, in one write', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      useHiveStore.getState().setTerminalForeground(id, 'vitest');
+      expect(useHiveStore.getState().entities[id]).toMatchObject({
+        status: 'running',
+        foreground: 'vitest',
+      });
+
+      useHiveStore.getState().setTerminalForeground(id, null);
+      expect(useHiveStore.getState().entities[id]).toMatchObject({
+        status: 'prompt',
+      });
+      expect(useHiveStore.getState().entities[id]).not.toHaveProperty(
+        'foreground',
+      );
+    });
+
+    it('setTerminalForeground ignores a session and an unknown id', () => {
+      const before = useHiveStore.getState().entities;
+
+      useHiveStore.getState().setTerminalForeground('hero-refresh', 'vitest');
+      useHiveStore.getState().setTerminalForeground('term-zz', 'vitest');
+
+      // Identity, not equality: a no-op that still wrote would re-render every
+      // subscriber of the entities map on every poll tick.
+      expect(useHiveStore.getState().entities).toBe(before);
+    });
+
+    it('setTerminalForeground writes nothing when the name has not changed', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().setTerminalForeground(id, 'vitest');
+      const before = useHiveStore.getState().entities;
+
+      useHiveStore.getState().setTerminalForeground(id, 'vitest');
+
+      expect(useHiveStore.getState().entities).toBe(before);
+    });
+
+    it('setTerminalForeground ignores a terminal that has been lost', () => {
+      /*
+        The poll runs on an interval and answers asynchronously, so a reading
+        taken before the shell died can land after `markTerminalLost` — and
+        without this guard a dead row flips back to `running` underneath the
+        cover explaining that it is over.
+      */
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().markTerminalLost(id, 'the pty host crashed');
+      const before = useHiveStore.getState().entities;
+
+      useHiveStore.getState().setTerminalForeground(id, 'vitest');
+
+      expect(useHiveStore.getState().entities).toBe(before);
+    });
+
+    it('markTerminalLost keeps the row and records why', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      useHiveStore.getState().markTerminalLost(id, 'the pty host crashed');
+
+      expect(useHiveStore.getState().entities[id]).toMatchObject({
+        ended: { reason: 'the pty host crashed' },
+      });
+      expect(useHiveStore.getState().order).toContain(id);
+    });
+
+    it('markTerminalLost keeps the first reason — the second is a consequence', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().markTerminalLost(id, 'the pty host crashed');
+
+      useHiveStore.getState().markTerminalLost(id, 'the poll stopped answering');
+
+      expect(useHiveStore.getState().entities[id]).toMatchObject({
+        ended: { reason: 'the pty host crashed' },
+      });
+    });
+
+    it('removeTerminal drops the entity and leaves the stage if it was showing', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      expect(useUiStore.getState().activeTab).toBe(id);
+
+      useHiveStore.getState().removeTerminal(id);
+
+      expect(useHiveStore.getState().entities[id]).toBeUndefined();
+      expect(useHiveStore.getState().order).not.toContain(id);
+      expect(useUiStore.getState().activeTab).toBe('orch');
+      // The renderer's channel goes with the row: nothing will switch back to
+      // this id, so its replay buffer and bridge listeners have no reader left.
+      expect(closeChannel).toHaveBeenCalledWith(id);
+    });
+
+    it('removeTerminal leaves another tab alone', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useUiStore.getState().openTab('hero-refresh');
+
+      useHiveStore.getState().removeTerminal(id);
+
+      expect(useUiStore.getState().activeTab).toBe('hero-refresh');
+    });
+
+    it('removeTerminal refuses to remove a session', () => {
+      useHiveStore.getState().removeTerminal('hero-refresh');
+
+      expect(useHiveStore.getState().entities['hero-refresh']).toBeDefined();
+    });
+
+    it('a terminal sits in its project list, and in no count', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      const { result: project } = renderHook(() => useProjectSessions('nova-web'));
+      const { result: counts } = renderHook(() => useCounts());
+      const { result: active } = renderHook(() => useActiveSessions());
+
+      expect(project.current).toContain(id);
+      expect(active.current).not.toContain(id);
+      const total = Object.values(counts.current).reduce((a, b) => a + b, 0);
+      expect(total).toBe(
+        useHiveStore
+          .getState()
+          .order.filter(
+            (entityId) =>
+              useHiveStore.getState().entities[entityId]?.kind === 'session',
+          ).length,
+      );
+    });
+
+    /**
+     * Two lists, two questions.
+     *
+     * `useNavOrder` is the fleet table's row and caret order, and the table
+     * draws no terminal row — a terminal in it would put the caret somewhere
+     * nobody can see and point `→` at a target the user never selected. The
+     * stage mounts a surface per terminal, so its list is the union.
+     */
+    it('stays out of the fleet table’s nav order', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      const { result: nav } = renderHook(() => useNavOrder());
+
+      expect(nav.current).not.toContain(id);
+    });
+
+    it('is in the stage’s host list, after everything the table can reach', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      const { result: nav } = renderHook(() => useNavOrder());
+      const { result: hosts } = renderHook(() => useTerminalHostIds());
+
+      expect(hosts.current).toContain(id);
+      // A prefix, not merely a superset: the stage's extra ids are the
+      // terminals, appended, so the table's order is untouched inside it.
+      expect(hosts.current.slice(0, nav.current.length)).toEqual(nav.current);
+      expect(hosts.current.slice(nav.current.length)).toEqual([id]);
+    });
+  });
 });
 
 /**
@@ -5498,6 +5852,146 @@ describe('the agent view selectors', () => {
       // Identity matters: a fresh [] each call re-renders every consumer on
       // any unrelated store write.
       expect(none.current).toBe(again.current);
+    });
+  });
+
+  describe('terminals — review fixes (PR #202)', () => {
+    beforeEach(() => {
+      useHiveStore.getState().reset();
+      seedDemoFleet();
+      seedDemoProjectConfig();
+      useUiStore.getState().reset();
+      vi.clearAllMocks();
+      vi.mocked(requestSpawnTerminal).mockResolvedValue({ ok: true });
+      vi.mocked(sendToSession).mockReturnValue({ ok: true });
+    });
+
+    it('send refuses a terminal, live or lost — send is a session verb', () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      const live = useHiveStore.getState().spawnTerminal('nova-web');
+      const lost = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().markTerminalLost(lost, 'the pty host crashed');
+      const before = useHiveStore.getState().entities[live]!.lines.length;
+
+      expect(useHiveStore.getState().sendToEntity(live, 'ls')).toEqual({
+        kind: 'refused',
+        reason: `terminals are typed into, not sent: open ${live}`,
+      });
+      expect(useHiveStore.getState().sendToEntity(lost, 'ls')).toMatchObject({ kind: 'refused' });
+      // Neither the pty nor the demo echo: nothing reached anything.
+      expect(sendToSession).not.toHaveBeenCalled();
+      expect(useHiveStore.getState().entities[live]!.lines).toHaveLength(before);
+    });
+
+    it('the console says so in red and names open', () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().runOrchCommand(parseCommand(`send ${id} ls`));
+      expect(useHiveStore.getState().orchLines.at(-1)).toEqual({
+        text: `  terminals are typed into, not sent: open ${id}`,
+        color: 'red',
+      });
+    });
+
+    it('a refused spawn marks the terminal lost with the refusal', async () => {
+      vi.mocked(isDesktop).mockReturnValue(true);
+      vi.mocked(requestSpawnTerminal).mockResolvedValue({ ok: false, reason: 'session limit reached (24)' });
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+
+      await vi.waitFor(() => {
+        expect(useHiveStore.getState().entities[id]).toMatchObject({
+          ended: { reason: 'session limit reached (24)' },
+        });
+      });
+      expect(useHiveStore.getState().order).toContain(id);
+    });
+
+    it('useProjectLiveCount excludes a lost terminal and ended sessions, while the list keeps the lost one', () => {
+      const live = useHiveStore.getState().spawnTerminal('nova-web');
+      const lost = useHiveStore.getState().spawnTerminal('nova-web');
+      useHiveStore.getState().markTerminalLost(lost, 'gone');
+      const { result: list } = renderHook(() => useProjectSessions('nova-web'));
+      const { result: count } = renderHook(() => useProjectLiveCount('nova-web'));
+
+      expect(list.current).toContain(live);
+      expect(list.current).toContain(lost);
+      expect(count.current).toBe(list.current.length - 1);
+    });
+  });
+
+  /**
+   * What this window's attachment is doing (HIVE-150).
+   *
+   * Domain state rather than view state: it is something the system knows
+   * about itself, and both the header chip and the attach pane read it. It
+   * replaces reading `AppInfo.attachedServerName` on demand, which a socket
+   * dying without a config write left stale indefinitely.
+   */
+  describe('the remote link', () => {
+    const status = (over: Partial<RemoteLinkStatus> = {}): RemoteLinkStatus => ({
+      state: 'attached',
+      serverName: 'mini',
+      attempt: 0,
+      nextAttemptAt: null,
+      reason: null,
+      epoch: 0,
+      lost: 0,
+      ...over,
+    });
+
+    it('has none until main says otherwise', () => {
+      const { result } = renderHook(() => useRemoteLink());
+
+      expect(result.current).toBeNull();
+    });
+
+    it('installs what main pushed', () => {
+      act(() => {
+        useHiveStore.getState().setRemoteLink(status({ state: 'reconnecting', attempt: 3 }));
+      });
+      const { result } = renderHook(() => useRemoteLink());
+
+      expect(result.current).toMatchObject({ state: 'reconnecting', attempt: 3 });
+    });
+
+    it('keeps naming the machine after the link is given up for good', () => {
+      act(() => {
+        useHiveStore.getState().setRemoteLink(
+          status({ state: 'disconnected', reason: 'That device was revoked.' }),
+        );
+      });
+      const { result } = renderHook(() => useRemoteLink());
+
+      /*
+        The chip still has to say *which* machine it lost, and by then the
+        client that could answer `serverName()` is gone — so the name rides on
+        every status rather than being read back from a live socket.
+      */
+      expect(result.current?.serverName).toBe('mini');
+      expect(result.current?.reason).toBe('That device was revoked.');
+    });
+
+    it('reads the epoch off the link, and 0 when there is none', () => {
+      const { result } = renderHook(() => useReattachEpoch());
+      expect(result.current).toBe(0);
+
+      act(() => {
+        useHiveStore.getState().setRemoteLink(status({ epoch: 2 }));
+      });
+
+      expect(result.current).toBe(2);
+    });
+
+    it('forgets the link on reset, because an attachment is a fact about now', () => {
+      act(() => {
+        useHiveStore.getState().setRemoteLink(status());
+      });
+
+      act(() => {
+        useHiveStore.getState().reset();
+      });
+
+      expect(useHiveStore.getState().remoteLink).toBeNull();
     });
   });
 });

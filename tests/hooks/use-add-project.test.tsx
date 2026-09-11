@@ -1,7 +1,13 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useAddProject } from '@hooks/use-add-project';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
+import { emptySnapshot } from '@shared/config-contract';
 
 const chooseProjectDirectory = vi.fn();
 const addProjectToConfig = vi.fn();
@@ -14,6 +20,20 @@ vi.mock('@lib/project-config', async (importOriginal) => {
     addProjectToConfig: (request: unknown) => addProjectToConfig(request),
   };
 });
+
+/**
+ * Put this window in the attached state, or out of it (HIVE-144 review, C1).
+ *
+ * The snapshot stays the plain one in **both** cases, deliberately. An
+ * attached client's `config:get` is answered by the server, so the snapshot it
+ * holds is the server's — and a server is attached to nobody, so its
+ * `remote.mode` reads `'local'`. Attachment is a runtime fact, and
+ * `setAttachedServerForTest` is the only place it lives.
+ */
+function attachedTo(server: string | null): void {
+  setProjectConfigForTest(emptySnapshot('/home/dev/.hive/config.json', '/bin/zsh'));
+  setAttachedServerForTest(server);
+}
 
 /**
  * Mapping a directory, from wherever the app offers it (Settings, the rail).
@@ -29,6 +49,10 @@ describe('useAddProject', () => {
     addProjectToConfig.mockReset();
     chooseProjectDirectory.mockResolvedValue(null);
     addProjectToConfig.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    resetProjectConfig();
   });
 
   it('writes the path the dialog returned, and no other', async () => {
@@ -110,5 +134,88 @@ describe('useAddProject', () => {
     expect(result.current.choosing).toBe(false);
     expect(logged).toHaveBeenCalled();
     logged.mockRestore();
+  });
+});
+
+/**
+ * While attached to someone else's Hive (HIVE-144, reworked by HIVE-146).
+ *
+ * `config:choose-directory` opens a dialog on the server, which has no window,
+ * so `WINDOW_BOUND` refuses it by name and the hook must never reach it in
+ * this state. What changed is what happens instead: the control used to be
+ * disabled with that table's reason as its `title`, and now it opens the
+ * server-side picker. So the assertions below are about `picking` rather than
+ * a `disabledReason` that no longer exists — the negative half, that the
+ * dialog is never reached, is unchanged and is still the important one.
+ */
+describe('useAddProject — attached to a remote server', () => {
+  beforeEach(() => {
+    chooseProjectDirectory.mockReset();
+    addProjectToConfig.mockReset();
+  });
+
+  afterEach(() => {
+    resetProjectConfig();
+  });
+
+  it('opens the native dialog and not the picker in local mode', async () => {
+    attachedTo(null);
+    chooseProjectDirectory.mockResolvedValue(null);
+
+    const { result } = renderHook(() => useAddProject());
+    await act(async () => {
+      result.current.addProject();
+    });
+
+    expect(chooseProjectDirectory).toHaveBeenCalled();
+    expect(result.current.picking).toBe(false);
+  });
+
+  it('opens the picker and never the dialog while attached', async () => {
+    attachedTo('mini.tail1234.ts.net');
+
+    const { result } = renderHook(() => useAddProject());
+    await act(async () => {
+      result.current.addProject();
+    });
+
+    expect(result.current.picking).toBe(true);
+    expect(chooseProjectDirectory).not.toHaveBeenCalled();
+    expect(addProjectToConfig).not.toHaveBeenCalled();
+  });
+
+  it('writes the path the picker returned, then closes it', async () => {
+    attachedTo('mini.tail1234.ts.net');
+    addProjectToConfig.mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useAddProject());
+    await act(async () => {
+      result.current.addProject();
+    });
+    await act(async () => {
+      result.current.onPicked('/Users/me/Projects/app');
+    });
+
+    expect(addProjectToConfig).toHaveBeenCalledWith({
+      path: '/Users/me/Projects/app',
+    });
+    expect(result.current.picking).toBe(false);
+    // The picker is the only chooser in this state; the dialog stays untouched.
+    expect(chooseProjectDirectory).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing when the picker is cancelled', async () => {
+    attachedTo('mini.tail1234.ts.net');
+
+    const { result } = renderHook(() => useAddProject());
+    await act(async () => {
+      result.current.addProject();
+    });
+    await act(async () => {
+      result.current.cancelPicking();
+    });
+
+    expect(result.current.picking).toBe(false);
+    expect(addProjectToConfig).not.toHaveBeenCalled();
   });
 });

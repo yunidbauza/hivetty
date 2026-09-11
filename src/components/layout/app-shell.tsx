@@ -11,9 +11,11 @@ import { useSessionStatus } from '@features/sessions/hooks/use-session-status';
 import { useNotificationActivate } from '@features/settings/hooks/use-notification-activate';
 import { useAgentsSync } from '@features/shared/hooks/use-agents-sync';
 import { useLedgerSync } from '@features/shared/hooks/use-ledger-sync';
+import { useAppChords } from '@hooks/use-app-chords';
+import { useDockBadge } from '@hooks/use-dock-badge';
 import { useForegroundSession } from '@hooks/use-foreground-session';
 import { useNotificationStream } from '@hooks/use-notification-stream';
-import { useRailChord } from '@hooks/use-rail-chord';
+import { useRemoteLinkStream } from '@hooks/use-remote-link';
 import { useSessionNames } from '@hooks/use-session-names';
 import { watchSystemTheme } from '@stores/appearance-store';
 import { useShowActivityRail } from '@stores/ui-store';
@@ -97,6 +99,19 @@ export function AppShell() {
     mounted would leave the count at zero until someone looked.
   */
   useNotificationStream();
+  /*
+    This machine's dock badge, from the rows the stream above fills (HIVE-159).
+    Only heard while attached; in local mode the hub badges from its own buffer.
+  */
+  useDockBadge();
+
+  /*
+    What this window's attachment is doing (HIVE-150). Mounted here for the
+    reason above it: the header chip and the attach pane both read it, and a
+    subscription that only lived while Settings was open would leave the chip
+    claiming an attachment for as long as nobody went looking.
+  */
+  useRemoteLinkStream();
 
   /*
     Which terminal is on the stage (HIVE-81). Here for the same reason as the
@@ -133,7 +148,7 @@ export function AppShell() {
    * about the whole shell, one listener. Per-rail would mean two listeners
    * racing to ignore each other's chord.
    */
-  useRailChord();
+  useAppChords();
 
   /**
    * Follow the OS while the app is open (story 105).

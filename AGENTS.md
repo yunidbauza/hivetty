@@ -42,11 +42,55 @@ Zustand · Tailwind v4 · shadcn/ui · pnpm.
 | `pnpm test:e2e` | Playwright — both the web and electron projects |
 | `pnpm test:e2e:web` · `:electron` | Either half alone — browser specs (070), or the built app (085) |
 | `pnpm test:pty` | PTY conformance — real PTYs, Electron ABI, no UI (098) |
-| `pnpm test:hooks` · `:statusline` · `:skills` · `:done` · `:ready` · `:hook-context` · `:marker` · `:back` · `:nudge` · `:title` · `:ledger` · `:mcp-http` · `:agent` · `:container` | Live conformance against a **real `claude`** — hooks (~3½ min), the status line, custom skills, `/done`, the boot-ready signal, that a hook's response reaches the model's context over http and command alike, `SessionStart` over http excepted, and what a slow, erroring or absent receiver costs the prompt (HIVE-136, ~2½ min), that a marker landing in a real session carries its entry whole as hook context through the real receiver and a real ledger (HIVE-138, ~1½ min), the bare-`←` claim in the built app, that a nudge marker is held while the visible input box holds a draft and lands once it is cleared (HIVE-135), that an unnamed session titles itself (~2½ min), the ledger MCP tools, the same tools served over `POST /mcp` with the container config's `${VAR}` shape, the headless agent runs — hooks, `--resume`, the two-wake ledger conversation, the permission fence, the scheduler's own clock, two task runs live at once with distinct receipts, and — skipped rather than failed without both Slack tokens stored — that a real Socket Mode `app_mention` starts a real run with no `runs.run` call behind it (HIVE-124, ~3½ min, after a `desktop:build`) — and the container session profile and a containerised agent against a real Docker container: the mechanism half needs only `alpine:3`; the claude and agent halves need `HIVE_LIVE_CONTAINER_IMAGE` naming an image built from `tests/live/container/Dockerfile` plus a credential in env (~2 min) |
+| `pnpm test:hooks` · `:statusline` · `:skills` · `:done` · `:ready` · `:hook-context` · `:marker` · `:back` · `:nudge` · `:title` · `:ledger` · `:mcp-http` · `:agent` · `:container` · `:server` | Live conformance against a **real `claude`** — hooks (~3½ min), the status line, custom skills, `/done`, the boot-ready signal, that a hook's response reaches the model's context over http and command alike, `SessionStart` over http excepted, and what a slow, erroring or absent receiver costs the prompt (HIVE-136, ~2½ min), that a marker landing in a real session carries its entry whole as hook context through the real receiver and a real ledger (HIVE-138, ~1½ min), the bare-`←` claim in the built app, that a nudge marker is held while the visible input box holds a draft and lands once it is cleared (HIVE-135), that an unnamed session titles itself (~2½ min), the ledger MCP tools, the same tools served over `POST /mcp` with the container config's `${VAR}` shape, the headless agent runs — hooks, `--resume`, the two-wake ledger conversation, the permission fence, the scheduler's own clock, two task runs live at once with distinct receipts, and — skipped rather than failed without both Slack tokens stored — that a real Socket Mode `app_mention` starts a real run with no `runs.run` call behind it (HIVE-124, ~3½ min, after a `desktop:build`) — the container session profile and a containerised agent against a real Docker container: the mechanism half needs only `alpine:3`; the claude and agent halves need `HIVE_LIVE_CONTAINER_IMAGE` naming an image built from `tests/live/container/Dockerfile` plus a credential in env (~2 min) — and, needing no `claude` at all, only the built app spawned twice over: server mode's real socket answering on loopback, a wrong or revoked token and a disallowed Origin each refused by their own code, a version mismatch that ends the socket with no frame following, an unattached socket refusing a call frame, `--pair` run in a second process reaching the already-running server with no restart and without erasing a device paired just before it, no token ever landing in `config.json`, a `0.0.0.0` bind refused with a reason while the app keeps running, and — read off the served process's own listening sockets with `lsof`, not a network probe a firewall could make look identical either way — that the OS-level bind itself is loopback-only, with a positive control proving that same check on this machine can see a genuine wildcard bind when one exists (HIVE-142), and — two real built apps, one serving and one attaching — that a client whose server is killed underneath it says it is reconnecting rather than going on claiming an attachment, and reattaches on its own when that server comes back, with nobody flipping a switch (HIVE-150), and that a client dropped by a cut connection re-states what it has on screen, so a block on a session every device is watching still arrives already-read (HIVE-160) (after a `desktop:build`, ~2 min) |
 | `pnpm verify:boundaries` | Proves every architecture fence still fires |
 
 **`pnpm lint` and `pnpm type-check` must both pass before any task is considered
 done.** Neither is optional, and no rule may be disabled inline to make a task pass.
+
+## Working a ticket
+
+Two audits now. A week of sessions (Sep 2026) found the hours going to
+confirmation prompts and to a serial implement-review-re-review chain. HIVE-144
+then proved the first half fixed and the second half untouched: four human turns
+in 17h34m, the orchestrator idle 29 minutes out of 853, and still 6.8 of the 14.2
+implementation hours inside the review chain. These rules follow from both:
+
+- **Execute plans inline.** Subagent-driven development is for a plan that spans
+  two or more subsystems with no shared test harness (main process + renderer +
+  a live suite) *and* touches a risk surface (auth, tokens, a wire protocol,
+  concurrency). One subsystem runs inline, however many tasks it has.
+- **The per-task review is conditional, and lean.** Only a task the plan marks
+  risk-bearing gets a reviewer subagent; the rest the controller adjudicates by
+  reading the diff itself. One reviewer, one pass, scoped to that task's diff and
+  its brief. Never fan reviewers out by category per task. HIVE-144 gave all 15
+  tasks a reviewer plus a scoped re-reviewer, 29 agents, and ship's whole-branch
+  review still found a Critical across the seams none of them could see.
+- **No scoped re-review subagent.** The implementer proves its own fix, with the
+  mutation or the test that fails without it, and the controller adjudicates the
+  proof. Two fix rounds per task stays the cap. Review-driven fix rounds were 5.5
+  hours of HIVE-144 against 7.4 for the implementation itself.
+- **Ship's self review is the one whole-branch review**, and the one place the
+  deep multi-dimension pass belongs.
+- **Re-split when the plan is wrong about size.** Tasks are twenty
+  implementer-minutes. Two consecutive tasks over that means every remaining
+  estimate is wrong: re-split what is left before the next dispatch. HIVE-144's
+  task 2 came back at forty minutes, its mean was fifty-one, its worst a hundred
+  and four, and nothing re-sized.
+- **A thirteen-point ticket is more than one PR.** HIVE-144 shipped 100 files and
+  15,698 insertions on one branch, a diff no whole-branch review can hold. Split
+  it in the plan, not at the merge.
+- **Ask decisions in one batch.** One `AskUserQuestion` call carries up to four
+  questions; the recommended option goes first. Never one question per turn.
+- **Never sleep-poll a subagent.** Its task notification is the wake-up; a
+  `sleep N; git log` loop overshoots by up to its own length every time.
+- **The tail runs unattended.** After the reconciliation go-ahead, the flow
+  pushes, opens the draft PR and invokes ship in the same turn; auto-merge for
+  this repo is on in `~/.claude/workstream/ship-config.json`.
+- **A failing e2e spec is re-run alone before it counts as red.** Playwright is
+  pinned to two workers here because the timeout flake scales with parallelism;
+  it lowers the flake, it does not remove it. A spec that passes alone is a
+  flake to note, not a finding to fix; an assertion failure is real either way.
 
 ## Deep-dive docs
 

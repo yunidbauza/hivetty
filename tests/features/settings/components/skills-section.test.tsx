@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { REMOTE_DISABLED_REASON } from '@config/runtime';
 import { SkillsSection } from '@features/settings/components/skills-section';
 import {
   appendSurfaceText,
@@ -9,25 +10,49 @@ import {
   surfaceText,
 } from '@tests/support/editor-surface';
 import { resetSkills, setSkillsForTest } from '@lib/skills';
+import {
+  resetProjectConfig,
+  setAttachedServerForTest,
+  setProjectConfigForTest,
+} from '@lib/project-config';
 
+import { emptySnapshot } from '@shared/config-contract';
 import type { SkillsSnapshot } from '@shared/skills-contract';
 
 const loadSkills = vi.fn();
-const readSkill = vi.fn();
+const readSkillFile = vi.fn();
 const saveSkill = vi.fn();
 const deleteSkill = vi.fn();
 const renameSkill = vi.fn();
+const importIntoSkill = vi.fn();
+const dropIntoSkill = vi.fn();
+const skillDropTokens = vi.fn();
+const writeSkillFile = vi.fn();
+const removeSkillFile = vi.fn();
+const moveSkillFile = vi.fn();
+const makeSkillDir = vi.fn();
 
 vi.mock('@/lib/skills', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/skills')>();
   return {
     ...actual,
     loadSkills: () => loadSkills(),
-    readSkill: (name: string) => readSkill(name),
+    readSkillFile: (name: string, path: string) => readSkillFile(name, path),
     saveSkill: (name: string, body: string) => saveSkill(name, body),
     deleteSkill: (name: string) => deleteSkill(name),
     renameSkill: (from: string, to: string, body: string) =>
       renameSkill(from, to, body),
+    importIntoSkill: (name: string, dir: string) => importIntoSkill(name, dir),
+    dropIntoSkill: (name: string, dir: string, tokens: string[]) =>
+      dropIntoSkill(name, dir, tokens),
+    skillDropTokens: (files: readonly File[]) => skillDropTokens(files),
+    writeSkillFile: (name: string, path: string, body: string) =>
+      writeSkillFile(name, path, body),
+    removeSkillFile: (name: string, path: string) =>
+      removeSkillFile(name, path),
+    moveSkillFile: (name: string, from: string, to: string) =>
+      moveSkillFile(name, from, to),
+    makeSkillDir: (name: string, path: string) => makeSkillDir(name, path),
   };
 });
 
@@ -49,8 +74,39 @@ const withSkills = (...names: string[]): SkillsSnapshot =>
       name,
       description: 'does a thing',
       valid: true as const,
+      manifest: { entries: [], capped: null },
     })),
   });
+
+/**
+ * Switch to another skill, which is two clicks now rather than one (HIVE-148).
+ *
+ * The 190px column drills into the open skill's files, so every other skill is
+ * behind the `Skills` crumb. That is the cost the drill-in chose — a folder
+ * cannot be a column of names — and these tests pay it exactly as a user does,
+ * which is also what keeps them honest about the dirty guard: the crumb is
+ * guarded too, so a dirty buffer asks on the way out rather than on the way in.
+ */
+const switchTo = async (name: string): Promise<void> => {
+  await leaveBundle();
+  await userEvent.click(screen.getByRole('button', { name: `/${name}` }));
+};
+
+/**
+ * The crumb alone — the click the dirty guard actually intercepts.
+ *
+ * A dirty buffer stops here, so the tests about the confirm use this rather
+ * than {@link switchTo}: the skill list is still behind the question, and
+ * reaching for a row that is not on screen yet would be the test asserting a
+ * sequence the user cannot perform.
+ */
+const leaveBundle = (): Promise<void> =>
+  /*
+    A prefix, because the crumb's accessible name grows an "edited" suffix
+    while the buffer is dirty — which is deliberate: the way out is where a
+    screen-reader user most needs to hear that leaving will cost something.
+  */
+  userEvent.click(screen.getByRole('button', { name: /^Skills/ }));
 
 beforeEach(() => {
   loadSkills.mockResolvedValue(undefined);
@@ -60,11 +116,26 @@ beforeEach(() => {
   // A rename resolves with what it *did*, not just whether it worked — the
   // middle outcome (moved, then failed to write) is what recovery hangs on.
   renameSkill.mockResolvedValue({ moved: true, error: null });
-  readSkill.mockImplementation((name: string) =>
+  importIntoSkill.mockResolvedValue(null);
+  dropIntoSkill.mockResolvedValue(null);
+  skillDropTokens.mockReturnValue(['token-1']);
+  writeSkillFile.mockResolvedValue(null);
+  removeSkillFile.mockResolvedValue(null);
+  moveSkillFile.mockResolvedValue(null);
+  makeSkillDir.mockResolvedValue(null);
+  /*
+    Every file in a bundle now comes through one verb (HIVE-148). Opening a
+    skill is opening its SKILL.md, so these tests reach the editor exactly as
+    they did — they just take the bundle route to get there.
+  */
+  readSkillFile.mockImplementation((name: string, path: string) =>
     Promise.resolve({
       name,
+      path,
+      absPath: `/home/u/.hive/skills/${name}/${path}`,
+      size: file(name).length,
       body: file(name),
-      path: `/home/u/.hive/skills/${name}/SKILL.md`,
+      refused: null,
     }),
   );
 });
@@ -137,7 +208,7 @@ describe('SkillsSection', () => {
     expect(screen.getByText('invalid')).toBeInTheDocument();
     expect(row).toBeDisabled();
     await userEvent.click(row);
-    expect(readSkill).not.toHaveBeenCalled();
+    expect(readSkillFile).not.toHaveBeenCalled();
   });
 
   it('opens a skill into the editor', async () => {
@@ -146,9 +217,367 @@ describe('SkillsSection', () => {
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
 
-    expect(readSkill).toHaveBeenCalledWith('standup');
+    expect(readSkillFile).toHaveBeenCalledWith('standup', 'SKILL.md');
     await screen.findByLabelText('Skill source');
     expect(surfaceText('Skill source')).toBe(file('standup'));
+  });
+
+  it('drills the column into the skill, and comes back on the crumb', async () => {
+    setSkillsForTest(withSkills('standup', 'triage'));
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/standup' }));
+
+    // The list is gone; the column is this skill's files now.
+    expect(screen.getByLabelText('Files in standup')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '/triage' })).toBeNull();
+
+    await leaveBundle();
+
+    expect(screen.getByRole('button', { name: '/triage' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Files in standup')).toBeNull();
+  });
+
+  /**
+   * Save and Delete mean different things depending on which file is open, and
+   * getting that wrong is not cosmetic: routing a `scripts/build.py` through
+   * the skill-level verbs would write its bytes into SKILL.md under the
+   * frontmatter name, and delete the whole bundle.
+   */
+  describe('inside a bundle', () => {
+    const bundled = () =>
+      snapshot({
+        skills: [
+          {
+            name: 'graphify',
+            description: 'does a thing',
+            valid: true as const,
+            manifest: {
+              entries: [
+                { path: 'SKILL.md', kind: 'file', size: 10, executable: false, excluded: null },
+                { path: 'build.py', kind: 'file', size: 10, executable: true, excluded: null },
+              ],
+              capped: null,
+            },
+          },
+        ],
+      });
+
+    const openBuildPy = async (): Promise<void> => {
+      render(<SkillsSection />);
+      await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+      await userEvent.click(screen.getByRole('button', { name: /build\.py/ }));
+      await screen.findByLabelText('Skill source');
+    };
+
+    it('saves the open file through the file verb, not the skill verb', async () => {
+      setSkillsForTest(bundled());
+      await openBuildPy();
+      appendSurfaceText('Skill source', 'print(2)');
+
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(writeSkillFile).toHaveBeenCalledWith(
+        'graphify',
+        'build.py',
+        expect.stringContaining('print(2)'),
+      );
+      // The skill-level save would have written this into SKILL.md.
+      expect(saveSkill).not.toHaveBeenCalled();
+    });
+
+    it('deletes the open file, not the whole skill', async () => {
+      setSkillsForTest(bundled());
+      await openBuildPy();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      const ask = screen.getByRole('alertdialog', { name: /Delete build\.py/ });
+      // Scoped to the question: the editor footer still carries its own
+      // Delete, and clicking the wrong one would prove nothing.
+      await userEvent.click(within(ask).getByRole('button', { name: 'Delete' }));
+
+      expect(removeSkillFile).toHaveBeenCalledWith('graphify', 'build.py');
+      expect(deleteSkill).not.toHaveBeenCalled();
+    });
+
+    it('renames the open file inside the bundle', async () => {
+      setSkillsForTest(bundled());
+      await openBuildPy();
+
+      await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
+      const ask = screen.getByRole('alertdialog', { name: /Rename build\.py/ });
+      const box = within(ask).getByRole('textbox');
+      await userEvent.clear(box);
+      await userEvent.type(box, 'scripts/build.py');
+      await userEvent.click(within(ask).getByRole('button', { name: 'Rename' }));
+
+      expect(moveSkillFile).toHaveBeenCalledWith(
+        'graphify',
+        'build.py',
+        'scripts/build.py',
+      );
+    });
+
+    it('offers no Rename for a SKILL.md, whose name is its frontmatter', async () => {
+      setSkillsForTest(bundled());
+
+      render(<SkillsSection />);
+      await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+      await screen.findByLabelText('Skill source');
+
+      expect(screen.queryByRole('button', { name: 'Rename' })).toBeNull();
+    });
+
+    it('creates a file and opens it empty', async () => {
+      setSkillsForTest(bundled());
+
+      render(<SkillsSection />);
+      await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+      await userEvent.click(screen.getByRole('button', { name: '+ Add' }));
+      await userEvent.click(screen.getByRole('button', { name: 'New file' }));
+      await userEvent.type(
+        screen.getByRole('textbox', { name: 'New file' }),
+        'refs/schema.json',
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+      // Empty, not templated: this pane cannot know the file type, and only
+      // the shebang rule in main cares.
+      expect(writeSkillFile).toHaveBeenCalledWith(
+        'graphify',
+        'refs/schema.json',
+        '',
+      );
+    });
+
+    /**
+     * `newFile`'s `act` used to call `writeSkillFile(name, path, '')` with no
+     * existence check at all, so typing *any* path already in the bundle —
+     * including `SKILL.md`, which main's own `writeFile` guard now refuses
+     * separately — emptied that file (HIVE-148 review, finding 1's renderer
+     * half). Refused here, before the channel is ever reached, the same way
+     * every other refusal in this pane is: reported into `error`.
+     */
+    it('refuses New file over a path already in the bundle, rather than emptying it', async () => {
+      setSkillsForTest(bundled());
+
+      render(<SkillsSection />);
+      await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+      await userEvent.click(screen.getByRole('button', { name: '+ Add' }));
+      await userEvent.click(screen.getByRole('button', { name: 'New file' }));
+      await userEvent.type(
+        screen.getByRole('textbox', { name: 'New file' }),
+        'build.py',
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+      expect(writeSkillFile).not.toHaveBeenCalled();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        '"build.py" already exists in this skill.',
+      );
+    });
+
+    it('refuses New file over SKILL.md by name, not only through main', async () => {
+      setSkillsForTest(bundled());
+
+      render(<SkillsSection />);
+      await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+      await userEvent.click(screen.getByRole('button', { name: '+ Add' }));
+      await userEvent.click(screen.getByRole('button', { name: 'New file' }));
+      await userEvent.type(
+        screen.getByRole('textbox', { name: 'New file' }),
+        'SKILL.md',
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+      expect(writeSkillFile).not.toHaveBeenCalled();
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        '"SKILL.md" already exists in this skill.',
+      );
+    });
+  });
+
+  /**
+   * A rejected read used to leave the pane on its own placeholder text with
+   * no error and no way out (HIVE-148 review, finding 4). `readSkillFile`
+   * resolves `null` for a channel that threw — `EISDIR` through a symlink
+   * `bundle.ts` used to call a file, `ENOENT` through a dangling one,
+   * `OutsideSkillError` through one resolving outside the bundle — and every
+   * caller had already cleared the buffer before the read settled.
+   */
+  it('reports a failed file read into the error line', async () => {
+    readSkillFile.mockImplementation((name: string, path: string) => {
+      if (path === 'build.py') return Promise.resolve(null);
+      return Promise.resolve({
+        name,
+        path,
+        absPath: `/home/u/.hive/skills/${name}/${path}`,
+        size: file(name).length,
+        body: file(name),
+        refused: null,
+      });
+    });
+    setSkillsForTest(
+      snapshot({
+        skills: [
+          {
+            name: 'graphify',
+            description: 'does a thing',
+            valid: true as const,
+            manifest: {
+              entries: [
+                { path: 'SKILL.md', kind: 'file', size: 10, executable: false, excluded: null },
+                { path: 'build.py', kind: 'file', size: 10, executable: false, excluded: null },
+              ],
+              capped: null,
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+    await userEvent.click(screen.getByRole('button', { name: /build\.py/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '"build.py" could not be read.',
+    );
+    // The empty-state placeholder, not a stale editor over a file that
+    // failed to load.
+    expect(
+      screen.getByText('Select a skill, or write a new one.'),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * `prompt` and `pending` used to render only inside the `buffer !== null`
+   * branch, so once a failed read left `buffer` `null`, `+ Add → New file`
+   * set state that had nowhere to render (HIVE-148 review, finding 4). Both
+   * now sit beside the placeholder as well as the editor.
+   */
+  it('still offers the New file prompt after a failed read left the editor empty', async () => {
+    readSkillFile.mockResolvedValueOnce(null);
+    setSkillsForTest(
+      snapshot({
+        skills: [
+          {
+            name: 'graphify',
+            description: 'does a thing',
+            valid: true as const,
+            manifest: { entries: [], capped: null },
+          },
+        ],
+      }),
+    );
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+    await screen.findByRole('alert');
+    expect(
+      screen.getByText('Select a skill, or write a new one.'),
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New file' }));
+
+    expect(
+      screen.getByRole('textbox', { name: 'New file' }),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * `drilled` and `openPath` used to stay set once the skill under an open
+   * *bundle file* left the valid list — removed, or renamed out from under
+   * itself — so `inFile` kept answering as though that file were still open,
+   * and Save/Delete kept targeting a skill no longer on screen (HIVE-148
+   * review, finding 6).
+   *
+   * Scoped to a bundle file deliberately, not to `SKILL.md`: HIVE-99's own
+   * "follows a move that landed before the write failed" test above depends
+   * on the opposite there, and has its own coverage for it.
+   */
+  it('backs out of a drill-in when a bundle file it has open loses its skill', async () => {
+    setSkillsForTest(
+      snapshot({
+        skills: [
+          {
+            name: 'graphify',
+            description: 'does a thing',
+            valid: true as const,
+            manifest: {
+              entries: [
+                { path: 'SKILL.md', kind: 'file', size: 10, executable: false, excluded: null },
+                { path: 'build.py', kind: 'file', size: 10, executable: false, excluded: null },
+              ],
+              capped: null,
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+    await userEvent.click(screen.getByRole('button', { name: /build\.py/ }));
+    await screen.findByLabelText('Skill source');
+
+    // Simulate a sync that no longer reports this skill at all — removed, or
+    // renamed away, by any route. Another skill is left in the snapshot so
+    // the pane stays on its ordinary two-column layout rather than the
+    // separate "write your first skill" screen, which is not what this test
+    // is for. The list column swaps back on its own, just from `drilledSkill`
+    // going `undefined` — that much happened before this fix too.
+    setSkillsForTest(withSkills('other'));
+
+    /*
+      What the fix actually changes: without it, `drilled` and `openPath`
+      stayed set to `graphify`/`build.py`, so the editor kept showing that
+      stale buffer beside a list that no longer named the skill — a Save or
+      Delete from there would still address a bundle not on screen. `buffer`
+      only clears once the effect fires, hence the poll.
+    */
+    await expect
+      .poll(() => screen.queryByLabelText('Skill source'))
+      .toBeNull();
+    expect(
+      screen.getByText('Select a skill, or write a new one.'),
+    ).toBeInTheDocument();
+  });
+
+  it('counts the files the delete confirm will remove', async () => {
+    setSkillsForTest(
+      snapshot({
+        skills: [
+          {
+            name: 'graphify',
+            description: 'does a thing',
+            valid: true as const,
+            manifest: {
+              entries: [
+                { path: 'SKILL.md', kind: 'file', size: 10, executable: false, excluded: null },
+                { path: 'scripts', kind: 'directory', size: 0, executable: false, excluded: null },
+                { path: 'scripts/a.py', kind: 'file', size: 10, executable: true, excluded: null },
+                { path: 'refs.json', kind: 'file', size: 10, executable: false, excluded: null },
+              ],
+              capped: null,
+            },
+          },
+        ],
+      }),
+    );
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/graphify' }));
+    await screen.findByLabelText('Skill source');
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    /*
+      Three files, not four: the directory is not one. "Removes the folder"
+      was accurate when a skill was a single file, and is not a sentence to
+      show someone about to delete a bundle.
+    */
+    expect(screen.getByText(/Removes 3 files/)).toBeInTheDocument();
   });
 
   it('starts a new skill from a template with a blank name', async () => {
@@ -230,32 +659,42 @@ describe('SkillsSection', () => {
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     appendSurfaceText('Skill source', ' more');
-    readSkill.mockClear();
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    readSkillFile.mockClear();
+    await leaveBundle();
 
     expect(
       screen.getByRole('alertdialog', { name: /Discard changes/ }),
     ).toBeInTheDocument();
     // The switch has not happened yet — that is the whole point of asking.
-    expect(readSkill).not.toHaveBeenCalled();
+    expect(readSkillFile).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
 
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(readSkill).not.toHaveBeenCalled();
+    expect(readSkillFile).not.toHaveBeenCalled();
   });
 
-  it('switches after the discard is confirmed', async () => {
+  it('returns to the list after the discard is confirmed, and switches from there', async () => {
+    /*
+      What the confirm resumes is the action it interrupted, which is now
+      *leaving the bundle* rather than opening another skill. So discarding
+      lands on the list, and picking the next skill is the ordinary click it
+      always was — one question, then a normal pane.
+    */
     setSkillsForTest(withSkills('standup', 'triage'));
 
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     appendSurfaceText('Skill source', ' more');
-    readSkill.mockClear();
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    readSkillFile.mockClear();
+    await leaveBundle();
     await userEvent.click(screen.getByRole('button', { name: 'Discard' }));
 
-    expect(readSkill).toHaveBeenCalledWith('triage');
+    expect(readSkillFile).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+
+    expect(readSkillFile).toHaveBeenCalledWith('triage', 'SKILL.md');
   });
 
   it('switches without asking when nothing is dirty', async () => {
@@ -264,10 +703,10 @@ describe('SkillsSection', () => {
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     await screen.findByLabelText('Skill source');
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    await switchTo('triage');
 
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(readSkill).toHaveBeenCalledWith('triage');
+    expect(readSkillFile).toHaveBeenCalledWith('triage', 'SKILL.md');
   });
 
   it('claims Escape, so backing out of a confirm does not close settings', async () => {
@@ -281,7 +720,7 @@ describe('SkillsSection', () => {
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     appendSurfaceText('Skill source', ' more');
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    await leaveBundle();
 
     expect(screen.getByRole('alertdialog')).toHaveAttribute('data-escape-scope');
   });
@@ -394,7 +833,7 @@ describe('SkillsSection', () => {
       which could be the first row's body under the second row's name.
     */
     let resolveFirst: (file: unknown) => void = () => undefined;
-    readSkill.mockImplementation((name: string) => {
+    readSkillFile.mockImplementation((name: string, path: string) => {
       if (name === 'standup') {
         return new Promise((resolve) => {
           resolveFirst = resolve;
@@ -402,15 +841,18 @@ describe('SkillsSection', () => {
       }
       return Promise.resolve({
         name,
+        path,
+        absPath: `/home/u/.hive/skills/${name}/${path}`,
+        size: file(name).length,
         body: file(name),
-        path: `/home/u/.hive/skills/${name}/SKILL.md`,
+        refused: null,
       });
     });
     setSkillsForTest(withSkills('standup', 'triage'));
 
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    await switchTo('triage');
     await screen.findByLabelText('Skill source');
     expect(surfaceText('Skill source')).toBe(file('triage'));
 
@@ -453,7 +895,7 @@ describe('SkillsSection', () => {
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     const box = await screen.findByLabelText('Skill source');
     appendSurfaceText('Skill source', ' more');
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    await leaveBundle();
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
 
     // The caret is in CodeMirror's content, which is where it really is when
@@ -806,7 +1248,7 @@ describe('SkillsSection renaming', () => {
     render(<SkillsSection />);
     await userEvent.click(screen.getByRole('button', { name: '/standup' }));
     appendSurfaceText('Skill source', ' more');
-    await userEvent.click(screen.getByRole('button', { name: '/triage' }));
+    await leaveBundle();
     expect(
       screen.getByRole('alertdialog', { name: /Discard changes/ }),
     ).toBeInTheDocument();
@@ -816,5 +1258,44 @@ describe('SkillsSection renaming', () => {
     expect(
       screen.getByRole('alertdialog', { name: /Discard changes/ }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * `skills:file:import` while attached to someone else's Hive (HIVE-144) —
+ * see `WINDOW_BOUND` (`electron/shared/remote-contract.ts`). Wired through
+ * `SkillsSection`'s own `useRemoteCapabilities()` call, distinct from the
+ * `SkillBundle` unit test, which only proves the button obeys a prop it is
+ * handed directly.
+ */
+describe('SkillsSection — attached to a remote server', () => {
+  afterEach(() => {
+    resetProjectConfig();
+    resetSkills();
+    vi.clearAllMocks();
+  });
+
+  it('disables Add from your computer and never opens the picker', async () => {
+    setProjectConfigForTest({
+      ...emptySnapshot('/tmp/hive/config.json'),
+    });
+    // Attached is a runtime fact, never a config one: while attached
+    // `config:get` is answered by the server, whose own `remote.mode`
+    // reads 'local' (HIVE-144 review, C1).
+    setAttachedServerForTest('mini.tail1234.ts.net');
+    setSkillsForTest(withSkills('standup'));
+
+    render(<SkillsSection />);
+    await userEvent.click(screen.getByRole('button', { name: '/standup' }));
+    await userEvent.click(screen.getByRole('button', { name: '+ Add' }));
+
+    const button = screen.getByRole('button', {
+      name: 'Add from your computer',
+    });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', REMOTE_DISABLED_REASON.importSkillFiles);
+
+    await userEvent.click(button);
+    expect(importIntoSkill).not.toHaveBeenCalled();
   });
 });

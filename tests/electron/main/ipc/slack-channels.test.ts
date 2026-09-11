@@ -64,6 +64,7 @@ vi.mock('electron', () => ({
     },
     on: vi.fn(),
     removeHandler: vi.fn(),
+    removeAllListeners: vi.fn(),
   },
   session: { defaultSession: { webRequest: { onHeadersReceived: vi.fn() } } },
 }));
@@ -81,6 +82,7 @@ vi.mock('../../../../electron/main/pty-host', () => ({
     onSpawned: () => () => {},
     onError: () => () => {},
     onSessionLost: () => () => {},
+    onForeground: () => () => {},
     shutdown: async () => {},
     isRunning: () => true,
     isBlocked: () => false,

@@ -32,15 +32,19 @@ import type {
 } from './agent-contract';
 import type {
   AddProjectRequest,
+  BrowseDirRequest,
+  BrowseListing,
   CloneDoneEvent,
   CloneRequest,
   CloneStartResult,
   CommandDiagnostic,
   ConfigSnapshot,
+  DeviceNameRequest,
   DiagnoseCommandRequest,
   DiagnoseEnvRequest,
   EnvDiagnostic,
   PathProbe,
+  RemotePairRequest,
   RemoveProjectRequest,
   RenameProjectRequest,
   ReorderProjectsRequest,
@@ -50,6 +54,7 @@ import type {
   JiraIssueRequest,
   JiraSearchRequest,
   JiraTransitionsRequest,
+  RemoteConfig,
   RepointProjectRequest,
   SetJiraRequest,
   SetJiraTokenRequest,
@@ -57,7 +62,10 @@ import type {
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
+  SetRemoteRequest,
+  SetRemoteResult,
   SetRuntimeRequest,
+  SetServerRequest,
   SetSlackRequest,
   SetSlackTokensRequest,
 } from './config-contract';
@@ -107,9 +115,11 @@ import type {
   SessionBranchEvent,
   SessionClearedEvent,
   SessionFinishedEvent,
+  SessionForegroundEvent,
   SessionReadyEvent,
   SessionNameEvent,
   SessionStatusEvent,
+  SessionTerminalEndedEvent,
   SessionTicketIntentEvent,
 } from './session-contract';
 import type {
@@ -119,7 +129,12 @@ import type {
 } from './session-history-contract';
 import type {
   SkillFile,
+  SkillFileRead,
+  SkillFileWriteRequest,
+  SkillImportRequest,
+  SkillMoveRequest,
   SkillNameRequest,
+  SkillPathRequest,
   SkillRenameRequest,
   SkillWriteRequest,
   SkillsSnapshot,
@@ -131,7 +146,6 @@ import type {
   SlackStatus,
   SlackTokensState,
 } from './slack-contract';
-import type { PickedTheme, SaveThemeRequest } from './theme-contract';
 import type { UpdateStatus } from './update-contract';
 
 export const CH = {
@@ -139,6 +153,17 @@ export const CH = {
   configReload: 'config:reload',
   /** Story 101's three mutating channels. All `invoke` — each needs a result. */
   configChooseDirectory: 'config:choose-directory',
+  /**
+   * HIVE-146's server-side browser. `invoke` — it answers with a listing.
+   *
+   * Answered by whichever machine holds the filesystem, which while attached
+   * is the server. That is the whole point of it existing beside
+   * `configChooseDirectory` rather than replacing it: the dialog cannot be
+   * answered there at all, so it stays in `WINDOW_BOUND` and the renderer asks
+   * this instead. Locally the dialog is still the better experience and is
+   * still what runs.
+   */
+  configBrowseDirectory: 'config:browse-directory',
   configAddProject: 'config:add-project',
   configRemoveProject: 'config:remove-project',
   /**
@@ -211,7 +236,7 @@ export const CH = {
   /**
    * What the login-shell import did — and nothing about `gh`.
    *
-   * Its own verb for the same reason {@link CH.notificationsSupported} is one:
+   * Its own verb for the same reason {@link CH.notificationsDelivery} is one:
    * {@link CH.integrationsStatus} already carries this field, and that handler
    * **executes `gh`** through `spawnSync`. Settings → Runtime needs the
    * environment and not the binary, so reading it off the integrations verb
@@ -243,13 +268,159 @@ export const CH = {
    */
   configSetSlack: 'config:set-slack',
   /**
-   * The container host alias (HIVE-131).
+   * The container host alias, and where the receiver listens (HIVE-131, HIVE-134).
    *
    * A `config:` channel because it writes the config file and returns the fresh
-   * snapshot, like every other settings verb. What it sets is a *name*, never an
-   * address with a port — the port is the receiver's, assigned at bind time.
+   * snapshot, like every other settings verb. Two fields, and they are not
+   * equally mild — read both, because an earlier draft of this comment claimed
+   * the whole verb was inert and that was simply false.
+   *
+   * `hostAlias` **names a network destination**, and was the first verb on this
+   * bridge to do so. It stores the hostname a containerised session uses to
+   * address this app; from HIVE-132 it is the host in `HIVE_RECEIVER_URL`, and
+   * `agents/waker.ts` hands a session `HIVE_HOOK_TOKEN` alongside that URL. So a
+   * renderer able to call this verb with `evil.com` redirects authenticated hook
+   * traffic. A well-formed hostname is enough; no delimiter trick is needed.
+   * What bounds it is `assertHostAlias`, sharing one per-label allowlist
+   * (`isHostAlias`) with the file reader, so no scheme, port, path, credentials
+   * or authority-terminating delimiter survives.
+   *
+   * `bind` **changes the listening surface**, which nothing on this bridge could
+   * do before HIVE-134. A renderer that sets `bind.host` to a routable address
+   * moves the receiver off loopback at the app's next launch — not immediately,
+   * because a socket already listening cannot be moved. Three things bound it:
+   * the same `isHostAlias` predicate, so the value is a host and never a URL; the
+   * next-launch delay, so the change is not silent to a user who is looking; and
+   * the header's exposure chip, which reads `receiverBoundHost` off `AppInfo` — the
+   * receiver's *running* bind, not this config's snapshot of it — and so says the
+   * receiver is exposed for exactly as long as it is, including the session
+   * between toggling this switch off and the next launch that would actually
+   * close the wider socket (HIVE-134). The guards `reject` applies — a
+   * timing-safe token compare and an Origin and Host allowlist on every route —
+   * do not depend on this value and hold at every bind.
+   *
+   * Neither field names a *file*: the one file this bridge can write is still
+   * chosen by main, as for every verb on this list.
    */
   configSetReceiver: 'config:set-receiver',
+  /**
+   * Whether the server is on and where it listens (HIVE-142).
+   *
+   * A `config:` channel for the same reason every other settings verb is one:
+   * it writes the config file and returns the fresh snapshot. There is
+   * deliberately no credential field here — pairing mints one, and this verb
+   * only ever writes what {@link ConfigSnapshot.server} already resolves to.
+   *
+   * `bind` **changes the listening surface**, exactly as {@link
+   * CH.configSetReceiver}'s does, and for the identical reason takes effect
+   * only at the next launch — a socket already listening cannot be moved.
+   */
+  configSetServer: 'config:set-server',
+  /**
+   * Mint a device credential, and hand back its plaintext once (HIVE-142).
+   *
+   * Its own namespace rather than `config:`, because it does not merely write
+   * the config file — it returns a secret. The server stores only the
+   * digest; this is the one moment the plaintext exists on this side of the
+   * bridge, and it is never written into the config, a store, or a log.
+   *
+   * This is the same register as `agents:run`: whoever holds this device's
+   * token can reach the entire IPC surface as though sitting at this
+   * console. Read the doc on `CHANNEL_AUTHORIZATION` before touching its
+   * grade.
+   */
+  serverPair: 'server:pair',
+  /**
+   * Revoke a paired device by name (HIVE-142).
+   *
+   * The mirror of {@link CH.serverPair} — destroying a credential is the same
+   * register as minting one, because both decide whether a device can reach
+   * every session on this machine.
+   */
+  serverRevoke: 'server:revoke',
+  /**
+   * Whether this window is a client and where it attaches (HIVE-144).
+   *
+   * `config:` for the same reason {@link CH.configSetServer} is one: it writes
+   * the config file and returns the fresh snapshot, and only ever writes what
+   * {@link ConfigSnapshot.remote} already resolves to. There is deliberately
+   * no credential field here, for the identical reason `config:set-server`
+   * carries none — the token this verb's host block would need is
+   * `remote:pair`'s job, stored in `safeStorage`, never in this file.
+   */
+  configSetRemote: 'config:set-remote',
+  /**
+   * This machine's own `remote` block, whichever mode it is bound in
+   * (HIVE-149) — {@link CH.configSetRemote}'s read half.
+   *
+   * {@link CH.configGet} cannot answer this. While attached it is proxied by
+   * design — Settings names the machine whose config it is editing, and that is
+   * the far end — so the `remote` block it returns describes the *server*,
+   * whose own `mode` reads `local` because the server is the thing being
+   * attached to. The attach half of Settings therefore wrote a config through
+   * `config:set-remote` (`PROCESS_LOCAL` since Ruling 28) that it could not
+   * read back, and hid the address and the port rather than show the far end's
+   * values under a control that writes locally.
+   *
+   * On `PROCESS_LOCAL` for the same reason its writer is: "where would this
+   * window dial next" is a question about this process, not about the fleet it
+   * may be driving. It carries no credential, because `RemoteConfig` holds
+   * none and never will.
+   */
+  configGetRemote: 'config:get-remote',
+  /**
+   * Store the device credential this machine was handed by someone else's
+   * server (HIVE-144).
+   *
+   * **Not** the other direction from {@link CH.serverPair}, which mints a
+   * credential *on* this machine *for* a device it is admitting — this one
+   * takes a credential *given to* this machine so it can attach *outward*,
+   * as a client, to a server elsewhere. Two verbs named "pair" pointing
+   * opposite ways would read as one feature; they are two, hence the
+   * separate `remote:` namespace rather than reusing `server:pair`'s name or
+   * folding this into `config:set-remote` above.
+   *
+   * The plaintext token this payload carries goes to `electron/remote-client/
+   * token-store.ts`'s `safeStorage`-encrypted file and nowhere else — not the
+   * config, not a log line. See that module's own doc comment, which quotes
+   * `server/devices.ts:17-19` on where a token's plaintext is ever allowed to
+   * exist.
+   */
+  remotePair: 'remote:pair',
+  /**
+   * Forget the credential {@link CH.remotePair} stored (HIVE-144).
+   *
+   * The mirror of {@link CH.remotePair} on this machine's own side, and
+   * **not** {@link CH.serverRevoke} — revoking is the *far* server's decision
+   * about *this* device; forgetting is this device discarding what it was
+   * given, which it can do unilaterally and which does not, by itself, revoke
+   * anything on the server that issued the credential.
+   */
+  remoteForget: 'remote:forget',
+  /**
+   * What this window's attachment is doing right now (HIVE-150).
+   *
+   * A **push**, for the reason {@link CH.slackSocketStatus} is one: the socket
+   * changes state on its own, and until this existed nothing told a renderer
+   * that it had. `AppInfo.attachedServerName` is the runtime truth but it is
+   * read on demand, and `useAttachedServer` re-read it only when a
+   * `ConfigSnapshot` changed — so a socket that died without a config write
+   * left the header chip claiming an attachment indefinitely, which is the
+   * defect this story exists to close.
+   *
+   * **Emitted by this process, and never accepted from the socket.** The
+   * server's own link status is a fact about the server's attachments, not
+   * about this window's, and forwarding one would be the same class of defect
+   * `PROCESS_LOCAL` closed for `app:info` — where an attached client's About
+   * box reported the *server's* Electron version as its own.
+   *
+   * The payload is `RemoteLinkStatus | null`, and the `null` is load-bearing:
+   * it is what a window is told when it goes **local**. Without it a detach
+   * left the last `attached` status standing, so every consumer went on naming
+   * a machine this window had deliberately stopped driving — the same staleness
+   * this channel exists to end, arriving through the other door.
+   */
+  remoteLinkStatus: 'remote:link-status',
   /**
    * The Jira credential and the connection test (HIVE-67).
    *
@@ -323,8 +494,8 @@ export const CH = {
    * A **push**, not a verb (HIVE-124).
    *
    * Deliberately not folded into {@link CH.integrationsStatus}, which carries
-   * `gh` / `loginEnv` / `notificationsSupported` and has no Slack field. The
-   * ticket named that channel; it is not the one Slack uses.
+   * `gh` / `loginEnv` and has no Slack field. The ticket named that channel;
+   * it is not the one Slack uses.
    *
    * A push because the socket changes state on its own — Slack drops a
    * connection, a token stops working, the last subscribing agent is paused —
@@ -396,6 +567,33 @@ export const CH = {
    * the app to learn nothing almost every time.
    */
   notificationsNew: 'notifications:new', // main → renderer
+  /**
+   * Raise an OS notification **on the machine receiving this** (HIVE-145).
+   * main → renderer, and main → attached client.
+   *
+   * Distinct from {@link CH.notificationsNew}, which is the inbox row and goes
+   * to every surface. This is the *interruption*, and it goes only to surfaces
+   * that are not already looking at the session it is about — so two attached
+   * devices can get different answers about the same notification, which one
+   * push could not express.
+   *
+   * It exists because the toast used to be raised by the process that decided
+   * to raise it. In server mode that is the mini, whose desktop nobody is at:
+   * the row reached the laptop and the interruption did not.
+   *
+   * Carries an `id` and an `action` rather than a callback, because no closure
+   * crosses a socket. The receiver raises the notification locally and, on a
+   * click, sends the same two effects the local path has — activate the action,
+   * dismiss the row — back through the channels that already exist for them.
+   *
+   * **Not in {@link EVENT_CHANNELS}**, and for the reason the three
+   * `notifications:*` pushes are not: that array is what main pushes to a
+   * *renderer*, and this is answered by the receiving **main process** — it
+   * raises an Electron `Notification`, which a renderer cannot do. It is graded
+   * `event` in `FRAME_KIND` all the same, which is what carries it over a
+   * socket.
+   */
+  notificationsToast: 'notifications:toast', // main → main, and main → attached client
   /**
    * The buffer, newest first.
    *
@@ -482,6 +680,20 @@ export const CH = {
    */
   notificationsDelivery: 'notifications:delivery',
   /**
+   * The unread count this window's inbox is showing, renderer → main, for this
+   * machine's dock badge (HIVE-159).
+   *
+   * Needed only while attached. There no hub runs in this process, so nothing
+   * in main knows the count; the server's hub computes it from the same rows
+   * the renderer already holds. In local mode the hub writes the badge itself
+   * and the local handler ignores this report.
+   *
+   * `PROCESS_LOCAL`: the badge belongs to the dock of the machine that asked.
+   * Proxied, it would badge the server's dock on the client's behalf, which is
+   * the defect this channel exists to end.
+   */
+  notificationsBadge: 'notifications:badge',
+  /**
    * Do what a clicked notification says to do.
    *
    * The renderer used to handle a clicked row itself, which worked for exactly
@@ -562,6 +774,8 @@ export const CH = {
   ptyLost: 'pty:lost', // main → renderer
   /** Kill, wait for the exit, spawn fresh, bootstrap again (story 096). */
   ptyRestart: 'pty:restart',
+  /** A plain login shell with no Claude typed into it (terminals). */
+  ptySpawnTerminal: 'pty:spawn-terminal',
   /**
    * What a real session is doing, derived in main (story 096).
    *
@@ -653,6 +867,8 @@ export const CH = {
    * carries rate limits at all.
    */
   sessionMetrics: 'session:metrics', // main → renderer
+  sessionForeground: 'session:foreground', // main → renderer
+  sessionTerminalEnded: 'session:terminal-ended', // main → renderer
   /**
    * The fleet as it was when the app last closed (HIVE-87).
    *
@@ -726,14 +942,33 @@ export const CH = {
   fsUnwatch: 'fs:unwatch',
   fsChanged: 'fs:changed', // main → renderer
   /**
-   * Custom skills (HIVE-96, HIVE-99). Five verbs, and not one of them takes a
-   * path.
+   * Custom skills (HIVE-96, HIVE-99, HIVE-148).
    *
-   * Stricter than the `fs` block above, which has to admit a project-relative
-   * path because the explorer navigates a tree. A skill request names a
-   * **skill**, and main already knows the one directory skills live in — see
-   * `skills-contract.ts` for why that makes traversal unrepresentable rather
-   * than merely filtered. `skills:rename` names two of them and still no path.
+   * This block used to say that five verbs lived here and not one of them
+   * took a path. That was true while a skill was one file. A skill is now a
+   * folder, and a pane that can author every file in one cannot address them
+   * by anything but a path — so five of the **twelve channels** below still
+   * name only a **skill** (`list`, `read`, `write`, `remove`, `rename`, the
+   * original set, stricter than the `fs` block above because
+   * `SKILL_NAME_PATTERN` makes traversal unrepresentable rather than merely
+   * filtered) and **seven carry a path**: skill-relative, or, for
+   * `skillsFileDrop` alone, an absolute one. (`pathToken` — the sixth of
+   * `BRIDGE_SKILLS_KEYS`'s thirteen bridge keys — is not a channel at all; it
+   * never crosses IPC, so it does not appear in this list.)
+   *
+   * The bound for those seven is not the shape of the payload: `assertSkillPath`
+   * (five of them) and `assertSkillDir` (`skillsFileImport`, `skillsFileDrop`)
+   * refuse a `..` segment and cap the depth, but a symlink is a fact about the
+   * disk, not the string. `resolveInSkill`'s `realpath` containment check in
+   * `electron/main/skills/paths.ts` is the layer that actually holds a bundle
+   * holding `escape -> /etc` inside its own folder — see `skills-contract.ts`
+   * for the full argument, which this block matches rather than repeats.
+   *
+   * `skillsFileDrop`'s `sources` are the one field in this whole namespace
+   * that is an absolute path, and only preload can produce one — see
+   * `BRIDGE_SKILLS_KEYS` for how the renderer is kept from forging one.
+   * `skillsFileImport` carries no source at all: main opens a native dialog
+   * and chooses for itself.
    *
    * No event channel. A write is request/response and answers with the fresh
    * snapshot, the way the config's mutating verbs do; the Settings pane is the
@@ -744,6 +979,13 @@ export const CH = {
   skillsWrite: 'skills:write',
   skillsRemove: 'skills:remove',
   skillsRename: 'skills:rename',
+  skillsFileRead: 'skills:file:read',
+  skillsFileWrite: 'skills:file:write',
+  skillsFileMkdir: 'skills:file:mkdir',
+  skillsFileRemove: 'skills:file:remove',
+  skillsFileMove: 'skills:file:move',
+  skillsFileImport: 'skills:file:import',
+  skillsFileDrop: 'skills:file:drop',
   /**
    * Agent definitions — the same five verbs as `skills`, and one more thing
    * (HIVE-114).
@@ -824,12 +1066,6 @@ export const CH = {
   agentsLines: 'agents:lines',
   appInfo: 'app:info',
   /**
-   * HIVE-80's two verbs. Neither takes a destination path — the dialog chooses
-   * it — so the epic's "no verb takes a destination path" rule still holds by
-   * construction.
-   */
-  themePick: 'theme:pick',
-  themeSave: 'theme:save',
   /**
    * Which session's terminal is on the centre stage, renderer → main (HIVE-81).
    *
@@ -899,6 +1135,8 @@ export const EVENT_CHANNELS = [
   CH.sessionBranch,
   CH.sessionTicketIntent,
   CH.sessionMetrics,
+  CH.sessionForeground,
+  CH.sessionTerminalEnded,
   CH.configCloneDone,
   CH.notificationsActivate,
   CH.fsChanged,
@@ -967,6 +1205,24 @@ export interface SpawnRequest {
   resume?: boolean;
 }
 
+/**
+ * A terminal spawn (terminals).
+ *
+ * The project, a size, and — for "terminal here" — the directory to start in.
+ * `cwd` is optional because every other entry point means the project's path,
+ * and absent is how they say so; when present it is a session's observed
+ * working directory, which differs from the project path exactly when the
+ * session has moved into a worktree. There is still no task, model, effort,
+ * name or resume — the guard refuses each.
+ */
+export interface SpawnTerminalRequest {
+  sessionId: string;
+  projectId: string;
+  cols: number;
+  rows: number;
+  cwd?: string;
+}
+
 export interface WriteRequest {
   sessionId: string;
   data: string;
@@ -996,6 +1252,22 @@ export interface DataEvent {
    * this file was quietly the one exception to.
    */
   seq: number;
+  /**
+   * Which live process `seq` counts within, for this entity (HIVE-144).
+   *
+   * `seq` alone cannot answer that: a restart mints a fresh pty session and
+   * `emptyChannel()` resets its `seq` to 0, so generation 2's batch 41 and
+   * generation 1's batch 41 are indistinguishable by `seq` and `sessionId`
+   * (the entity id survives the restart unchanged) alone. `gen` is the field
+   * that lets a client reattaching after a disconnect tell "the process I was
+   * reading is still running" from "the process I was reading is gone and a
+   * new one has taken its id" — see `electron/main/sessions/registry.ts`'s
+   * `generationFor` and `electron/main/sessions/index.ts`'s `resume` for where
+   * that check happens. Monotonic per entity, and it changes on every
+   * restart; it does not change within a generation, including across a
+   * reconnect that only misses `seq`s.
+   */
+  gen: number;
 }
 
 /**
@@ -1146,8 +1418,16 @@ export interface LoginEnvStatus {
 /**
  * Answer to {@link CH.integrationsStatus}.
  *
- * All three facts in one round trip because the section needs them together on
+ * Both facts in one round trip because the section needs them together on
  * open, and separate verbs would paint the pane in stages.
+ *
+ * Deliberately does **not** carry `Notification.isSupported()` (HIVE-157).
+ * That fact is about the OS of whichever process answers, and this channel is
+ * proxied to the server while attached — a client would get the server's
+ * machine's answer for a question about its own. {@link CH.notificationsDelivery}
+ * already carries it, is already `PROCESS_LOCAL`, and was already split out for
+ * the same reason, so the field had somewhere to go rather than needing a new
+ * verb.
  */
 export interface IntegrationsStatus {
   gh: GhStatus;
@@ -1157,12 +1437,6 @@ export interface IntegrationsStatus {
    * the two are read as one sentence or not at all.
    */
   loginEnv: LoginEnvStatus;
-  /**
-   * `Notification.isSupported()`. False on a Linux box with no notification
-   * daemon, where the switches must be replaced by an explanation rather than
-   * left as controls that quietly do nothing.
-   */
-  notificationsSupported: boolean;
 }
 
 /**
@@ -1203,6 +1477,93 @@ export type NotificationActivateEvent =
   /** An ask was clicked (HIVE-118). Its card lives in the inbox. */
   | { type: 'ask' };
 
+/**
+ * What an attachment is doing, for {@link CH.remoteLinkStatus} (HIVE-150).
+ *
+ * Three states, because the user needs to tell "still trying" from "stopped
+ * trying" before deciding whether to work locally instead. `reconnecting` means
+ * the loop is running and the sessions on the far machine are still there;
+ * `disconnected` means it is not, and no amount of waiting will change that.
+ */
+export type RemoteLinkState = 'attached' | 'reconnecting' | 'disconnected';
+
+/**
+ * What {@link CH.configGetRemote} answers: this machine's own `remote` block,
+ * and whether a device credential is stored beside it.
+ *
+ * `paired` is a yes or no and never the credential itself (HIVE-140 audit,
+ * gap 6). Settings used to learn it only by watching a pairing succeed in the
+ * same session, so a credential paired yesterday showed no "Paired" chip. The
+ * token stays where `remote:pair` put it; no verb returns it.
+ */
+export interface LocalRemoteState extends RemoteConfig {
+  paired: boolean;
+}
+
+/** The payload {@link CH.remoteLinkStatus} pushes. */
+export interface RemoteLinkStatus {
+  state: RemoteLinkState;
+  /**
+   * The far machine's own name, kept in every state.
+   *
+   * A disconnected chip still has to say *which* machine it lost, and the
+   * client that could answer `serverName()` is gone by then.
+   */
+  serverName: string;
+  /** 0 while attached; which retry is in flight while reconnecting. */
+  attempt: number;
+  /** Epoch ms of the next retry, or `null` when no timer is pending. */
+  nextAttemptAt: number | null;
+  /** Why it stopped, set only when `state` is `'disconnected'`. */
+  reason: string | null;
+  /**
+   * Increments on every successful **re**attach, never on a first one.
+   *
+   * The renderer keys the effects that own per-surface state on it. A reconnect
+   * gets a new surface id on the server — ids come from a `WeakMap` on the
+   * socket object — and the old surface's fs watcher, foreground record and
+   * delivery focus were released when it went away. Nothing re-establishes them
+   * on its own, because the renderer never unmounted.
+   *
+   * Monotonic for the **process**, not for one reconnect loop: a detach and a
+   * fresh attach must not restart it, or re-attaching to the same server with
+   * the same project open would leave every input to those effects unchanged.
+   */
+  epoch: number;
+  /**
+   * The accept frame's snapshot, on a **re**attach only (HIVE-150).
+   *
+   * Everything the server pushed while the socket was down is simply gone: a
+   * session that ended still renders as running, notifications never reach the
+   * inbox, ledger entries and PR sweeps vanish. Terminals are covered by
+   * `resumeFrom` and per-surface state by {@link RemoteLinkStatus.epoch}; this
+   * is the third category, and without it a reconnect looks complete while the
+   * fleet on screen describes a moment that has passed.
+   *
+   * Absent on a first attach, where `config:set-remote` already carries the
+   * snapshot back through `SetRemoteResult.changed` and the store applies it
+   * there.
+   */
+  snapshot?: Readonly<Partial<Record<Channel, unknown>>>;
+  /**
+   * How many calls and keystrokes from this window failed because the link was
+   * down, since it last held (HIVE-140 audit, gap 1).
+   *
+   * A dead link used to lose them silently: the renderer's wrappers log and
+   * swallow a rejected call, and a keystroke into a still-focused terminal
+   * ended at a `console.error` in main. The reattach replays the *server's*
+   * transcript, which never held them, so nothing anywhere recorded that the
+   * input existed. Counted in main, where every proxied call and notify passes.
+   * Only what the user did counts — a keystroke, or a call that changes
+   * something — and nothing the server itself refused, which reached it.
+   *
+   * Kept through a reattach, which is exactly when the chip tells the user to
+   * redo them, and reset to 0 only when the window goes local. The chip hides
+   * what the user has already acknowledged with a click.
+   */
+  lost: number;
+}
+
 /** Answer to {@link CH.appInfo} — proves the bridge round-trips. */
 export interface AppInfo {
   /** The app version, from `package.json` via Electron. */
@@ -1230,6 +1591,174 @@ export interface AppInfo {
    * answering it, so no such button ships and this stays text.
    */
   logPath: string;
+  /**
+   * The host the hook receiver's socket is actually bound to right now, or
+   * `null` when nothing is listening (HIVE-134).
+   *
+   * It lives here rather than behind a verb of its own for the reason
+   * {@link AppInfo.logPath} does: `AppInfo` already exists "for the About box
+   * and bug reports", and this is the same kind of fact — something true of the
+   * running process, read once. What makes a one-shot read sufficient, rather
+   * than something the renderer would need to subscribe to and keep live, is
+   * the same fact that makes `receiver.bind` say "takes effect at next
+   * launch" in Settings: a listening socket cannot be moved, so **once the
+   * bind has resolved** — succeeded or failed, during main's own boot — this
+   * value cannot change again before a relaunch. That is deliberately narrower
+   * than "fixed for the life of the session": before that resolution the value
+   * genuinely is `null`, because genuinely nothing is listening yet, so a read
+   * that lands there is correct, not stale. What a one-shot reader must never
+   * see is a *wrong* answer at the moment it reads — this value transiently
+   * doing exactly that, for the length of a settings-file write that had
+   * nothing to do with the socket, was a real review finding on this field's
+   * first pass; see `createHookRuntime`'s own doc comment on `boundHost` for
+   * how main now captures it the instant its bind resolves, rather than behind
+   * anything else still in flight.
+   *
+   * **That guarantee is about this value inside main, not about when a
+   * reader on the other side of the bridge asks for it.** `hooks.start()` is
+   * fire-and-forget, so nothing here promises a renderer's read lands *after*
+   * the bind has resolved — for a hostname bind (`isHostAlias` accepts one,
+   * and Settings lets a user configure one) `listen()` waits on a DNS lookup
+   * first, and a slow resolver or an mDNS `.local` name can outlast window
+   * creation, renderer boot and the read itself. A read that lands before
+   * resolution is not wrong, exactly as the paragraph above says — it is
+   * genuinely `null` at that instant — but a **one-shot** reader that never
+   * asks again has no way to learn the bind then finished, and would report
+   * "not exposed" for a socket that plainly is. `useReceiverExposure` is the
+   * one consumer and copes with this itself, with a single bounded retry
+   * when its first read comes back `null`; see its own doc comment for why
+   * once is enough.
+   *
+   * Deliberately **not** `receiver.bind.host` off the config snapshot, which
+   * says what will be bound at the *next* launch, not what is bound *now* —
+   * the two can disagree for an entire running session (toggle the settings
+   * switch off; the snapshot updates instantly, the open socket does not) and
+   * a false "safe" reading from the gap is worse than a stale one. The header's
+   * exposure chip (`useReceiverExposure`) reads this field for exactly that
+   * reason; `container-alias-group.tsx`'s settings switch is the one place
+   * that correctly stays config-derived, because it is a control over the file,
+   * not a status readout.
+   */
+  receiverBoundHost: string | null;
+  /**
+   * The host the server-mode socket is actually bound to right now, or
+   * `null` when nothing is listening (HIVE-142).
+   *
+   * The same "running, not configured" shape as {@link AppInfo.receiverBoundHost},
+   * for the same reason: a listening socket cannot be moved, so this is what
+   * `remoteListener.start()` actually bound, not `server.bind.host` off the
+   * config snapshot. The two can disagree for an entire running session —
+   * flip `server.enabled` off in the config file and the snapshot updates on
+   * the next read, but the socket bound at this launch's boot stays open
+   * until relaunch — and a status readout has to report the one that is
+   * actually true right now.
+   *
+   * `startRemoteListener()` is fire-and-forget from `index.ts`'s boot
+   * sequence, exactly as `hooks.start()` is for the receiver, so a reader on
+   * this side of the bridge has no guarantee its read lands after the bind
+   * resolves — `server.bind.host` accepts a hostname as well as an IPv4
+   * literal, and `listen()` resolving one can outlast window creation and
+   * this value's first read. `useServerExposure` copes with that itself,
+   * the same single bounded retry `useReceiverExposure` uses; see its own
+   * doc comment for why once is enough.
+   *
+   * The one consumer is the header's serving chip (`useServerExposure`,
+   * `ServingChip`) — see that component's own doc comment for why it reads
+   * **brand**, not the amber `receiverBoundHost`'s chip spends, even though
+   * both chips are sourced the same way.
+   */
+  serverBoundHost: string | null;
+  /**
+   * How many devices are paired to this Hive's server mode, right now
+   * (HIVE-142, HIVE-144 Task 13).
+   *
+   * Read from `server.devices` on disk — `readServerDevicesFromDisk()`, the
+   * same source `createRemoteListener`'s own `devices` getter uses so a
+   * `--pair` run in another process is visible without a restart — rather
+   * than the config snapshot's cached copy, for a much smaller version of
+   * {@link AppInfo.serverBoundHost}'s own reason: a snapshot taken at launch
+   * cannot see a device paired since. The header's serving chip
+   * (`ServingChip`) is the one consumer, and trades the address
+   * `serverBoundHost` used to carry for this count — see that component's
+   * own doc comment for why the address stopped being the interesting fact.
+   */
+  servingDeviceCount: number;
+  /**
+   * The name of the server this window is attached to over a socket, or
+   * `null` in `'local'` mode (HIVE-144 Task 13).
+   *
+   * **Runtime-derived, and deliberately not `ConfigSnapshot.attachedServer`
+   * (Task 12) — read that field's own doc comment together with this one
+   * before touching either.** That field is a *control's* readout: it names
+   * the machine whose config file `config:get` is answering right now, which
+   * while attached is genuinely the far end, exactly as `RemoteConfig`'s own
+   * doc comment says. This field is a *status* readout: it names whether a
+   * socket is actually open. The two can disagree in **both** directions —
+   * Ruling 19 deliberately leaves `config.json` saying `remote` in
+   * `config.json` after an already-remote re-switch fails and rebinds local,
+   * so a config-derived chip would keep claiming an attachment that is no
+   * longer there; and, symmetrically, would deny one on the next launch
+   * before the boot attach has even been attempted. A chip sourced from this
+   * field instead is wrong in neither direction, because it says what
+   * `electron/main/ipc/router.ts`'s own `attached` variable — the socket
+   * `switchIpcMode` actually opened — is holding right now, not what the
+   * file says should be true.
+   *
+   * The name itself comes from `RemoteClient.serverName()` (Task 7), built
+   * "for the header chip": the far end's `hostname()`, handed over in the
+   * attach handshake (`AttachAccepted.serverName`), not derived from
+   * `remote.host` the way `ConfigSnapshot.attachedServer.name` has to be —
+   * config only knows the address it dials, the live socket knows the name
+   * the machine actually gave itself.
+   *
+   * The header's attached chip (`AttachedChip`, `useAttachedServer`) is the
+   * one consumer.
+   */
+  attachedServerName: string | null;
+  /**
+   * What that attachment is *doing*, for a window that has just opened
+   * (HIVE-150).
+   *
+   * {@link AppInfo.attachedServerName} answers "is a socket held", and it stays
+   * non-null through a drop and through a terminal disconnect — `attached` is
+   * only cleared by an explicit mode switch. A window that opened or reloaded
+   * mid-outage and hydrated from that field alone therefore painted a healthy
+   * brand "attached" chip over a link that was down, and in the `disconnected`
+   * case there is never another transition to correct it.
+   *
+   * So the runtime status rides along verbatim. `null` means this window has no
+   * attachment at all.
+   */
+  remoteLink: RemoteLinkStatus | null;
+  /**
+   * Whether this process was launched to serve (HIVE-144 review, I3).
+   *
+   * **Intent, not a bound socket** — which is exactly what separates it from
+   * {@link serverBoundHost} beside it. That field says a socket is listening
+   * *now*; this one says this run is a server, whether the bind has happened
+   * yet, succeeded, or failed. `--server` **or** `server.enabled`, resolved
+   * once at boot, and it never changes for the life of the process (a
+   * listening socket cannot be moved, which is why Settings says "takes
+   * effect at next launch").
+   *
+   * It exists because `RemoteConfig`'s own doc comment says an install is
+   * either the server or a client and never a hybrid, and nothing enforced
+   * it: `unbindEverything` stops and drops `remoteListener`, which is built
+   * inside `registerIpcHandlers` and started from exactly one place in
+   * `whenReady` — so a boot attach on a serving machine tore the listener
+   * down before it was ever started, and that machine stopped serving
+   * permanently, including across relaunches. The interlock is enforced in
+   * `switchIpcMode` and made visible from this field: Settings disables the
+   * attach half on a serving machine, and the serve switch on an attached
+   * one.
+   *
+   * Not sourced from `ConfigSnapshot.server.enabled`, which is the trap this
+   * whole review round is about: `config:get` is proxied while attached, so
+   * that field describes the **server's** file and reads `true` on a client
+   * attached to a real server. `AppInfo` is `PROCESS_LOCAL`, so this is
+   * answered by this process in either mode.
+   */
+  serving: boolean;
   /**
    * Per-session flow-control counters (story 093).
    *
@@ -1296,6 +1825,21 @@ export interface HiveBridge {
     reload(): Promise<ConfigSnapshot>;
     /** Native directory dialog, owned by main. Resolves null when cancelled. */
     chooseDirectory(): Promise<string | null>;
+    /**
+     * List one directory under the answering machine's home directory
+     * (HIVE-146).
+     *
+     * The only verb on this bridge that takes a path, and the exception is
+     * argued where it is enforced: `electron/main/fs/home-browse.ts`. The short
+     * version is that a folder which is not a project yet has no `projectId`
+     * to be named by, so the fence moves from "inside this project" to "inside
+     * home, proven after `realpath`" rather than disappearing.
+     *
+     * It does not widen the bridge into a general file reader: only
+     * directories are ever listed, never a file's contents, and every path it
+     * returns has already been contained.
+     */
+    browseDirectory(request: BrowseDirRequest): Promise<FsResult<BrowseListing>>;
     addProject(request: AddProjectRequest): Promise<ConfigSnapshot>;
     removeProject(request: RemoveProjectRequest): Promise<ConfigSnapshot>;
     /** Change a project's display name (story 103). The id is never touched. */
@@ -1395,6 +1939,48 @@ export interface HiveBridge {
      */
     setReceiver(request: SetReceiverRequest): Promise<ConfigSnapshot>;
     /**
+     * Turn server mode on or off, and change where it listens (HIVE-142).
+     *
+     * The one verb that touches {@link ConfigSnapshot.server} without
+     * pairing or revoking a device — see {@link HiveBridge.server} for those.
+     * `bind` takes effect at next launch, for the reason
+     * {@link HiveBridge.config.setReceiver} states for its own bind.
+     */
+    setServer(request: SetServerRequest): Promise<ConfigSnapshot>;
+    /**
+     * Turn client mode on or off, and change where it attaches (HIVE-144).
+     *
+     * {@link HiveBridge.config.setServer}'s mirror: the one verb that touches
+     * {@link ConfigSnapshot.remote} without storing or forgetting a
+     * credential — see {@link HiveBridge.remote} for those. No credential
+     * field here either, for the same reason `setServer` carries none.
+     *
+     * The one asymmetry with `setServer`, and the reason this answers a
+     * {@link SetRemoteResult} rather than a bare snapshot (HIVE-144): a
+     * listening socket cannot be moved without a relaunch, but *attaching*
+     * applies immediately. So this verb also performs the switch, and the
+     * switch can be refused — while local sessions are live, over a plaintext
+     * target, or because the far machine did not answer. `switched` is what
+     * happened; `config` is the file as it now stands, which is the old one
+     * untouched whenever `switched` is not `ok` (Ruling 19).
+     */
+    setRemote(request: SetRemoteRequest): Promise<SetRemoteResult>;
+    /**
+     * This machine's own `remote` block (HIVE-149) — {@link setRemote}'s read
+     * half.
+     *
+     * Takes no argument and carries no credential: `RemoteConfig` has never
+     * held the device token, so this returns the three fields `setRemote`
+     * writes, plus whether a credential is stored ({@link LocalRemoteState}).
+     * The credential itself is not here and never will be — see
+     * `readRemoteCredential`'s doc comment in `electron/main/ipc/index.ts`.
+     *
+     * Prefer this over {@link get}'s `remote` block anywhere the answer must
+     * describe *this* window: while attached, `config:get` is answered by the
+     * server, so its `remote` block is the far end's.
+     */
+    getRemote(): Promise<LocalRemoteState>;
+    /**
      * Show the config file in the OS file manager (story 107).
      *
      * Takes no argument: main reveals its own `configPath()`. *Reveal* rather
@@ -1425,8 +2011,80 @@ export interface HiveBridge {
     /** Returns its own unsubscribe. Callers MUST invoke it on unmount. */
     onCloneDone(callback: (event: CloneDoneEvent) => void): () => void;
   };
+  /**
+   * Pairing and revoking a device for server mode (HIVE-142).
+   *
+   * Its own namespace, not `config`, because neither verb is an ordinary
+   * settings write: `pair` mints a secret and hands back its plaintext once,
+   * and `revoke` destroys one. Both persist to the same
+   * {@link ConfigSnapshot.server.devices} list `config.setServer` can read,
+   * through the one `pairDevice`/`revokeDevice` implementation the CLI's
+   * `--pair`/`--revoke` and the server-mode tray also call.
+   */
+  server: {
+    /**
+     * Mint a device named `request.name`, and answer its plaintext token —
+     * once, and never again. The renderer must not store it, log it, or hand
+     * it to anything other than the person copying it onto the other device.
+     *
+     * `deviceId` rides alongside the token (HIVE-142 review, I5): the attach
+     * handshake needs both, and this was the only place the id was not also
+     * handed to whoever is holding the token.
+     *
+     * Refuses with `error` rather than rejecting the promise, on a duplicate
+     * name, a credential that could not be minted uniquely, or a config write
+     * that did not land (HIVE-142 review, C1) — all are things the person
+     * pairing can act on, not a broken channel.
+     */
+    pair(
+      request: DeviceNameRequest,
+    ): Promise<{ token: string; deviceId: string } | { error: string }>;
+    /**
+     * Revoke the device named `request.name`.
+     *
+     * `{ error }` on a name that matches nothing, or on a write that did not
+     * land (HIVE-142 review, I7 — same family as C1), rather than an
+     * unconditional success: the most urgent control on the Settings pane
+     * must not report "done" for a revoke that changed nothing on disk.
+     */
+    revoke(request: DeviceNameRequest): Promise<{ revoked: true } | { error: string }>;
+  };
+  /**
+   * Storing and forgetting the credential this machine was handed to attach
+   * outward, as a client, to someone else's server (HIVE-144).
+   *
+   * **Not** {@link HiveBridge.server}, and deliberately its own namespace
+   * rather than a rename of it: `server.pair`/`.revoke` mint or destroy a
+   * credential this machine hands out to devices *it* admits; `remote.pair`/
+   * `.forget` hold a credential *this* device was given, for the opposite
+   * direction. Two verbs named "pair" pointing opposite ways would read as
+   * one feature and confuse whoever has to reason about which side of a
+   * connection they are looking at.
+   */
+  remote: {
+    /**
+     * Store the `deviceId`/`token` pair a `server.pair` call on the *other*
+     * Hive handed back. There is no plaintext to hand back — unlike
+     * `server.pair`, it arrived *in* this call rather than being minted by
+     * it — but `{ error }` on a locked keychain that could not persist it
+     * (fix-round review, Important-2): the store's `read()` is main-internal,
+     * so a bare `void` return would leave the pane unable to tell "stored"
+     * from "silently discarded."
+     */
+    pair(request: RemotePairRequest): Promise<{ paired: true } | { error: string }>;
+    /** Discard the credential {@link HiveBridge.remote.pair} stored. Idempotent. */
+    forget(): Promise<void>;
+    /**
+     * What this window's attachment is doing right now (HIVE-150).
+     *
+     * Fires on every transition — a drop, each retry, a reattach, giving up,
+     * and `null` when this window goes local. See {@link RemoteLinkStatus}.
+     */
+    onLinkStatus(callback: (status: RemoteLinkStatus | null) => void): () => void;
+  };
   pty: {
     spawn(request: SpawnRequest): Promise<void>;
+    spawnTerminal(request: SpawnTerminalRequest): Promise<void>;
     write(request: WriteRequest): void;
     resize(request: ResizeRequest): void;
     kill(sessionId: string): Promise<void>;
@@ -1509,13 +2167,23 @@ export interface HiveBridge {
     onChanged(callback: (event: FsChangedEvent) => void): () => void;
   };
   /**
-   * The custom skills The Hive injects into the sessions it starts (HIVE-96).
+   * The custom skills The Hive injects into the sessions it starts (HIVE-96,
+   * HIVE-148).
    *
-   * Five verbs, none of which names a path. `fs` above must accept a
-   * project-relative path and defend containment on the resolved result; here
-   * a request names a skill, and `SKILL_NAME_PATTERN` cannot express a
-   * separator or a dot segment — so main's `join` is total and there is no
-   * second check to forget. `rename` names two skills, which is still no path.
+   * Five of the thirteen verbs still name only a skill, none of them a path:
+   * `fs` above must accept a project-relative path and defend containment on
+   * the resolved result; here `list`, `read`, `write`, `remove` and `rename`
+   * take `SKILL_NAME_PATTERN`, which cannot express a separator or a dot
+   * segment — so main's `join` is total and there is no second check to
+   * forget.
+   *
+   * The other eight — HIVE-148's bundle verbs — carry a skill-relative path
+   * (or, for `fileDrop`'s `sources`, an id that resolves to an absolute one
+   * only in preload). `assertSkillPath`/`assertSkillDir` is the string-shape
+   * half of what bounds them; `resolveInSkill`'s `realpath` containment check
+   * in main is the other half, and neither substitutes for the other. See
+   * `skills-contract.ts` for the full argument and `BRIDGE_SKILLS_KEYS` for
+   * why `pathToken` is what keeps the renderer from naming a path of its own.
    *
    * Every mutating verb answers with the fresh snapshot rather than `void`, so
    * the pane never has to follow a mutation with a read, and the two can never
@@ -1537,6 +2205,46 @@ export interface HiveBridge {
      * replacing it.
      */
     rename(request: SkillRenameRequest): Promise<SkillsSnapshot>;
+    /** One file inside a bundle, for the editor (HIVE-148). */
+    fileRead(request: SkillPathRequest): Promise<SkillFileRead>;
+    /** Write one file inside a bundle, creating its parent directories. */
+    fileWrite(request: SkillFileWriteRequest): Promise<SkillsSnapshot>;
+    /** Create a folder inside a bundle. */
+    fileMkdir(request: SkillPathRequest): Promise<SkillsSnapshot>;
+    /** Remove a file or folder inside a bundle. Refuses `SKILL.md` and the root. */
+    fileRemove(request: SkillPathRequest): Promise<SkillsSnapshot>;
+    /** Move or rename a file or folder inside a bundle. */
+    fileMove(request: SkillMoveRequest): Promise<SkillsSnapshot>;
+    /**
+     * Copy whatever a native open dialog returns into a bundle (HIVE-148).
+     *
+     * Carries no source path: main opens the dialog and chooses. `dir` is the
+     * only field the renderer supplies.
+     */
+    fileImport(request: SkillImportRequest): Promise<SkillsSnapshot>;
+    /**
+     * Copy dropped files into a bundle, named by the ids `pathToken` minted
+     * (HIVE-148).
+     *
+     * The renderer's own shape, distinct from `skills-contract.ts`'s
+     * `SkillDropRequest`: it carries `tokens`, not `sources`. Preload resolves
+     * each token back to the real path it was minted for, consuming it, and
+     * only then calls `skills:file:drop` with the resolved `sources` — so
+     * this method's *request* type never appears on the wire;
+     * `SkillDropRequest` does.
+     */
+    fileDrop(request: { name: string; dir: string; tokens: string[] }): Promise<SkillsSnapshot>;
+    /**
+     * Mint an opaque, one-shot id for a `File` a real drop produced, or `null`
+     * for one the page constructed itself (HIVE-148).
+     *
+     * The only verb in this namespace — in this bridge — that is neither
+     * `invoke` nor a listener: it runs synchronously in preload against a map
+     * only preload holds, and never touches IPC at all. See
+     * `BRIDGE_SKILLS_KEYS` for why that is what keeps `fileDrop` from being a
+     * read-anywhere primitive.
+     */
+    pathToken(file: File): string | null;
   };
   /**
    * External tooling this app can see but does not own (story 106).
@@ -1754,6 +2462,11 @@ export interface HiveBridge {
      */
     delivery(): Promise<NotificationDeliveryStatus>;
     /**
+     * Report the unread count this window is showing, for this machine's dock
+     * badge (HIVE-159). See {@link CH.notificationsBadge}.
+     */
+    badge(count: number): Promise<void>;
+    /**
      * Carry out a notification's action.
      *
      * The renderer still handles `session` itself — only it knows what opening
@@ -1884,6 +2597,10 @@ export interface HiveBridge {
      * zero.
      */
     onMetrics(callback: (event: SessionMetricsEvent) => void): () => void;
+    /** A terminal's foreground process changed (terminals). */
+    onForeground(callback: (event: SessionForegroundEvent) => void): () => void;
+    /** A terminal's shell ended, and how (terminals). */
+    onTerminalEnded(callback: (event: SessionTerminalEndedEvent) => void): () => void;
     /**
      * The fleet as it was when the app last closed (HIVE-87).
      *
@@ -1910,20 +2627,6 @@ export interface HiveBridge {
      * launch's fleet table and nothing in this one.
      */
     pr(request: SessionPrRequest): Promise<void>;
-  };
-  /**
-   * Getting a theme file on and off disk (HIVE-80).
-   *
-   * Two verbs, and neither takes a destination path: the dialog chooses it in
-   * both directions, which is what keeps the epic's "no verb takes a
-   * destination path" rule true by construction rather than by a check that
-   * could be forgotten.
-   */
-  theme: {
-    /** Native open dialog filtered to .json. Resolves null when cancelled. */
-    pick(): Promise<PickedTheme | null>;
-    /** Native save dialog, then writes. Resolves the path, or null when cancelled. */
-    save(request: SaveThemeRequest): Promise<string | null>;
   };
   /**
    * What the renderer is showing (HIVE-81).
@@ -1960,6 +2663,17 @@ export const HIGH_WATER_BYTES = 512 * 1024;
 
 /** Unacked bytes below which it is resumed. */
 export const LOW_WATER_BYTES = 128 * 1024;
+
+/**
+ * Per-session replay ring, for a remote client reconnecting (HIVE-143).
+ *
+ * Sized to match `SCROLLBACK_BYTES`, which is the other bounded transcript in
+ * the app and the fallback when this one cannot reach back far enough. Making
+ * it larger would only move the point at which the gap notice appears; making
+ * it smaller would move that point closer for no saving worth having, since a
+ * session is already permitted 256 KiB in the pty host.
+ */
+export const REPLAY_BYTES = 256 * 1024;
 
 /**
  * At most one resize per session per this many milliseconds.
@@ -2017,6 +2731,16 @@ export const RESIZE_THROTTLE_MS = 50;
  * argument for it is recorded on {@link BRIDGE_SKILLS_KEYS} rather than here,
  * because it is a change to one namespace and not to the surface.
  *
+ * HIVE-148 adds eight more to that namespace, still nothing to this list. A
+ * skill became a folder rather than one file, so seven of the eight now carry
+ * a path — the first time anything in `skills` has — and the eighth,
+ * `pathToken`, mints an id for a dropped `File` rather than taking or
+ * returning a path at all. Both are namespace changes, not surface ones, and
+ * the full argument for what bounds a path-carrying verb here — `assertSkillPath`
+ * at the boundary, `resolveInSkill`'s `realpath` containment behind it, and why
+ * the renderer still cannot forge a source for `fileDrop` — is recorded on
+ * {@link BRIDGE_SKILLS_KEYS}.
+ *
  * HIVE-111 adds `ledger`. What a web page can now do that it could not before:
  * read the whole correspondence log between every session and the overmind,
  * append to it, and close an open ask — but always **as the overmind**. `post`
@@ -2041,10 +2765,24 @@ export const BRIDGE_KEYS = [
   'ledger',
   'notifications',
   'pty',
+  /**
+   * HIVE-144 adds `remote`. What a web page can now do that it could not
+   * before: store the device credential a `server.pair` mint on some *other*
+   * Hive handed back, and forget it. **Not** the same capability `server`
+   * adds below — see the comment above {@link BRIDGE_REMOTE_KEYS} for why the
+   * two are kept apart rather than sharing a namespace.
+   */
+  'remote',
+  /**
+   * HIVE-142 adds `server`. What a web page can now do that it could not
+   * before: mint a device credential, hand back its plaintext once, and
+   * revoke one by name. Neither verb is an ordinary settings write — see the
+   * comment above {@link BRIDGE_SERVER_KEYS}.
+   */
+  'server',
   'session',
   'skills',
   'slack',
-  'theme',
   'ui',
   'updates',
 ] as const;
@@ -2078,6 +2816,19 @@ export const BRIDGE_KEYS = [
  * main chose. It cannot reach a file `remove` could not already reach, and it
  * refuses a `to` that exists rather than replacing it, so it cannot destroy a
  * skill that `remove` was not already able to destroy.
+ *
+ * ## What the eight bundle verbs widen, and what holds them (HIVE-148)
+ *
+ * Seven of them carry a skill-relative path where the original five carried
+ * only a name, so the bound is no longer the shape of the payload alone. It is
+ * `assertSkillPath` at the boundary and a `realpath` containment check in
+ * `resolveInSkill` behind it, and the second is not optional: a bundle holding
+ * `escape -> /etc` satisfies every string rule.
+ *
+ * `pathToken` is the eighth and takes no path at all in either direction. It
+ * accepts a `File` and answers an opaque id, which is what keeps `fileDrop`
+ * from being a read-anywhere primitive: the renderer never holds a path, so it
+ * cannot name one it was not handed.
  */
 export const BRIDGE_SKILLS_KEYS = [
   'list',
@@ -2085,6 +2836,14 @@ export const BRIDGE_SKILLS_KEYS = [
   'write',
   'remove',
   'rename',
+  'pathToken',
+  'fileRead',
+  'fileWrite',
+  'fileMkdir',
+  'fileRemove',
+  'fileMove',
+  'fileImport',
+  'fileDrop',
 ] as const;
 
 /**
@@ -2292,6 +3051,8 @@ export const BRIDGE_SESSION_KEYS = [
    * no token value.
    */
   'onMetrics',
+  'onForeground',
+  'onTerminalEnded',
   /**
    * HIVE-87's two, and the "listeners only" claim above stops being true here.
    *
@@ -2471,6 +3232,24 @@ export interface NotificationDismissedEvent {
  */
 export interface ForegroundReport {
   terminalId: string | null;
+  /**
+   * Whether the surface reporting this is itself focused (HIVE-145).
+   *
+   * Absent from a local renderer, and deliberately so: main reads a window's
+   * focus live from `BrowserWindow`, because a renderer-published boolean goes
+   * stale in exactly the case the suppression exists for — the window hidden,
+   * the app in the background, the renderer no longer running to update it.
+   *
+   * Present only on the way over a socket, stamped by the *client's* main
+   * process as it proxies, because that is the only process that can see that
+   * machine's windows. A served Mac usually has none of its own, so its
+   * `BrowserWindow` answer says nothing about the person at the far end.
+   *
+   * Absent is read as **not** focused. The failure that produces is a toast for
+   * a session the user was already watching; the opposite default's failure is
+   * silence about a session nobody is looking at.
+   */
+  focused?: boolean;
 }
 
 /**
@@ -2533,6 +3312,9 @@ export const BRIDGE_NOTIFICATIONS_KEYS = [
   // The router for everything a row cannot carry out itself — see
   // `CH.notificationsAct`.
   'act',
+  // HIVE-159. This window's unread count, for this machine's dock — see
+  // `CH.notificationsBadge`.
+  'badge',
 ] as const;
 
 /** The exact key set of `window.hive.ledger` (HIVE-111). */
@@ -2555,9 +3337,6 @@ export const BRIDGE_LEDGER_KEYS = [
 /** The exact key set of `window.hive.updates`. */
 export const BRIDGE_UPDATES_KEYS = ['status', 'check'] as const;
 
-/** The exact key set of `window.hive.theme` (HIVE-80). */
-export const BRIDGE_THEME_KEYS = ['pick', 'save'] as const;
-
 /** The exact key set of `window.hive.ui` (HIVE-81). */
 export const BRIDGE_UI_KEYS = ['reportForeground', 'reportSessionName'] as const;
 
@@ -2566,6 +3345,8 @@ export const BRIDGE_CONFIG_KEYS = [
   'get',
   'reload',
   'chooseDirectory',
+  // HIVE-146.
+  'browseDirectory',
   'addProject',
   'removeProject',
   // Story 103.
@@ -2617,16 +3398,89 @@ export const BRIDGE_CONFIG_KEYS = [
    * it, so the alias decides where authenticated hook traffic is addressed.
    * `assertHostAlias` bounds it to a hostname — per-label allowlist, shared with
    * the file reader, no scheme, port, path, credentials or delimiter — and it
-   * names no *file*, opens no socket and changes no bind. See the fuller
-   * justification beside `'setReceiver'` in `tests/e2e/electron/security.spec.ts`.
+   * names no *file*, the one file the bridge can write still chosen by main.
+   *
+   * HIVE-134 added `bind` to this same payload, and it is a larger claim than
+   * the alias: it **does** change the listening surface, which nothing on this
+   * bridge could do before, taking effect at next launch because a listening
+   * socket cannot be moved. What bounds it: the same `isHostAlias` predicate,
+   * the next-launch delay that keeps the change from being silent, and the
+   * header chip, which is sourced from the receiver's *running* bind
+   * (`AppInfo.receiverBoundHost`) rather than this config's snapshot of it — so it
+   * still says the receiver is exposed for exactly as long as it is, even
+   * across the gap between toggling this switch off and the relaunch that
+   * would actually close the wider socket (HIVE-134). `reject`'s
+   * `timingSafeEqual` token compare and the `Origin`/`Host` checks on all
+   * eight routes hold at every bind, which is why widening it is not a cliff.
+   * See the fuller justification beside `'setReceiver'` in
+   * `tests/e2e/electron/security.spec.ts`.
    */
   'setReceiver',
+  /**
+   * HIVE-142. Whether server mode is on, and where it listens — an ordinary
+   * settings write, exactly like `setReceiver` above, and with no credential
+   * in the payload: `parseSetServerRequest` refuses one. Minting and
+   * revoking a device credential is the `server` namespace's job, below.
+   */
+  'setServer',
+  /**
+   * HIVE-144. Whether this window is a client and where it attaches —
+   * `setServer`'s mirror, and with the identical no-credential rule:
+   * `parseSetRemoteRequest` refuses one. Storing and forgetting the
+   * credential this device was handed is the `remote` namespace's job below,
+   * a distinct namespace from `server` — see the comment above
+   * {@link BRIDGE_REMOTE_KEYS}.
+   */
+  'setRemote',
+  /**
+   * HIVE-149. `setRemote`'s read half, and the narrowest kind of addition this
+   * list takes: **no argument**, and a return of the same three fields
+   * `setRemote` above already writes. It names no path, no destination and no
+   * credential — `RemoteConfig` holds none — so there is nothing here to guard
+   * that `setRemote` does not already guard on the way in.
+   *
+   * What it grants is being able to *read* the address this window would dial,
+   * which the renderer could otherwise only take from `get` — answered by the
+   * server while attached, and therefore describing the wrong machine.
+   */
+  'getRemote',
 ] as const;
+
+/**
+ * The exact key set of `window.hive.server` (HIVE-142).
+ *
+ * Two verbs, and neither is an ordinary settings write: `pair` mints a
+ * credential and answers its plaintext once; `revoke` destroys one. Both go
+ * through `pairDevice`/`revokeDevice` in `server/devices.ts`, the same
+ * implementation the CLI's `--pair`/`--revoke` and the server-mode tray call.
+ */
+export const BRIDGE_SERVER_KEYS = ['pair', 'revoke'] as const;
+
+/**
+ * The exact key set of `window.hive.remote` (HIVE-144).
+ *
+ * **Not** {@link BRIDGE_SERVER_KEYS} renamed, despite sharing a verb name:
+ * `server.pair`/`.revoke` mint or destroy a credential this machine hands out
+ * to a device *it* admits; `remote.pair`/`.forget` store or discard a
+ * credential *this* machine was handed, for attaching outward as a client to
+ * someone else's server. A device holding this credential can reach the
+ * entire IPC surface of the server it attaches to — the same register
+ * `server.pair`'s own doc comment states — which is exactly why the two
+ * verbs must not be confused for one feature pointing one direction.
+ *
+ * `onLinkStatus` (HIVE-150) is the third, and it is the one verb here that
+ * touches no credential at all: a read-only subscription to what the socket
+ * this credential opened is currently doing. Grouped here rather than in its
+ * own namespace because it is the same subject seen from the other end — the
+ * credential, the attachment it buys, and the state of that attachment.
+ */
+export const BRIDGE_REMOTE_KEYS = ['pair', 'forget', 'onLinkStatus'] as const;
 
 /** The exact key set of `window.hive.pty`. */
 export const BRIDGE_PTY_KEYS = [
   'ack',
   'spawn',
+  'spawnTerminal',
   'write',
   'resize',
   'kill',

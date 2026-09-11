@@ -11,6 +11,7 @@ import type {
   ProjectRow,
   Session,
   SessionStatus,
+  Terminal,
 } from '@/types/entity';
 import {
   branchLabel,
@@ -19,6 +20,7 @@ import {
   isAgent,
   isEnded,
   isSession,
+  isTerminal,
   recencyOf,
   resolveEntityRef,
   terminalOf,
@@ -42,32 +44,47 @@ import { buildTicketSearchJql } from '@lib/jira-search';
 import { ledgerRows } from '@lib/ledger/console-rows';
 import {
   projectConfigSnapshot,
+  projectContainerised,
+  projectPath,
   resolveProjectRef,
   subscribeProjectConfig,
 } from '@lib/project-config';
 import { noteSessionPr, noteSessionTicket } from '@lib/session-history';
 import { pickPhrase } from '@lib/swarm/phrases';
-import { reopenChannel, requestSpawn } from '@lib/terminal/pty-transport';
+import {
+  closeChannel,
+  reopenChannel,
+  requestSpawn,
+  requestSpawnTerminal,
+} from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
 import {
   SESSION_ID_PREFIX_PATTERN,
   type AgentLinesPush,
   type AgentRunResult,
+  type AgentsSnapshot,
   type AgentStatus,
   type AgentStatusPush,
   type AgentSummary,
   type LiveRunSummary,
   type RunSummary,
 } from '@shared/agent-contract';
-import type { PrRecord } from '@shared/github-contract';
+import type { ModeChange } from '@shared/config-contract';
+import type { GhResult, PrRecord, PrsSnapshot } from '@shared/github-contract';
 import type { IdleDetail } from '@shared/hook-contract';
-import type { SessionNameReport } from '@shared/ipc-contract';
+import {
+  CH,
+  type Channel,
+  type RemoteLinkStatus,
+  type SessionNameReport,
+} from '@shared/ipc-contract';
 import type { JiraIssue } from '@shared/jira-contract';
 import {
   LEDGER_MEMORY_CAP,
   type LedgerEntry,
   type LedgerReadQuery,
   type LedgerResult,
+  type LedgerSnapshot,
   type OpenAsk,
 } from '@shared/ledger-contract';
 import { matches, openAsks, thread } from '@shared/ledger-derive';
@@ -237,6 +254,14 @@ const NO_TICKET_SEARCH: TicketSearchState = {
   tooShort: false,
 };
 
+/** The same rest state for PR search, which had been spelled out at each of its four sites. */
+const NO_PR_SEARCH: PrSearchState = {
+  term: '',
+  results: null,
+  searching: false,
+  error: null,
+};
+
 export type PrSource =
   /** A read is in flight and there is nothing yet. The boot state. */
   | { kind: 'loading' }
@@ -287,6 +312,16 @@ export interface SetSessionTicketOptions {
   source?: 'prompt' | 'branch' | 'rename';
 }
 
+/** What `spawnTerminal` may be told beyond the project (entry points). */
+export interface SpawnTerminalOptions {
+  /**
+   * Where the shell starts. Absent means the project's path. "Terminal here"
+   * passes a session's observed cwd, which differs from the project path
+   * exactly when the session has moved into a worktree.
+   */
+  cwd?: string;
+}
+
 interface HiveState {
   entities: Record<string, Entity>;
   order: string[];
@@ -314,6 +349,17 @@ interface HiveState {
   /** Where {@link HiveState.prs} came from. */
   prSource: PrSource;
   notifs: HiveNotification[];
+  /**
+   * What this window's attachment is doing, or `null` when it has none
+   * (HIVE-150).
+   *
+   * Domain rather than view state: it is something the system knows about
+   * itself, pushed by main on `remote:link-status`, and it is what the header
+   * chip and the attach pane both read. Never persisted — an attachment is a
+   * fact about right now, and a remembered one would be a lie on the next
+   * launch.
+   */
+  remoteLink: RemoteLinkStatus | null;
   /**
    * The ledger's tail (HIVE-111).
    *
@@ -422,6 +468,40 @@ interface HiveState {
     /** The Jira issue this session is being started for (HIVE-73). */
     ticket?: string,
   ) => string;
+  /**
+   * Open a terminal in a project: a login shell with no Claude typed into it
+   * (terminals). The entity is created at once; on desktop the spawn is asked
+   * for and a refusal is written to the console, as `spawnSession` does.
+   */
+  /**
+   * Open a terminal in a project: a login shell with no Claude typed into it
+   * (terminals). `options.cwd` is "terminal here" naming where the shell
+   * starts; absent means the project's path.
+   */
+  spawnTerminal: (projectId: string, options?: SpawnTerminalOptions) => string;
+  /**
+   * A shell beside an entity: the same project, the same directory (entry
+   * points). A session contributes its observed `cwd`, falling back to the
+   * project path where none has been observed — or where the project is
+   * containerised, since that cwd is a container path and a terminal is
+   * host-only; a terminal contributes its own. Anything else answers null and
+   * opens nothing.
+   */
+  spawnTerminalBeside: (entityId: string) => string | null;
+  /**
+   * The host reported what holds the tty. `null` is the prompt. Status is
+   * derived here, in the same write — the only writer of either field.
+   *
+   * The one place this store derives rather than selects, and it is deliberate:
+   * `status` and `foreground` are two readings of one observation, and a
+   * selector computing the first from the second would leave a window in which
+   * a row says `running` with nothing running in it.
+   */
+  setTerminalForeground: (id: string, name: string | null) => void;
+  /** The shell died unasked. The row stays, with the reason on it. */
+  markTerminalLost: (id: string, reason: string) => void;
+  /** The `exit` ending, and the close control on a lost one. Nothing is kept. */
+  removeTerminal: (id: string) => void;
   sendToEntity: (
     id: string,
     msg: string,
@@ -490,6 +570,8 @@ interface HiveState {
    */
   clearNotifs: () => void;
   pushNotif: (notif: HiveNotification) => void;
+  /** Install the link status main just pushed, or `null` for none (HIVE-150). */
+  setRemoteLink: (status: RemoteLinkStatus | null) => void;
   /**
    * Merge main's buffer into what is already here, newest first (HIVE-75).
    *
@@ -662,6 +744,77 @@ interface HiveState {
    * {@link Session.resumable} and asks main to `--resume` rather than begin.
    */
   resumeSession: (id: string) => void;
+  /**
+   * Apply an attach snapshot in one pass (HIVE-144).
+   *
+   * Walks the snapshot's **own keys** rather than `SNAPSHOT_CHANNELS`: the
+   * server drops keys from an oversized or slow snapshot by design (a
+   * snapshot is a convenience, not a precondition), so the payload
+   * legitimately arrives incomplete, and a newer server may send a channel
+   * this build has no handler for — walking the payload copes with both,
+   * silently skipping what it does not recognise rather than throwing.
+   *
+   * Dispatches each recognised channel to the hydrate action it already has,
+   * keeping every one of those actions' existing merge-or-replace behaviour
+   * untouched: `hydrateSessions`, `hydrateLedger` and `hydrateNotifs` merge,
+   * `hydrateAgents` and `hydratePrs` replace, because a server snapshot is
+   * authoritative for agents and PRs.
+   */
+  applyAttachSnapshot: (snapshot: Readonly<Partial<Record<Channel, unknown>>>) => void;
+  /**
+   * Drop the entities that belonged to the mode being left (HIVE-144).
+   *
+   * The exact inverse of {@link HiveActions.applyAttachSnapshot} over the same
+   * set — what it clears is what that action can repopulate: sessions,
+   * agents, the ledger tail, notifications and PRs. Clearing anything wider
+   * would drop state neither mode's snapshot ever fills back in; clearing
+   * anything narrower would leave a stale entity from the old mode standing
+   * after the switch.
+   *
+   * Also clears `metrics` — not one of the five, but its dangerous sibling:
+   * `Record<sessionId, SessionMetrics>`, keyed by an id `nextSpawnId` mints
+   * identically on every machine, so the mode being left and the mode being
+   * joined can and do produce the same `sess-01`. Left standing, a stale entry
+   * would render the departed session's numbers against the newly attached
+   * session wearing the same id — not a leak, a wrong answer shown with
+   * confidence. `entities` was the other id-keyed slice, and it is already
+   * cleared above.
+   *
+   * And `staleTitles` (module state, not a field here — see the action's own
+   * body): its keys name terminals in the mode being left, so once `entities`
+   * is cleared every one of them describes something gone, which is what
+   * makes clearing it correct rather than merely defensive. `reset()` clears
+   * the same map for the same reason, on the wider occasion of the whole app
+   * resetting.
+   *
+   * Deliberately leaves `tickets` (Jira, not a snapshot channel — both modes
+   * read the same query) and `orchLines` (the local console transcript, a
+   * property of this window, not of either mode, and never keyed by a session
+   * id) untouched.
+   */
+  clearModeEntities: () => void;
+  /**
+   * Put the store where the mode switch that just happened left it (HIVE-144
+   * review, I1).
+   *
+   * The production entry point for the two actions above, and the reason they
+   * are one action rather than two calls at the call site: their **order** is
+   * the invariant. Clear first, then seed — the other way round the seed is
+   * wiped by the clear that follows it, and the pane would render an empty
+   * fleet until the first push from the new mode happened to arrive.
+   *
+   * Both arms clear. A detach that only cleared on the way in would leave the
+   * remote fleet standing on a window that is back on its own machine, with
+   * `useSessionMetrics(id)` reading the departed mode's numbers against a
+   * local `sess-01` — see {@link HiveActions.clearModeEntities}.
+   *
+   * `ModeChange` comes from `config-contract`, carried back by
+   * `config:set-remote` (`SetRemoteResult.changed`), which is the one call
+   * that knows a switch happened and is answered by the process holding the
+   * client. `null` is not accepted: "nothing changed" is the caller's branch
+   * to skip, not a state this action should have to have an opinion about.
+   */
+  applyModeChange: (change: ModeChange) => void;
   reset: () => void;
 }
 
@@ -792,6 +945,39 @@ let ticketSearchTicket = 0;
  */
 let inFlightTicketSweep: Promise<void> | null = null;
 
+/**
+ * Which machine this store is currently describing, as a monotonic counter.
+ *
+ * A sweep reads it before its first `await` and again before it writes; a
+ * mismatch means the mode changed underneath it and the answer it is holding
+ * is about a machine this window is no longer showing.
+ *
+ * **Why a counter and not a cancelled request.** Nulling `inFlightPrSweep` on
+ * a switch cannot help: the request is already out, dropping the handle
+ * neither cancels it nor stops its late write, and on its own it would merely
+ * let a second sweep start concurrently — the race the dedupe exists to
+ * prevent. Considered and rejected in HIVE-144. What works is comparing a
+ * generation **before** the data is applied rather than trying to stop the
+ * data arriving, which is the shape HIVE-144's pty resume fix settled on and
+ * the shape `prSearchTicket` above already uses for the narrower race between
+ * two searches.
+ *
+ * Module scope for the reason every counter around it is: nothing renders a
+ * generation number, and putting it in the store would wake every subscriber
+ * to announce that a request had been stamped.
+ *
+ * **It counts mode changes, not machines**, and the two come apart in one
+ * place: `modeChange` in `set-remote.ts` compares only *attached vs not*
+ * (`(after !== null) === before`), so re-attaching straight from one server to
+ * another reports no change and never reaches `clearModeEntities` — leaving
+ * this counter where it was. That is currently unreachable rather than
+ * unhandled: the address fields are hidden while attached, so a detach always
+ * sits in between. Widening `modeChange` to compare the address is what would
+ * make the name literally true, and it belongs with whatever first allows a
+ * direct hand-off.
+ */
+let modeEpoch = 0;
+
 function currentSessionIn(state: HiveState, terminalId: string): string {
   const direct = state.entities[terminalId];
   if (direct !== undefined && isSession(direct) && !isEnded(direct.status)) {
@@ -866,6 +1052,7 @@ const HELP_ROWS: readonly (readonly [ParsedCommand['kind'], string])[] = [
   ['ask', '  ask <agent> <message>      ask an agent a question'],
   ['answer', '  answer <id> <text>         answer an open ask'],
   ['spawn', '  spawn <project> <task>     start a new session on a project'],
+  ['term', '  term [<project>]           open a terminal in a project, or beside the selected session'],
   ['agents', '  agents                     one line per agent'],
   ['run', '  run <agent> [prompt]       wake an agent now, optionally saying why'],
   ['pause', '  pause <agent>              stop an agent waking'],
@@ -1108,6 +1295,16 @@ const oneLine = (text: string): string => text.replace(/\s*\n\s*/gu, ' ');
 let spawnCounter = 0;
 
 /**
+ * The same counter for terminals, and a separate one on purpose (terminals).
+ *
+ * Sharing `spawnCounter` would number the two sequences through each other —
+ * `sess-01`, `term-02`, `sess-03` — so neither prefix would say how many of its
+ * own kind had been opened, which is the only thing these ids are for. Reset
+ * beside it in `reset()`.
+ */
+let terminalCounter = 0;
+
+/**
  * Deterministic-enough id for a prototype: `sess-01`, `sess-02`, …
  *
  * **The counter alone is not enough, and the fleet is consulted for a reason.**
@@ -1318,6 +1515,28 @@ function nextSessionId(taken: Readonly<Record<string, Entity>>): string {
 }
 
 /**
+ * `term-01`, `term-02`, … — the same shape, and the fleet consulted for the same
+ * reason (terminals).
+ *
+ * The `while (id in taken)` guard is not belt-and-braces here either: HMR puts
+ * {@link terminalCounter} back to zero while the rows it named are still on
+ * screen, and `entities` is keyed by id, so a collision would file two terminals
+ * under one key and leave `order` carrying the id twice.
+ *
+ * No `rememberTerminalId` counterpart to `rememberSpawnId`: a terminal is never
+ * restored, so nothing can arrive from outside this process wearing an id this
+ * counter has not minted.
+ */
+function nextTerminalId(taken: Readonly<Record<string, Entity>>): string {
+  let id: string;
+  do {
+    terminalCounter += 1;
+    id = `term-${terminalCounter.toString(36).padStart(2, '0')}`;
+  } while (id in taken);
+  return id;
+}
+
+/**
  * What to call a session started for a ticket (HIVE-78).
  *
  * `HIVE-73`, then `HIVE-73-2`, `HIVE-73-3` — the key itself for the first one,
@@ -1517,9 +1736,47 @@ function rankTicketSearch(term: string, issues: JiraIssue[]): Ticket[] {
   return [tickets[at], ...tickets.slice(0, at), ...tickets.slice(at + 1)];
 }
 
+/**
+ * Where each {@link SNAPSHOT_CHANNELS} entry lands, and how its raw IPC shape
+ * becomes the argument the hydrate action it owns actually takes.
+ *
+ * Keyed on the channel constants rather than on a hand-written literal, so a
+ * channel renamed in `ipc-contract.ts` fails this file's build instead of
+ * silently going unmatched.
+ *
+ * `CH.configGet` has deliberately no entry: nothing in this store hydrates
+ * from the workspace config — `loadProjectConfig()` in `lib/project-config.ts`
+ * owns that read — so `applyAttachSnapshot` below falls through its "no
+ * action for this channel" branch for it exactly as it would for a channel
+ * this build has never heard of.
+ */
+const ATTACH_SNAPSHOT_HANDLERS: Partial<
+  Record<Channel, (value: unknown, store: HiveState) => void>
+> = {
+  [CH.sessionHistory]: (value, store) =>
+    store.hydrateSessions(value as SessionHistoryEntry[]),
+  [CH.agentsList]: (value, store) =>
+    store.hydrateAgents((value as AgentsSnapshot).agents),
+  [CH.ledgerList]: (value, store) =>
+    store.hydrateLedger((value as LedgerSnapshot).entries),
+  [CH.notificationsList]: (value, store) =>
+    store.hydrateNotifs(value as HiveNotification[]),
+  [CH.githubPrs]: (value, store) => {
+    const result = value as GhResult<PrsSnapshot>;
+    // A failed sweep on the server side is not this client's failure to
+    // report: `reportPrFailure` is for a fetch *this* window attempted and
+    // lost, and the server's own PR panel already carries that message.
+    // Silently keeping whatever PRs this store already has is the same
+    // "a snapshot is a convenience, not a precondition" rule the server's
+    // own `raceSnapshotRead` applies to a slow or broken read.
+    if (result.ok) store.hydratePrs(result.value.prs, result.value.repos);
+  },
+};
+
 export const useHiveStore = create<HiveState>()((set, get) => ({
   ...emptySeeds(),
   notifs: [],
+  remoteLink: null,
   ledger: [],
   metrics: {},
   /**
@@ -1535,7 +1792,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 
   /** Loading until the first sweep answers, for the same reason as above. */
   prSource: { kind: 'loading' } as PrSource,
-  prSearch: { term: '', results: null, searching: false, error: null } as PrSearchState,
+  prSearch: NO_PR_SEARCH,
   ticketSearch: NO_TICKET_SEARCH,
 
   /**
@@ -1755,6 +2012,202 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
   },
 
   /**
+   * Open a terminal on a project, and show it (terminals).
+   *
+   * `spawnSession` with everything an agent needs taken away: no task, no model,
+   * no effort, no seeded transcript to quote them back, and no ticket note —
+   * a shell has none of those, and inventing any of them would put a claim on
+   * the row that nothing behind it could honour.
+   *
+   * The refusal path is kept, and it is the reason the eager `requestSpawnTerminal`
+   * is here rather than left to the surface: main's message names the config
+   * file to edit, and the console is the only place with room to say so.
+   */
+  spawnTerminal: (projectId, options = {}) => {
+    const id = nextTerminalId(get().entities);
+
+    const terminal: Terminal = {
+      kind: 'terminal',
+      id,
+      project: projectId,
+      /**
+       * The directory the shell starts in: the caller's when it named one,
+       * else the project's path, else empty when the config cannot answer.
+       *
+       * Empty rather than a guess: the row shows a `cwd` tail and an invented
+       * one would name a directory the shell is not in. Main starts the pty at
+       * the project's path when this is empty.
+       */
+      cwd: options.cwd ?? projectPath(projectId) ?? '',
+      status: 'prompt',
+      createdAt: Date.now(),
+      /**
+       * Empty, and it stays empty. A session's seed transcript quotes the
+       * command it was started with; a shell prints its own prompt within the
+       * frame, so anything written here would be a line the terminal then
+       * scrolls past for no reason.
+       */
+      lines: [],
+    };
+
+    set((state) => ({
+      entities: { ...state.entities, [id]: terminal },
+      order: [...state.order, id],
+    }));
+
+    if (isDesktop()) {
+      void requestSpawnTerminal(id, projectId, options.cwd).then((outcome) => {
+        if (outcome.ok) return;
+        set((state) => ({
+          orchLines: capLines([
+            ...state.orchLines,
+            line(`  ${outcome.reason}`, 'red'),
+          ]),
+        }));
+        /*
+          A refusal is an ending. `withSpawnChannel` has already closed the
+          channel, so without this the tab would keep a blinking caret over a
+          shell that never started and offer no way to close it. Lost, with
+          the refusal as the reason, gives it the cover and the control.
+        */
+        get().markTerminalLost(id, outcome.reason);
+      });
+    }
+
+    useUiStore.getState().openTab(id);
+
+    return id;
+  },
+
+  spawnTerminalBeside: (entityId) => {
+    const entity = get().entities[entityId];
+    if (entity === undefined) return null;
+    if (isTerminal(entity)) {
+      return get().spawnTerminal(entity.project, entity.cwd === '' ? {} : { cwd: entity.cwd });
+    }
+    if (isSession(entity)) {
+      /*
+        A container session's observed `cwd` is the hook's — Claude's, inside
+        the container (`/workspace`) — and a terminal is host-only. Starting a
+        host shell there would fail on a path that does not exist, so a
+        containerised project falls back to its host path (#205 review).
+      */
+      const cwd = projectContainerised(entity.project)
+        ? (projectPath(entity.project) ?? undefined)
+        : (entity.cwd ?? projectPath(entity.project) ?? undefined);
+      return get().spawnTerminal(entity.project, cwd === undefined ? {} : { cwd });
+    }
+    return null;
+  },
+
+  /**
+   * What holds the tty, as the host's poll reports it (terminals).
+   *
+   * **Both fields in one write**, which is the one place this store derives a
+   * value instead of selecting it. They are two readings of a single
+   * observation: a selector deriving `status` from `foreground` would be a
+   * second opinion about the same fact, and two writes would leave a frame in
+   * which the row says `running` beside `at prompt`.
+   *
+   * An unchanged name returns before the `set`, so a poll that finds the same
+   * process every second does not re-render every subscriber of the entities
+   * map for a fact that did not move.
+   *
+   * **A lost terminal is not updated.** The poll runs on an interval and its
+   * answer arrives asynchronously, so a reading taken before the shell died can
+   * land after {@link HiveState.markTerminalLost} — which would flip a dead row
+   * back to `running` beside the cover explaining that it is over.
+   */
+  setTerminalForeground: (id, name) => {
+    const current = get().entities[id];
+    if (!current || !isTerminal(current)) return;
+    if (current.ended !== undefined) return;
+    if ((current.foreground ?? null) === name) return;
+
+    set((state) => {
+      const next: Terminal = {
+        ...current,
+        status: name === null ? 'prompt' : 'running',
+      };
+      /*
+        Absent at the prompt rather than `undefined`, the way every optional key
+        on an entity in this store is: `terminalLabel` reads the absence as
+        `at prompt`, and the snapshots these rows appear in are compared.
+      */
+      if (name === null) delete next.foreground;
+      else next.foreground = name;
+      return { entities: { ...state.entities, [id]: next } };
+    });
+  },
+
+  /**
+   * The shell went away and nobody asked it to (terminals).
+   *
+   * The row survives, which is the whole difference from {@link removeTerminal}:
+   * a shell the user exited has nothing left to read, and one that was killed
+   * from underneath them has a transcript that says what happened. The reason is
+   * recorded rather than derived, because only the caller knows it — a signal, a
+   * spawn that never started, the pty host going away.
+   *
+   * **First reason wins.** A lost host is followed by whatever notices next, and
+   * the later message describes the consequence rather than the cause.
+   */
+  markTerminalLost: (id, reason) => {
+    const current = get().entities[id];
+    if (!current || !isTerminal(current) || current.ended !== undefined) return;
+
+    set((state) => ({
+      entities: {
+        ...state.entities,
+        [id]: { ...current, ended: { reason, at: Date.now() } },
+      },
+    }));
+  },
+
+  /**
+   * Forget a terminal entirely (terminals).
+   *
+   * Nothing is kept, and nothing should be: a terminal has no transcript worth
+   * a tombstone, no cost to account for and no conversation to resume, so an
+   * ended-terminal row would be a permanent entry in every list for a window
+   * somebody closed.
+   *
+   * Guarded on the kind rather than trusted, because this is the one action here
+   * that destroys state and its id arrives from a surface that also draws
+   * sessions.
+   */
+  removeTerminal: (id) => {
+    const current = get().entities[id];
+    if (!current || !isTerminal(current)) return;
+
+    set((state) => {
+      const entities = { ...state.entities };
+      delete entities[id];
+      return {
+        entities,
+        order: state.order.filter((entityId) => entityId !== id),
+      };
+    });
+
+    /*
+      The renderer's channel goes with the row (terminals). Nothing will ever
+      switch back to this id, so its replay buffer and its three bridge
+      subscriptions have no reader left — and this map is never otherwise swept,
+      so a day of opening and closing shells would grow it without bound.
+    */
+    closeChannel(id);
+
+    /*
+      Cross-store, so the other store's action is called explicitly — no store
+      subscribes to another. Only when the stage was showing the row that just
+      stopped existing: leaving it would strand the centre on an id nothing can
+      resolve.
+    */
+    const ui = useUiStore.getState();
+    if (ui.activeTab === id) ui.backToOrch();
+  },
+
+  /**
    * Route a message to an entity.
    *
    * **The one branch point in the coordination layer** (story 097). A real
@@ -1774,6 +2227,20 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * bridge to ask. One predicate covers both, which is what keeps a surface
      * from becoming typable while its transport stays a recording.
      */
+    /*
+      `send` is a session verb. A terminal is a shell the user types into
+      directly — there is no agent at the other end to route a message to —
+      so it is refused the way an agent is, naming the verb that does work.
+      Without this a terminal would fall into the demo echo below and the
+      console would report `routed` for bytes that reached nothing.
+    */
+    if (isTerminal(entity)) {
+      return {
+        kind: 'refused',
+        reason: `terminals are typed into, not sent: open ${id}`,
+      };
+    }
+
     if (isDesktop() && isSession(entity)) {
       /**
        * Addressed to the **terminal**, because that is what owns the channel.
@@ -1950,6 +2417,56 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * reconstruct it — reconstructing it at two call sites is how `open` came to
      * report a cleared session as terminated. `null` means the target is live.
      */
+    /**
+     * A project reference — a key, an id or a name — resolved for a console
+     * verb, or `null` after the refusal has been written (HIVE-94; shared by
+     * `spawn` and `term`).
+     *
+     * The config decides what exists, exactly as the rail and picker do — one
+     * source for "which projects exist". **On desktop, no snapshot means
+     * permissive, not empty**: `main.tsx` fires `loadProjectConfig()` without
+     * awaiting, so the input passes through and main — which has the file —
+     * gives the refusal if there is one. **In a browser it means empty**: no
+     * bridge, no refusal downstream, and being permissive would mint a
+     * phantom row.
+     *
+     * Ambiguity is its own answer, not a miss: two folders both called `api`
+     * is ordinary, and picking whichever sat first would start work in the
+     * wrong repository. The keys are listed on a miss because they are the
+     * shortest thing that works and what the Settings row shows.
+     */
+    const resolveProjectForConsole = (ref: string): string | null => {
+      const snapshot = projectConfigSnapshot();
+      const resolved =
+        snapshot === null
+          ? ({ kind: 'none' } as const)
+          : resolveProjectRef(ref, snapshot.projects);
+
+      if (resolved.kind === 'ambiguous') {
+        const ids = resolved.projects.map((project) => project.id).join(', ');
+        pushOrch(
+          `  ${ref} names ${resolved.projects.length} projects (${ids}) — use a key`,
+          'red',
+        );
+        return null;
+      }
+
+      if (resolved.kind === 'none' && !(snapshot === null && isDesktop())) {
+        const keys = snapshot?.projects.map((project) => project.key) ?? [];
+        const suffix =
+          keys.length === 0
+            ? ' — add one in Settings › Projects'
+            : ` — try a key from Settings › Projects (${keys.join(', ')})`;
+        pushOrch(`  unknown project: ${ref}${suffix}`, 'red');
+        return null;
+      }
+
+      // The **resolved id**, never what was typed: an entity recorded under a
+      // key or a display name would point at nothing the moment that alias
+      // was edited.
+      return resolved.kind === 'match' ? resolved.project.id : ref;
+    };
+
     const resolve = (
       ref: string,
     ): { id: string; label: string; ended: string | null } | null => {
@@ -2294,94 +2811,27 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       }
 
       case 'spawn': {
-        /**
-         * The config decides what exists, exactly as the rail and picker do.
-         *
-         * This read `state.projects` — the store's own slice — which worked
-         * only because that slice was seeded with five demo projects at boot.
-         * Emptying the seed left it always empty, so every `spawn` answered
-         * "unknown project" for projects sitting right there in the Projects
-         * panel. One source for "which projects exist", and it is the config.
-         *
-         * **On desktop, no snapshot means permissive, not empty.** `main.tsx`
-         * fires `loadProjectConfig()` without awaiting, and `project-config.ts`
-         * leaves the snapshot `null` when that read throws — deliberately, so a
-         * broken IPC hop degrades rather than locks the app. Treating `null` as
-         * "no projects" would make this verb refuse every project during the first
-         * frames of launch, and refuse them *permanently* after a failed read.
-         * `can.spawnSessionIn` already answers `true` with no snapshot; this
-         * agrees with it, and lets main — which has the file in front of it —
-         * give the refusal if there is one.
-         *
-         * **In a browser it means empty, and the distinction is load-bearing.**
-         * There is no bridge, so the snapshot is `null` *forever* rather than
-         * briefly, and nothing downstream can ever refuse: `spawnSession` skips
-         * `requestSpawn` off-desktop, so no main-side refusal arrives and the
-         * row stays. Being permissive there would let `spawn anything` mint a
-         * session with a fabricated transcript that the header counts and the
-         * rails list — a phantom fleet, which is the exact lie this branch
-         * exists to delete.
-         */
-        const snapshot = projectConfigSnapshot();
-        /**
-         * A key, an id or a name — resolved once, in `lib/` (HIVE-94).
-         *
-         * The store used to compare `project.id === command.repo` inline, which
-         * made the console the only surface with an opinion about what names a
-         * project. The picker now shares this resolver, so a project reachable
-         * from one is reachable from the other by exactly the same spellings.
-         */
-        const resolved =
-          snapshot === null
-            ? ({ kind: 'none' } as const)
-            : resolveProjectRef(command.project, snapshot.projects);
-
-        /*
-          Ambiguity is its own answer, not a miss (HIVE-94). Display names are
-          never uniqueness-checked — two folders both called `api` is ordinary —
-          and picking whichever sat first in the file would start an agent in the
-          wrong repository, which is the exact failure the exactness rule exists
-          to prevent. Naming the ids is what makes the advice actionable: the key
-          is the way to say which one.
-        */
-        if (resolved.kind === 'ambiguous') {
-          const ids = resolved.projects.map((project) => project.id).join(', ');
-          pushOrch(
-            `  ${command.project} names ${resolved.projects.length} projects (${ids}) — use a key`,
-            'red',
-          );
-          return;
-        }
-
-        if (resolved.kind === 'none' && !(snapshot === null && isDesktop())) {
-          /*
-            The keys, in config order, because they are the shortest thing that
-            works and the row in Settings shows them. Listing ids instead would
-            answer "what could I have typed?" with the very strings this story
-            exists to stop people typing.
-          */
-          const keys = snapshot?.projects.map((project) => project.key) ?? [];
-          const suffix =
-            keys.length === 0
-              ? ' — add one in Settings › Projects'
-              : ` — try a key from Settings › Projects (${keys.join(', ')})`;
-          pushOrch(`  unknown project: ${command.project}${suffix}`, 'red');
-          return;
-        }
-
-        /*
-          The **resolved id**, never what was typed. `spawnSession` stores it on
-          the entity as `entity.project`, and a session recorded under a key or
-          a display name would be a session pointing at nothing the moment that
-          alias was edited. With no snapshot there is nothing to resolve
-          against, so the input is passed through and main — which has the file
-          — gives the refusal if there is one.
-        */
-        const target =
-          resolved.kind === 'match' ? resolved.project.id : command.project;
+        const target = resolveProjectForConsole(command.project);
+        if (target === null) return;
         // No confirmation line here: `spawnSession` writes it, so both this
         // command and the picker log exactly once.
         get().spawnSession(target, command.task);
+        return;
+      }
+
+      case 'term': {
+        if (command.project !== undefined) {
+          const target = resolveProjectForConsole(command.project);
+          if (target === null) return;
+          get().spawnTerminal(target);
+          return;
+        }
+        // Bare: beside the fleet table's caret. The console is the stage, so
+        // the selected row is the only "session you are looking at" it has.
+        const selected = useUiStore.getState().selId;
+        if (selected === null || get().spawnTerminalBeside(selected) === null) {
+          pushOrch(`  ${USAGE.term}`, 'red');
+        }
         return;
       }
 
@@ -2749,6 +3199,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ? state
         : { notifs: [notif, ...state.notifs].slice(0, NOTIF_CAP) },
     ),
+
+  setRemoteLink: (status) => {
+    set({ remoteLink: status });
+  },
 
   applyRead: (id, unread) =>
     set((state) => ({
@@ -4348,7 +4802,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * Wraps the status read as well as the search, because both hops cost a
      * round trip and neither is worth doing twice concurrently.
      */
-    inFlightTicketSweep ??= (async () => {
+    if (inFlightTicketSweep !== null) return inFlightTicketSweep;
+
+    /**
+     * Which machine this sweep is asking about, read before the first `await`.
+     *
+     * Compared again after every suspension point below, because both hops can
+     * outlive a mode switch and there is no write in this closure that happens
+     * before one of them. See {@link modeEpoch}.
+     */
+    const epoch = modeEpoch;
+
+    const sweep: Promise<void> = (async () => {
       /**
        * **Nothing here sets `loading`.** That is the boot state, left to the
        * first answer to clear, permanently — `refreshPrs`'s rule, and tickets
@@ -4366,6 +4831,11 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * settled `live` list is never blanked, because nothing blanks anything.
        */
       const status = await readJiraStatus();
+      // The mode switched while the status read was out. Everything below this
+      // line writes about a machine this window is no longer showing —
+      // including the two failure reports, which would put "may be out of
+      // date" or "no Jira configured" over the attached machine's own list.
+      if (epoch !== modeEpoch) return;
       if (status === null) {
         get().reportTicketFailure(
           'The app could not reach its own main process.',
@@ -4391,6 +4861,8 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * a value main has in front of it anyway.
        */
       const result = await searchJiraIssues();
+      // And again after the search itself, the longer of the two hops.
+      if (epoch !== modeEpoch) return;
       if (result === null) {
         get().reportTicketFailure(
           'The app could not reach its own main process.',
@@ -4403,10 +4875,22 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       }
       get().hydrateTickets(result.value.issues, result.value.capped);
     })().finally(() => {
-      inFlightTicketSweep = null;
+      /*
+        Only if the handle is still this sweep's own.
+
+        `clearModeEntities` drops the handle on a mode switch so the newly
+        attached view can start a sweep of its own immediately. That sweep is
+        already installed here by the time this one settles, and an
+        unconditional `= null` would erase it — leaving a live sweep with no
+        handle, so the *next* caller starts a third one concurrently. That is
+        precisely the double-sweep this dedupe exists to prevent, arriving by
+        the back door.
+      */
+      if (inFlightTicketSweep === sweep) inFlightTicketSweep = null;
     });
 
-    return inFlightTicketSweep;
+    inFlightTicketSweep = sweep;
+    return sweep;
   },
 
   /**
@@ -4556,8 +5040,27 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
      * over data a second old. Sharing the promise makes the retry *join* the
      * sweep instead of racing it.
      */
-    inFlightPrSweep ??= (async () => {
+    if (inFlightPrSweep !== null) return inFlightPrSweep;
+
+    /**
+     * Which machine this sweep is asking about, read before the first `await`.
+     *
+     * The stakes are higher here than on the ticket side, and not only because
+     * PRs are the panel a user is most likely to act on: `hydratePrs` also
+     * fires `noteSessionPr` for every change it learns. A late sweep does not
+     * merely *display* the departed fleet's PRs, it **writes** them onto the
+     * attached machine's sessions over IPC — the one harm in this story that
+     * the next sweep does not quietly undo. See {@link modeEpoch}.
+     */
+    const epoch = modeEpoch;
+
+    const sweep: Promise<void> = (async () => {
       const result = await readPullRequests();
+
+      // Everything below writes about the machine this sweep asked, which is
+      // no longer the machine on screen. Guards all four exits at once —
+      // `hydratePrs` and the three failure/unconfigured reports.
+      if (epoch !== modeEpoch) return;
 
       if (result === null) {
         get().reportPrFailure('The app could not reach its own main process.');
@@ -4589,10 +5092,13 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 
       get().hydratePrs(result.value.prs, result.value.repos);
     })().finally(() => {
-      inFlightPrSweep = null;
+      // Only if the handle is still this sweep's own — see the same guard on
+      // `refreshTickets` for what an unconditional null would let through.
+      if (inFlightPrSweep === sweep) inFlightPrSweep = null;
     });
 
-    return inFlightPrSweep;
+    inFlightPrSweep = sweep;
+    return sweep;
   },
 
   searchPrs: async (term, projectId) => {
@@ -4665,7 +5171,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     // Retires anything in flight, so a search cancelled mid-request cannot
     // land its results into an empty box.
     prSearchTicket += 1;
-    set({ prSearch: { term: '', results: null, searching: false, error: null } });
+    set({ prSearch: NO_PR_SEARCH });
   },
 
   searchTickets: async (term, mineOnly) => {
@@ -4764,11 +5270,198 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     set({ ticketSearch: NO_TICKET_SEARCH });
   },
 
+  applyAttachSnapshot: (snapshot) => {
+    const store = get();
+
+    // Walks the snapshot's own keys, not `SNAPSHOT_CHANNELS`: the server
+    // drops keys from an oversized or slow snapshot by design, so this
+    // payload can legitimately arrive with fewer than six of them, and a
+    // newer server may send a channel this build has no handler for.
+    // `ATTACH_SNAPSHOT_HANDLERS[channel]` is `undefined` for both cases, and
+    // the optional call below simply skips it rather than throwing.
+    for (const [channel, value] of Object.entries(snapshot) as Array<
+      [Channel, unknown]
+    >) {
+      ATTACH_SNAPSHOT_HANDLERS[channel]?.(value, store);
+    }
+  },
+
+  clearModeEntities: () => {
+    /*
+      Module state, not `HiveState` — cleared beside the `set()` below rather
+      than inside it, the same split `reset()` uses for the same map.
+
+      Every key in `staleTitles` names a terminal in the mode being left, and
+      once `entities` is cleared that terminal no longer exists in this
+      store. This is not the `metrics` collision story repeated — it would
+      still be correct to clear even if a terminal id could never collide
+      across machines, because a dead key describes nothing once its entity
+      is gone. That the id *can* collide (`nextSpawnId` mints it the same way
+      everywhere) is why a leftover entry is not just inert but actively
+      wrong: a stale title meant for the departed terminal would suppress a
+      genuine rename on the newly attached one wearing the same id.
+    */
+    staleTitles.clear();
+
+    /*
+      Everything already in flight is now about the departed machine.
+
+      The epoch retires the six writes a running sweep can still make —
+      `hydratePrs`/`hydrateTickets` and the four failure and unconfigured
+      reports beside them — and the two search tickets retire a search out at
+      the same moment, which is the identical race one layer down.
+
+      Dropping the two sweep handles is not what makes any of that safe; the
+      epoch is. It is here so the newly attached view does not sit on empty
+      panels waiting out the rest of a poll interval for a sweep whose answer
+      is already condemned: the next caller starts a fresh one instead of
+      joining that one. Safe only because the epoch is doing the real work —
+      the second concurrent sweep this would otherwise allow is a sweep whose
+      writes have already been disarmed.
+    */
+    modeEpoch += 1;
+    prSearchTicket += 1;
+    ticketSearchTicket += 1;
+    inFlightPrSweep = null;
+    inFlightTicketSweep = null;
+
+    /*
+      **The term lives in the other store, and clearing only half strands the
+      panel.**
+
+      A search is split deliberately: the results are here, the term the user
+      typed is `ui-store`'s (`prSearchTerm`, `workSearchTerm`), because a
+      keystroke must not re-render thirteen live terminals. Both panels then
+      derive `searching` from the *term* — `work-panel.tsx` and its PR twin
+      each compute `term !== ''` — and render the search branch on it.
+
+      So emptying `prSearch`/`ticketSearch` below without emptying the term
+      leaves `searching` true over `results === null`, `error === null`,
+      `tooShort === false`: the skeleton branch, pulsing forever. Nothing
+      re-issues the search — the debounce's deps did not change and the panel
+      never unmounts — and there is no way out, because `prSource` is
+      `loading` after a switch, which is exactly the state that hides "Try
+      again" and disables pull-to-refresh.
+
+      Cross-store by calling the other store's action, never by subscribing to
+      it, which is this codebase's rule for exactly this direction.
+    */
+    const ui = useUiStore.getState();
+    ui.clearPrSearch();
+    ui.clearWorkSearch();
+
+    set({
+      // `entities` holds only sessions and agents (`Entity = Session |
+      // Agent`), so clearing it and both order arrays drops exactly what
+      // `hydrateSessions` and `hydrateAgents` can put back — nothing wider,
+      // nothing narrower.
+      entities: {},
+      order: [],
+      agentOrder: [],
+      notifs: [],
+      ledger: [],
+      prs: [],
+      // `hydratePrs` sets `prs` and `prSource` together; leaving the old
+      // mode's `prSource` standing would claim a source for a list that was
+      // just emptied. `{ kind: 'loading' }` is the same value `reset()` and
+      // this store's own initial state use for "nothing read yet".
+      prSource: { kind: 'loading' },
+      /*
+        **Tickets are the remote machine's too, and this used to be wrong in
+        the other direction.**
+
+        There is a test asserting these two survive a switch, written on the
+        premise that both modes read the same Jira query — and that premise is
+        false: `CH.jiraStatus` and `CH.jiraSearch` are `'call'` channels and
+        neither is in `PROCESS_LOCAL`, so while attached, the site, the account
+        and the JQL are all the *served* machine's. The list under the WORK
+        badge belongs to whichever machine answered, exactly as `prs` does.
+
+        Left standing it was survivable only by accident: the in-flight sweep
+        replaced it within seconds. The epoch above now discards that answer,
+        which would have left the departed machine's issues sitting under a
+        `live` label for a whole poll interval — so the guard that fixes the
+        race is precisely what makes clearing these two necessary.
+      */
+      tickets: [],
+      ticketSource: { kind: 'loading' },
+      /*
+        Not "an orphan quietly wasting memory" the way it first read — session
+        ids are **not unique across machines**. `nextSpawnId`/`rememberSpawnId`
+        mint them from the same base-36 counter everywhere, so the mode being
+        left and the mode being joined both produce `sess-01`, `sess-02`, and
+        so on. `useSessionMetrics(id)` is a bare id lookup with no check
+        against which mode the entity behind that id belongs to, so a stale
+        entry surviving the switch renders the *departed* session's model,
+        effort and usage against the *newly attached* session wearing the
+        same id — a wrong number shown with confidence, not a harmless leak.
+        This is exactly what Ruling 22 exists to prevent, and it is the only
+        other id-keyed slice in `HiveState` (`entities` is the other one, and
+        it is already cleared above).
+      */
+      metrics: {},
+      /*
+        Results, not just the request behind them.
+
+        Bumping the two search tickets above only stops an answer still in
+        flight from landing. An answer that already landed is sitting on
+        screen, and it is a list of the departed machine's PRs or issues under
+        a term the user typed about that machine. Ruling 22's argument for
+        `metrics` applies unchanged: wrong data shown with confidence, and PR
+        rows are the ones a user is most likely to act on.
+
+        `applyAttachSnapshot` seeds nothing back here, and should not — an
+        empty search box is the right state for a machine just attached to,
+        not the previous machine's question asked again on its behalf.
+      */
+      prSearch: NO_PR_SEARCH,
+      ticketSearch: NO_TICKET_SEARCH,
+    });
+  },
+
+  applyModeChange: (change) => {
+    const store = get();
+    // Order, not taste: seeding first would be undone by the clear. See the
+    // declaration's own doc comment.
+    store.clearModeEntities();
+    if (change.to === 'remote') store.applyAttachSnapshot(change.snapshot);
+
+    /*
+      **Ask the new machine, now — the dropped handles are useless without
+      this.**
+
+      `clearModeEntities` retires both in-flight sweeps so a caller arriving
+      after the switch starts a fresh one rather than joining an answer the
+      epoch has already condemned. On its own that changes nothing a user can
+      see, because nothing calls: `createPoller` holds its *own* `inFlight`
+      over the condemned promise and skips every tick until it settles — and a
+      tick skipped that way does not set `missed`, which is hidden-document
+      only, so the read waits for the next interval boundary. Up to two
+      intervals of an empty panel.
+
+      There is no manual way out of it either. After a switch `prSource` and
+      `ticketSource` are both `loading`, and that is exactly the state that
+      renders no "Try again" and disables pull-to-refresh. So the panels would
+      sit empty with no affordance at all, which is the thing the drop was
+      supposed to prevent.
+
+      Fire-and-forget for the reason `hydratePrs` fires `noteSessionPr` that
+      way: a switch must not block on two network round trips, and both verbs
+      already own their failure reporting. `void` rather than `await` is the
+      whole difference.
+    */
+    void store.refreshPrs();
+    void store.refreshTickets();
+  },
+
   reset: () => {
     spawnCounter = 0;
+    terminalCounter = 0;
     staleTitles.clear();
     // A sweep from the previous state must not install its answer into the new
-    // one — dropping the handle makes the next caller start fresh.
+    // one. Bumping the epoch is what retires it — dropping the handle only
+    // means the next caller starts fresh rather than joining it.
+    modeEpoch += 1;
     inFlightPrSweep = null;
     inFlightTicketSweep = null;
     // Same rule for a search in flight: bumping the ticket retires it, so its
@@ -4786,11 +5479,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     set({
       ...emptySeeds(),
       notifs: [],
+      remoteLink: null,
       ledger: [],
       metrics: {},
       ticketSource: { kind: 'loading' },
       prSource: { kind: 'loading' },
-      prSearch: { term: '', results: null, searching: false, error: null },
+      prSearch: NO_PR_SEARCH,
       ticketSearch: NO_TICKET_SEARCH,
     });
   },
@@ -5037,47 +5731,78 @@ export const useIdleDetailCounts = () =>
     }),
   );
 
+/**
+ * The fleet table's flattened order — the computation, without the subscription.
+ *
+ * Extracted from {@link useNavOrder} so {@link useTerminalHostIds} can build on
+ * it rather than hold a second copy of the partition. Two selectors spelling one
+ * rule is exactly how the caret and the rows come to disagree about where "here"
+ * is, which is the failure this function exists to prevent.
+ *
+ * **Two** buckets, each newest-first, and both facts are the table's rather than
+ * this function's.
+ *
+ * There were three until the fleet table stopped drawing a PREVIOUS RUN
+ * divider: restored rows are ended rows, and once every group sorts by
+ * recency they interleave with this run's endings correctly on their own.
+ * The `restored` flag is still on the entity — Resume and `endedReason`
+ * both read it — it simply no longer partitions anything.
+ *
+ * This exists precisely to keep the caret and the rows agreeing about where
+ * "here" is, so the partition *and* the sort have to match `session-table.tsx`
+ * exactly. A flattening in a different order from the one on screen makes the
+ * down arrow skip a row and come back to it.
+ *
+ * **Three** buckets since HIVE-117, because the table draws three. The
+ * agents sit between the two session groups, ranked by `rankedAgents` —
+ * the same function the table's own group is drawn from, not a second
+ * copy of its rule. Without them here an agent row was still *selectable*
+ * (it renders the caret and sets `selId` on click) while being absent
+ * from the order every arrow key consults: `↓` from one teleported to the
+ * first session, `↑` to the last ended row, and `→` opened nothing at all
+ * because `console-input.tsx` gates on membership of this list.
+ *
+ * **Still three, and terminals are deliberately not a fourth** (terminals). The
+ * table draws no terminal row — a shell lives in the projects tree — so a
+ * terminal here would put the caret on a row nobody can see and `→` on a target
+ * the user never selected. The stage's list is {@link useTerminalHostIds},
+ * which is a different question with a different answer.
+ */
+function navOrderOf(state: HiveState): string[] {
+  const active: string[] = [];
+  const ended: string[] = [];
+  for (const id of state.order) {
+    const entity = state.entities[id];
+    if (!entity || !isSession(entity)) continue;
+    if (isEnded(entity.status)) ended.push(id);
+    else active.push(id);
+  }
+  return [
+    ...byRecency(active, state.entities),
+    ...rankedAgents(state.agentOrder, state.entities),
+    ...byRecency(ended, state.entities),
+  ];
+}
+
 /** Active sessions first, then ended ones — the keyboard nav order (041, 060). */
-export const useNavOrder = () =>
+export const useNavOrder = () => useHiveStore(useShallow(navOrderOf));
+
+/**
+ * Every id the centre stage mounts a terminal surface for (terminals).
+ *
+ * `useNavOrder` is the fleet table's order, and the table draws no terminal
+ * row — so a terminal in that list would put the console's caret on a row
+ * nobody can see. The stage needs the union: everything the table can reach,
+ * then every terminal in the order it started.
+ */
+export const useTerminalHostIds = () =>
   useHiveStore(
     useShallow((state) => {
-      /**
-       * **Two** buckets, each newest-first, and both facts are the table's
-       * rather than this selector's.
-       *
-       * There were three until the fleet table stopped drawing a PREVIOUS RUN
-       * divider: restored rows are ended rows, and once every group sorts by
-       * recency they interleave with this run's endings correctly on their own.
-       * The `restored` flag is still on the entity — Resume and `endedReason`
-       * both read it — it simply no longer partitions anything.
-       *
-       * This selector exists precisely to keep the caret and the rows agreeing
-       * about where "here" is, so the partition *and* the sort have to match
-       * `session-table.tsx` exactly. A flattening in a different order from the
-       * one on screen makes the down arrow skip a row and come back to it.
-       *
-       * **Three** buckets since HIVE-117, because the table draws three. The
-       * agents sit between the two session groups, ranked by `rankedAgents` —
-       * the same function the table's own group is drawn from, not a second
-       * copy of its rule. Without them here an agent row was still *selectable*
-       * (it renders the caret and sets `selId` on click) while being absent
-       * from the order every arrow key consults: `↓` from one teleported to the
-       * first session, `↑` to the last ended row, and `→` opened nothing at all
-       * because `console-input.tsx` gates on membership of this list.
-       */
-      const active: string[] = [];
-      const ended: string[] = [];
-      for (const id of state.order) {
+      const terminals = state.order.filter((id) => {
         const entity = state.entities[id];
-        if (!entity || !isSession(entity)) continue;
-        if (isEnded(entity.status)) ended.push(id);
-        else active.push(id);
-      }
-      return [
-        ...byRecency(active, state.entities),
-        ...rankedAgents(state.agentOrder, state.entities),
-        ...byRecency(ended, state.entities),
-      ];
+        return entity !== undefined && isTerminal(entity);
+      });
+      return [...navOrderOf(state), ...terminals];
     }),
   );
 
@@ -5741,6 +6466,24 @@ export const useAgentPr = (name: string): AgentPr | null => {
 /** Create a session on a project (stories 041, 044). */
 export const useSpawnSession = () => useHiveStore((state) => state.spawnSession);
 
+/** Open a plain shell on a project (terminals). */
+export const useSpawnTerminal = () =>
+  useHiveStore((state) => state.spawnTerminal);
+export const useSpawnTerminalBeside = () =>
+  useHiveStore((state) => state.spawnTerminalBeside);
+
+/** The host's poll reported what holds a terminal's tty (terminals). */
+export const useSetTerminalForeground = () =>
+  useHiveStore((state) => state.setTerminalForeground);
+
+/** A terminal's shell died unasked (terminals). */
+export const useMarkTerminalLost = () =>
+  useHiveStore((state) => state.markTerminalLost);
+
+/** Forget a terminal — it exited, or its lost row was closed (terminals). */
+export const useRemoveTerminal = () =>
+  useHiveStore((state) => state.removeTerminal);
+
 /** HIVE-61: main pushes the name the agent gave itself through this. */
 export const useRenameSession = () =>
   useHiveStore((state) => state.renameSession);
@@ -5987,20 +6730,45 @@ export const useProjects = (): ProjectRow[] => {
   );
 };
 
-/** Sessions for a project that have not ended (story 031). */
+/**
+ * Sessions that have not ended, and terminals, for a project (story 031;
+ * terminals).
+ *
+ * A terminal is included unconditionally, because there is no ended terminal to
+ * exclude: a shell that exited is removed, and a lost one is still a row the
+ * user has to see in order to close it.
+ */
 export const useProjectSessions = (projectId: string) =>
   useHiveStore(
     useShallow((state) =>
       state.order.filter((id) => {
         const entity = state.entities[id];
-        return (
-          entity !== undefined &&
-          isSession(entity) &&
-          entity.project === projectId &&
-          !isEnded(entity.status)
-        );
+        // Narrowed before `project` is read: an agent has no project, and it is
+        // the one entity kind this list never contains.
+        if (entity === undefined || isAgent(entity)) return false;
+        if (entity.project !== projectId) return false;
+        if (isTerminal(entity)) return true;
+        return !isEnded(entity.status);
       }),
     ),
+  );
+
+/**
+ * How many of a project's entries are alive (terminals).
+ *
+ * `useProjectSessions` keeps a lost terminal in the list, because its tab is
+ * still on screen saying why; but a count that names it "running" or "active"
+ * is a lie. The tree's pill and the picker's row both read this instead.
+ */
+export const useProjectLiveCount = (projectId: string): number =>
+  useHiveStore((state) =>
+    state.order.reduce((count, id) => {
+      const entity = state.entities[id];
+      if (entity === undefined || isAgent(entity)) return count;
+      if (entity.project !== projectId) return count;
+      if (isTerminal(entity)) return entity.ended === undefined ? count + 1 : count;
+      return isEnded(entity.status) ? count : count + 1;
+    }, 0),
   );
 
 /** Every work item, in fixture order (story 032). */
@@ -6595,6 +7363,16 @@ export const useHydrateLedger = () => useHiveStore((state) => state.hydrateLedge
 export const useHydrateAgents = () => useHiveStore((state) => state.hydrateAgents);
 export const useLedgerAppend = () => useHiveStore((state) => state.ledgerAppend);
 
+/**
+ * This window changed machines — clear the departed fleet and seed the new
+ * one (HIVE-144 review, I1).
+ *
+ * Settings' attach half is the only caller: `config:set-remote` is the one
+ * verb that knows a switch happened, and `SetRemoteResult.changed` is how it
+ * says so. See {@link HiveActions.applyModeChange}.
+ */
+export const useApplyModeChange = () => useHiveStore((state) => state.applyModeChange);
+
 /** A run started, ended, or changed an agent's status (HIVE-115). */
 export const useSetAgentStatus = () => useHiveStore((state) => state.setAgentStatus);
 
@@ -6779,6 +7557,47 @@ export const useClearNotifs = () => useHiveStore((state) => state.clearNotifs);
 
 /** Push a notification — the stream's entry point (stories 051, 061, HIVE-75). */
 export const usePushNotif = () => useHiveStore((state) => state.pushNotif);
+
+/**
+ * What this window's attachment is doing, or `null` when it has none
+ * (HIVE-150).
+ *
+ * The header chip and the attach pane both read this rather than
+ * `AppInfo.attachedServerName`. That field is still the runtime truth, but it
+ * is read on demand: a socket that dies without a config write leaves it
+ * unread and the chip claiming an attachment that is gone. This is pushed.
+ */
+export const useRemoteLink = () => useHiveStore((state) => state.remoteLink);
+
+/** Install the link status main just pushed (HIVE-150). */
+export const useSetRemoteLink = () => useHiveStore((state) => state.setRemoteLink);
+
+/**
+ * Re-state the fleet from an accept frame's snapshot (HIVE-150).
+ *
+ * The same action `applyModeChange` runs on a first attach, exposed on its own
+ * because a **re**attach must apply the snapshot without `clearModeEntities`:
+ * the mode has not changed, so there are no local-mode entities to clear, and
+ * clearing would discard the very terminals the resume just brought back.
+ */
+export const useApplyAttachSnapshot = () =>
+  useHiveStore((state) => state.applyAttachSnapshot);
+
+/**
+ * How many times this attachment has come back (HIVE-150).
+ *
+ * The effects that own per-surface state depend on it, so that a reconnect
+ * re-establishes what the server released when the old socket went away: its
+ * `fs:watch`, its `ui:foreground` record. A reconnect mints a *new* surface id
+ * on the server — ids come from a `WeakMap` on the socket object — and the
+ * renderer never unmounted, so nothing else would ever ask again.
+ *
+ * Terminals deliberately do not depend on it. Their continuity is what
+ * `resumeFrom` buys, and remounting them would throw away the scrollback the
+ * resume just saved.
+ */
+export const useReattachEpoch = () =>
+  useHiveStore((state) => state.remoteLink?.epoch ?? 0);
 
 /** Install main's buffer on mount (HIVE-75). */
 export const useHydrateNotifs = () =>

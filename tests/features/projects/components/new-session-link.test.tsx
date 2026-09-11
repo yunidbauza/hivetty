@@ -5,10 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isSession } from '@/types/entity';
 
 import {
-  DEFAULT_JIRA,
-  DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
+  emptySnapshot,
   type ConfigSnapshot,
   type ProjectStatus,
 } from '@shared/config-contract';
@@ -45,11 +42,7 @@ function snapshot(
   projects: { id: string; status: ProjectStatus }[],
 ): ConfigSnapshot {
   return {
-    configPath: CONFIG_PATH,
-    templateWritten: false,
-    shell: '/bin/zsh',
-    claudeCommand: 'claude',
-    env: {},
+    ...emptySnapshot(CONFIG_PATH, '/bin/zsh'),
     projects: projects.map(({ id, status }) => ({
       id,
       path: status === 'ok' ? `/repos/${id}` : null,
@@ -60,14 +53,6 @@ function snapshot(
       key: testProjectKey(id),
       isRepo: true,
     })),
-    notifications: { ...DEFAULT_NOTIFICATIONS },
-    jira: { ...DEFAULT_JIRA },
-    receiver: { ...DEFAULT_RECEIVER },
-    slack: { ...DEFAULT_SLACK },
-    subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-    errors: [],
   };
 }
 

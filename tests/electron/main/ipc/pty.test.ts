@@ -25,7 +25,7 @@ import {
 
 interface Sent {
   channel: string;
-  payload: DataEvent | ExitEvent;
+  payload: DataEvent | ExitEvent | Record<string, unknown>;
 }
 
 let sent: Sent[];
@@ -35,6 +35,7 @@ let emitData: (event: { sessionId: string; chunk: string }) => void;
 let emitExit: (event: ExitEvent) => void;
 let emitError: (event: { sessionId?: string; message: string }) => void;
 let emitLost: (event: { sessionId: string; reason: string }) => void;
+let emitForeground: (event: { sessionId: string; name: string | null }) => void;
 
 const SPAWN = {
   sessionId: 'a',
@@ -70,6 +71,10 @@ function fakeSupervisor(): PtyHostSupervisor {
     }),
     onSessionLost: vi.fn((listener) => {
       emitLost = listener;
+      return () => {};
+    }),
+    onForeground: vi.fn((listener) => {
+      emitForeground = listener;
       return () => {};
     }),
     shutdown: vi.fn(async () => {}),
@@ -268,6 +273,271 @@ describe('flow control', () => {
 
   it('ignores an ack for a session it does not know', () => {
     expect(() => ipc.ack('ghost', 1)).not.toThrow();
+  });
+});
+
+/**
+ * Flow control with more than one surface watching (HIVE-145).
+ *
+ * The window used to be one per session, released by whoever acked. Two
+ * clients on the same session meant the fast one's acks let the producer run
+ * ahead, and the slow one's own socket send buffer grew without bound because
+ * nothing applied backpressure on its behalf.
+ *
+ * The naive fix has a trap the HIVE-143 review named: requiring every attached
+ * client to ack before releasing means one stalled client freezes the session
+ * for everyone. What closes it is that a surface which goes away releases
+ * whatever it was holding.
+ */
+describe('flow control across surfaces', () => {
+  let surfaceIds: string[];
+  let multi: PtyIpc;
+
+  beforeEach(() => {
+    surfaceIds = ['fast', 'slow'];
+    multi = build({ liveSurfaces: () => surfaceIds });
+    multi.spawn(SPAWN);
+  });
+
+  afterEach(() => {
+    multi.dispose();
+  });
+
+  const stats = () => multi.diagnostics().find((entry) => entry.sessionId === 'a')!;
+
+  it('releases only up to the slowest surface', () => {
+    /*
+      Both enrol on the first batch, which is what a real client does — the
+      renderer acks each batch as xterm parses it. A surface that enrols later
+      cannot un-release what was already released, so a test that acked one
+      client through three batches before the other had spoken would be
+      measuring an ordering no client produces.
+    */
+    flood('a', 10);
+    multi.ack('a', 1, 'fast');
+    multi.ack('a', 1, 'slow');
+
+    flood('a', 20);
+    flood('a', 30);
+    multi.ack('a', 3, 'fast');
+
+    // The fast client has consumed everything; the slow one is one batch in.
+    expect(stats().bytesAcked).toBe(10);
+    expect(stats().unacked).toBe(50);
+  });
+
+  it('releases the rest once the slowest catches up', () => {
+    flood('a', 10);
+    multi.ack('a', 1, 'slow');
+    flood('a', 20);
+    multi.ack('a', 2, 'fast');
+    expect(stats().unacked).toBe(20);
+
+    multi.ack('a', 2, 'slow');
+
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('keeps the producer paused while one surface lags', () => {
+    flood('a', 10);
+    multi.ack('a', 1, 'slow');
+    flood('a', 600 * 1024);
+    expect(supervisor.pause).toHaveBeenCalledWith('a');
+
+    multi.ack('a', 2, 'fast');
+
+    // A fast client on a fast link must not let the pty outrun a slow one.
+    expect(supervisor.resume).not.toHaveBeenCalled();
+  });
+
+  it('resumes when the slow surface finally acks', () => {
+    flood('a', 10);
+    multi.ack('a', 1, 'slow');
+    flood('a', 600 * 1024);
+    multi.ack('a', 2, 'fast');
+    expect(supervisor.resume).not.toHaveBeenCalled();
+
+    multi.ack('a', 2, 'slow');
+
+    expect(supervisor.resume).toHaveBeenCalledWith('a');
+  });
+
+  it('a departing surface releases what it was holding', () => {
+    flood('a', 10);
+    multi.ack('a', 1, 'slow');
+    flood('a', 600 * 1024);
+    multi.ack('a', 2, 'fast');
+    expect(supervisor.resume).not.toHaveBeenCalled();
+
+    /*
+      The trap, closed. Without this a slow client could freeze a session for
+      everyone else simply by disconnecting: its mark would sit at the bottom
+      of the window forever, and nothing would ever release the bytes it was
+      never going to acknowledge.
+    */
+    surfaceIds = ['fast'];
+    multi.releaseSurface('slow');
+
+    expect(supervisor.resume).toHaveBeenCalledWith('a');
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('does not gate on a surface that arrived after the batches were sent', () => {
+    surfaceIds = ['fast'];
+    flood('a', 10);
+    flood('a', 20);
+
+    /*
+      A laptop attaching to a busy session was never sent those two batches. If
+      it started at zero it would hold them forever — it has nothing to ack
+      them with — and the session would stall for the client that *is* watching.
+    */
+    surfaceIds = ['fast', 'late'];
+    multi.ack('a', 2, 'fast');
+
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('gates the newcomer from its own first ack onwards', () => {
+    surfaceIds = ['fast'];
+    flood('a', 10);
+    surfaceIds = ['fast', 'late'];
+    multi.ack('a', 1, 'fast');
+    expect(stats().unacked).toBe(0);
+
+    // It opens the session and acks: from here it is an ordinary consumer and
+    // the window waits for it.
+    flood('a', 20);
+    multi.ack('a', 2, 'late');
+    flood('a', 30);
+    multi.ack('a', 3, 'fast');
+    expect(stats().unacked).toBe(30);
+
+    multi.ack('a', 3, 'late');
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('does not gate on a surface that is merely attached', () => {
+    flood('a', 10);
+
+    multi.ack('a', 1, 'fast');
+
+    /*
+      Being attached is not watching. `slow` has never acked this session, so
+      it is not consuming it and must not hold its window — the defect ship's
+      whole-branch review found, where a second device froze every session it
+      had not opened.
+    */
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('releases everything while no surface exists at all', () => {
+    surfaceIds = [];
+
+    flood('a', 600 * 1024);
+
+    /*
+      A served mini with no client attached, running the fleet it exists to
+      run. Nothing to protect, and pausing here would stop every agent on an
+      unattended server after half a megabyte — the deployment this whole Epic
+      is for.
+    */
+    expect(stats().unacked).toBe(0);
+    expect(supervisor.pause).not.toHaveBeenCalled();
+  });
+
+  it('holds a session no surface has ever opened, even with surfaces around', () => {
+    surfaceIds = ['fast', 'slow'];
+
+    flood('a', 600 * 1024);
+
+    /*
+      Spawned and never opened. This is the pre-HIVE-145 answer and it is still
+      the right one: an agent nobody has looked at should not run away with the
+      fd. The pause lifts the moment somebody opens it and acks.
+    */
+    expect(supervisor.pause).toHaveBeenCalledWith('a');
+
+    multi.ack('a', 1, 'fast');
+    multi.ack('a', 1, 'slow');
+    expect(supervisor.resume).toHaveBeenCalledWith('a');
+  });
+
+  it('never moves a surface\'s mark backwards', () => {
+    flood('a', 10);
+    flood('a', 20);
+    multi.ack('a', 2, 'fast');
+    multi.ack('a', 2, 'slow');
+    expect(stats().unacked).toBe(0);
+
+    // A late, lower ack must not reopen a window already released.
+    multi.ack('a', 1, 'slow');
+    flood('a', 30);
+    multi.ack('a', 3, 'fast');
+    multi.ack('a', 3, 'slow');
+
+    expect(stats().unacked).toBe(0);
+  });
+
+  /**
+   * The seam defect ship's whole-branch review found (HIVE-145).
+   *
+   * A surface only acks a session whose terminal it has actually mounted —
+   * `terminal-host.tsx` mounts lazily on first visit, and `pty-transport.ts`
+   * fires the ack through subscribers, so a channel nobody is subscribed to
+   * acks nothing. Gating every session on every *attached* surface therefore
+   * froze every session the second device had not opened: its mark was seeded
+   * once at the head, never moved, and the window never released for anyone.
+   *
+   * Being attached is not the same as watching. An ack is what says a surface
+   * is consuming this session, so an ack is what enrols it in this session's
+   * window.
+   */
+  it('does not gate a session on a surface that never acked it', () => {
+    // The laptop attaches and opens something else entirely.
+    surfaceIds = ['fast', 'elsewhere'];
+
+    for (let i = 1; i <= 20; i += 1) {
+      flood('a', 40 * 1024);
+      multi.ack('a', i, 'fast');
+    }
+
+    expect(stats().unacked).toBe(0);
+    expect(supervisor.pause).not.toHaveBeenCalled();
+  });
+
+  it('gates on a surface from its first ack onwards', () => {
+    surfaceIds = ['fast', 'slow'];
+    flood('a', 10);
+
+    // `slow` has now shown it is watching this session.
+    multi.ack('a', 1, 'slow');
+    flood('a', 20);
+    multi.ack('a', 2, 'fast');
+
+    expect(stats().unacked).toBe(20);
+
+    multi.ack('a', 2, 'slow');
+    expect(stats().unacked).toBe(0);
+  });
+
+  it('keeps a session running for the others when one client stops acking it', () => {
+    surfaceIds = ['fast', 'slow'];
+    flood('a', 10);
+    multi.ack('a', 1, 'fast');
+    multi.ack('a', 1, 'slow');
+
+    // `slow` goes quiet mid-stream — the case backpressure genuinely exists
+    // for, and the one that must still hold the window.
+    flood('a', 600 * 1024);
+    multi.ack('a', 2, 'fast');
+
+    expect(supervisor.pause).toHaveBeenCalledWith('a');
+    expect(supervisor.resume).not.toHaveBeenCalled();
+  });
+
+  it('ignores a release for a surface it never saw', () => {
+    expect(() => { multi.releaseSurface('ghost'); }).not.toThrow();
   });
 });
 
@@ -500,5 +770,199 @@ describe('dispose', () => {
 
     expect(sent).toEqual([]);
     expect(ipc.diagnostics()).toEqual([]);
+  });
+});
+
+describe('resume', () => {
+  /** Flush one batch. Only a payload past the size cap flushes on its own. */
+  const beat = (chunk: string): void => {
+    emitData({ sessionId: 'a', chunk });
+    vi.advanceTimersByTime(8);
+  };
+
+  // `gen: 0` on every replayed event below is `PLACEHOLDER_GEN` (HIVE-144):
+  // this module is keyed by pty session id and has no entity or generation
+  // concept, so it cannot supply a real one. `sessions/index.ts`'s `resume`
+  // always overwrites it with the entity's live generation before anything
+  // reaches a client — asserted in `tests/electron/main/sessions/index.test.ts`,
+  // not here, since that translation happens one layer up.
+
+  it('replays only what the client has not seen, in order', () => {
+    beat('one');
+    beat('two');
+    beat('three');
+
+    expect(ipc.resume('a', 1)).toEqual({
+      kind: 'replay',
+      events: [
+        { sessionId: 'a', chunk: 'two', seq: 2, gen: 0 },
+        { sessionId: 'a', chunk: 'three', seq: 3, gen: 0 },
+      ],
+    });
+  });
+
+  it('replays nothing when the client is already current', () => {
+    beat('one');
+
+    expect(ipc.resume('a', 1)).toEqual({ kind: 'replay', events: [] });
+  });
+
+  it('reports a gap when the ring cannot reach back', () => {
+    ipc.dispose();
+    sent = [];
+    ipc = build({ replayBytes: 8 });
+    ipc.spawn(SPAWN);
+    for (const chunk of ['aaaa', 'bbbb', 'cccc', 'dddd']) beat(chunk);
+
+    // An 8-byte ring holds the last two batches; seq 1 and 2 are gone. A gap
+    // rather than the replay of seq 3 and 4 the ring *could* still produce:
+    // handing back a discontiguous run is what the client cannot recover from.
+    // `toEqual` on the whole shape, and the `seq` is the head — 4 batches in —
+    // because that is the number the caller stamps its marker frame with.
+    expect(ipc.resume('a', 1)).toEqual({ kind: 'gap', seq: 4 });
+  });
+
+  it('still replays from the oldest seq the ring does hold', () => {
+    ipc.dispose();
+    sent = [];
+    ipc = build({ replayBytes: 8 });
+    ipc.spawn(SPAWN);
+    for (const chunk of ['aaaa', 'bbbb', 'cccc']) beat(chunk);
+
+    expect(ipc.resume('a', 2)).toEqual({
+      kind: 'replay',
+      events: [{ sessionId: 'a', chunk: 'cccc', seq: 3, gen: 0 }],
+    });
+  });
+
+  it('returns null for a session it has never heard of', () => {
+    expect(ipc.resume('nope', 0)).toBeNull();
+  });
+
+  it('reports a gap when the client claims a seq beyond what was ever sent', () => {
+    beat('one');
+
+    // A server restart resets seq to 0, so a client can honestly hold a higher
+    // number than this process ever issued. Treated as a gap, not a crash — and
+    // specifically not a `replay` of everything the ring holds, which would look
+    // to the client like output arriving with seq numbers it has already passed.
+    // The `seq` is this process's head, 1 — not the 99 the client claimed. The
+    // marker frame has to be stamped with a number that means something here.
+    expect(ipc.resume('a', 99)).toEqual({ kind: 'gap', seq: 1 });
+  });
+
+  it('frees the ring when the session exits', () => {
+    beat('one');
+    emitExit({ sessionId: 'a', exitCode: 0 });
+    vi.advanceTimersByTime(8);
+
+    // The channel is never deleted — it stays for `diagnostics()` — so nothing
+    // frees the ring for free. `resume` returning `null` here is proof of the
+    // explicit reset at the exit site: `channel.exited = true` is set right
+    // alongside `channel.replay = []` and `replayBytes = 0`.
+    expect(ipc.resume('a', 0)).toBeNull();
+  });
+
+  /**
+   * HIVE-143 review: the ring accrued `pendingBytes` — the sum of
+   * `Buffer.byteLength` over the individual `onData` pieces — and trimmed by
+   * `Buffer.byteLength` of those same pieces *joined*. A surrogate pair split
+   * across two pty reads makes those two different numbers, so `replayBytes`
+   * drifted permanently upward and the ring trimmed early. Reachable whenever a
+   * PTY emits an emoji at a read boundary, which is every day.
+   */
+  it('accounts a batch by the bytes it measured, not by the bytes of its joined text', () => {
+    // The discrimination, stated rather than implied: a lone surrogate is
+    // encoded as U+FFFD at 3 bytes each, and the pair joined is one 4-byte
+    // character. Six going in, four coming out, under the old code.
+    expect(Buffer.byteLength('\uD83D') + Buffer.byteLength('\uDE80')).toBe(6);
+    expect(Buffer.byteLength('🚀')).toBe(4);
+
+    ipc.dispose();
+    sent = [];
+    ipc = build({ replayBytes: 8 });
+    ipc.spawn(SPAWN);
+
+    // One batch of 6 measured bytes, then one of 8 — 14 in an 8-byte ring, so
+    // exactly one batch has to go. Subtracting the joined 4 instead of the
+    // measured 6 leaves the ring believing it still holds 10 and dropping the
+    // second batch as well, which turns this `replay` into a `gap`.
+    emitData({ sessionId: 'a', chunk: '\uD83D' });
+    emitData({ sessionId: 'a', chunk: '\uDE80' });
+    vi.advanceTimersByTime(8);
+    beat('cccccccc');
+
+    expect(ipc.resume('a', 1)).toEqual({
+      kind: 'replay',
+      events: [{ sessionId: 'a', chunk: 'cccccccc', seq: 2, gen: 0 }],
+    });
+  });
+
+  it('does not let the ring grow without bound under a flood', () => {
+    ipc.dispose();
+    sent = [];
+    ipc = build({ replayBytes: 1024 });
+    ipc.spawn(SPAWN);
+    for (let i = 0; i < 50; i += 1) beat('y'.repeat(512));
+
+    /*
+      A gap is the proof the ring was bounded: 50 × 512 bytes went in, so a ring
+      that had grown without bound would still hold seq 1 and answer `replay`.
+      `toEqual` rather than `toMatchObject`, so the shape is pinned whole — the
+      `seq` is the 50th batch, which is where the stream actually is.
+    */
+    expect(ipc.resume('a', 0)).toEqual({ kind: 'gap', seq: 50 });
+  });
+});
+
+describe('foreground (terminals)', () => {
+  it('forwards a foreground report on the session channel, keyed by session id', () => {
+    emitForeground({ sessionId: 'term-01.g1', name: 'vitest' });
+
+    expect(sent.at(-1)).toEqual({
+      channel: CH.sessionForeground,
+      payload: { sessionId: 'term-01.g1', name: 'vitest' },
+    });
+  });
+
+  it('passes the foreground flag through to the supervisor', () => {
+    ipc.spawn({ ...SPAWN, foreground: true });
+    expect(supervisor.spawn).toHaveBeenCalledWith(expect.objectContaining({ foreground: true }));
+  });
+});
+
+/**
+ * `headSeq` must answer "gone" the same way `resume` does (HIVE-144 review):
+ * a caller with generation-aware callers of its own — `sessions/index.ts`'s
+ * `resume`, on a mismatch — reads this instead of asking `resume` to do
+ * replay arithmetic, and a disagreement here would only surface once such a
+ * caller actually exercised the exited-channel case, which nothing does
+ * today.
+ */
+describe('headSeq', () => {
+  const beat = (chunk: string): void => {
+    emitData({ sessionId: 'a', chunk });
+    vi.advanceTimersByTime(8);
+  };
+
+  it('is undefined for a session it has never heard of', () => {
+    expect(ipc.headSeq('nope')).toBeUndefined();
+  });
+
+  it('answers the channel\'s current seq, with no ring lookup', () => {
+    beat('one');
+    beat('two');
+
+    expect(ipc.headSeq('a')).toBe(2);
+  });
+
+  it('is undefined once the session has exited, same as resume', () => {
+    beat('one');
+    emitExit({ sessionId: 'a', exitCode: 0 });
+    vi.advanceTimersByTime(8);
+
+    expect(ipc.headSeq('a')).toBeUndefined();
+    // Same "gone" answer both ways — the asymmetry this closed.
+    expect(ipc.resume('a', 0)).toBeNull();
   });
 });

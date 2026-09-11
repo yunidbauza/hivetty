@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { parseConfig } from '../../../../electron/main/config/parse';
+import { parseConfig, serverBindRefusal } from '../../../../electron/main/config/parse';
 
 /**
  * Shape validation for `~/.hive/config.json` (stories 090, 101).
@@ -505,18 +505,6 @@ describe('parseConfig — the receiver block (HIVE-131)', () => {
     ]);
   });
 
-  it('reports an unknown key inside the block and keeps the rest', () => {
-    const parsed = parseConfig(
-      doc({ receiver: { hostAlias: 'a.b', bind: {} } }),
-      'config',
-    );
-
-    expect(parsed.receiver).toEqual({ hostAlias: 'a.b' });
-    expect(parsed.errors).toEqual([
-      'config.receiver: unknown key "bind" — ignored',
-    ]);
-  });
-
   it('rejects a forbidden key by dropping the whole block', () => {
     const parsed = parseConfig(
       '{"version":2,"projects":[],"receiver":{"__proto__":"x"}}',
@@ -709,5 +697,282 @@ describe('parseConfig — per-project container block (HIVE-133)', () => {
     // reported and skipped, not fatal to the whole block.
     expect(parsed.projects[0]?.container).toEqual({ workspace: '/w', hiveDir: '/h' });
     expect(parsed.fatal).toBe(false);
+  });
+});
+
+describe('the server block (HIVE-142)', () => {
+  it('defaults to disabled on a file that names no server', () => {
+    const parsed = parseConfig(JSON.stringify({ version: 2 }), 'config');
+    expect(parsed.server?.enabled ?? false).toBe(false);
+  });
+
+  it('reads a well-formed block', () => {
+    const parsed = parseConfig(
+      JSON.stringify({
+        version: 2,
+        server: { enabled: true, bind: { host: '100.101.102.103', port: 7433 } },
+      }),
+      'config',
+    );
+    expect(parsed.server?.enabled).toBe(true);
+    expect(parsed.server?.bind?.host).toBe('100.101.102.103');
+    expect(parsed.server?.bind?.port).toBe(7433);
+  });
+
+  it('refuses 0.0.0.0 with a message naming why, and keeps the rest', () => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, server: { enabled: true, bind: { host: '0.0.0.0' } } }),
+      'config',
+    );
+    expect(parsed.server?.bind?.host).toBeUndefined();
+    expect(parsed.errors.join(' ')).toMatch(/0\.0\.0\.0/);
+    expect(parsed.server?.enabled).toBe(true);
+    expect(parsed.fatal).toBe(false);
+  });
+
+  /**
+   * HIVE-142 review, I1: every other spelling `dns.lookup`/`net.Server.listen`
+   * still resolve to the same `0.0.0.0` — `isHostAlias`'s per-label regex
+   * admits all four as hostname shapes, so the literal-string check above is
+   * not the whole rule.
+   */
+  it.each(['0', '00', '0x0', '0X0', '000.000.000.000'])(
+    'refuses %s, another spelling of the wildcard, and keeps the rest',
+    (host) => {
+      const parsed = parseConfig(
+        JSON.stringify({ version: 2, server: { enabled: true, bind: { host } } }),
+        'config',
+      );
+      expect(parsed.server?.bind?.host).toBeUndefined();
+      expect(parsed.server?.enabled).toBe(true);
+      expect(parsed.fatal).toBe(false);
+    },
+  );
+
+  it('allows loopback, for single-machine testing', () => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, server: { bind: { host: '127.0.0.1' } } }),
+      'config',
+    );
+    expect(parsed.server?.bind?.host).toBe('127.0.0.1');
+  });
+
+  /**
+   * HIVE-140 audit, gap 3. The listener reads a refused host off the snapshot's
+   * errors and binds nothing, instead of the default it would otherwise fall
+   * back to. So the predicate must name every refusal that throws the host
+   * away, and none that leaves it standing.
+   */
+  describe('serverBindRefusal', () => {
+    const refusalOf = (server: unknown): string | null =>
+      serverBindRefusal(parseConfig(JSON.stringify({ version: 2, server }), 'config').errors);
+
+    it.each(['0.0.0.0', '0x0', '000.000.000.000', 'not a host!'])(
+      'names the refusal of %s',
+      (host) => {
+        expect(refusalOf({ enabled: true, bind: { host } })).toMatch(/^config\.server\.bind\.host: /);
+      },
+    );
+
+    it('names a bind block that was ignored whole', () => {
+      expect(refusalOf({ enabled: true, bind: 'mini' })).toMatch(/^config\.server\.bind: expected an object/);
+    });
+
+    it('is null for a good host, and for no bind block at all', () => {
+      expect(refusalOf({ enabled: true, bind: { host: '100.101.102.103' } })).toBeNull();
+      expect(refusalOf({ enabled: true })).toBeNull();
+    });
+
+    it('is null for an advisory beside a good host', () => {
+      expect(
+        refusalOf({ enabled: true, bind: { host: '100.101.102.103', colour: 'blue' } }),
+      ).toBeNull();
+    });
+  });
+
+  it('drops a malformed device and keeps the good ones', () => {
+    const good = {
+      id: 'd_9f2c',
+      name: 'MacBook',
+      paired: '2026-09-07',
+      revoked: false,
+      credential: { kind: 'sha256', digest: 'a'.repeat(64) },
+    };
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, server: { devices: [good, { id: 'd_bad' }] } }),
+      'config',
+    );
+    expect(parsed.server?.devices).toHaveLength(1);
+    expect(parsed.server?.devices?.[0]?.id).toBe('d_9f2c');
+    expect(parsed.errors.join(' ')).toMatch(/device/i);
+    expect(parsed.fatal).toBe(false);
+  });
+
+  /**
+   * HIVE-142 review, I6: `pairDevice`/`revokeDevice` read the already-
+   * filtered roster and write it back wholesale, so a dropped entry is not
+   * merely ignored for this load — it is erased from the file for good the
+   * next time anyone pairs or revokes anything. The message has to say that,
+   * not just "dropped".
+   */
+  it('says a dropped device is lost for good on the next write, not merely ignored', () => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, server: { devices: [{ id: 'd_bad' }] } }),
+      'config',
+    );
+    expect(parsed.errors.join(' ')).toMatch(/erased for good/i);
+  });
+
+  it('is advisory about a bad port and falls back to the default', () => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, server: { bind: { port: 70000 } } }),
+      'config',
+    );
+    expect(parsed.server?.bind?.port).toBeUndefined();
+    expect(parsed.fatal).toBe(false);
+  });
+
+  it('loads a v2 file written before this story with no error', () => {
+    const parsed = parseConfig(
+      JSON.stringify({ version: 2, shell: '/bin/zsh', projects: [] }),
+      'config',
+    );
+    expect(parsed.fatal).toBe(false);
+    expect(parsed.errors).toEqual([]);
+  });
+});
+
+describe('the remote block (HIVE-144)', () => {
+  it('leaves remote undefined when the file has no block', () => {
+    const parsed = parseConfig(doc({}), 'config');
+
+    expect(parsed.remote).toBeUndefined();
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('reads a well-formed remote block', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'remote', host: 'mini.tail1234.ts.net', port: 7433 } }),
+      'config',
+    );
+
+    expect(parsed.remote).toEqual({
+      mode: 'remote',
+      host: 'mini.tail1234.ts.net',
+      port: 7433,
+    });
+    expect(parsed.fatal).toBe(false);
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('reports a non-object block and ignores it, without rejecting the file', () => {
+    const parsed = parseConfig(doc({ remote: 'nope' }), 'config');
+
+    expect(parsed.remote).toBeUndefined();
+    expect(parsed.fatal).toBe(false);
+    expect(parsed.errors).toEqual(['config.remote: expected an object — ignored']);
+  });
+
+  it('rejects a forbidden key by dropping the whole block', () => {
+    const parsed = parseConfig(
+      '{"version":2,"projects":[],"remote":{"__proto__":"x"}}',
+      'config',
+    );
+
+    expect(parsed.remote).toBeUndefined();
+    expect(parsed.fatal).toBe(false);
+    expect(parsed.errors).toEqual([
+      'config.remote: forbidden key "__proto__" — remote ignored',
+    ]);
+  });
+
+  it('rejects an unrecognised mode and keeps the rest', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'nope', host: '127.0.0.1', port: 7433 } }),
+      'config',
+    );
+
+    expect(parsed.remote?.mode).toBeUndefined();
+    expect(parsed.remote?.host).toBe('127.0.0.1');
+    expect(parsed.errors.join(' ')).toContain('remote.mode');
+    expect(parsed.fatal).toBe(false);
+  });
+
+  /**
+   * Ruling 3 (HIVE-144): `host` is validated only when this block's own
+   * `mode` is `'remote'`. `DEFAULT_REMOTE.host` is `''`, and every install
+   * that has never attached carries exactly that — validating it
+   * unconditionally would put a permanent false alarm in
+   * `ConfigSnapshot.errors` on every machine that has never used this
+   * feature.
+   */
+  it('does not validate host when mode is local, even when host is empty', () => {
+    const parsed = parseConfig(doc({ remote: { mode: 'local', host: '' } }), 'config');
+
+    expect(parsed.remote?.host).toBe('');
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.fatal).toBe(false);
+  });
+
+  it('does not validate host when mode is absent from the block', () => {
+    const parsed = parseConfig(doc({ remote: { host: '203.0.113.7' } }), 'config');
+
+    expect(parsed.remote?.host).toBe('203.0.113.7');
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.fatal).toBe(false);
+  });
+
+  it('refuses a host that is neither loopback nor tailnet, in remote mode', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'remote', host: '203.0.113.7', port: 7433 } }),
+      'config',
+    );
+
+    expect(parsed.remote?.host).toBeUndefined();
+    expect(parsed.errors.some((e) => e.includes('remote.host'))).toBe(true);
+    expect(parsed.fatal).toBe(false);
+  });
+
+  it('accepts a loopback host in remote mode', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'remote', host: '127.0.0.1', port: 7433 } }),
+      'config',
+    );
+
+    expect(parsed.remote?.host).toBe('127.0.0.1');
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('accepts a tailnet host in remote mode', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'remote', host: '100.64.1.2', port: 7433 } }),
+      'config',
+    );
+
+    expect(parsed.remote?.host).toBe('100.64.1.2');
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('is advisory about a bad port and falls back to the default', () => {
+    const parsed = parseConfig(doc({ remote: { port: 70000 } }), 'config');
+
+    expect(parsed.remote?.port).toBeUndefined();
+    expect(parsed.fatal).toBe(false);
+  });
+
+  /**
+   * The token is never read out of the config file — see `RemoteConfig`'s
+   * doc comment. `token` is not in `REMOTE_KEYS`, so it is reported as an
+   * unknown key and never copied onto the parsed block, exactly as an
+   * unrecognised key anywhere else in this file is.
+   */
+  it('never reads a token out of the config file', () => {
+    const parsed = parseConfig(
+      doc({ remote: { mode: 'remote', host: '127.0.0.1', port: 7433, token: 'nope' } }),
+      'config',
+    );
+
+    expect(JSON.stringify(parsed.remote)).not.toContain('nope');
+    expect(parsed.errors.join(' ')).toContain('unknown key "token"');
   });
 });

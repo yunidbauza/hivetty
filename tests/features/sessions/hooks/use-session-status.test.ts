@@ -7,9 +7,11 @@ import type {
   SessionBranchEvent,
   SessionClearedEvent,
   SessionFinishedEvent,
+  SessionForegroundEvent,
   SessionReadyEvent,
   SessionNameEvent,
   SessionStatusEvent,
+  SessionTerminalEndedEvent,
   SessionTicketIntentEvent,
 } from '@shared/session-contract';
 import type { SessionNoteRequest } from '@shared/session-history-contract';
@@ -38,6 +40,8 @@ let readyListeners: ((event: SessionReadyEvent) => void)[];
 let branchListeners: ((event: SessionBranchEvent) => void)[];
 let metricsListeners: ((event: SessionMetricsEvent) => void)[];
 let intentListeners: ((event: SessionTicketIntentEvent) => void)[];
+let foregroundListeners: ((event: SessionForegroundEvent) => void)[];
+let endedListeners: ((event: SessionTerminalEndedEvent) => void)[];
 let disposals: number;
 /** What the hook handed to `session.note` (HIVE-87). */
 let notedTickets: SessionNoteRequest[];
@@ -116,6 +120,20 @@ function withBridge() {
           disposals += 1;
         };
       },
+      onForeground: (callback: (event: SessionForegroundEvent) => void) => {
+        foregroundListeners.push(callback);
+        return () => {
+          disposals += 1;
+        };
+      },
+      onTerminalEnded: (
+        callback: (event: SessionTerminalEndedEvent) => void,
+      ) => {
+        endedListeners.push(callback);
+        return () => {
+          disposals += 1;
+        };
+      },
       /*
         HIVE-87. The hook now tells main about a ticket it has confirmed, so
         this stub has to answer that verb too. Recorded rather than ignored:
@@ -179,6 +197,8 @@ beforeEach(() => {
   branchListeners = [];
   metricsListeners = [];
   intentListeners = [];
+  foregroundListeners = [];
+  endedListeners = [];
   notedTickets = [];
   issueCalls = [];
   issueReplies = {};
@@ -223,11 +243,12 @@ describe('useSessionStatus', () => {
     unmount();
 
     // Status, name (HIVE-61), cleared, finished (HIVE-93), ready (HIVE-101),
-    // branch, metrics and ticket-intent (HIVE-78) — a leaked listener on any of
-    // them would keep writing to a store the unmounted shell no longer renders,
-    // the cleared one would go on minting sessions, and the finished one would
-    // go on bouncing the user back to the orchestrator.
-    expect(disposals).toBe(8);
+    // branch, metrics, ticket-intent (HIVE-78), foreground and terminal-ended
+    // (terminals) — a leaked listener on any of them would keep writing to a
+    // store the unmounted shell no longer renders, the cleared one would go on
+    // minting sessions, and the finished one would go on bouncing the user
+    // back to the orchestrator.
+    expect(disposals).toBe(10);
   });
 
   it('applies a rename pushed from main', () => {
@@ -866,5 +887,50 @@ describe('useSessionStatus — the ready signal', () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(isBooting(id)).toBe(false);
+  });
+});
+
+describe('terminals', () => {
+  it('routes a foreground report to the terminal', () => {
+    withBridge();
+    const id = useHiveStore.getState().spawnTerminal('nova-web');
+    renderHook(() => useSessionStatus());
+
+    act(() => foregroundListeners[0]!({ entityId: id, name: 'vitest' }));
+
+    expect(useHiveStore.getState().entities[id]).toMatchObject({
+      status: 'running',
+      foreground: 'vitest',
+    });
+  });
+
+  it('removes a terminal that finished and keeps one that was lost, with its reason', () => {
+    withBridge();
+    const finished = useHiveStore.getState().spawnTerminal('nova-web');
+    const lost = useHiveStore.getState().spawnTerminal('nova-web');
+    renderHook(() => useSessionStatus());
+
+    act(() => {
+      endedListeners[0]!({ entityId: finished, ending: { kind: 'finished' } });
+      endedListeners[0]!({
+        entityId: lost,
+        ending: { kind: 'lost', reason: 'the pty host crashed' },
+      });
+    });
+
+    expect(useHiveStore.getState().entities[finished]).toBeUndefined();
+    expect(useHiveStore.getState().entities[lost]).toMatchObject({
+      ended: { reason: 'the pty host crashed' },
+    });
+  });
+
+  it('disposes both subscriptions on unmount', () => {
+    withBridge();
+    const { unmount } = renderHook(() => useSessionStatus());
+    const before = disposals;
+    unmount();
+    // Every subscription the hook opened, including the two new ones — the
+    // existing unmount test's count (8) plus the two added here.
+    expect(disposals - before).toBe(10);
   });
 });

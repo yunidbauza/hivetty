@@ -272,3 +272,333 @@ test('typing an alias writes it to the file and preserves the rest', async ({}, 
 
   await app.close();
 });
+
+/**
+ * HIVE-134's bind sub-group, on a config that names no `receiver.bind` at
+ * all — so the switch reading **off** can only have come from
+ * `DEFAULT_BIND.host` (`127.0.0.1`) travelling the whole read path, the same
+ * way the alias test above proves for `hostAlias`.
+ *
+ * The fields are asserted `toBeHidden()`, not merely unchecked, because
+ * `ContainerAliasGroup` renders them conditionally (`open ? <> … </> : null`)
+ * — a regression that always rendered them, just visually collapsed, would
+ * still pass a plain `not.toBeVisible()` on an element Playwright never found
+ * absent, but not this.
+ */
+test('the off-loopback bind is off, and its fields are hidden, by default', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  const toggle = page.getByRole('switch', { name: /off loopback/i });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByLabel(/bind address/i)).toBeHidden();
+  await expect(page.getByLabel(/^port$/i)).toBeHidden();
+  await expect(page.getByLabel(/allowed origins/i)).toBeHidden();
+
+  // Nothing is claimed in the header, because nothing is exposed.
+  await expect(page.getByTestId('header-chips').getByText('127.0.0.1')).toHaveCount(0);
+
+  await app.close();
+});
+
+/**
+ * The write half of the bind switch — the only test that drives the whole
+ * chain a launch later depends on: switch → revealed field → `TextField`
+ * commit → `config:set-receiver` → `parseSetReceiverRequest`'s validation
+ * (`electron/shared/guards.ts`) → disk.
+ *
+ * Asserted against the **file**, not the DOM, because the file is what the
+ * next launch binds to — a component that shows `0.0.0.0` in its own state
+ * without having written it would leave the app still listening on loopback
+ * at the next launch, silently.
+ */
+test('turning the bind switch on reveals the fields and writes an address', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  await page.getByRole('switch', { name: /off loopback/i }).click();
+
+  const field = page.getByLabel(/bind address/i);
+  await expect(field).toBeVisible();
+  await field.fill('0.0.0.0');
+  await field.blur();
+
+  // The file, not the DOM: this is what the next launch will bind.
+  await expect
+    .poll(() => (read(configPath).receiver as Record<string, unknown> | undefined)
+      ?.bind as Record<string, unknown> | undefined)
+    .toMatchObject({ host: '0.0.0.0' });
+
+  await expect(page.getByText(/may attempt to talk to the receiver/i)).toBeVisible();
+
+  await app.close();
+});
+
+/**
+ * The header chip, on a config that seeds `receiver.bind.host` already
+ * non-loopback — proving the chip end to end from a *file* rather than from
+ * whatever state the switch test above left behind, since each spec launches
+ * its own app against its own seed.
+ */
+test('the header names the address when the app starts exposed', async ({}, testInfo) => {
+  const configPath = testInfo.outputPath('hive-config.json');
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        version: 2,
+        shell: '/bin/sh',
+        projects: [],
+        receiver: {
+          hostAlias: 'host.docker.internal',
+          bind: { host: '0.0.0.0', port: 0, allowedOrigins: [] },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+
+  await app.close();
+});
+
+/**
+ * The defect HIVE-134's own review found, proven against the **built app**
+ * rather than only in unit tests: a receiver reads its bind once, at boot, so
+ * a listening socket cannot be moved — which is exactly what "takes effect
+ * at next launch" already says. Toggling the settings switch off rewrites the
+ * config file and its in-memory snapshot to loopback *instantly*, but the
+ * socket this app bound wide at launch keeps listening until the app actually
+ * restarts. A chip sourced from that snapshot would vanish the instant the
+ * switch is toggled and read as safe; it would not be. So the chip must
+ * survive exactly this sequence, still naming the address, because the
+ * process is still reachable off loopback for the rest of this run.
+ */
+test('the chip survives the switch going loopback — it reports the running bind, not the file (HIVE-134)', async ({}, testInfo) => {
+  const configPath = testInfo.outputPath('hive-config.json');
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        version: 2,
+        shell: '/bin/sh',
+        projects: [],
+        receiver: { bind: { host: '0.0.0.0', port: 0, allowedOrigins: [] } },
+      },
+      null,
+      2,
+    ),
+  );
+
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+
+  await openAdvanced(page);
+  await page.getByRole('switch', { name: /off loopback/i }).click();
+
+  // The file, proving the toggle really did rewrite it to loopback — the
+  // half of the story a config-derived chip would have reacted to.
+  await expect
+    .poll(() => (read(configPath).receiver as Record<string, unknown> | undefined)
+      ?.bind as Record<string, unknown> | undefined)
+    .toMatchObject({ host: '127.0.0.1' });
+
+  // The chip, proving it did not react to that write: the socket this
+  // session opened at boot is still bound to `0.0.0.0` and still reachable,
+  // and the header still has to say so.
+  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+
+  await app.close();
+});
+
+/**
+ * HIVE-142's Server mode group, placed between `ContainerAliasGroup` and
+ * Reset (`advanced-section.tsx`). Asserted by heading order rather than by
+ * DOM position directly — Playwright has no ordinal locator for "the group
+ * between these two" — which is exactly what a component landing in the
+ * wrong slot would fail.
+ */
+test('the Server mode group renders between Containers and Reset', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  const headings = await page.getByRole('heading', { level: 3 }).allTextContents();
+  const containers = headings.indexOf('Containers');
+  const server = headings.indexOf('Server mode');
+  const reset = headings.indexOf('Reset');
+
+  expect(containers).toBeGreaterThanOrEqual(0);
+  expect(server).toBeGreaterThan(containers);
+  expect(reset).toBeGreaterThan(server);
+
+  await app.close();
+});
+
+/**
+ * The default: nothing paired, nothing configured, so the switch reads off
+ * and the bind fields are absent rather than merely collapsed — the same
+ * `toBeHidden()` distinction `the off-loopback bind is off…` above draws for
+ * `ContainerAliasGroup`, and for the identical reason: `ServerModeGroup`
+ * renders its fields conditionally (`open ? <> … </> : null`).
+ */
+test('the Serve this machine switch is off, and its fields are hidden, by default', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  const toggle = page.getByRole('switch', { name: 'Serve this machine' });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByLabel(/bind address/i)).toBeHidden();
+  await expect(page.getByLabel(/^port$/i)).toBeHidden();
+
+  await app.close();
+});
+
+/**
+ * The write half of this switch: an ordinary settings write, exactly like
+ * `configSetReceiver`'s own, and proven against the real bridge — `handle`
+ * → `parseSetServerRequest` → `setServer` → disk.
+ */
+test('turning server mode on reveals the bind fields and writes enabled: true', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  await page.getByRole('switch', { name: 'Serve this machine' }).click();
+
+  await expect(page.getByLabel(/bind address/i)).toBeVisible();
+  await expect(page.getByLabel(/^port$/i)).toBeVisible();
+
+  await expect
+    .poll(() => (read(configPath).server as Record<string, unknown> | undefined)?.enabled)
+    .toBe(true);
+
+  await app.close();
+});
+
+/**
+ * HIVE-144's attach half, the same group's second switch. Off by default and
+ * discloses nothing — the same `toBeHidden()` distinction the serving switch's
+ * own test above draws, for the identical reason: `attachOpen` gates a `?
+ * <div>…</div> : null`, not a visually-collapsed one.
+ */
+test('the Attach to a server switch is off, and its fields are hidden, by default', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  const toggle = page.getByRole('switch', { name: 'Attach to a server' });
+  await expect(toggle).toBeVisible();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.getByLabel(/server address/i)).toBeHidden();
+  await expect(page.getByRole('button', { name: /^attach$/i })).toBeHidden();
+
+  await page.getByRole('switch', { name: 'Attach to a server' }).click();
+
+  await expect(page.getByLabel(/server address/i)).toBeVisible();
+  await expect(page.getByRole('button', { name: /^attach$/i })).toBeVisible();
+
+  await app.close();
+});
+
+/**
+ * The security boundary itself, driven through the real app rather than only
+ * through the unit suite's mocked bridge: `isRemoteTarget` refuses a public
+ * address client-side, before `config:set-remote` is ever reached, so a typo
+ * or a pasted public IP never lands in the file this app would dial on the
+ * next Attach click. Asserted against the **file** — the unit test already
+ * proves `setRemoteConfig` was not called against a mock; this proves nothing
+ * reached the real bridge and the real disk either.
+ */
+test('the attach address field refuses a public address, and writes nothing', async ({}, testInfo) => {
+  const { configPath } = seed((name) => testInfo.outputPath(name));
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForSelector('header');
+
+  await openAdvanced(page);
+
+  await page.getByRole('switch', { name: 'Attach to a server' }).click();
+
+  const field = page.getByLabel(/server address/i);
+  await field.fill('8.8.8.8');
+  await field.blur();
+
+  await expect(
+    page.getByText(/must be a loopback or tailnet address/i),
+  ).toBeVisible();
+
+  /*
+    No `remote` block at all — the whole point of a client-side refusal is
+    that `config:set-remote` is never reached. Not a whole-file comparison:
+    opening this app resolves and persists a project key alias regardless of
+    anything this test does (`seed`'s entry has none), so the file legitimately
+    changes underneath every test in this suite. What must not change is the
+    one key this test is actually about, and the unrelated keys `seed` wrote.
+  */
+  const after = read(configPath);
+  expect(after.remote).toBeUndefined();
+  expect(after['//mine']).toBe('a comment reset is allowed to eat');
+  expect(after.futureKey).toBe('something this build does not know');
+
+  await app.close();
+});

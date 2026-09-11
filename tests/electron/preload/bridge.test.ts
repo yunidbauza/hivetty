@@ -13,10 +13,11 @@ import {
   BRIDGE_LEDGER_KEYS,
   BRIDGE_NOTIFICATIONS_KEYS,
   BRIDGE_PTY_KEYS,
+  BRIDGE_REMOTE_KEYS,
+  BRIDGE_SERVER_KEYS,
   BRIDGE_SESSION_KEYS,
   BRIDGE_SKILLS_KEYS,
   BRIDGE_SLACK_KEYS,
-  BRIDGE_THEME_KEYS,
   BRIDGE_UI_KEYS,
   CH,
   EVENT_CHANNELS,
@@ -49,6 +50,14 @@ const ipcRendererMock = {
   setMaxListeners: vi.fn(),
 };
 
+/**
+ * `webUtils.getPathForFile` (HIVE-148). Real Electron answers a real path only
+ * for a `File` a browser drop produced and `''` for one a page constructed —
+ * the default here matches the constructed case, and a test that wants a real
+ * drop overrides it per call with `mockReturnValueOnce`.
+ */
+const getPathForFileMock = vi.fn((_file: File): string => '');
+
 vi.mock('electron', () => ({
   contextBridge: {
     exposeInMainWorld: vi.fn((_key: string, value: Record<string, unknown>) => {
@@ -56,6 +65,7 @@ vi.mock('electron', () => ({
     }),
   },
   ipcRenderer: ipcRendererMock,
+  webUtils: { getPathForFile: getPathForFileMock },
 }));
 
 beforeEach(async () => {
@@ -85,11 +95,13 @@ const skills = () =>
   exposed.skills as Record<string, (...args: unknown[]) => unknown>;
 const updates = () =>
   exposed.updates as Record<string, (...args: unknown[]) => unknown>;
-const theme = () =>
-  exposed.theme as Record<string, (...args: unknown[]) => unknown>;
 const ui = () =>
   exposed.ui as Record<string, (...args: unknown[]) => unknown>;
 
+const server = () =>
+  exposed.server as Record<string, (...args: unknown[]) => unknown>;
+const remote = () =>
+  exposed.remote as Record<string, (...args: unknown[]) => unknown>;
 const session = () =>
   exposed.session as Record<string, (...args: unknown[]) => unknown>;
 const ledger = () =>
@@ -102,6 +114,28 @@ describe('exposed surface', () => {
     expect(Object.keys(exposed).sort()).toEqual([...BRIDGE_KEYS].sort());
     expect(Object.keys(pty()).sort()).toEqual([...BRIDGE_PTY_KEYS].sort());
     expect(Object.keys(config()).sort()).toEqual([...BRIDGE_CONFIG_KEYS].sort());
+    /**
+     * HIVE-142's namespace, written with it rather than after the fact — the
+     * habit the notes throughout this file spent six namespaces establishing.
+     * `pair` and `revoke` are the two verbs that mint and destroy a device
+     * credential; a third here is a change to what a device can do to every
+     * session on this machine, and this line is what stops it arriving
+     * quietly.
+     */
+    expect(Object.keys(server()).sort()).toEqual([...BRIDGE_SERVER_KEYS].sort());
+    /**
+     * HIVE-144's namespace. **Not** `server` above despite sharing a verb
+     * name: `pair` here stores a credential this device was *given*, for
+     * attaching outward as a client, rather than minting one for a device
+     * this machine admits. `pair` and `forget` are the two credential verbs;
+     * a third of *those* is a change to what this window can do with the
+     * credential a remote server handed it, and this line is what stops it
+     * arriving quietly.
+     *
+     * `onLinkStatus` (HIVE-150) joined them as a read-only subscription — it
+     * touches no credential, only reports what the socket one opened is doing.
+     */
+    expect(Object.keys(remote()).sort()).toEqual([...BRIDGE_REMOTE_KEYS].sort());
     expect(Object.keys(integrations()).sort()).toEqual([
       ...BRIDGE_INTEGRATIONS_KEYS,
     ].sort());
@@ -297,11 +331,6 @@ describe('exposed surface', () => {
     // `IpcRendererEvent` before the page ever sees it.
     expect(status).toHaveBeenCalledWith(push);
     expect(lines).toHaveBeenCalledWith(batch);
-  });
-
-  /** HIVE-80. Two verbs, neither taking a destination path from the renderer. */
-  it('exposes exactly the theme verbs', () => {
-    expect(Object.keys(theme()).sort()).toEqual([...BRIDGE_THEME_KEYS].sort());
   });
 
   /**
@@ -649,21 +678,6 @@ describe('verbs route to the contract channels', () => {
   });
 });
 
-describe('theme verbs route to their channels (HIVE-80)', () => {
-  it('pick invokes theme:pick with no payload', async () => {
-    await theme().pick();
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.themePick);
-  });
-
-  it('save invokes theme:save with the request', async () => {
-    await theme().save({ suggestedName: 'x.json', contents: '{}' });
-    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.themeSave, {
-      suggestedName: 'x.json',
-      contents: '{}',
-    });
-  });
-});
-
 describe('the skills rename verb routes to its channel (HIVE-99)', () => {
   it('invokes skills:rename with both names and nothing else', async () => {
     await skills().rename({ from: 'standup', to: 'stand-up' });
@@ -687,6 +701,76 @@ describe('the skills rename verb routes to its channel (HIVE-99)', () => {
       CH.skillsWrite,
       expect.anything(),
     );
+  });
+});
+
+describe('the skills bundle verbs (HIVE-148)', () => {
+  it('mints a token for a real dropped file and nothing for a constructed one', () => {
+    // A `File` the page built itself. `webUtils.getPathForFile` answers '' for
+    // one, which is what makes the renderer unable to name a path it was not
+    // handed.
+    expect(skills().pathToken(new File(['x'], 'x.txt'))).toBeNull();
+  });
+
+  it('mints a real token for a real drop, and resolves it exactly once', async () => {
+    getPathForFileMock.mockReturnValueOnce('/Users/yunid/Downloads/run.sh');
+
+    const token = skills().pathToken(new File(['x'], 'run.sh'));
+    expect(token).not.toBeNull();
+
+    await skills().fileDrop({ name: 'graphify', dir: '', tokens: [token as string] });
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.skillsFileDrop, {
+      name: 'graphify',
+      dir: '',
+      sources: ['/Users/yunid/Downloads/run.sh'],
+    });
+
+    /*
+      Consumed on first use — a token is a one-shot ticket, not a durable
+      handle. A second drop naming the same token resolves to nothing at all,
+      which is refused locally rather than invoked with an empty `sources` —
+      see the next test.
+    */
+    await expect(
+      skills().fileDrop({ name: 'graphify', dir: '', tokens: [token as string] }),
+    ).rejects.toThrow();
+  });
+
+  it('refuses locally when every token names nothing, rather than invoking a no-op', async () => {
+    /*
+      Invoking with `sources: []` would answer with a fresh snapshot
+      indistinguishable from a drop that copied something. This is the case
+      that must not reach main silently: every token here was never minted.
+    */
+    await expect(
+      skills().fileDrop({
+        name: 'graphify',
+        dir: '',
+        tokens: ['a-token-nobody-minted'],
+      }),
+    ).rejects.toThrow();
+
+    expect(ipcRendererMock.invoke).not.toHaveBeenCalledWith(
+      CH.skillsFileDrop,
+      expect.anything(),
+    );
+  });
+
+  it('still proceeds when only some tokens resolve, dropping just the unknown ones', async () => {
+    getPathForFileMock.mockReturnValueOnce('/Users/yunid/Downloads/run.sh');
+    const token = skills().pathToken(new File(['x'], 'run.sh'));
+
+    await skills().fileDrop({
+      name: 'graphify',
+      dir: '',
+      tokens: [token as string, 'a-token-nobody-minted'],
+    });
+
+    expect(ipcRendererMock.invoke).toHaveBeenCalledWith(CH.skillsFileDrop, {
+      name: 'graphify',
+      dir: '',
+      sources: ['/Users/yunid/Downloads/run.sh'],
+    });
   });
 });
 

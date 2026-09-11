@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentContainer } from '../../../../electron/shared/agent-contract';
 import type { ResolvedContainer } from '../../../../electron/shared/config-contract';
-import { HOOK_ENV_TOKEN } from '../../../../electron/shared/hook-contract';
+import {
+  HOOK_ENV_TOKEN,
+  HOOK_HEADER_SESSION,
+  HOOK_HEADER_TOKEN,
+  READY_PATH,
+} from '../../../../electron/shared/hook-contract';
 
 import { createLedger, type Ledger } from '../../../../electron/main/ledger';
 import {
@@ -326,6 +332,42 @@ describe('createHookRuntime — sweep ordering (HIVE-133)', () => {
     expect(originDuringSweep).toBeNull();
   });
 
+  /**
+   * `boundHost` mid-sweep, the review finding on this exact window (HIVE-134).
+   *
+   * `originDuringSweep` above is expected `null` mid-sweep — `containerOrigin`
+   * is legitimately gated on `receiver`, which is not assigned yet. `boundHost`
+   * is the opposite case on purpose: the socket bound the instant `start()`
+   * resolved, several lines above the sweep, so it must already be reachable
+   * mid-sweep — a `null` here would be the exact false-safe signal this story
+   * exists to remove, just relocated to a narrower window than the one that
+   * shipped first. Proven directly rather than inferred from the end-to-end
+   * `createHookRuntime — boundHost` tests below, which only ever observe
+   * `boundHost()` after `start()`'s whole promise — sweep, both settings
+   * writes, everything — has already resolved, and so cannot tell a fixed
+   * implementation from the one that read through `receiver` and just got
+   * lucky that nothing asked during the gap.
+   */
+  it('reports the bound host mid-sweep, before `receiver` itself is assigned', async () => {
+    let boundHostDuringSweep: string | null | undefined;
+
+    sweepSpy.mockImplementation(async (...args) => {
+      boundHostDuringSweep = runtime?.boundHost();
+      return realSweep(...args);
+    });
+
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      bind: { host: '0.0.0.0', port: 0, allowedOrigins: [] },
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    expect(sweepSpy).toHaveBeenCalled();
+    expect(boundHostDuringSweep).toBe('0.0.0.0');
+  });
+
   it('still keeps nothing, because no session can exist yet', async () => {
     runtime = createHookRuntime({ userDataPath: dir, sessionMetrics: () => false, ledger });
     await runtime.start(noopHandlers);
@@ -591,5 +633,273 @@ describe('createHookRuntime — an agent in a container (HIVE-137)', () => {
     expect(grants).not.toBeNull();
     expect(typeof grants?.set).toBe('function');
     expect(typeof grants?.delete).toBe('function');
+  });
+});
+
+/**
+ * `HookRuntime.boundHost` (HIVE-134).
+ *
+ * This runtime's own twin of `receiver.test.ts`'s `boundHost` coverage, one
+ * level up: `receiver.ts` proves the underlying socket reports the right
+ * value at each point in its lifecycle, and this proves `createHookRuntime`
+ * reads straight through to it rather than gating it on `settingsPath` the
+ * way `doneUrl` deliberately is (see the doc comment on `HookRuntime.boundHost`
+ * for why the two answer different questions).
+ */
+describe('createHookRuntime — boundHost', () => {
+  let dir: string;
+  let ledger: Ledger;
+  let runtime: HookRuntime | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-hooks-boundhost-'));
+    ledger = createLedger({ dir, knowsParty: () => true });
+  });
+
+  afterEach(async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('is null before start, the bound host after a successful start, and null again after stop', async () => {
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      bind: { host: '0.0.0.0', port: 0, allowedOrigins: [] },
+      ledger,
+    });
+
+    expect(runtime.boundHost()).toBeNull();
+
+    await runtime.start(noopHandlers);
+    expect(runtime.boundHost()).toBe('0.0.0.0');
+
+    await runtime.stop();
+    expect(runtime.boundHost()).toBeNull();
+  });
+});
+
+/**
+ * The host set's transport follows the *bound* address, not the config
+ * (HIVE-134 review, finding 1).
+ *
+ * `hookSettings`'s `transport` parameter defaults to `'http'`, and until this
+ * fix `createHookRuntime` never passed anything else — `writeHookSettings`
+ * and `writeAgentSettings` always wrote `type: 'http'` handlers, whatever
+ * `receiver.bind.host` actually resolved to. Claude Code refuses an http hook
+ * addressed to a non-loopback private or link-local address outright
+ * (`ERR_HTTP_HOOK_BLOCKED_ADDRESS` — the same guard `container/generated.ts`
+ * already routes around with `command`/`curl`), and it does so silently: a
+ * hook failure is not a turn failure, so status, the inbox, the header gauges
+ * and `/done` all just stop updating with nothing on screen to explain why.
+ *
+ * The two cases below are the two branches of that decision, read back off
+ * the files on disk rather than off any intermediate value, because the file
+ * is what a real `claude` process reads. `0.0.0.0` is the same off-loopback
+ * bind the `boundHost` block above already uses — Node's `server.address()`
+ * hands the literal string back unresolved, so `isLoopbackHost` sees exactly
+ * what a real bridge or LAN address would look like.
+ */
+describe('createHookRuntime — transport follows the bound host (HIVE-134)', () => {
+  let dir: string;
+  let ledger: Ledger;
+  let runtime: HookRuntime | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-hooks-transport-'));
+    ledger = createLedger({ dir, knowsParty: () => true });
+  });
+
+  afterEach(async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('keeps the host set on http for the default loopback bind — the byte-identical default path', async () => {
+    runtime = createHookRuntime({ userDataPath: dir, sessionMetrics: () => false, ledger });
+    await runtime.start(noopHandlers);
+
+    const settings = JSON.parse(
+      await readFile(join(dir, 'hive', 'claude-hooks.settings.json'), 'utf8'),
+    ) as { hooks: { Stop: [{ hooks: [{ type: string }] }] } };
+    const agent = JSON.parse(
+      await readFile(join(dir, 'hive', 'claude-agent.settings.json'), 'utf8'),
+    ) as { hooks: { Stop: [{ hooks: [{ type: string }] }] } };
+
+    expect(settings.hooks.Stop[0].hooks[0].type).toBe('http');
+    expect(agent.hooks.Stop[0].hooks[0].type).toBe('http');
+  });
+
+  it('writes the host set as command hooks once the receiver binds off loopback', async () => {
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      bind: { host: '0.0.0.0', port: 0, allowedOrigins: [] },
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    const settingsText = await readFile(
+      join(dir, 'hive', 'claude-hooks.settings.json'),
+      'utf8',
+    );
+    const agentText = await readFile(
+      join(dir, 'hive', 'claude-agent.settings.json'),
+      'utf8',
+    );
+    const settings = JSON.parse(settingsText) as {
+      hooks: { Stop: [{ hooks: [{ type: string; command?: string }] }] };
+    };
+    const agent = JSON.parse(agentText) as {
+      hooks: { Stop: [{ hooks: [{ type: string; command?: string }] }] };
+    };
+
+    expect(settings.hooks.Stop[0].hooks[0].type).toBe('command');
+    expect(settings.hooks.Stop[0].hooks[0].command).toContain('curl');
+    expect(agent.hooks.Stop[0].hooks[0].type).toBe('command');
+    expect(agent.hooks.Stop[0].hooks[0].command).toContain('curl');
+
+    // Never a bare `http` handler anywhere in either file — the whole point,
+    // since a single surviving one would still be refused.
+    expect(settingsText).not.toContain('"type": "http"');
+    expect(agentText).not.toContain('"type": "http"');
+  });
+});
+
+/**
+ * `HookRuntimeOptions.bind` reaching `createReceiver` (HIVE-134).
+ *
+ * Before this block, `bind` was not a field this runtime read at all —
+ * `receiver.bind` in the config file had a reader and a resolver (Tasks 1-3)
+ * and the guard downstream of it already knew what to do with a non-default
+ * `host`/`allowedOrigins`/`hostAlias` (Task 5-7), but nothing carried those
+ * values from `createHookRuntime`'s caller into the `createReceiver` call
+ * this runtime makes. A user who set `receiver.hostAlias` to the
+ * podman-flavoured `host.containers.internal` had every containerised
+ * session's hooks and MCP calls silently refused by the guard, because the
+ * receiver was still checking against the default `host.docker.internal`.
+ */
+describe('the receiver bind comes from config', () => {
+  let dir: string;
+  let ledger: Ledger;
+  let runtime: HookRuntime | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-hooks-bind-'));
+    ledger = createLedger({ dir, knowsParty: () => true });
+  });
+
+  afterEach(async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('binds loopback with an OS-assigned port when no bind is configured', async () => {
+    runtime = createHookRuntime({ userDataPath: dir, sessionMetrics: () => false, ledger });
+    await runtime.start(noopHandlers);
+
+    // The free regression check Task 8's own brief calls out: the default
+    // must not move.
+    expect(runtime.envFor('sess-a')['HIVE_RECEIVER_URL']).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+
+  it('passes the configured host through to the receiver', async () => {
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      bind: { host: '0.0.0.0', port: 0, allowedOrigins: ['http://localhost:5173'] },
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    expect(runtime.envFor('sess-a')['HIVE_RECEIVER_URL']).toMatch(/^http:\/\/0\.0\.0\.0:\d+$/);
+  });
+
+  it('fills in the default port when `bind` names only a host', async () => {
+    // `bind` arrives partial (`Partial<ReceiverBindConfig>`). Naming only
+    // `host` must not lose the default port — the resolved value has to
+    // still be `DEFAULT_BIND.port`, i.e. an OS-assigned free port, not
+    // `undefined` reaching `createReceiver` and breaking its own default.
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      bind: { host: '127.0.0.1' },
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    expect(runtime.envFor('sess-a')['HIVE_RECEIVER_URL']).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  });
+
+  /*
+    `port` on the options object is the test override that predates this
+    block. It has to keep winning, or every existing spec that pins a port
+    starts fighting a config default.
+  */
+  it('lets the explicit `port` option win over the configured one', async () => {
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      port: 0,
+      bind: { host: '127.0.0.1', port: 63999, allowedOrigins: [] },
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    const url = new URL(runtime.envFor('sess-a')['HIVE_RECEIVER_URL'] as string);
+
+    expect(url.port).not.toBe('63999');
+  });
+
+  /**
+   * The end-to-end proof that `hostAlias` reaches the guard, not just that
+   * the option is threaded through: without this, an existing suite could
+   * pass load-bearing coverage of a field that never actually reaches
+   * `createReceiver`'s `Host` allowlist.
+   *
+   * Raw `node:http`, never `fetch` — `fetch` silently replaces a spoofed
+   * `Host` header with the socket's own authority before the request leaves
+   * the process, which would make this test pass without exercising the
+   * guard at all (see `receiver.test.ts`'s `'the Origin and Host guard'`
+   * describe, which this mirrors).
+   */
+  it('admits a request whose Host names the configured alias (HIVE-134)', async () => {
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      hostAlias: () => 'host.containers.internal',
+      ledger,
+    });
+    await runtime.start(noopHandlers);
+
+    const env = runtime.envFor('sess-a');
+    const target = new URL(env['HIVE_RECEIVER_URL'] as string);
+
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        {
+          hostname: target.hostname,
+          port: target.port,
+          path: READY_PATH,
+          method: 'POST',
+          headers: {
+            [HOOK_HEADER_TOKEN]: env['HIVE_HOOK_TOKEN'],
+            [HOOK_HEADER_SESSION]: 'sess-a',
+            host: `host.containers.internal:${target.port}`,
+          },
+        },
+        (response) => {
+          response.resume();
+          response.on('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+
+    expect(status).toBe(204);
   });
 });

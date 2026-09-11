@@ -866,6 +866,35 @@ export interface SessionReadyEvent {
 }
 
 /**
+ * A terminal's foreground process changed (terminals, phase 2).
+ *
+ * `null` means the shell has the tty — the row reads `at prompt`. A name means
+ * that process is running and the row reads it verbatim.
+ */
+export interface SessionForegroundEvent {
+  entityId: string;
+  name: string | null;
+}
+
+/**
+ * How a terminal's shell ended.
+ *
+ * `finished` is the shell exiting on its own — `exit`, Ctrl-D — and the exit
+ * code is deliberately not inspected: a shell's `exit` returns the last
+ * command's code, so a non-zero one says nothing about whether the user meant
+ * to leave. `lost` is every ending the user did not ask for: a signal, a spawn
+ * failure, the host going away.
+ */
+export type TerminalEnding =
+  | { kind: 'finished' }
+  | { kind: 'lost'; reason: string };
+
+export interface SessionTerminalEndedEvent {
+  entityId: string;
+  ending: TerminalEnding;
+}
+
+/**
  * The model and thinking effort a session may be started with (story 109).
  *
  * **Closed sets, and they live here rather than in `src/types/entity.ts`

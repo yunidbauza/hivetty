@@ -7,6 +7,7 @@ import {
   type DataMessage,
   type ErrorMessage,
   type ExitMessage,
+  type ForegroundMessage,
   type HostCommand,
   type HostMessage,
   type SpawnCommand,
@@ -91,6 +92,7 @@ export interface PtyHostSupervisor {
   onSpawned(listener: Listener<SpawnedMessage>): () => void;
   onError(listener: Listener<ErrorMessage>): () => void;
   onSessionLost(listener: Listener<SessionLost>): () => void;
+  onForeground(listener: Listener<ForegroundMessage>): () => void;
 
   /** Ask the host to kill everything and exit; force-kill after the timeout. */
   shutdown(): Promise<void>;
@@ -134,6 +136,7 @@ export function createPtyHostSupervisor(
   const spawned = emitter<SpawnedMessage>();
   const errors = emitter<ErrorMessage>();
   const lost = emitter<SessionLost>();
+  const foreground = emitter<ForegroundMessage>();
 
   let child: HostChild | null = null;
   /** The host has emitted `spawn`; before that, `postMessage` has nowhere to go. */
@@ -261,6 +264,10 @@ export function createPtyHostSupervisor(
       case 'error':
         errors.emit(message);
         return;
+      case 'foreground':
+        if (!sessions.has(message.sessionId)) return;
+        foreground.emit(message);
+        return;
     }
   }
 
@@ -373,6 +380,7 @@ export function createPtyHostSupervisor(
     onSpawned: spawned.add,
     onError: errors.add,
     onSessionLost: lost.add,
+    onForeground: foreground.add,
 
     async shutdown() {
       const instance = child;

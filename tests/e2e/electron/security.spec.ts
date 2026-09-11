@@ -74,8 +74,9 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     github: Object.keys(window.hive!.github).sort(),
     notifications: Object.keys(window.hive!.notifications).sort(),
     jira: Object.keys(window.hive!.jira).sort(),
+    server: Object.keys(window.hive!.server).sort(),
+    remote: Object.keys(window.hive!.remote).sort(),
     updates: Object.keys(window.hive!.updates).sort(),
-    theme: Object.keys(window.hive!.theme).sort(),
     ui: Object.keys(window.hive!.ui).sort(),
   }));
 
@@ -146,11 +147,14 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * already mapped rather than a general-purpose GitHub client.
    */
   /**
-   * HIVE-80 adds `theme`, and the bound still holds: two verbs, neither
-   * taking a destination path from the renderer. `pick` reads whatever the
-   * open dialog chose; `save` writes to whatever the save dialog chose, with
-   * the renderer's own `suggestedName` only ever offered to that dialog as a
-   * default — never joined to a directory or trusted as a destination.
+   * HIVE-80 added a `theme` namespace here, two verbs wrapping native dialogs.
+   * HIVE-146 removed it: a theme file is on the machine the user is sitting at,
+   * so the renderer reads and writes it with the File API and nothing about
+   * themes crosses the bridge at all.
+   *
+   * The narrowing is the point. This spec exists to catch the surface growing,
+   * and a namespace that leaves it is the one direction that never needs an
+   * argument.
    */
   /**
    * HIVE-81 adds `ui`, and it is the first namespace whose one verb travels
@@ -188,6 +192,22 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * it can name no directory `remove` could not already name, and it refuses a
    * destination that exists rather than replacing it. The argument for the
    * fifth verb is recorded on `BRIDGE_SKILLS_KEYS`.
+   *
+   * HIVE-148 grows that namespace to thirteen — a skill became a folder, not
+   * one file, so a pane that can author every file in one cannot address them
+   * by anything but a path. Seven of the eight new verbs carry a path,
+   * bounded twice: `assertSkillPath`/`assertSkillDir` at the boundary, and
+   * `resolveInSkill`'s `realpath` containment check behind it, because a
+   * symlink is a fact about the disk and not about the string. Six of those
+   * seven are skill-relative; the seventh, `fileDrop`, is the one verb in
+   * this whole bridge whose payload holds an *absolute* path. The eighth,
+   * `pathToken`, is the one that reopens no posture at all: it carries no
+   * path in either direction, is not `invoke`d, runs synchronously against a
+   * map only preload holds, and answers `null` for any `File` the page did
+   * not get from a real drop. A renderer that invents an id gets nothing back
+   * for it — which is what keeps `fileDrop`'s absolute payload from being a
+   * read-anywhere primitive. The full argument is recorded on
+   * `BRIDGE_SKILLS_KEYS`.
    *
    * ## `agents` (HIVE-114)
    *
@@ -278,6 +298,26 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'ledger',
     'notifications',
     'pty',
+    /**
+     * HIVE-144 adds `remote`. What a web page can now do that it could not
+     * before: store the device credential a `server.pair` mint on some
+     * *other* Hive handed back, and forget it — asserted separately below on
+     * `surface.remote`. **Not** the same direction as `server` below despite
+     * sharing a verb name: `server.pair`/`.revoke` mint or destroy a
+     * credential this machine hands out; `remote.pair`/`.forget` store or
+     * discard a credential this machine was given. Both verbs persist to
+     * `remote-credential.bin` under `userData`, never to the config file —
+     * see `electron/remote-client/token-store.ts`.
+     */
+    'remote',
+    /**
+     * HIVE-142 adds `server`. What a web page can now do that it could not
+     * before: mint a device credential and hand back its plaintext once, or
+     * revoke one by name — asserted separately below on `surface.server`.
+     * Both verbs persist to `ConfigSnapshot.server.devices`, the same list
+     * `config.setServer` can read but never write directly.
+     */
+    'server',
     'session',
     'skills',
     /*
@@ -288,7 +328,6 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
       (`electron/shared/ipc-contract.ts`, the comment above `BRIDGE_KEYS`).
     */
     'slack',
-    'theme',
     'ui',
     'updates',
   ]);
@@ -324,14 +363,49 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'write',
   ]);
   expect(surface.ledger).toEqual(['answer', 'list', 'onChanged', 'post']);
+  /**
+   * HIVE-142. Two verbs, and neither is an ordinary settings write: `pair`
+   * mints a device credential and answers its plaintext once; `revoke`
+   * destroys one by name. A third here is a change to what a device can do
+   * to every session on this machine, which is exactly the kind of widening
+   * this whole test exists to make impossible to add quietly.
+   */
+  expect(surface.server).toEqual(['pair', 'revoke']);
+  /**
+   * HIVE-144. Two credential verbs, and **not** `server` above pointing the
+   * same way: `pair` here stores a `deviceId`/`token` pair this machine was
+   * *handed* by a `server.pair` mint on some other Hive, so it can attach
+   * outward as a client; `forget` discards it. Neither mints or destroys a
+   * credential that grants access *to* this machine — that register is
+   * `server`'s, above — which is why the pair is graded `mutate` rather than
+   * `execute` (`remote-contract.ts`). A third *credential* verb here is the
+   * same kind of widening this whole test exists to make impossible to add
+   * quietly.
+   *
+   * `onLinkStatus` (HIVE-150) is the exception that proves what this list is
+   * for. It is a **subscription**, and it touches no credential at all: it
+   * reports what the socket one of those credentials opened is currently
+   * doing — attached, reconnecting, given up, or gone. A page that can watch a
+   * link change state gains nothing it could not already infer from the calls
+   * failing, which is why this addition is a widening of *what the window
+   * knows* rather than of what it can do.
+   */
+  expect(surface.remote).toEqual(['forget', 'onLinkStatus', 'pair']);
   expect(surface.skills).toEqual([
+    'fileDrop',
+    'fileImport',
+    'fileMkdir',
+    'fileMove',
+    'fileRead',
+    'fileRemove',
+    'fileWrite',
     'list',
+    'pathToken',
     'read',
     'remove',
     'rename',
     'write',
   ]);
-  expect(surface.theme).toEqual(['pick', 'save']);
   /**
    * HIVE-110 adds `reportSessionName`, and it is the first verb here that takes
    * renderer-supplied *content* rather than an identifier.
@@ -445,8 +519,21 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * `null` would have traded that guarantee away for one fewer entry here. It
    * takes no payload at all, which is the narrowest a mutating verb can be.
    */
+  /**
+   * `badge` is HIVE-159, and what a page can do with it that it could not
+   * before is **set the number on this machine's dock icon**.
+   *
+   * Nothing more: the payload is a count, and `badgeDock` drops anything that
+   * is not a non-negative integer rather than coercing it, so no string a page
+   * supplies ever reaches `app.dock.setBadge`. It reaches no file, process or
+   * network, and in local mode the handler ignores it outright, because the hub
+   * writes the badge from its own buffer. It exists because an attached client
+   * runs no hub, and the renderer is the only thing there that knows the count.
+   */
   expect(surface.notifications).toEqual([
     'act',
+    // HIVE-159 — this window's unread count, for this machine's dock.
+    'badge',
     'clear',
     'delivery',
     // HIVE-93 — a deliberate widening; see BRIDGE_NOTIFICATIONS_KEYS.
@@ -542,6 +629,16 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      */
     'restart',
     'spawn',
+    /**
+     * Terminals add `spawnTerminal`, a capability rather than a listener — and
+     * a **narrower** one than the `spawn` above it. It takes a session id, a
+     * project id and a size, never a shell, a command, a directory or an
+     * environment: main
+     * resolves all of those from the mapped project in the config file, the
+     * same way `spawn` does. What it grants the renderer is one login shell in
+     * a directory the user already mapped, with the bootstrap left off.
+     */
+    'spawnTerminal',
     'write',
   ]);
   /**
@@ -572,6 +669,25 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    */
   expect(surface.config).toEqual([
     'addProject',
+    /**
+     * HIVE-146 adds `browseDirectory`, and it is the first verb on this bridge
+     * that takes a path — so it is the one addition here that genuinely needs
+     * an argument rather than a note.
+     *
+     * The bound it appears to break is "no verb names a destination". It does
+     * not: nothing is written, and the path it takes is a *source* to list, not
+     * a place to put anything. The one file this bridge can write is still the
+     * config, and `addProject` still re-validates from scratch whatever path
+     * reaches it, from this verb or from anywhere else.
+     *
+     * What it does take is a path to *read*, which the fs verbs deliberately
+     * never do — they name a `projectId`. The exception is argued where it is
+     * enforced, in `electron/main/fs/home-browse.ts`: a folder that is not a
+     * project yet has no id, and main contains every path against the home
+     * directory after `realpath`, on the request and on every entry returned.
+     * Directories only; a file's contents never cross this verb.
+     */
+    'browseDirectory',
     'cancelClone',
     'chooseDirectory',
     /**
@@ -592,6 +708,20 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      */
     'diagnoseEnv',
     'get',
+    /**
+     * HIVE-149. The narrowest addition this list has taken: **no argument**,
+     * and a return of the three fields `setRemote` below already writes —
+     * `mode`, `host` and `port`. It names no path and no destination, and it
+     * cannot carry a credential, because `RemoteConfig` has never held one.
+     *
+     * Why it exists at all, with `get` sitting directly above it: `config:get`
+     * is proxied while attached, on purpose, so the `remote` block it answers
+     * with describes the *server*, whose own `mode` reads `local` because the
+     * server is the thing being attached to. This verb is on `PROCESS_LOCAL`
+     * and describes this window. The pair is the point — a renderer that needs
+     * to know where it would dial next cannot get that from `get`.
+     */
+    'getRemote',
     'onCloneDone',
     'reload',
     'removeProject',
@@ -649,14 +779,14 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      * inside a container that has to be told them, not paths this process
      * opens, and `envArg`/`freshness` are shape, not destinations.
      *
-     * `probe` is not that mild, and does not belong in the same clause
-     * (final-review fix, HIVE-134 has been told to lean on this paragraph):
-     * `diagnoseCommand` runs it via `/bin/sh -c` on the **host**, from a
-     * settings handler — this is the first payload on this bridge that main
-     * executes at all outside a session's own terminal, where the user can at
-     * least see what ran. That the value only takes effect when Settings asks
-     * for a diagnostic, and is otherwise inert on disk, is HIVE-134's premise
-     * to weigh, not this test's to assert away.
+     * `probe` is not that mild, and HIVE-134 weighed it rather than assert it
+     * away: `diagnoseCommand` runs it via `/bin/sh -c` on the **host**, from a
+     * settings handler, which is a strictly larger capability than anything
+     * `setReceiver` carries — a bind names where a socket listens, a probe names
+     * a program to run. It stays in this list on the ground the earlier comment
+     * gave: it takes effect only when Settings asks for a diagnostic and is
+     * otherwise inert on disk. That is a real bound and not the same as harmless,
+     * and it is the next thing on this bridge worth narrowing.
      */
     /**
       * Story 106's `setNotifications` — a capability, and the mildest one on
@@ -685,8 +815,7 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'setProjectRuntime',
     /**
      * HIVE-131's `setReceiver`, and it **does name a network destination** —
-     * the first verb on the config bridge that does. Read that plainly, because
-     * the follow-up bind story will lean on whatever this paragraph says.
+     * the first verb on the config bridge that does. Read that plainly.
      *
      * It stores the hostname a containerised session uses to address this app.
      * Nothing consumes it on this branch, but HIVE-132 routes
@@ -706,16 +835,81 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      *   survives it — an earlier blocklist let `?`, `#`, `@` and `\` through,
      *   each of which silently re-pointed the address at port 80 of another
      *   host.
-     * - It names no *file*: the one file the bridge can write is still chosen by
-     *   main, as for every verb above.
-     * - It opens **no socket and changes no bind**. The receiver still binds
-     *   `127.0.0.1`, and nothing on this bridge can widen that. The opt-in
-     *   non-loopback bind was deliberately left out of HIVE-131 — which is why
-     *   this verb adds no listening surface, and why that claim, unlike the
-     *   destination one, holds.
+     * - It named no *file* and opened no socket, and only the first half still
+     *   holds. HIVE-134 added `bind` to this payload, so this verb **can** move
+     *   the receiver off loopback — at the next launch, because a listening
+     *   socket cannot be moved. What bounds it is no longer "it cannot": it is
+     *   the same `isHostAlias` predicate, the next-launch delay that keeps the
+     *   change from being silent, and the header chip — sourced from the
+     *   receiver's *running* bind (`AppInfo.receiverBoundHost`), not from this config's
+     *   snapshot of it, precisely so it still says the receiver is exposed for
+     *   exactly as long as it is even across the gap between toggling this
+     *   switch off and the relaunch that actually closes the wider socket
+     *   (HIVE-134).
+     * - What does *not* depend on the bind, and is the reason widening it is not
+     *   a cliff: `reject` compares the hook token with `timingSafeEqual` and
+     *   checks `Origin` and `Host` on all eight routes, at every bind. Those
+     *   were conditioned on the bind in HIVE-134's ticket and deliberately are
+     *   not in the code — a guard that engages only on a config no user of the
+     *   shipped platform sets is a guard nothing exercises.
      */
     'setReceiver',
+    /**
+     * HIVE-144's `setRemote`, and it does exactly what `setServer` below
+     * does for the other direction: writes `mode`, `host` and `port`, all
+     * already resolved by `ConfigSnapshot.remote`, and carries **no
+     * credential** — `parseSetRemoteRequest` refuses a `token` key outright,
+     * so this payload has no route for one. Storing and forgetting the
+     * credential this device was handed is the new `remote` namespace's job,
+     * asserted separately below, and — unlike `server.pair`/`.revoke` — it is
+     * graded `mutate` rather than `execute`: it stores a credential this
+     * device receives, not one that grants access to a device this machine
+     * admits. See `remote-contract.ts`'s `CHANNEL_AUTHORIZATION` comment for
+     * the full reasoning.
+     *
+     * `host` is the one field worth reading plainly: it **does name a network
+     * destination**, exactly as `setReceiver` above does, and `isRemoteTarget`
+     * is the predicate that bounds it — loopback or a tailnet address only,
+     * because the socket this app dials is plaintext and anything else would
+     * send the credential `remote.pair` stores to whoever controls the
+     * address. Ruling 3 means an empty `host` alongside `mode: 'local'` is
+     * accepted rather than refused: every install that has never attached
+     * carries exactly that pair, and validating a field nobody is using would
+     * make the ordinary, never-configured state an error.
+     */
+    'setRemote',
     'setRuntime',
+    /**
+     * HIVE-124's Socket Mode switch, and it reached the bridge in 52fb16b
+     * without reaching this list — so the assertion was red on `main` before
+     * HIVE-141 touched anything. Added here rather than left for whoever tripped
+     * over it next: a surface test nobody can get green is a surface test people
+     * learn to skip.
+     *
+     * It is a mild addition on the terms this list already uses. The payload is
+     * the socket-mode boolean and the commander allow-list — no path, no
+     * hostname, no destination of any kind — and it carries **no tokens**: the
+     * app and bot secrets are on the `slack` namespace, refused here by
+     * `parseSetSlackRequest` as unexpected keys, for the identical reason
+     * `setJira` above cannot carry Jira's. The one file the bridge can write is
+     * still chosen by main.
+     *
+     * What it genuinely grants is the switch that lets a Slack message wake an
+     * agent. That is a real capability, and it is bounded on the far side rather
+     * than here: the allow-list names who may command, and the agent permission
+     * fence decides what a woken run may do.
+     */
+    /**
+     * HIVE-142's `setServer`, and it does exactly what `setReceiver` above
+     * does for the receiver: writes `enabled` and `bind`, both already
+     * resolved by `ConfigSnapshot.server`, and carries no credential —
+     * `parseSetServerRequest` refuses one as an unexpected key. Minting and
+     * destroying a device credential is the new `server` namespace's job,
+     * asserted separately below, and it is graded `execute` rather than
+     * `mutate` for exactly that reason (`remote-contract.ts`).
+     */
+    'setServer',
+    'setSlack',
     'startClone',
   ]);
   /**
@@ -817,6 +1011,12 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * The property worth pinning is no longer "listeners only" but "nothing here
    * carries a prompt, and nothing here names a path the renderer chose". That
    * still holds.
+   *
+   * Terminals add two more **listeners**, which is the cheapest widening this
+   * list takes. `onForeground` carries a process's comm name — `sleep`, `vim` —
+   * read from the tty main already owns, and `onTerminalEnded` carries how a
+   * shell stopped. Neither takes an argument from the renderer, neither names a
+   * path, and neither carries a prompt.
    */
   expect(surface.session).toEqual([
     'history',
@@ -824,10 +1024,12 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'onBranch',
     'onCleared',
     'onFinished',
+    'onForeground',
     'onMetrics',
     'onName',
     'onReady',
     'onStatus',
+    'onTerminalEnded',
     'onTicketIntent',
     'pr',
   ]);

@@ -443,8 +443,47 @@ export interface Agent {
   lines: TermLine[];
 }
 
+/**
+ * What a shell is doing, as far as the PTY can tell (terminals).
+ *
+ * Two words, and neither is a session's. A session's `idle` means "Claude is
+ * waiting for you"; a shell's `prompt` means nothing is happening and nobody
+ * is waiting. Sharing a word would make the STATUS column mean two things.
+ * A dead terminal has no status — it is over, not in a state.
+ */
+export type TerminalStatus = 'prompt' | 'running';
+
+/**
+ * A terminal is a session that never had `claude` typed into it (terminals).
+ *
+ * Same spawn, one write suppressed. No transcript to earn a title from, no
+ * hooks to report a status, no cost, no history and no resume — the shell's
+ * own `↑` is the resume. Its row is its id plus whatever holds the tty.
+ */
+export interface Terminal {
+  kind: 'terminal';
+  id: string; // 'term-02'
+  project: string;
+  /** Where the shell started: the project's path, or the directory "terminal here" named. */
+  cwd: string;
+  status: TerminalStatus;
+  /**
+   * The foreground process's comm name while `running` — `vitest`, `vim`,
+   * `ssh`, or `node` for anything a JavaScript runner launched. Absent at
+   * `prompt`. Set together with `status` by one action, never apart.
+   */
+  foreground?: string;
+  createdAt: number;
+  /**
+   * Present only after the shell died unasked: a signal, a spawn failure, the
+   * host going away. A shell that exited on its own is removed, never marked.
+   */
+  ended?: { reason: string; at: number };
+  lines: TermLine[];
+}
+
 /** Anything that owns a terminal tab. */
-export type Entity = Session | Agent;
+export type Entity = Session | Agent | Terminal;
 
 export interface Project {
   id: string;
@@ -559,6 +598,26 @@ export const isSession = (entity: Entity): entity is Session =>
 
 export const isAgent = (entity: Entity): entity is Agent =>
   entity.kind === 'agent';
+
+export const isTerminal = (entity: Entity): entity is Terminal =>
+  entity.kind === 'terminal';
+
+/**
+ * `lost` once the shell died unasked; otherwise `at prompt`, or what holds
+ * the tty. `at prompt` is tier 1's honest floor: a shell built-in, a function
+ * or a `read` runs in the shell's own process and reads as the prompt until
+ * shell integration (tier 2) can say otherwise.
+ */
+export const terminalLabel = (terminal: Terminal): string =>
+  terminal.ended !== undefined ? 'lost' : (terminal.foreground ?? 'at prompt');
+
+/** The shell died unasked and the tab is showing why. */
+export const isLostTerminal = (entity: Entity | null | undefined): boolean =>
+  entity !== null && entity !== undefined && isTerminal(entity) && entity.ended !== undefined;
+
+/** The last segment of a directory, for a row that has no branch to show. */
+export const cwdTail = (cwd: string): string =>
+  cwd.split('/').filter((segment) => segment !== '').at(-1) ?? cwd;
 
 /**
  * Which terminal a session runs in.

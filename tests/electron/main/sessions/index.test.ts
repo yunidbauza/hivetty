@@ -7,10 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AUTH_ENV_KEYS,
-  DEFAULT_JIRA,
-  DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
+  emptySnapshot,
   type ConfigSnapshot,
   type ResolvedContainer,
 } from '../../../../electron/shared/config-contract';
@@ -78,8 +75,11 @@ let spawned: {
   shell: string;
   args: string[];
   cwd: string;
+  env: Record<string, string>;
   /** Absent for a command session, which has no authentication to decide. */
   stripEnv?: readonly string[];
+  /** Set only for a terminal (terminals). */
+  foreground?: true;
 }[];
 let killed: string[];
 let sessions: Sessions;
@@ -93,14 +93,12 @@ let emitExit: (event: {
 /** Story 102: a host-level failure, which is how a bad binary reports. */
 let emitError: (event: { sessionId?: string; message: string }) => void;
 let emitLost: (event: { sessionId: string }) => void;
+/** A terminal's foreground process changed (terminals). */
+let emitForeground: (event: { sessionId: string; name: string | null }) => void;
 let blocked: boolean;
 
 const CONFIG: ConfigSnapshot = {
-  configPath: '/home/dev/.hive/config.json',
-  templateWritten: false,
-  shell: '/bin/zsh',
-  claudeCommand: 'claude',
-  env: {},
+  ...emptySnapshot('/home/dev/.hive/config.json', '/bin/zsh'),
   projects: [
     {
       id: 'nova-web',
@@ -123,14 +121,6 @@ const CONFIG: ConfigSnapshot = {
       isRepo: false,
     },
   ],
-  notifications: { ...DEFAULT_NOTIFICATIONS },
-  jira: { ...DEFAULT_JIRA },
-  receiver: { ...DEFAULT_RECEIVER },
-  slack: { ...DEFAULT_SLACK },
-  subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-  errors: [],
 };
 
 function fakeSupervisor(): PtyHostSupervisor {
@@ -141,7 +131,9 @@ function fakeSupervisor(): PtyHostSupervisor {
         shell: string;
         args: string[];
         cwd: string;
+        env: Record<string, string>;
         stripEnv?: readonly string[];
+        foreground?: true;
       }) => {
         spawned.push(request);
       },
@@ -166,6 +158,10 @@ function fakeSupervisor(): PtyHostSupervisor {
     }),
     onSessionLost: vi.fn((listener) => {
       emitLost = listener;
+      return () => {};
+    }),
+    onForeground: vi.fn((listener) => {
+      emitForeground = listener;
       return () => {};
     }),
     shutdown: vi.fn(async () => {}),
@@ -706,6 +702,174 @@ describe('identity: the renderer only ever sees entity ids', () => {
     expect(() => sessions.resize('ghost', 80, 24)).not.toThrow();
     expect(() => sessions.kill('ghost')).not.toThrow();
     expect(supervisor.write).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Resume translates ids in **both** directions (HIVE-143).
+   *
+   * The ring in `ipc/pty.ts` is keyed by the pty session id and stamps its
+   * events with it; every `pty:data` that leaves this module has had that
+   * rewritten to the entity id by `forward`. So a remote client's `resumeFrom`
+   * holds entity ids, and what it gets back has to as well — a replayed frame
+   * must be indistinguishable from a live one. The ring's own arithmetic is
+   * `tests/electron/main/ipc/pty.test.ts`'s job.
+   */
+  describe('resume', () => {
+    it('replays what a client missed, under the entity id it knows', () => {
+      sessions.open(OPEN);
+      const sessionId = mintedFor('hero-refresh');
+
+      emitData({ sessionId, chunk: 'first' });
+      vi.advanceTimersByTime(8);
+      const live = on(CH.ptyData).at(-1)!.payload;
+
+      const result = sessions.resume('hero-refresh', { gen: 1, seq: 0 });
+
+      expect(result).toEqual({
+        kind: 'replay',
+        events: [{ sessionId: 'hero-refresh', chunk: 'first', seq: live.seq, gen: 1 }],
+      });
+      // Never the pty session id, which no client has ever seen.
+      expect(sessionId).not.toBe('hero-refresh');
+    });
+
+    it('replays nothing for a client that is already up to date', () => {
+      sessions.open(OPEN);
+      const sessionId = mintedFor('hero-refresh');
+
+      emitData({ sessionId, chunk: 'first' });
+      vi.advanceTimersByTime(8);
+      const seq = on(CH.ptyData).at(-1)!.payload.seq as number;
+
+      expect(sessions.resume('hero-refresh', { gen: 1, seq })).toEqual({ kind: 'replay', events: [] });
+    });
+
+    it('hands a gap back untouched', () => {
+      sessions.open(OPEN);
+      const sessionId = mintedFor('hero-refresh');
+
+      emitData({ sessionId, chunk: 'first' });
+      vi.advanceTimersByTime(8);
+
+      /*
+        A seq beyond anything this process issued, within the **same**
+        generation — the ring simply does not reach back that far. The ring
+        answers `gap`, and this asserts the value arrives unchanged: a gap
+        carries no events, so the id rewrite above must not run on this branch
+        and must not invent an `events: []` that would tell the client it had
+        missed nothing. Its `seq` — the head, one batch in — must survive the
+        passthrough too: it is what the caller stamps the marker frame with,
+        and dropping it here would leave that frame with no number. A gap
+        caused by a **restart** — a mismatched `gen` — is
+        `describe('resume across a restart (HIVE-144)')`'s job, below: that
+        one never reaches the ring at all.
+      */
+      expect(sessions.resume('hero-refresh', { gen: 1, seq: 99 })).toEqual({ kind: 'gap', seq: 1 });
+    });
+
+    it('answers null for an entity with no live session', () => {
+      expect(sessions.resume('ghost', { gen: 1, seq: 0 })).toBeNull();
+    });
+  });
+
+  /**
+   * The bug HIVE-144 closes: a client that watched one generation across a
+   * restart must never be handed the next generation's batches renumbered
+   * onto its old transcript as a contiguous `replay` (see the hazard this
+   * replaced, in `sessions/index.ts`'s `resume`).
+   */
+  describe('resume across a restart (HIVE-144)', () => {
+    it('answers gap, stamped at the live generation\'s head, when the client watched a generation that is no longer running', async () => {
+      sessions.open(OPEN);
+      const first = mintedFor('hero-refresh'); // g1
+
+      emitData({ sessionId: first, chunk: 'from generation 1' });
+      vi.advanceTimersByTime(8);
+      const g1Seq = on(CH.ptyData).at(-1)!.payload.seq as number; // 1
+
+      const restarted = sessions.restart(OPEN);
+      await Promise.resolve();
+      emitExit({ sessionId: first, exitCode: 0 });
+      vi.advanceTimersByTime(8);
+      await restarted;
+
+      const second = spawned[1]!.sessionId; // g2, the live one
+      /*
+        Three batches on generation 2, not one (self-review fix round 1).
+        With one batch on each side, both heads land on seq `1`, which hides
+        two things at once. First, it makes the forwarded `gen` on a live
+        batch untestable here: nothing below could tell `gen: 2` apart from
+        a broken `gen: 0` by seq alone. Second, and more importantly, it
+        never builds the shape the ticket describes: `lastSeq === g1Seq`
+        (1) would equal generation 2's head too, so `ptyIpc.resume` — even
+        with the generation check removed — would short-circuit to an
+        *empty* `replay`, not the dangerous non-empty one. The real bug is a
+        **contiguous, non-empty** replay of the new process's actual output
+        stitched onto the old transcript, and that only appears once the
+        client's stale seq sits strictly below the new generation's head:
+        with three batches here, a generation check that had been deleted
+        would hand back generation 2's own seq 2 and seq 3 — real chunks —
+        under the entity id the client still associates with generation 1.
+      */
+      emitData({ sessionId: second, chunk: 'g2 batch one' });
+      vi.advanceTimersByTime(8);
+      emitData({ sessionId: second, chunk: 'g2 batch two' });
+      vi.advanceTimersByTime(8);
+      emitData({ sessionId: second, chunk: 'g2 batch three' });
+      vi.advanceTimersByTime(8);
+      const g2Batches = on(CH.ptyData).slice(-3).map((entry) => entry.payload);
+      const g2Seq = g2Batches.at(-1)!.seq as number; // 3
+
+      /*
+        The most-travelled `gen` site (`forward`'s `ptyData` case in
+        `sessions/index.ts`) is otherwise untested: every other assertion in
+        this file that checks `.gen` reads it off a *replayed* event, which
+        is stamped by a different line, inside `resume`. A live batch is
+        forwarded and stamped here, on the ordinary path every terminal
+        render goes through — if this ever shipped `gen: 0` (a stale cache,
+        a read before `registry.open`, …), a reconnecting client would see a
+        spurious generation mismatch on the very next live batch after every
+        restart, forever, with nothing here failing unless this asserts it.
+      */
+      for (const payload of g2Batches) expect(payload.gen).toBe(2);
+
+      // The client watched generation 1 to g1Seq and reconnects still naming
+      // it — exactly the reattach-after-restart scenario.
+      const result = sessions.resume('hero-refresh', { gen: 1, seq: g1Seq });
+
+      /*
+        Never generation 2's batches renumbered onto generation 1's tail —
+        the bug this closes. A gap, stamped at the live generation's head,
+        never a contiguous replay: `g2Seq` (3) is provably not `g1Seq` (1),
+        so this assertion can only pass if the seq actually came from
+        generation 2's own ring — `ptyIpc.headSeq` for the *live* pty
+        session — rather than from generation 1's, or from the client's own
+        stale value. With equal heads (the previous version of this test)
+        the assertion below could not have told the two apart.
+      */
+      expect(g2Seq).not.toBe(g1Seq);
+      expect(result).toEqual({ kind: 'gap', seq: g2Seq });
+    });
+
+    it('replays when the generation still matches, and stamps events with it', () => {
+      sessions.open(OPEN);
+      const sessionId = mintedFor('hero-refresh'); // g1
+
+      emitData({ sessionId, chunk: 'first' });
+      vi.advanceTimersByTime(8);
+      const live = on(CH.ptyData).at(-1)!.payload;
+
+      const result = sessions.resume('hero-refresh', { gen: 1, seq: 0 });
+
+      expect(result).toEqual({
+        kind: 'replay',
+        events: [{ sessionId: 'hero-refresh', chunk: 'first', seq: live.seq, gen: 1 }],
+      });
+    });
+
+    it('answers null for an entity with no live session, generation mismatch or not', () => {
+      expect(sessions.resume('never-opened', { gen: 1, seq: 0 })).toBeNull();
+    });
   });
 });
 
@@ -3060,5 +3224,111 @@ describe('container spawn (HIVE-133)', () => {
     resolveRemoval();
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
     expect(settled).toBe(true);
+  });
+});
+
+const TERMINAL = { entityId: 'term-01', projectId: 'nova-web', cols: 80, rows: 24 };
+
+describe('terminals', () => {
+  it('starts at the requested directory when one is given, and at the project path otherwise', () => {
+    sessions.openTerminal({ ...TERMINAL, cwd: '/repos/nova-web/.claude/worktrees/hero' });
+    expect(spawned[0]!.cwd).toBe('/repos/nova-web/.claude/worktrees/hero');
+
+    sessions.openTerminal({ ...TERMINAL, entityId: 'term-02' });
+    expect(spawned[1]!.cwd).toBe('/repos/nova-web');
+  });
+
+  it('spawns the login shell in the project directory with the foreground flag, and types nothing', () => {
+    sessions.openTerminal(TERMINAL);
+    const sessionId = mintedFor('term-01');
+
+    expect(spawned[0]).toMatchObject({
+      shell: '/bin/zsh',
+      args: ['-l'],
+      cwd: '/repos/nova-web',
+      env: {},
+      foreground: true,
+    });
+    // A terminal has no authentication to decide, so nothing is stripped.
+    expect(spawned[0]).not.toHaveProperty('stripEnv');
+
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8 + 150 + 300);
+    expect(supervisor.write).not.toHaveBeenCalled();
+    // And no status is derived from its output: hooks are the only source.
+    expect(on(CH.sessionStatus)).toHaveLength(0);
+  });
+
+  it('shares the session refusals', () => {
+    expect(() => sessions.openTerminal({ ...TERMINAL, projectId: 'referral-api' })).toThrow(
+      'referral-api is not mapped — add it to /home/dev/.hive/config.json',
+    );
+    blocked = true;
+    expect(() => sessions.openTerminal(TERMINAL)).toThrow('pty host unavailable');
+  });
+
+  it('attaches rather than respawning an entity that already has a process', () => {
+    sessions.openTerminal(TERMINAL);
+    sessions.openTerminal(TERMINAL);
+    expect(spawned).toHaveLength(1);
+  });
+
+  it('forwards a foreground report as an entity event', () => {
+    sessions.openTerminal(TERMINAL);
+    const sessionId = mintedFor('term-01');
+
+    emitForeground({ sessionId, name: 'vitest' });
+
+    expect(on(CH.sessionForeground).at(-1)!.payload).toEqual({ entityId: 'term-01', name: 'vitest' });
+  });
+
+  it('drops a foreground report for a session, which never asked for one', () => {
+    sessions.open(OPEN);
+    emitForeground({ sessionId: mintedFor('hero-refresh'), name: 'vitest' });
+    expect(on(CH.sessionForeground)).toHaveLength(0);
+  });
+
+  it('reports finished when the shell exits on its own, whatever the code', () => {
+    sessions.openTerminal(TERMINAL);
+    emitExit({ sessionId: mintedFor('term-01'), exitCode: 1 });
+
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'term-01',
+      ending: { kind: 'finished' },
+    });
+    // No history row, no terminated status.
+    expect(on(CH.sessionStatus)).toHaveLength(0);
+    expect(sessions.entities()).not.toContain('term-01');
+  });
+
+  it('reports lost when the shell died by signal', () => {
+    sessions.openTerminal(TERMINAL);
+    emitExit({ sessionId: mintedFor('term-01'), exitCode: 129, signal: 9 });
+
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'term-01',
+      ending: { kind: 'lost', reason: 'the shell was killed by signal 9' },
+    });
+  });
+
+  it('reports lost with the host message when the spawn failed', () => {
+    sessions.openTerminal(TERMINAL);
+    emitError({ sessionId: mintedFor('term-01'), message: 'could not start /bin/zsh in /repos/nova-web: ENOENT' });
+
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'term-01',
+      ending: { kind: 'lost', reason: 'could not start /bin/zsh in /repos/nova-web: ENOENT' },
+    });
+    expect(sessions.entities()).not.toContain('term-01');
+  });
+
+  it('reports lost when the host went away', () => {
+    sessions.openTerminal(TERMINAL);
+    emitLost({ sessionId: mintedFor('term-01') });
+
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'term-01',
+      ending: { kind: 'lost', reason: 'the pty host crashed' },
+    });
   });
 });

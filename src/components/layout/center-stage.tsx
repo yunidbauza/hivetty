@@ -3,7 +3,13 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useDeclinedBack } from '@/hooks/use-declined-back';
 import { isTerminalView, resolveView } from '@/lib/resolve-view';
 import { cn } from '@/lib/utils';
-import { isAgent, isSession, isTerminated } from '@/types/entity';
+import {
+  isAgent,
+  isLostTerminal,
+  isSession,
+  isTerminal,
+  isTerminated,
+} from '@/types/entity';
 
 import { SessionMetaBar } from '@components/layout/session-meta-bar';
 import { TerminalHost } from '@components/terminal/terminal-host';
@@ -17,6 +23,7 @@ import { FleetPane, TRANSCRIPT_FLOOR } from '@features/orchestrator/components/f
 import { MessageInput } from '@features/sessions/components/message-input';
 import { NewSessionPicker } from '@features/sessions/components/new-session-picker';
 import { SessionBootCover } from '@features/sessions/components/session-boot-cover';
+import { TerminalEndedCover } from '@features/sessions/components/terminal-ended-cover';
 import { useSessionBoot } from '@features/sessions/hooks/use-session-boot';
 import { SettingsOverlay } from '@features/settings/components/settings-overlay';
 import { isMacPlatform } from '@lib/platform';
@@ -37,7 +44,7 @@ import { useActiveFileKey, useHasOpenFiles } from '@stores/editor-store';
 import {
   terminalIdFor,
   useActiveEntity,
-  useNavOrder,
+  useTerminalHostIds,
 } from '@stores/hive-store';
 import {
   useActiveTab,
@@ -76,7 +83,7 @@ export function CenterStage() {
   const terminalAppearance = useTerminalAppearance();
   const activeTab = useActiveTab();
   const entity = useActiveEntity();
-  const navOrder = useNavOrder();
+  const hostIds = useTerminalHostIds();
   const { picker } = usePickerState();
   const settings = useSettingsOpen();
 
@@ -141,8 +148,14 @@ export function CenterStage() {
     a read-only xterm replaying its lines. An agent now has a view of its own —
     a run log is a transcript, not a terminal — so nothing here should ever
     build one a `TerminalHost` will not mount.
+
+    Terminals *are* in it, which is why this reads `useTerminalHostIds` rather
+    than `useNavOrder` (terminals). The latter is the fleet table's row order
+    and carries no terminal on purpose — a shell lives in the projects tree, not
+    in the fleet — so a stage built from it would open a terminal tab with no
+    entry behind it, no transport, and nothing to draw.
   */
-  const ids = useMemo(() => [ORCHESTRATOR_ID, ...navOrder], [navOrder]);
+  const ids = useMemo(() => [ORCHESTRATOR_ID, ...hostIds], [hostIds]);
 
   /**
    * Transports are created once per entity and cached for the life of the app.
@@ -217,8 +230,15 @@ export function CenterStage() {
    * knowing it costs nothing. Only the visible terminal can hold focus, and
    * `ended` only affects keys and stdin, so the visible one is the only one that
    * needs to know.
+   *
+   * A lost terminal counts (terminals), and it has to be asked separately: a
+   * shell has no `terminated` status to reach — a dead terminal is over rather
+   * than in a state — so `isTerminated` can never answer for one. Without this
+   * the cover below would explain that the shell is gone over a surface still
+   * blinking a caret and swallowing every keystroke.
    */
-  const endedId = isTerminated(entity ?? undefined) ? activeTab : null;
+  const endedId =
+    isTerminated(entity ?? undefined) || isLostTerminal(entity) ? activeTab : null;
 
   /**
    * Focus the message row when the terminal area is clicked — unless the user
@@ -453,6 +473,23 @@ export function CenterStage() {
             background covers nothing.
           */}
           {booting ? <SessionBootCover /> : null}
+
+          {/*
+            The other thing drawn over a terminal, and the opposite half of the
+            boot cover's job (terminals): one hides output nobody needs to read,
+            this one points at output somebody does. A strip along the foot,
+            because the scrollback above it is the evidence for what it says.
+
+            `isTerminal` as well as the view, for the reason `isSession` is
+            spelled out above the meta bar: the two answer different questions,
+            and the narrowed entity is what `TerminalEndedCover` takes.
+          */}
+          {view === 'terminal' &&
+          entity !== null &&
+          isTerminal(entity) &&
+          entity.ended !== undefined ? (
+            <TerminalEndedCover terminal={entity} />
+          ) : null}
 
           {/*
             The app saying where the user just went (HIVE-79).

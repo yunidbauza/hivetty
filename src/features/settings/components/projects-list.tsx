@@ -1,7 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 
 import {
-  chooseProjectDirectory,
   removeProjectFromConfig,
   renameProjectInConfig,
   reorderProjectsInConfig,
@@ -14,6 +13,9 @@ import { ProjectNameEditor } from '@features/settings/components/project-name-ed
 import { ProjectRemoveConfirm } from '@features/settings/components/project-remove-confirm';
 import { ProjectRow } from '@features/settings/components/project-row';
 import { ProjectRowMenu } from '@features/settings/components/project-row-menu';
+import { DirectoryPicker } from '@features/shared/components/directory-picker';
+import { useChooseDirectory } from '@hooks/use-choose-directory';
+import { useAttachedServer } from '@hooks/use-project-config';
 import { projectAliases, type ProjectConfig } from '@shared/config-contract';
 import { useLiveSessionCounts } from '@stores/hive-store';
 
@@ -78,6 +80,7 @@ export function ProjectsList({ entries }: ProjectsListProps) {
     itself in the same sentence.
   */
   const liveCounts = useLiveSessionCounts();
+  const attachedServer = useAttachedServer();
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -128,13 +131,26 @@ export function ProjectsList({ entries }: ProjectsListProps) {
     setDropIndex(null);
   };
 
-  const onRepoint = async (id: string): Promise<void> => {
-    const path = await chooseProjectDirectory();
-    // Cancelled, or no bridge to ask. Nothing to write, and nothing to say —
-    // the user closed a dialog they opened. Same shape as the section's `onAdd`.
-    if (path === null) return;
-    await repointProjectInConfig({ id, path });
-  };
+  /**
+   * One picker serves every row, so which project a chosen folder belongs to
+   * travels **with** the choice rather than being read back off state. The row
+   * click hands the id to `choose`, and it comes back beside the path.
+   *
+   * Reading it off a `useState` was the first shape and it is unsound: the
+   * click that sets it also calls `choose`, so `choose` runs before the render
+   * that carries it. `useChooseDirectory`'s own doc has the long version.
+   */
+  const {
+    choose: onRepoint,
+    picking,
+    cancelPicking,
+    onPicked,
+  } = useChooseDirectory<string>(
+    useCallback(
+      (path: string, id: string) => repointProjectInConfig({ id, path }),
+      [],
+    ),
+  );
 
   const onRemove = (id: string): void => {
     if ((liveCounts[id] ?? 0) > 0) {
@@ -235,13 +251,23 @@ export function ProjectsList({ entries }: ProjectsListProps) {
                 onChangeKey={() =>
                   setMode({ id: project.id, kind: 'change-key' })
                 }
-                onRepoint={() => void onRepoint(project.id)}
+                onRepoint={() => onRepoint(project.id)}
                 onRemove={() => onRemove(project.id)}
               />
             }
           />
         );
       })}
+      <DirectoryPicker
+        open={picking}
+        onOpenChange={(next) => {
+          if (!next) cancelPicking();
+        }}
+        onChoose={onPicked}
+        serverName={attachedServer ?? 'the server'}
+        title="Choose the project’s new folder"
+        confirmLabel="Move project here"
+      />
     </ul>
   );
 }

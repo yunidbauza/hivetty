@@ -1,14 +1,34 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from '@components/layout/header';
+import { resetProjectConfig, setProjectConfigForTest } from '@lib/project-config';
+import { emptySnapshot } from '@shared/config-contract';
 import { useAppearanceStore } from '@stores/appearance-store';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 
 import { notif } from '../../support/notifications';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
+
+/**
+ * The one seam the exposure chip's sub-tests below need mocked: `readAppInfo`
+ * (HIVE-134). Everything else in `@lib/project-config` stays real, the same
+ * split `advanced-section.test.tsx` and `use-project-config.test.tsx` make —
+ * `ExposureChip` reads the receiver's *running* bind through this function,
+ * never through `setProjectConfigForTest`'s snapshot, so a widened-bind test
+ * that only installed a snapshot (the old, config-derived shape of this test)
+ * would now assert on a chip with nothing to render. Defaults to resolving
+ * `null`, matching what a real, un-mocked bridge would answer in this
+ * environment (there is no `window.hive` in jsdom), so every test in this
+ * file *except* the ones that override it behaves exactly as before.
+ */
+const readAppInfo = vi.fn();
+vi.mock('@/lib/project-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/project-config')>();
+  return { ...actual, readAppInfo: () => readAppInfo() };
+});
 
 /**
  * The header only composes — the three sub-components are asserted in their own
@@ -22,6 +42,8 @@ describe('Header', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+    readAppInfo.mockReset();
+    readAppInfo.mockResolvedValue(null);
     /**
      * Pinned to dark rather than left on the story-105 default of `system`.
      * `system` resolves against `prefers-color-scheme`, which the test
@@ -30,6 +52,13 @@ describe('Header', () => {
      */
     useAppearanceStore.getState().reset();
     useAppearanceStore.getState().setTheme('dark');
+  });
+
+  afterEach(() => {
+    // The real `@lib/project-config` module is a module-level singleton, so a
+    // snapshot one test installs would otherwise leak into whichever test runs
+    // next in this file.
+    resetProjectConfig();
   });
 
   it('renders as the page banner at the fixed 56px height', () => {
@@ -316,6 +345,14 @@ describe('Header', () => {
   });
 
   describe('New session', () => {
+    it('keeps the button the only exact "New session", beside a terminal chevron', () => {
+      render(<Header />);
+      expect(screen.getAllByRole('button', { name: 'New session' })).toHaveLength(1);
+      expect(
+        screen.getByRole('button', { name: 'Terminal in a project' }),
+      ).toBeInTheDocument();
+    });
+
     it('opens the picker', async () => {
       const user = userEvent.setup();
       render(<Header />);
@@ -362,6 +399,279 @@ describe('Header', () => {
       expect(
         screen.getByRole('button', { name: 'Settings' }).className,
       ).toContain('[-webkit-app-region:no-drag]');
+    });
+  });
+
+  /**
+   * `ExposureChip`'s own states — loopback renders nothing, a widened bind
+   * names the address — belong to its own spec. What is pinned here is that it
+   * is actually mounted in the `header-chips` cluster, after `DemoChip`
+   * (HIVE-134). Not proven against `ModelChip` too: these tests render on the
+   * default tab, where `ModelChip` itself renders `null` (see "drops the
+   * model chip on the orchestrator tab" above), so there is nothing of
+   * `ModelChip`'s in the cluster for an ordering assertion to compare against.
+   *
+   * The chip is sourced from the receiver's **running** bind, read through
+   * `readAppInfo` — see the mock at the top of this file — never from
+   * `setProjectConfigForTest`'s snapshot; a config-only snapshot install here
+   * would exercise nothing the chip actually reads.
+   */
+  describe('the exposure chip (HIVE-134)', () => {
+    /*
+      No `setProjectConfigForTest` call here, so `useProjectConfig()` returns
+      `null` — the same "no bridge" state the browser demo starts in — and
+      `useReceiverExposure`'s gate means `readAppInfo` is never even called.
+      This is not a loopback-bind scenario at all despite the old title's
+      claim: it never installs a snapshot, so it cannot distinguish "bound
+      loopback" from "bound nowhere." That case is already covered by
+      `use-project-config.test.tsx`'s `useReceiverExposure` suite and by
+      `receiver.test.ts`'s own guard coverage; what this test actually pins is
+      the header's wiring — that the cluster renders nothing for the chip when
+      there is no config snapshot to read at all.
+    */
+    it('is absent from the chips cluster when there is no config snapshot', () => {
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      expect(chips).not.toHaveTextContent('172.17.0.1');
+    });
+
+    it('joins the cluster, after DemoChip, once the running bind widens', async () => {
+      // A real snapshot, because `useReceiverExposure` gates its `readAppInfo`
+      // fetch on one resolving — see its own doc comment for why, and
+      // `use-project-config.test.tsx` for the "no snapshot" case this gate
+      // produces.
+      setProjectConfigForTest(emptySnapshot('/Users/dev/.hive/config.json'));
+      readAppInfo.mockResolvedValue({
+        version: '0.1.0',
+        electron: '38.0.0',
+        chrome: '140.0.0',
+        node: '22.0.0',
+        platform: 'darwin',
+        logPath: '/Users/dev/Library/Logs/The Hive',
+        receiverBoundHost: '172.17.0.1',
+      });
+
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      await waitFor(() => expect(chips).toHaveTextContent('172.17.0.1'));
+
+      const names = Array.from(chips.children).map((child) => child.textContent);
+      expect(names.indexOf('172.17.0.1')).toBeGreaterThan(names.indexOf('demo'));
+    });
+  });
+
+  /**
+   * `ServingChip`'s own states — same shape as `ExposureChip`'s block above,
+   * for the same reason: its render logic belongs to its own spec, and what
+   * is pinned here is only that it is actually mounted in the `header-chips`
+   * cluster, after `ExposureChip` (HIVE-142).
+   *
+   * Sourced from the server-mode socket's **running** bind, read through the
+   * same `readAppInfo` mock — see the mock at the top of this file — never
+   * from `setProjectConfigForTest`'s snapshot.
+   */
+  describe('the serving chip (HIVE-142)', () => {
+    /*
+      No `setProjectConfigForTest` call here, so `useProjectConfig()` returns
+      `null` and `useServerExposure`'s gate means `readAppInfo` is never even
+      called — the same "no bridge" state `ExposureChip`'s absence test above
+      exercises.
+    */
+    it('is absent from the chips cluster when there is no config snapshot', () => {
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      expect(chips).not.toHaveTextContent('100.101.102.103');
+    });
+
+    it('joins the cluster, after ExposureChip, once the server socket binds', async () => {
+      // A real snapshot, because `useServerExposure` gates its `readAppInfo`
+      // fetch on one resolving — see its own doc comment for why.
+      setProjectConfigForTest(emptySnapshot('/Users/dev/.hive/config.json'));
+      // Both fields bound at once, so the ordering assertion below actually
+      // compares two rendered chips rather than one chip against a `demo`
+      // text node that happens to sit earlier in the cluster.
+      readAppInfo.mockResolvedValue({
+        version: '0.1.0',
+        electron: '38.0.0',
+        chrome: '140.0.0',
+        node: '22.0.0',
+        platform: 'darwin',
+        logPath: '/Users/dev/Library/Logs/The Hive',
+        receiverBoundHost: '172.17.0.1',
+        serverBoundHost: '100.101.102.103',
+        servingDeviceCount: 2,
+        attachedServerName: null,
+        remoteLink: null,
+  serving: false,
+      });
+
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      await waitFor(() => expect(chips).toHaveTextContent('serving · 2 devices'));
+
+      const names = Array.from(chips.children).map((child) => child.textContent);
+      expect(names.indexOf('serving · 2 devices')).toBeGreaterThan(
+        names.indexOf('172.17.0.1'),
+      );
+    });
+  });
+
+  /**
+   * `AttachedChip`'s own states belong to its own spec; what is pinned here
+   * is only that it is actually mounted in the `header-chips` cluster, after
+   * `ServingChip` (HIVE-144, Task 13) — the same shape the exposure and
+   * serving blocks above use.
+   */
+  describe('the attached chip (HIVE-144)', () => {
+    it('is absent from the chips cluster when there is no config snapshot', () => {
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      expect(chips).not.toHaveTextContent('attached ·');
+    });
+
+    it('joins the cluster, after ServingChip, once this window attaches', async () => {
+      setProjectConfigForTest(emptySnapshot('/Users/dev/.hive/config.json'));
+      readAppInfo.mockResolvedValue({
+        version: '0.1.0',
+        electron: '38.0.0',
+        chrome: '140.0.0',
+        node: '22.0.0',
+        platform: 'darwin',
+        logPath: '/Users/dev/Library/Logs/The Hive',
+        receiverBoundHost: null,
+        serverBoundHost: '100.101.102.103',
+        servingDeviceCount: 2,
+        attachedServerName: 'mini',
+        remoteLink: null,
+      });
+      /*
+        The chip reads the pushed `remote:link-status` since HIVE-150, not an
+        `app:info` read. `useRemoteLinkStream` installs it, and that lives in
+        the app shell rather than the header — so this file states the link
+        directly, which is also the honest fixture: what the header composes is
+        a chip over a link, not over a bridge call.
+      */
+      useHiveStore.getState().setRemoteLink({
+        state: 'attached',
+        serverName: 'mini',
+        attempt: 0,
+        nextAttemptAt: null,
+        reason: null,
+        epoch: 0,
+        lost: 0,
+      });
+
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      await waitFor(() => expect(chips).toHaveTextContent('attached · mini'));
+
+      const names = Array.from(chips.children).map((child) => child.textContent);
+      expect(names.indexOf('attached · mini')).toBeGreaterThan(
+        names.indexOf('serving · 2 devices'),
+      );
+    });
+  });
+
+  /**
+   * The two facts this task adds together (HIVE-144, Task 13) — proven both
+   * ways, not just as "the row is non-empty": a header that rendered one
+   * chip twice, or collapsed both into one node, would still make the row
+   * non-empty.
+   */
+  describe('serving and attached together', () => {
+    it('shows both chips when serving and attached at once', async () => {
+      setProjectConfigForTest(emptySnapshot('/Users/dev/.hive/config.json'));
+      readAppInfo.mockResolvedValue({
+        version: '0.1.0',
+        electron: '38.0.0',
+        chrome: '140.0.0',
+        node: '22.0.0',
+        platform: 'darwin',
+        logPath: '/Users/dev/Library/Logs/The Hive',
+        receiverBoundHost: null,
+        serverBoundHost: '100.101.102.103',
+        servingDeviceCount: 2,
+        attachedServerName: 'mini',
+        remoteLink: null,
+      });
+      /*
+        The chip reads the pushed `remote:link-status` since HIVE-150, not an
+        `app:info` read. `useRemoteLinkStream` installs it, and that lives in
+        the app shell rather than the header — so this file states the link
+        directly, which is also the honest fixture: what the header composes is
+        a chip over a link, not over a bridge call.
+      */
+      useHiveStore.getState().setRemoteLink({
+        state: 'attached',
+        serverName: 'mini',
+        attempt: 0,
+        nextAttemptAt: null,
+        reason: null,
+        epoch: 0,
+        lost: 0,
+      });
+
+      render(<Header />);
+
+      const chips = screen.getByTestId('header-chips');
+      await waitFor(() => expect(chips).toHaveTextContent('attached · mini'));
+
+      // Both present, as two distinct child nodes — not one node carrying
+      // both strings concatenated, and not one chip standing in for both.
+      const names = Array.from(chips.children).map((child) => child.textContent);
+      expect(names).toContain('serving · 2 devices');
+      expect(names).toContain('attached · mini');
+      expect(names.filter((name) => name === 'serving · 2 devices' || name === 'attached · mini')).toHaveLength(2);
+    });
+
+    /*
+      Local mode at the default bind: every one of the three remote-attach
+      chips reads a fact that is genuinely off here, not merely a snapshot
+      that never resolved — the "no config snapshot" tests above already
+      cover that weaker case. The positive control is the test just above:
+      it proves this same `readAppInfo` mock and the same `header-chips`
+      query can and do surface these two chips' text when the facts are on,
+      so this test's silence cannot be explained by a broken query or a
+      component that always renders nothing.
+    */
+    it('shows no chip in local mode at the default bind', async () => {
+      setProjectConfigForTest(emptySnapshot('/Users/dev/.hive/config.json'));
+      readAppInfo.mockResolvedValue({
+        version: '0.1.0',
+        electron: '38.0.0',
+        chrome: '140.0.0',
+        node: '22.0.0',
+        platform: 'darwin',
+        logPath: '/Users/dev/Library/Logs/The Hive',
+        receiverBoundHost: null,
+        serverBoundHost: null,
+        servingDeviceCount: 0,
+        attachedServerName: null,
+        remoteLink: null,
+  serving: false,
+      });
+
+      render(<Header />);
+
+      // Waited on directly rather than via `waitFor(toHaveTextContent(...))`:
+      // there is nothing here to wait to *appear*, so this instead drains the
+      // same `readAppInfo` microtask the positive test above resolves before
+      // asserting, or a genuinely broken assertion could pass on a render
+      // that simply hadn't finished its effects yet.
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const chips = screen.getByTestId('header-chips');
+      expect(chips).not.toHaveTextContent('serving ·');
+      expect(chips).not.toHaveTextContent('attached ·');
+      expect(chips).not.toHaveTextContent(/\d\.\d+\.\d+\.\d+/);
     });
   });
 });

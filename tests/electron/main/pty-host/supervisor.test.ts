@@ -486,3 +486,19 @@ describe('listeners', () => {
     });
   });
 });
+
+describe('foreground (terminals)', () => {
+  it('forwards a foreground report for an owned session and drops one for a stranger', () => {
+    const seen: { sessionId: string; name: string | null }[] = [];
+    supervisor.onForeground((message) => seen.push({ sessionId: message.sessionId, name: message.name }));
+    supervisor.spawn({ ...SPAWN, sessionId: 'term-01', foreground: true });
+    host().ready();
+
+    host().emit({ type: 'foreground', sessionId: 'term-01', name: 'vitest' });
+    host().emit({ type: 'foreground', sessionId: 'nobody', name: 'vim' });
+
+    expect(seen).toEqual([{ sessionId: 'term-01', name: 'vitest' }]);
+    // The flag travels to the host verbatim.
+    expect(host().sent.find((c) => c.type === 'spawn')).toMatchObject({ foreground: true });
+  });
+});

@@ -3,11 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PHRASES } from '@lib/swarm/phrases';
 import { toSgrIndexed } from '@lib/terminal/ansi';
 import {
+  DEFAULT_COLS,
+  DEFAULT_ROWS,
+  closeChannel,
   createCloneTransport,
   createPtyTransport,
+  createTerminalTransport,
   reopenChannel,
   resetCloneChannel,
   requestSpawn,
+  requestSpawnTerminal,
   resetPtyChannels,
   sessionChannelState,
 } from '@lib/terminal/pty-transport';
@@ -34,6 +39,8 @@ type LostCb = (event: SessionLostEvent) => void;
 /** Every listener the transport registered, so a test can drive the channel. */
 interface Bridge {
   spawn: ReturnType<typeof vi.fn>;
+  /** The terminal verb: a login shell, no Claude typed into it (terminals). */
+  spawnTerminal: ReturnType<typeof vi.fn>;
   write: ReturnType<typeof vi.fn>;
   resize: ReturnType<typeof vi.fn>;
   kill: ReturnType<typeof vi.fn>;
@@ -54,6 +61,7 @@ function installBridge(): Bridge {
   const lost = new Set<LostCb>();
   const stub = {
     spawn: vi.fn(() => Promise.resolve()),
+    spawnTerminal: vi.fn(() => Promise.resolve()),
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(() => Promise.resolve()),
@@ -76,6 +84,7 @@ function installBridge(): Bridge {
   (window as { hive?: unknown }).hive = {
     pty: {
       spawn: stub.spawn,
+      spawnTerminal: stub.spawnTerminal,
       write: stub.write,
       resize: stub.resize,
       kill: stub.kill,
@@ -90,9 +99,19 @@ function installBridge(): Bridge {
   return stub;
 }
 
-/** Push a live chunk as main would, with an explicit sequence number. */
-function pushData(sessionId: string, chunk: string, seq: number): void {
-  for (const cb of [...bridge.data]) cb({ sessionId, chunk, seq });
+/**
+ * Push a live chunk as main would, with an explicit sequence number.
+ *
+ * `gen` defaults to `1` rather than being required at every call site: most of
+ * this file is about `PtyTransport`'s own `seq` sequencing and reopen
+ * behaviour, not about a generation change, so a constant default keeps every
+ * such call honest about the wire shape without making it specify a value it
+ * does not care about. The generation tests below pass `gen` explicitly at
+ * every call — leaning on this default there would silently stop exercising a
+ * generation change at all (HIVE-144).
+ */
+function pushData(sessionId: string, chunk: string, seq: number, gen = 1): void {
+  for (const cb of [...bridge.data]) cb({ sessionId, chunk, seq, gen });
 }
 
 const dim = toSgrIndexed('dim');
@@ -472,6 +491,25 @@ describe('PtyTransport — lifecycle lines', () => {
     expect(text).toContain('three');
   });
 
+  it('reports a gap when the generation changes, without reopenChannel (HIVE-144)', () => {
+    const text = transcriptAfter(() => {
+      pushData('sess-a', 'one', 1, 1);
+      // A restart the renderer was never told about: seq is contiguous, gen is not.
+      pushData('sess-a', 'two', 2, 2);
+    });
+
+    expect(text).toContain('── output gap detected ──');
+  });
+
+  it('reports no gap when the generation holds and seq is contiguous', () => {
+    const text = transcriptAfter(() => {
+      pushData('sess-a', 'one', 1, 1);
+      pushData('sess-a', 'two', 2, 1);
+    });
+
+    expect(text).not.toContain('output gap');
+  });
+
   it('stays silent while sequence numbers are contiguous', () => {
     const text = transcriptAfter(() => {
       pushData('sess-a', 'one', 1);
@@ -585,8 +623,55 @@ describe('reopenChannel', () => {
     expect(seen.join('')).not.toContain('output gap detected');
   });
 
+  it('does not report a gap on the new generation’s first chunk when gen also changes (HIVE-144)', () => {
+    const seen: string[] = [];
+    createPtyTransport('sess-a', 'nova-web').onData((chunk) => seen.push(chunk));
+    pushData('sess-a', 'first', 1, 1);
+    for (const cb of [...bridge.exit]) cb({ sessionId: 'sess-a', exitCode: 0 });
+
+    reopenChannel('sess-a');
+    // The restart that legitimately reopens a channel is exactly the case
+    // that bumps gen as well as resetting seq — main hands the new process a
+    // fresh generation. reopenChannel clears both, so neither one reads the
+    // new process's first chunk as a discontinuity.
+    pushData('sess-a', 'fresh', 1, 2);
+
+    expect(seen.join('')).not.toContain('output gap detected');
+  });
+
   it('is a no-op for an entity that never had a channel', () => {
     expect(() => reopenChannel('never-seen')).not.toThrow();
+  });
+});
+
+/**
+ * Ending a channel rather than clearing it (terminals).
+ *
+ * `reopenChannel` and `resetCloneChannel` both keep the channel and wipe parts
+ * of it, because something is coming back. Nothing comes back to a removed
+ * terminal, so its buffer and its three bridge listeners have no reader left —
+ * and this map is never otherwise swept.
+ */
+describe('closeChannel', () => {
+  it('forgets the entity and unsubscribes its listeners', () => {
+    const seen: string[] = [];
+    createTerminalTransport('term-05', 'nova-web').onData((chunk) =>
+      seen.push(chunk),
+    );
+
+    closeChannel('term-05');
+    pushData('term-05', 'output after the row was removed', 1);
+
+    expect(sessionChannelState('term-05')).toBe('none');
+    expect(seen).toEqual([]);
+    // The three bridge subscriptions are gone, not merely ignored.
+    expect(bridge.data.size).toBe(0);
+    expect(bridge.exit.size).toBe(0);
+    expect(bridge.lost.size).toBe(0);
+  });
+
+  it('is a no-op for an entity that never had a channel', () => {
+    expect(() => closeChannel('never-seen')).not.toThrow();
   });
 });
 
@@ -717,6 +802,102 @@ describe('requestSpawn', () => {
     // Attach-never-respawn: a tab switch past a finished session must not
     // silently start it working again (story 094).
     expect(bridge.spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The terminal spawn (terminals).
+ *
+ * The same channel bookkeeping as `requestSpawn` over a different verb, so what
+ * is worth asserting here is only the difference: the payload carries a project
+ * and nothing else, and mounting a terminal's surface must reach
+ * `pty.spawnTerminal` rather than `pty.spawn` — the one mistake that would put
+ * `claude` in a window the user opened as a shell.
+ */
+describe('requestSpawnTerminal', () => {
+  it('sends the directory when given, and no cwd key when not', async () => {
+    await requestSpawnTerminal('term-10', 'nova-web', '/repos/nova-web/pkg');
+    expect(bridge.spawnTerminal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: 'term-10', cwd: '/repos/nova-web/pkg' }),
+    );
+    await requestSpawnTerminal('term-11', 'nova-web');
+    expect(bridge.spawnTerminal.mock.calls.at(-1)![0]).not.toHaveProperty('cwd');
+  });
+
+  it('a terminal transport re-spawns at the same directory it was created for', () => {
+    const transport = createTerminalTransport('term-12', 'nova-web', '/repos/nova-web/pkg');
+    transport.onData(() => {});
+    expect(bridge.spawnTerminal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: 'term-12', cwd: '/repos/nova-web/pkg' }),
+    );
+  });
+
+  it('asks the bridge for a terminal with the project and the default geometry, once', async () => {
+    await requestSpawnTerminal('term-01', 'nova-web');
+    await requestSpawnTerminal('term-01', 'nova-web');
+
+    expect(bridge.spawnTerminal).toHaveBeenCalledTimes(1);
+    expect(bridge.spawnTerminal).toHaveBeenCalledWith({
+      sessionId: 'term-01',
+      projectId: 'nova-web',
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+    });
+  });
+
+  it('answers with the refusal instead of rejecting', async () => {
+    bridge.spawnTerminal.mockRejectedValueOnce(
+      new Error('session limit reached (24)'),
+    );
+
+    await expect(requestSpawnTerminal('term-02', 'nova-web')).resolves.toEqual({
+      ok: false,
+      reason: 'session limit reached (24)',
+    });
+  });
+
+  it('writes the refusal into the terminal as well, as a session spawn does', async () => {
+    bridge.spawnTerminal.mockRejectedValueOnce(
+      new Error('session limit reached (24)'),
+    );
+
+    const seen: string[] = [];
+    await requestSpawnTerminal('term-02', 'nova-web');
+    createTerminalTransport('term-02', 'nova-web').onData((chunk) =>
+      seen.push(chunk),
+    );
+
+    expect(seen.join('')).toContain('session limit reached (24)');
+  });
+
+  it('resolves rather than throwing when there is no bridge', async () => {
+    delete (window as { hive?: unknown }).hive;
+
+    // `spawnTerminal` calls this fire-and-forget after creating the entity, so
+    // a synchronous throw would take the whole action down.
+    await expect(
+      requestSpawnTerminal('term-02', 'nova-web'),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
+  it('a terminal transport requests its spawn when the surface attaches', () => {
+    const transport = createTerminalTransport('term-03', 'nova-web');
+
+    transport.onData(() => {});
+
+    expect(bridge.spawnTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'term-03' }),
+    );
+    expect(bridge.spawn).not.toHaveBeenCalled();
+  });
+
+  it('does not re-request for a surface that mounts after the console asked', async () => {
+    const pending = requestSpawnTerminal('term-04', 'nova-web');
+    createTerminalTransport('term-04', 'nova-web').onData(() => {});
+
+    await pending;
+
+    expect(bridge.spawnTerminal).toHaveBeenCalledTimes(1);
   });
 });
 

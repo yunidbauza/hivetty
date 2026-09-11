@@ -180,6 +180,70 @@ export type NotificationAction =
   /** Quit and swap in the update that has finished downloading. */
   | { type: 'update.install' };
 
+/**
+ * Which machine answers a notification's click (HIVE-151).
+ *
+ * `notifications:act` is one channel carrying seven different verbs, and the
+ * remote proxy routes by channel name alone. Three of those verbs reach
+ * *hardware* — a browser, an updater — so they are carried out by whichever
+ * process receives the call. While attached that is the server, and the click
+ * happened on the client: a `url` opened a browser on a Mac mini in another
+ * room, and an `update.install` quit the wrong app.
+ *
+ * The other four resolve against fleet state the client does not hold — a
+ * ledger thread, a session's terminal id — so they are correct to proxy and
+ * would break if they were answered locally.
+ */
+export type ActionScope = 'this-machine' | 'fleet';
+
+/**
+ * The one place an action's scope is written down.
+ *
+ * `as const satisfies Record<NotificationAction['type'], ActionScope>` is
+ * load-bearing rather than decoration: it makes an unclassified new member of
+ * the union a **compile error** here, and {@link ThisMachineAction} is derived
+ * from this table rather than restated, so the type and the runtime check
+ * cannot drift apart.
+ *
+ * What this replaced was a hand-written allowlist in
+ * `electron/main/notifications/remote-toast.ts`, which had to be remembered by
+ * anyone adding a member and whose own comment said as much: "unreachable by
+ * which kinds happen to arrive is a property of the caller, not of this code".
+ */
+export const ACTION_SCOPE = {
+  none: 'fleet',
+  session: 'fleet',
+  url: 'this-machine',
+  ask: 'fleet',
+  agent: 'fleet',
+  'update.download': 'this-machine',
+  'update.install': 'this-machine',
+} as const satisfies Record<NotificationAction['type'], ActionScope>;
+
+/** The action types {@link ACTION_SCOPE} marks `this-machine`. */
+type ThisMachineType = {
+  [K in keyof typeof ACTION_SCOPE]: (typeof ACTION_SCOPE)[K] extends 'this-machine'
+    ? K
+    : never;
+}[keyof typeof ACTION_SCOPE];
+
+/**
+ * An action that must be carried out by the machine whose user clicked it.
+ *
+ * Narrow on purpose: `activateOnThisMachine` takes this rather than the whole
+ * union, so a fleet action cannot be handed to it even by a caller that forgot
+ * to check first. The routing table and the activation cannot come to disagree
+ * about which machine a click belongs to, because one of them will not compile.
+ */
+export type ThisMachineAction = Extract<NotificationAction, { type: ThisMachineType }>;
+
+/** Whether this action is answered here rather than over the socket. */
+export function isThisMachineAction(
+  action: NotificationAction,
+): action is ThisMachineAction {
+  return ACTION_SCOPE[action.type] === 'this-machine';
+}
+
 /** One thing that wants the user's attention. */
 export interface HiveNotification {
   /**
@@ -237,6 +301,13 @@ export interface HiveNotification {
   body: string;
   /** Epoch ms. The relative time on the card is derived from this, and ticks. */
   createdAt: number;
+  /**
+   * Has the **fleet** seen this row (HIVE-154)? Written `false` at raise when
+   * every attended surface was already looking at its session — one device's
+   * attention never speaks for another's. Flipped to `true` by a click on any
+   * device or by a promotion once the last watcher walks away; there is one
+   * value, because the inbox is shared state.
+   */
   unread: boolean;
   action: NotificationAction;
   /**
@@ -253,6 +324,41 @@ export interface HiveNotification {
    * become link text a click can be tricked into trusting.
    */
   link?: { href: string; label: string };
+}
+
+/**
+ * What `notifications:toast` carries (HIVE-145).
+ *
+ * The **interruption**, as distinct from `HiveNotification`, which is the inbox
+ * row. A toast belongs to whichever surfaces are not already looking at the
+ * session it is about, so with two devices attached one may get it and the
+ * other not. The row is the opposite shape by design (HIVE-154): it goes to
+ * everyone and its `unread` is the fleet's answer — read only once every
+ * attended surface has seen it.
+ *
+ * No `onClick`, because no closure crosses a socket. The receiver raises the
+ * notification locally and, on a click, sends the two effects the local path
+ * has — activate the action, dismiss the row — back through the channels that
+ * already exist for both. `id` is what the dismiss names; `action` is what the
+ * activate carries.
+ *
+ * Deliberately not `HiveNotification` itself: the toast's title is the *toast*
+ * title, which the hub composes from the row's `subject` and `title` rather
+ * than reading off either, and sending the whole row would invite a receiver
+ * to recompose it and disagree.
+ */
+export interface ToastPayload {
+  id: string;
+  /**
+   * Carried because the **queue** filters on it: only kinds a person must
+   * answer are replayed when a device attaches after nobody was looking, and
+   * `NOTIFICATION_KIND_SPECS` is keyed by this. A receiver may also read it —
+   * it is the one fact about a toast that the words do not already state.
+   */
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  action: NotificationAction;
 }
 
 /** Everything any consumer needs to know about a kind. */

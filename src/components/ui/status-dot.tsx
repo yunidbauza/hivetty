@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import type { SessionStatus } from '@/types/entity';
+import type { SessionStatus, TerminalStatus } from '@/types/entity';
 
 import type { AgentStatus } from '@shared/agent-contract';
 import type { IdleDetail } from '@shared/hook-contract';
@@ -21,7 +21,7 @@ import type { IdleDetail } from '@shared/hook-contract';
  * so that one word means one colour wherever it is drawn, and only `failed`
  * needed a hue the session vocabulary does not have.
  */
-export type DotStatus = SessionStatus | AgentStatus;
+export type DotStatus = SessionStatus | AgentStatus | TerminalStatus;
 
 /**
  * `terminated` is muted, not blue, and not `subtle` either (story 108).
@@ -62,6 +62,11 @@ export const STATUS_FILL: Record<DotStatus, string> = {
   asking: 'bg-amber',
   paused: 'bg-muted',
   failed: 'bg-red',
+  // Terminals. Subtle at a prompt — the quietest thing in the tree — and
+  // brand while running: brand, not green, because green means a Claude is
+  // working and this is a different claim. Amber is never reachable here.
+  prompt: 'bg-subtle',
+  running: 'bg-brand',
 };
 
 /**
@@ -81,6 +86,8 @@ export const STATUS_TEXT: Record<DotStatus, string> = {
   asking: 'text-amber',
   paused: 'text-muted',
   failed: 'text-red',
+  prompt: 'text-subtle',
+  running: 'text-brand',
 };
 
 /**
@@ -101,6 +108,8 @@ export const STATUS_LABEL: Record<DotStatus, string> = {
   asking: 'asking',
   paused: 'paused',
   failed: 'failed',
+  prompt: 'at prompt',
+  running: 'running',
 };
 
 /**
@@ -134,6 +143,8 @@ const STATUS_RING: Record<DotStatus, string> = {
   asking: 'border-subtle',
   paused: 'border-subtle',
   failed: 'border-subtle',
+  prompt: 'border-subtle',
+  running: 'border-brand',
 };
 
 /**

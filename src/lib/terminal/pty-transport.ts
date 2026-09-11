@@ -44,8 +44,8 @@ import type {
  * it — would put a layout concern in the transport permanently to save one
  * `SIGWINCH` once.
  */
-const DEFAULT_COLS = 80;
-const DEFAULT_ROWS = 24;
+export const DEFAULT_COLS = 80;
+export const DEFAULT_ROWS = 24;
 
 /**
  * How much output is kept per entity for a surface that subscribes late.
@@ -145,6 +145,18 @@ interface EntityChannel {
   /** Last `seq` seen, for gap detection. `null` until the first chunk. */
   lastSeq: number | null;
   /**
+   * Last `gen` seen, for restart detection. `null` until the first chunk.
+   *
+   * `reopenChannel` clears this on the local restart path, but a client that
+   * was disconnected when the restart happened never calls it — the stream
+   * itself has to carry the news. `seq` alone cannot: main's sequence counter
+   * restarts at 0 for each new process, so a stale `lastSeq` misreads the
+   * restart's first chunk as a gap while a genuine generation change with
+   * contiguous `seq` sails through unnoticed. Checking `gen` catches exactly
+   * that case.
+   */
+  gen: number | null;
+  /**
    * A spawn has been requested. Never reset — not even after an exit or a lost
    * host.
    *
@@ -211,6 +223,7 @@ function openChannel(entityId: string): EntityChannel {
     buffer: [],
     bufferUnits: 0,
     lastSeq: null,
+    gen: null,
     spawnRequested: false,
     spawnResult: null,
     closed: false,
@@ -228,14 +241,22 @@ function openChannel(entityId: string): EntityChannel {
       if (channel.closed) return;
 
       /**
-       * A skipped sequence number means a batch was lost between main and here.
-       * Saying so is the whole point: a terminal that quietly drops a batch
-       * renders output that never existed in that order, and the user debugs
-       * something that never happened.
+       * A skipped sequence number means a batch was lost between main and here;
+       * a changed generation means the process behind this entity restarted
+       * without this transport being told to reopen the channel — a client
+       * that was disconnected at the time never gets that call, so the stream
+       * itself is the only place left to notice. Either way, saying so is the
+       * whole point: a terminal that quietly drops a batch, or quietly starts
+       * showing a different process's output, renders a transcript that never
+       * existed in that order, and the user debugs something that never
+       * happened.
        */
-      if (channel.lastSeq !== null && event.seq !== channel.lastSeq + 1) {
+      const restarted = channel.gen !== null && event.gen !== channel.gen;
+      const skipped = channel.lastSeq !== null && event.seq !== channel.lastSeq + 1;
+      if (restarted || skipped) {
         emit(channel, GAP);
       }
+      channel.gen = event.gen;
       channel.lastSeq = event.seq;
 
       /**
@@ -350,22 +371,24 @@ export interface SpawnOptions {
 }
 
 /**
- * Request a process for this entity, at most once, and report the outcome.
+ * The channel bookkeeping every spawn verb shares.
  *
- * Two callers with two different needs, and one request between them: the
- * console needs main's refusal *as a value* so it can print it in the
- * transcript, and the terminal needs it as a notice. Sharing the promise is
- * what stops the second caller starting a second process — which would put two
- * `claude` instances in one repository, a data-loss bug wearing a rendering
- * bug's clothes.
+ * One request per entity, a refusal answered rather than thrown *and* written
+ * into the terminal. Only the bridge call differs between a session and a
+ * terminal, so only that is passed in — the alternative was two copies of this,
+ * which is two chances for the next fix to land on one of them.
+ *
+ * Sharing the promise is what stops a second caller starting a second process.
+ * For a session that would put two `claude` instances in one repository, a
+ * data-loss bug wearing a rendering bug's clothes; for a terminal it is a second
+ * shell nobody asked for under one row.
  *
  * Never rejects. A refusal is an outcome, not an exception: the fire-and-forget
- * caller below has nowhere to catch one.
+ * callers have nowhere to catch one.
  */
-export function requestSpawn(
+function withSpawnChannel(
   entityId: string,
-  projectId: string,
-  { task, model, effort, name, resume }: SpawnOptions = {},
+  send: () => Promise<void>,
 ): Promise<SpawnOutcome> {
   /**
    * The bridge is read inside the try, not before it.
@@ -387,10 +410,50 @@ export function requestSpawn(
   if (channel.spawnResult) return channel.spawnResult;
 
   channel.spawnRequested = true;
+  channel.spawnResult = send()
+    .then((): SpawnOutcome => ({ ok: true }))
+    .catch((cause: unknown): SpawnOutcome => {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      /**
+       * A refusal is *information*, and it belongs in the terminal.
+       *
+       * Main rejects a spawn with a specific, actionable message — an unmapped
+       * project names the config file to edit. Swallowing it leaves an empty
+       * black rectangle, which is the failure mode this whole path exists to
+       * avoid.
+       *
+       * Guarded like every other writer here. Unreachable today — main throws
+       * synchronously before a channel exists, so no exit or loss can land
+       * first — but that is a fact about main's ordering, and this file should
+       * not depend on it staying true.
+       */
+      if (!channel.closed) {
+        channel.closed = true;
+        emit(channel, spawnRefused(reason));
+      }
+      return { ok: false, reason };
+    });
+
+  return channel.spawnResult;
+}
+
+/**
+ * Request a process for this entity, at most once, and report the outcome.
+ *
+ * Two callers with two different needs, and one request between them: the
+ * console needs main's refusal *as a value* so it can print it in the
+ * transcript, and the terminal needs it as a notice.
+ */
+export function requestSpawn(
+  entityId: string,
+  projectId: string,
+  { task, model, effort, name, resume }: SpawnOptions = {},
+): Promise<SpawnOutcome> {
   /** See the spread below for why this is flattened rather than passed as typed. */
   const wireTask = flattenLines(task ?? '');
-  channel.spawnResult = pty()
-    .spawn({
+
+  return withSpawnChannel(entityId, () =>
+    pty().spawn({
       sessionId: entityId,
       projectId,
       cols: DEFAULT_COLS,
@@ -447,31 +510,43 @@ export function requestSpawn(
        * "nothing beyond the declared fields" test meaning what it says.
        */
       ...(resume === true ? { resume: true } : {}),
-    })
-    .then((): SpawnOutcome => ({ ok: true }))
-    .catch((cause: unknown): SpawnOutcome => {
-      const reason = cause instanceof Error ? cause.message : String(cause);
-      /**
-       * A refusal is *information*, and it belongs in the terminal.
-       *
-       * Main rejects a spawn with a specific, actionable message — an unmapped
-       * project names the config file to edit. Swallowing it leaves an empty
-       * black rectangle, which is the failure mode this whole path exists to
-       * avoid.
-       *
-       * Guarded like every other writer here. Unreachable today — main throws
-       * synchronously before a channel exists, so no exit or loss can land
-       * first — but that is a fact about main's ordering, and this file should
-       * not depend on it staying true.
-       */
-      if (!channel.closed) {
-        channel.closed = true;
-        emit(channel, spawnRefused(reason));
-      }
-      return { ok: false, reason };
-    });
+    }),
+  );
+}
 
-  return channel.spawnResult;
+/**
+ * Ask main for a terminal: a login shell with no Claude typed into it (terminals).
+ *
+ * The same channel bookkeeping as {@link requestSpawn} — one request per entity,
+ * a refusal answered rather than thrown, and the refusal written into the
+ * transcript as well so an empty black rectangle never has to be explained — over
+ * the terminal verb, whose payload is the project and the geometry and nothing
+ * else. There is no task, no model and no effort to carry: those describe an
+ * agent, and a terminal has none.
+ *
+ * A sibling of `requestSpawn` rather than a flag on it. The two differ in the
+ * verb they call and in nothing else — which is exactly what
+ * {@link withSpawnChannel} makes literal — and a boolean would put the choice
+ * between "start a shell" and "start Claude in a repository" inside an options
+ * object where a call site could pass it by accident.
+ */
+export function requestSpawnTerminal(
+  entityId: string,
+  projectId: string,
+  cwd?: string,
+): Promise<SpawnOutcome> {
+  return withSpawnChannel(entityId, () =>
+    pty().spawnTerminal({
+      sessionId: entityId,
+      projectId,
+      cols: DEFAULT_COLS,
+      rows: DEFAULT_ROWS,
+      // Spread, never `cwd: undefined`: the guard refuses a key it did not
+      // expect, and an own property whose value is undefined survives the
+      // structured clone as a present key.
+      ...(cwd === undefined ? {} : { cwd }),
+    }),
+  );
 }
 
 /**
@@ -484,12 +559,10 @@ export function requestSpawn(
  */
 function ensureSpawned(
   channel: EntityChannel,
-  entityId: string,
-  projectId: string,
-  options: SpawnOptions,
+  request: () => Promise<SpawnOutcome>,
 ): void {
   if (channel.spawnRequested) return;
-  void requestSpawn(entityId, projectId, options);
+  void request();
 }
 
 /**
@@ -573,7 +646,31 @@ export function createPtyTransport(
   options: SpawnOptions = {},
 ): TerminalTransport {
   return createTransport(entityId, (channel) =>
-    ensureSpawned(channel, entityId, projectId, options),
+    ensureSpawned(channel, () => requestSpawn(entityId, projectId, options)),
+  );
+}
+
+/**
+ * A terminal's transport: the pty transport, with the terminal spawn behind it
+ * (terminals).
+ *
+ * The third parameterisation of the one moment {@link createTransport} exists to
+ * vary. A session's mount starts `claude`, a clone's starts nothing, and this
+ * one starts a login shell — everything after the first byte is identical, which
+ * is why there is one factory function and three call sites rather than three
+ * copies of the replay, gap and ack machinery.
+ */
+export function createTerminalTransport(
+  entityId: string,
+  projectId: string,
+  cwd?: string,
+): TerminalTransport {
+  return createTransport(entityId, (channel) =>
+    // The same attach-never-respawn guard the session path mounts behind: a tab
+    // switch back to a shell that has exited must not start a second one — and
+    // the same directory it was opened at, so a lazy re-spawn never silently
+    // re-roots the shell.
+    ensureSpawned(channel, () => requestSpawnTerminal(entityId, projectId, cwd)),
   );
 }
 
@@ -636,6 +733,15 @@ export function resetCloneChannel(): void {
  * for each new session id, so a retained `lastSeq` reports a spurious gap on
  * the first chunk of every restart.
  *
+ * `gen` is reset alongside it, but this half is now belt and braces rather
+ * than the only defence: every `DataEvent` also carries `gen`, so the data
+ * handler notices a restart from the stream itself even when this function is
+ * never called — the case that matters for a client that was disconnected
+ * while the restart happened and so never had the chance to call it. Clearing
+ * it here still matters for the local, connected case: it keeps this reopen
+ * from reporting a spurious gap on the first chunk of the new generation, the
+ * same reason `lastSeq` is cleared above.
+ *
  * `spawnResult` is dropped so the next `requestSpawn` genuinely asks again.
  */
 export function reopenChannel(entityId: string): void {
@@ -643,8 +749,31 @@ export function reopenChannel(entityId: string): void {
   if (!channel) return;
   channel.closed = false;
   channel.lastSeq = null;
+  channel.gen = null;
   channel.spawnRequested = false;
   channel.spawnResult = null;
+}
+
+/**
+ * Drop one entity's channel and its bridge subscriptions (terminals).
+ *
+ * The counterpart to a row that is genuinely gone rather than merely finished.
+ * A session's channel deliberately outlives everything — its buffer is what a
+ * tab switch replays, and `closed` is a one-way latch so a remount cannot
+ * resurrect a finished agent — but a removed terminal has no row left to switch
+ * back to, and leaving its channel behind holds a replay buffer and three
+ * bridge listeners for a window the user closed. Over a working day of opening
+ * and closing shells that is an unbounded leak in the one map that is never
+ * swept.
+ *
+ * Distinct from {@link reopenChannel} and {@link resetCloneChannel}, which both
+ * keep the channel and clear parts of it. This one ends it.
+ */
+export function closeChannel(entityId: string): void {
+  const channel = channels.get(entityId);
+  if (!channel) return;
+  channel.dispose();
+  channels.delete(entityId);
 }
 
 /**

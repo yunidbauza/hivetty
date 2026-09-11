@@ -6,12 +6,11 @@ import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  DEFAULT_BIND,
   DEFAULT_CLAUDE_COMMAND,
-  DEFAULT_JIRA,
   DEFAULT_RECEIVER,
-  DEFAULT_SLACK,
-  DEFAULT_NOTIFICATIONS,
   DEFAULT_SHELL,
+  emptySnapshot,
   type ConfigSnapshot,
   type EffectiveRuntime,
   type ProjectConfig,
@@ -19,6 +18,7 @@ import {
 import {
   diagnoseCommand,
   effectiveRuntime,
+  receiverHostAliases,
   runProbeCommand,
 } from '../../../../electron/main/config/runtime';
 
@@ -33,20 +33,7 @@ import {
 let dir: string;
 
 const snapshot = (over: Partial<ConfigSnapshot> = {}): ConfigSnapshot => ({
-  configPath: '/tmp/hive/config.json',
-  templateWritten: false,
-  shell: DEFAULT_SHELL,
-  claudeCommand: DEFAULT_CLAUDE_COMMAND,
-  env: {},
-  projects: [],
-  notifications: { ...DEFAULT_NOTIFICATIONS },
-  jira: { ...DEFAULT_JIRA },
-  receiver: { ...DEFAULT_RECEIVER },
-  slack: { ...DEFAULT_SLACK },
-  subscriptionAuth: true,
-  sessionMetrics: true,
-  importLoginEnv: true,
-  errors: [],
+  ...emptySnapshot('/tmp/hive/config.json'),
   ...over,
 });
 
@@ -348,7 +335,7 @@ describe('effectiveRuntime container (HIVE-133)', () => {
 
   it('inherits hostAlias from the receiver, which is the only layer that can', () => {
     const runtime = effectiveRuntime(
-      snapshot({ receiver: { hostAlias: 'gateway' } }),
+      snapshot({ receiver: { hostAlias: 'gateway', bind: DEFAULT_BIND } }),
       project({ id: 'p', container: minimal }),
     );
     expect(runtime.container?.hostAlias).toBe('gateway');
@@ -356,7 +343,7 @@ describe('effectiveRuntime container (HIVE-133)', () => {
 
   it('lets the project override the receiver alias', () => {
     const runtime = effectiveRuntime(
-      snapshot({ receiver: { hostAlias: 'gateway' } }),
+      snapshot({ receiver: { hostAlias: 'gateway', bind: DEFAULT_BIND } }),
       project({ id: 'p', container: { ...minimal, hostAlias: 'bridge' } }),
     );
     expect(runtime.container?.hostAlias).toBe('bridge');
@@ -389,6 +376,83 @@ describe('effectiveRuntime container (HIVE-133)', () => {
     );
     expect(runtime.env).toEqual({ A: '1' });
     expect(runtime.container?.workspace).toBe('/workspace');
+  });
+});
+
+describe('receiverHostAliases (HIVE-134 follow-up)', () => {
+  const minimal = { workspace: '/workspace', hiveDir: '/hive' };
+
+  it('is exactly the global alias with no projects and no agents', () => {
+    expect(receiverHostAliases(snapshot())).toEqual(
+      new Set([DEFAULT_RECEIVER.hostAlias]),
+    );
+  });
+
+  it("includes a project's diverged alias alongside the global one", () => {
+    const aliases = receiverHostAliases(
+      snapshot({
+        receiver: { hostAlias: 'gateway', bind: DEFAULT_BIND },
+        projects: [project({ id: 'p', container: { ...minimal, hostAlias: 'bridge' } })],
+      }),
+    );
+
+    expect(aliases).toEqual(new Set(['gateway', 'bridge']));
+  });
+
+  it("does not add a project's own field twice when it matches the global alias", () => {
+    // `effectiveRuntime` already resolves an absent project override to the
+    // global alias, so a project with no override of its own contributes
+    // nothing new here — proven by the size staying 1, not by a `has` that
+    // would pass whether this collapsed into the same entry or silently
+    // duplicated it.
+    const aliases = receiverHostAliases(
+      snapshot({
+        receiver: { hostAlias: 'gateway', bind: DEFAULT_BIND },
+        projects: [project({ id: 'p', container: minimal })],
+      }),
+    );
+
+    expect(aliases.size).toBe(1);
+    expect(aliases).toEqual(new Set(['gateway']));
+  });
+
+  it('folds in more than one diverged project alias', () => {
+    const aliases = receiverHostAliases(
+      snapshot({
+        projects: [
+          project({ id: 'a', container: { ...minimal, hostAlias: 'bridge' } }),
+          project({ id: 'b', container: { ...minimal, hostAlias: 'span' } }),
+        ],
+      }),
+    );
+
+    expect(aliases).toEqual(new Set([DEFAULT_RECEIVER.hostAlias, 'bridge', 'span']));
+  });
+
+  it('leaves a host project — no `container` block at all — contributing nothing', () => {
+    const aliases = receiverHostAliases(
+      snapshot({ projects: [project({ id: 'p' })] }),
+    );
+
+    expect(aliases).toEqual(new Set([DEFAULT_RECEIVER.hostAlias]));
+  });
+
+  it("folds in every agent's alias the caller supplies", () => {
+    const aliases = receiverHostAliases(snapshot(), ['bridge', 'span']);
+
+    expect(aliases).toEqual(new Set([DEFAULT_RECEIVER.hostAlias, 'bridge', 'span']));
+  });
+
+  it('de-duplicates an agent alias that already equals a project or the global one', () => {
+    const aliases = receiverHostAliases(
+      snapshot({
+        receiver: { hostAlias: 'gateway', bind: DEFAULT_BIND },
+        projects: [project({ id: 'p', container: { ...minimal, hostAlias: 'bridge' } })],
+      }),
+      ['gateway', 'bridge'],
+    );
+
+    expect(aliases.size).toBe(2);
   });
 });
 

@@ -34,6 +34,13 @@ export interface SpawnCommand {
   stripEnv?: readonly string[];
   cols: number;
   rows: number;
+  /**
+   * Poll the foreground process group and report its name (terminals).
+   *
+   * Set only for a terminal — a plain shell with no Claude in it. A session's
+   * status comes from Claude Code's hooks and has no use for this.
+   */
+  foreground?: true;
 }
 
 export interface WriteCommand {
@@ -138,13 +145,28 @@ export interface PongMessage {
   seq: number;
 }
 
+/**
+ * What owns the tty right now, for a spawn flagged `foreground` (terminals).
+ *
+ * Emitted **on change only**, so a shell sitting at its prompt costs nothing on
+ * the wire. `name` is the foreground process's comm name — `vitest`, `vim`,
+ * `ssh`, or `node` for anything launched by a JavaScript runner — and `null`
+ * when the shell itself holds the tty, which is the prompt.
+ */
+export interface ForegroundMessage {
+  type: 'foreground';
+  sessionId: string;
+  name: string | null;
+}
+
 export type HostMessage =
   | DataMessage
   | ExitMessage
   | SpawnedMessage
   | ErrorMessage
   | PongMessage
-  | PingMessage;
+  | PingMessage
+  | ForegroundMessage;
 
 /** How often main pings the host. */
 export const HEARTBEAT_INTERVAL_MS = 2_000;
@@ -201,3 +223,12 @@ export const MAX_SESSIONS = 24;
 
 /** How long a killed process group has to die before it is SIGKILLed. */
 export const KILL_GRACE_MS = 2_000;
+
+/**
+ * How often a terminal's foreground process group is read.
+ *
+ * One `tcgetpgrp` and one `sysctl` per tick per terminal — microseconds, so
+ * there is no visibility gating: thirteen hidden terminals polling is still
+ * microseconds, and the deferral machinery would cost more than it saved.
+ */
+export const FOREGROUND_POLL_MS = 1_000;

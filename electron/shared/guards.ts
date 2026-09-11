@@ -16,15 +16,22 @@ import {
   isContainerProbe,
   isEnvArgTemplate,
   isHostAlias,
+  isOrigin,
   isProjectKey,
+  isServerBindHost,
   unsafeEnvReason,
 } from './config-contract';
 import type {
   AddProjectRequest,
+  BrowseDirRequest,
   CloneRequest,
   ContainerConfig,
+  DeviceNameRequest,
   DiagnoseCommandRequest,
   DiagnoseEnvRequest,
+  ReceiverBindConfig,
+  RemoteMode,
+  RemotePairRequest,
   RemoveProjectRequest,
   RenameProjectRequest,
   ReorderProjectsRequest,
@@ -35,13 +42,16 @@ import type {
   JiraSearchRequest,
   JiraTransitionsRequest,
   RepointProjectRequest,
+  ServerBindConfig,
   SetJiraRequest,
   SetJiraTokenRequest,
   SetNotificationsRequest,
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
+  SetRemoteRequest,
   SetRuntimeRequest,
+  SetServerRequest,
   SetSlackRequest,
   SetSlackTokensRequest,
 } from './config-contract';
@@ -59,6 +69,7 @@ import type {
   PromptReport,
   ResizeRequest,
   SpawnRequest,
+  SpawnTerminalRequest,
   WriteRequest,
 } from './ipc-contract';
 import { ISSUE_KEY_PATTERN } from './jira-contract';
@@ -85,9 +96,19 @@ import type {
   SessionNoteRequest,
   SessionPrRequest,
 } from './session-history-contract';
-import { RESERVED_SKILL_NAME, SKILL_NAME_PATTERN } from './skills-contract';
+import {
+  MAX_BUNDLE_DEPTH,
+  MAX_BUNDLE_FILES,
+  RESERVED_SKILL_NAME,
+  SKILL_NAME_PATTERN,
+} from './skills-contract';
 import type {
+  SkillDropRequest,
+  SkillFileWriteRequest,
+  SkillImportRequest,
+  SkillMoveRequest,
   SkillNameRequest,
+  SkillPathRequest,
   SkillRenameRequest,
   SkillWriteRequest,
 } from './skills-contract';
@@ -248,7 +269,15 @@ const MAX_TEXT = 4096;
  */
 const MAX_PROJECT_IDS = 1000;
 
-function assertText(value: unknown, label: string): string {
+/**
+ * Exported (HIVE-142 review, M1) so `cli.ts`'s `--pair`/`--revoke` argv
+ * parsing can hold a device name to the exact same bound this file's own
+ * IPC guards do (`parsePairDeviceRequest`, `parseRevokeDeviceRequest`) —
+ * non-empty, capped, no control characters — rather than accepting anything
+ * argv hands it and minting a device the config reader silently drops on
+ * the next load because its name is empty or unprintable.
+ */
+export function assertText(value: unknown, label: string): string {
   const text = assertString(value, label);
   if (text.length === 0) return fail(`${label}: must not be empty`);
   if (text.length > MAX_TEXT) return fail(`${label}: too long`);
@@ -359,6 +388,38 @@ export function parseSpawnRequest(input: unknown): SpawnRequest {
       ? {}
       : { resume: assertBoolean(raw.resume, 'spawn.resume') }),
   };
+}
+
+export function parseSpawnTerminalRequest(input: unknown): SpawnTerminalRequest {
+  const raw = assertShape(
+    input,
+    ['sessionId', 'projectId', 'cols', 'rows'],
+    'spawn-terminal',
+    ['cwd'],
+  );
+  return {
+    sessionId: assertId(raw.sessionId, 'spawn-terminal.sessionId'),
+    projectId: assertId(raw.projectId, 'spawn-terminal.projectId'),
+    cols: assertDimension(raw.cols, 'spawn-terminal.cols'),
+    rows: assertDimension(raw.rows, 'spawn-terminal.rows'),
+    /**
+     * Spread rather than `cwd: undefined`: this module's own tests compare the
+     * returned object key-for-key. Absolute first, then the same length cap
+     * and control-character ban as any text — the pair the container paths
+     * use, for the same reason: this string becomes a process's cwd.
+     */
+    ...(raw.cwd === undefined
+      ? {}
+      : { cwd: assertAbsolutePath(raw.cwd, 'spawn-terminal.cwd') }),
+  };
+}
+
+/** An absolute POSIX path with `assertText`'s bounds on top. */
+function assertAbsolutePath(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.startsWith('/')) {
+    return fail(`${label}: must be an absolute path`);
+  }
+  return assertText(value, label);
 }
 
 /**
@@ -578,6 +639,49 @@ export function parseAddProjectRequest(input: unknown): AddProjectRequest {
     path: assertPath(raw.path, 'addProject.path'),
     ...(name !== undefined ? { name } : {}),
   };
+}
+
+/**
+ * Longer than any real path — macOS caps a component at 255 bytes and a full
+ * path at 1024 — and short enough that nothing pathological gets as far as a
+ * syscall.
+ */
+const MAX_BROWSE_PATH = 4096;
+
+/**
+ * Payload guard for `config:browse-directory` (HIVE-146).
+ *
+ * The path is **not** trusted here, and is not meant to be. It goes on to
+ * `browseHomeDirectory`, which resolves it, `realpath`s it and proves
+ * containment against the answering machine's home directory. What this bounds
+ * is shape and size, so a malformed or enormous payload is refused before it
+ * becomes syscalls.
+ *
+ * `assertPath` is deliberately not reused: it rejects an empty string, and an
+ * empty string is this verb's way of asking for home. That is the difference
+ * between "the caller named nowhere", which is an error for `addProject`, and
+ * "the caller named the default", which is the ordinary first call here.
+ */
+export function parseBrowseDirRequest(input: unknown): BrowseDirRequest {
+  const raw = assertShape(input, ['path'], 'browseDirectory');
+  const path = assertString(raw.path, 'browseDirectory.path');
+  if (path.length > MAX_BROWSE_PATH) {
+    return fail(`browseDirectory.path: too long`);
+  }
+  /*
+    Control characters are refused here rather than left to the syscall.
+
+    A NUL makes Node throw `ERR_INVALID_ARG_VALUE`, which `asFailure` flattens
+    to `EUNKNOWN` — a correct refusal wearing a useless code. A newline is
+    worse: it reaches the filesystem layer intact and any log line built around
+    the path afterwards carries a forged second line. Neither is a containment
+    hole, and neither should get as far as a syscall to be one.
+  */
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(path)) {
+    return fail('browseDirectory.path: contains a control character');
+  }
+  return { path };
 }
 
 export function parseRemoveProjectRequest(input: unknown): RemoveProjectRequest {
@@ -1209,20 +1313,309 @@ export function assertHostAlias(value: unknown, label: string): string {
   return raw;
 }
 
-/** Payload of `config:set-receiver` (HIVE-131). */
+/**
+ * A TCP port on the bridge.
+ *
+ * `0` is legal and means "ask the OS for any free port", which is the default
+ * and what shipped — so unlike {@link assertPrNumber} the range starts at 0.
+ * The bound is `optionalPort`'s in `config/parse.ts`, restated rather than
+ * imported because that module is main-process only; the two have to keep
+ * agreeing by inspection, the same discipline `assertHostAlias` documents for
+ * `isHostAlias`.
+ */
+function assertPort(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    return fail(`${label}: expected an integer, got ${describe(value)}`);
+  }
+  if (value < 0 || value > 65_535) return fail(`${label}: expected a port from 0 to 65535`);
+  return value;
+}
+
+/**
+ * One {@link ReceiverBindConfig.allowedOrigins} entry.
+ *
+ * Shares {@link isOrigin} with the file reader for {@link assertHostAlias}'s
+ * stated reason: the set the reader accepts and the set the bridge accepts have
+ * to be the same one, or a value the UI stores is refused on the next load.
+ */
+function assertOrigin(value: unknown, label: string): string {
+  const raw = assertString(value, label);
+  if (!isOrigin(raw)) {
+    return fail(`${label}: expected an origin like http://localhost:5173`);
+  }
+  return raw;
+}
+
+/**
+ * Payload of `config:set-receiver` (HIVE-131, HIVE-134).
+ *
+ * `bind` validates the same way `hostAlias` does — one shared predicate per
+ * field with the file reader (`isHostAlias`, `isOrigin`; `assertPort` restates
+ * `optionalPort`'s bound) — but it does not *salvage* the way the reader does.
+ * `optionalBind` keeps two good fields when the third is bad, because a typo
+ * in a config file a user hand-edited must not cost the whole block. Here the
+ * three fields arrive from a live form, so `assertShape`'s ordinary rule holds:
+ * reject the request and name what was wrong, rather than silently keeping
+ * only the parts that parsed.
+ *
+ * An empty `bind: {}` is dropped rather than kept as a no-op key, so a request
+ * that touches nothing still falls into the "nothing to change" check below —
+ * `bind` is not a special case of that rule, it is a value that can itself be
+ * empty.
+ */
 export function parseSetReceiverRequest(input: unknown): SetReceiverRequest {
-  const raw = assertShape(input, [], 'setReceiver', ['hostAlias']);
+  const raw = assertShape(input, [], 'setReceiver', ['hostAlias', 'bind']);
+
+  let bind: Partial<ReceiverBindConfig> | undefined;
+  if (raw.bind !== undefined) {
+    const rawBind = assertShape(raw.bind, [], 'setReceiver.bind', [
+      'host',
+      'port',
+      'allowedOrigins',
+    ]);
+
+    let allowedOrigins: string[] | undefined;
+    if (rawBind.allowedOrigins !== undefined) {
+      if (!Array.isArray(rawBind.allowedOrigins)) {
+        return fail(
+          `setReceiver.bind.allowedOrigins: expected an array, got ${describe(rawBind.allowedOrigins)}`,
+        );
+      }
+      allowedOrigins = rawBind.allowedOrigins.map((entry, index) =>
+        assertOrigin(entry, `setReceiver.bind.allowedOrigins[${index}]`),
+      );
+    }
+
+    bind = {
+      ...(rawBind.host !== undefined
+        ? { host: assertHostAlias(rawBind.host, 'setReceiver.bind.host') }
+        : {}),
+      ...(rawBind.port !== undefined
+        ? { port: assertPort(rawBind.port, 'setReceiver.bind.port') }
+        : {}),
+      ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+    };
+  }
 
   const request: SetReceiverRequest = {
     ...(raw.hostAlias !== undefined
       ? { hostAlias: assertHostAlias(raw.hostAlias, 'setReceiver.hostAlias') }
       : {}),
+    ...(bind !== undefined && Object.keys(bind).length > 0 ? { bind } : {}),
   };
 
   if (Object.keys(request).length === 0) {
     return fail('setReceiver: nothing to change');
   }
   return request;
+}
+
+/**
+ * `server.bind.host` (HIVE-142).
+ *
+ * Shares {@link isHostAlias}'s per-label allowlist with `assertHostAlias`, via
+ * {@link isServerBindHost}, and refuses exactly one value neither `assertHostAlias`
+ * nor the receiver's own bind refuse: `0.0.0.0`. A served machine is always
+ * reachable at a Tailscale address, so binding every interface is a wider
+ * surface with nothing to buy for it — see {@link isServerBindHost}'s own
+ * doc comment.
+ */
+function assertServerBindHost(value: unknown, label: string): string {
+  const raw = assertString(value, label).trim();
+  if (raw.length === 0) return fail(`${label}: must not be empty`);
+  if (!isServerBindHost(raw)) {
+    return fail(
+      `${label}: expected a hostname or IPv4 address — not 0.0.0.0, which exposes every interface`,
+    );
+  }
+  return raw;
+}
+
+/**
+ * `server.bind.port` (HIVE-142 review, I3).
+ *
+ * Restates {@link assertPort}'s bound and then refuses the one value the
+ * receiver's own bind accepts and this one cannot: `0`. Unlike
+ * {@link ReceiverBindConfig.port}, `server.bind.port` cannot be OS-assigned —
+ * a client's config and a LaunchAgent both have to be told the number ahead
+ * of time, and neither can be handed one the kernel only picks at boot (see
+ * {@link ServerBindConfig.port}'s own doc comment).
+ */
+function assertServerBindPort(value: unknown, label: string): number {
+  const port = assertPort(value, label);
+  if (port === 0) {
+    return fail(`${label}: must be fixed, not 0 — a client and any LaunchAgent need to be told the port ahead of time`);
+  }
+  return port;
+}
+
+/**
+ * Payload of `config:set-server` (HIVE-142).
+ *
+ * Shaped exactly like {@link parseSetReceiverRequest}, field for field, and for
+ * the same reasons: `bind` validates one field at a time against
+ * {@link SERVER_BIND_KEYS}, salvages nothing on a bad field (this arrives from a
+ * live form, not a hand-edited file), and an empty `bind: {}` is dropped so a
+ * request that touches nothing still falls into the "nothing to change" check.
+ *
+ * The one difference from `setReceiver` is `enabled`, a plain boolean with
+ * nothing else to validate — `off` is a value, not a nullable field, the same
+ * reasoning {@link SetSlackRequest.socketMode} states. There is deliberately no
+ * `devices` here: replacing the roster is `pairDevice`/`revokeDevice`'s job in
+ * main, reached through `server:pair`/`server:revoke`, never through a payload
+ * arriving on this channel.
+ */
+export function parseSetServerRequest(input: unknown): SetServerRequest {
+  const raw = assertShape(input, [], 'setServer', ['enabled', 'bind']);
+
+  let bind: Partial<ServerBindConfig> | undefined;
+  if (raw.bind !== undefined) {
+    const rawBind = assertShape(raw.bind, [], 'setServer.bind', [
+      'host',
+      'port',
+      'allowedOrigins',
+    ]);
+
+    let allowedOrigins: string[] | undefined;
+    if (rawBind.allowedOrigins !== undefined) {
+      if (!Array.isArray(rawBind.allowedOrigins)) {
+        return fail(
+          `setServer.bind.allowedOrigins: expected an array, got ${describe(rawBind.allowedOrigins)}`,
+        );
+      }
+      allowedOrigins = rawBind.allowedOrigins.map((entry, index) =>
+        assertOrigin(entry, `setServer.bind.allowedOrigins[${index}]`),
+      );
+    }
+
+    bind = {
+      ...(rawBind.host !== undefined
+        ? { host: assertServerBindHost(rawBind.host, 'setServer.bind.host') }
+        : {}),
+      ...(rawBind.port !== undefined
+        ? { port: assertServerBindPort(rawBind.port, 'setServer.bind.port') }
+        : {}),
+      ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
+    };
+  }
+
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') {
+    return fail(`setServer.enabled: expected a boolean, got ${describe(raw.enabled)}`);
+  }
+
+  const request: SetServerRequest = {
+    ...(raw.enabled !== undefined ? { enabled: raw.enabled as boolean } : {}),
+    ...(bind !== undefined && Object.keys(bind).length > 0 ? { bind } : {}),
+  };
+
+  if (Object.keys(request).length === 0) {
+    return fail('setServer: nothing to change');
+  }
+  return request;
+}
+
+/**
+ * Payload of `server:pair` and `server:revoke` (HIVE-142).
+ *
+ * A device name is free text a person typed — "Yunid's MacBook" — so it runs
+ * through {@link assertText}, the same bound every other pasted string on this
+ * bridge takes, rather than a closed grammar like {@link assertAgentName}'s.
+ */
+export function parsePairDeviceRequest(input: unknown): DeviceNameRequest {
+  const raw = assertShape(input, ['name'], 'serverPair');
+  return { name: assertText(raw.name, 'serverPair.name') };
+}
+
+/** Shape-identical to {@link parsePairDeviceRequest}; see its own doc comment. */
+export function parseRevokeDeviceRequest(input: unknown): DeviceNameRequest {
+  const raw = assertShape(input, ['name'], 'serverRevoke');
+  return { name: assertText(raw.name, 'serverRevoke.name') };
+}
+
+/**
+ * Payload of `config:set-remote` (HIVE-144).
+ *
+ * This guard validates **shape only** — `mode` is `'local'` or `'remote'`,
+ * `host` is a string, `port` is in range — and, as of fix-round 2, no longer
+ * enforces Ruling 3's "`host` must satisfy `isRemoteTarget` once mode is
+ * remote" rule at all. Two review rounds each closed one payload shape that
+ * broke that rule when it lived here: checking `request.mode` against
+ * `request.host` in isolation missed `{ host }` alone against a config
+ * already remote, and then missed `{ mode: 'remote' }` alone after an earlier
+ * call had legitimately stored an unvalidated host under `'local'`. Both are
+ * the same defect through a different door — a guard that sees one
+ * incremental patch can never resolve "effective mode" from that patch alone,
+ * because the config it merges onto is state this function does not have and
+ * must not be given (threading config reads into a shared, stateless guard
+ * module would be a bigger change than the bug warrants).
+ *
+ * The invariant now lives in exactly one place: `setRemote`
+ * (`electron/main/config/index.ts`), checked once against the merged result
+ * `writeConfig` is about to write — the only place that actually holds both
+ * the payload and the config it lands on. See that function's own doc
+ * comment for the property statement and why a single merged-state check
+ * closes every sequence of calls, not just the one shape a review happened
+ * to try.
+ *
+ * That is also why `host` takes no "must not be empty" check of its own:
+ * {@link DEFAULT_REMOTE} carries `''`, and a payload restating `mode: 'local'`
+ * alongside that empty default is the normal, never-attached state, not a
+ * malformed request — and it is also why a bare `{ host }` payload, with no
+ * `mode`, is accepted here again: a host-only save while the stored config is
+ * genuinely local is harmless (Ruling 3), and one that would leave the
+ * effective state remote-with-a-bad-host is caught by `setRemote`,
+ * regardless of which field this call happened to carry.
+ *
+ * Unlike `optionalRemote`, this guard salvages nothing on a bad field: the
+ * payload arrives from a live form, not a file a human hand-edited, so one
+ * bad field fails the whole request — the same rule {@link
+ * parseSetServerRequest} applies to its own three fields.
+ *
+ * There is no token field, and there never will be: `remote:pair` is the only
+ * verb that ever writes one, and it writes to `safeStorage`, never here.
+ */
+export function parseSetRemoteRequest(input: unknown): SetRemoteRequest {
+  const raw = assertShape(input, [], 'setRemote', ['mode', 'host', 'port']);
+
+  let mode: RemoteMode | undefined;
+  if (raw.mode !== undefined) {
+    if (raw.mode !== 'local' && raw.mode !== 'remote') {
+      return fail(`setRemote.mode: expected "local" or "remote"`);
+    }
+    mode = raw.mode;
+  }
+
+  const request: SetRemoteRequest = {
+    ...(mode !== undefined ? { mode } : {}),
+    ...(raw.host !== undefined
+      ? { host: assertString(raw.host, 'setRemote.host') }
+      : {}),
+    ...(raw.port !== undefined ? { port: assertPort(raw.port, 'setRemote.port') } : {}),
+  };
+
+  if (Object.keys(request).length === 0) {
+    return fail('setRemote: nothing to change');
+  }
+  return request;
+}
+
+/**
+ * Payload of `remote:pair` (HIVE-144).
+ *
+ * The opposite direction from {@link parsePairDeviceRequest}: that one takes a
+ * free-text name typed by a person; this one takes the two values a
+ * `server:pair` mint on some *other* machine handed back — a `deviceId` this
+ * app already recognises as an id (`assertId`, the same guard every session
+ * and project id on this bridge takes), and a `token`, which is exactly the
+ * "credential in a payload" shape {@link assertJiraToken} was generalised to
+ * describe, not anything specific to Jira.
+ */
+export function parseRemotePairRequest(input: unknown): RemotePairRequest {
+  const raw = assertShape(input, ['deviceId', 'token'], 'remotePair');
+  return {
+    deviceId: assertId(raw.deviceId, 'remotePair.deviceId'),
+    token: assertJiraToken(raw.token, 'remotePair.token'),
+  };
 }
 
 /**
@@ -1792,6 +2185,61 @@ export function assertSkillName(value: unknown, label: string): string {
   return name;
 }
 
+/**
+ * A skill-relative path, as the bundle verbs accept one (HIVE-148).
+ *
+ * `assertRelPath`'s rules, and deliberately not a character class. A charset of
+ * `[a-z0-9._-]` looks stricter and buys nothing: traversal is already dead
+ * without it, because no `..` segment survives — while it would refuse
+ * `README.md`, `Inter-Bold.ttf` and every screenshot with a space in its name,
+ * which are exactly the files a user drags into a bundle.
+ *
+ * What it adds over `assertRelPath` is a depth cap and a refusal of `''`. The
+ * empty path means "the project root" there; here every verb names a thing,
+ * and a verb that removed the bundle root would be `skills.remove` with a
+ * different name.
+ *
+ * It also **normalises**, not just validates: the return value is
+ * `segments.join('/')`, not the string that was passed in. `a//b`, `a/b/c/d/`
+ * and `a\b\c\d` all `join` onto a root identically, so nothing downstream
+ * broke while this returned the verbatim string — but `readBundle` emits
+ * canonical POSIX-separated paths as `BundleEntry.path`, and a request that
+ * kept its own separators or doubled slashes would carry a string that can
+ * never `===` the manifest entry it names, silently missing a dedupe or an
+ * open-buffer lookup keyed on that path.
+ *
+ * As with `assertRelPath`, this is not a containment check and cannot be one.
+ * `electron/main/skills/paths.ts` resolves and calls `contains()` after
+ * `realpath`. Both are required.
+ */
+export function assertSkillPath(value: unknown, label: string): string {
+  const path = assertRelPath(value, label);
+  if (path === '') return fail(`${label}: names nothing`);
+
+  const segments = path.split(/[/\\]/).filter((segment) => segment !== '');
+  if (segments.length > MAX_BUNDLE_DEPTH) {
+    return fail(`${label}: deeper than ${String(MAX_BUNDLE_DEPTH)} folders`);
+  }
+  if (segments.some((segment) => segment === '.')) {
+    return fail(`${label}: must not contain a dot segment`);
+  }
+
+  return segments.join('/');
+}
+
+/**
+ * The same rule, plus the bundle root.
+ *
+ * A separate export rather than a boolean parameter: `import` and `drop` target
+ * a directory and default to the root, every other verb names an entry, and a
+ * flag repeated at nine call sites is a flag someone eventually passes wrong.
+ */
+export function assertSkillDir(value: unknown, label: string): string {
+  const path = assertString(value, label);
+  if (path === '') return '';
+  return assertSkillPath(path, label);
+}
+
 export function parseSkillNameRequest(input: unknown): SkillNameRequest {
   const raw = assertShape(input, ['name'], 'skillName');
   return { name: assertSkillName(raw.name, 'skillName.name') };
@@ -1838,6 +2286,91 @@ export function parseSkillWriteRequest(input: unknown): SkillWriteRequest {
   return {
     name: assertSkillName(raw.name, 'skillWrite.name'),
     body: assertString(raw.body, 'skillWrite.body'),
+  };
+}
+
+export function parseSkillPathRequest(input: unknown): SkillPathRequest {
+  const raw = assertShape(input, ['name', 'path'], 'skillFilePath');
+  return {
+    name: assertSkillName(raw.name, 'skillFilePath.name'),
+    path: assertSkillPath(raw.path, 'skillFilePath.path'),
+  };
+}
+
+export function parseSkillFileWriteRequest(
+  input: unknown,
+): SkillFileWriteRequest {
+  const raw = assertShape(input, ['name', 'path', 'body'], 'skillFileWrite');
+  return {
+    name: assertSkillName(raw.name, 'skillFileWrite.name'),
+    path: assertSkillPath(raw.path, 'skillFileWrite.path'),
+    body: assertString(raw.body, 'skillFileWrite.body'),
+  };
+}
+
+export function parseSkillMoveRequest(input: unknown): SkillMoveRequest {
+  const raw = assertShape(input, ['name', 'from', 'to'], 'skillFileMove');
+  return {
+    name: assertSkillName(raw.name, 'skillFileMove.name'),
+    from: assertSkillPath(raw.from, 'skillFileMove.from'),
+    to: assertSkillPath(raw.to, 'skillFileMove.to'),
+  };
+}
+
+export function parseSkillImportRequest(input: unknown): SkillImportRequest {
+  const raw = assertShape(input, ['name', 'dir'], 'skillFileImport');
+  return {
+    name: assertSkillName(raw.name, 'skillFileImport.name'),
+    dir: assertSkillDir(raw.dir, 'skillFileImport.dir'),
+  };
+}
+
+/**
+ * The only skills verb whose payload holds an absolute path.
+ *
+ * Guarded here anyway. Preload is what makes a forged path impossible, and this
+ * is what makes a *broken* preload visible rather than exploitable — the same
+ * belt-and-braces `parseSpawnRequest` applies to values main itself chose.
+ */
+export function parseSkillDropRequest(input: unknown): SkillDropRequest {
+  const raw = assertShape(input, ['name', 'dir', 'sources'], 'skillFileDrop');
+
+  // Declaration order, like every other parser here: a doubly-wrong request
+  // reports the field named first in the shape, not whichever check happens
+  // to run first in the function body.
+  const name = assertSkillName(raw.name, 'skillFileDrop.name');
+  const dir = assertSkillDir(raw.dir, 'skillFileDrop.dir');
+
+  if (!Array.isArray(raw.sources)) {
+    return fail('skillFileDrop.sources: must be an array');
+  }
+  if (raw.sources.length > MAX_BUNDLE_FILES) {
+    return fail(
+      `skillFileDrop.sources: more than ${String(MAX_BUNDLE_FILES)} files`,
+    );
+  }
+
+  return {
+    name,
+    dir,
+    /*
+      `Array.from` first, not a bare `.map`. `Array.prototype.map` skips holes
+      — `new Array(3)` has none of its indices set — so a sparse array walks
+      straight past the per-element guard below and comes back as a `string[]`
+      that is really three holes, no throw. `structuredClone`/`v8.serialize`,
+      which is the channel this payload actually crosses, preserves holes
+      exactly like that. `Array.from` reads every index up to `.length`,
+      turning a hole into `undefined`, which `assertString` then refuses like
+      any other wrong-typed element.
+    */
+    sources: Array.from(raw.sources).map((source, index) => {
+      const label = `skillFileDrop.sources[${String(index)}]`;
+      const path = assertString(source, label);
+      if (!path.startsWith('/')) {
+        return fail(`${label}: must be an absolute path`);
+      }
+      return path;
+    }),
   };
 }
 

@@ -1,12 +1,25 @@
-import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readFile as readFileRaw,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
-import type {
-  SkillFile,
-  SkillsSnapshot,
+import {
+  MAX_BUNDLE_FILE_BYTES,
+  type SkillFile,
+  type SkillFileRead,
+  type SkillsSnapshot,
 } from '@shared/skills-contract';
 
-import { PLUGIN_DIR, skillsRoot } from './paths';
+import { copyInto } from './import';
+import { PLUGIN_DIR, isSkillManifest, resolveInSkill, skillsRoot } from './paths';
 import { writePluginDir } from './plugin';
 import { readUserSkills, type SkillsRead } from './read';
 
@@ -49,6 +62,43 @@ export interface SkillsRuntime {
   /** Remove the folder, regenerate, and answer with the fresh snapshot. */
   remove(name: string): Promise<SkillsSnapshot>;
   /**
+   * One file inside a skill's bundle, for the editor (HIVE-148).
+   *
+   * `readOne` above is `SKILL.md` by another name — a fixed file, no path. This
+   * is its bundle sibling: any file `resolveInSkill` admits, refused rather
+   * than failed when it is too large or looks binary, the same two reasons and
+   * the same order `fs/read.ts` uses for the project explorer.
+   */
+  readFile(name: string, path: string): Promise<SkillFileRead>;
+  /**
+   * Write one file inside a bundle, creating its parent directories and
+   * regenerating the plugin (HIVE-148).
+   *
+   * Does **not** regenerate the skill's `SKILL.md` mirror logic or touch
+   * anything but the one file named — `write` above stays the only verb that
+   * can change a skill's declared name and body.
+   */
+  writeFile(name: string, path: string, body: string): Promise<SkillsSnapshot>;
+  /** Create a folder inside a bundle, regenerate, and answer with the fresh snapshot. */
+  makeDir(name: string, path: string): Promise<SkillsSnapshot>;
+  /**
+   * Remove a file or folder inside a bundle, regenerate, and answer with the
+   * fresh snapshot.
+   *
+   * Refuses `SKILL.md` itself — see the implementation for why deleting the
+   * skill is a different verb.
+   */
+  removeFile(name: string, path: string): Promise<SkillsSnapshot>;
+  /**
+   * Move or rename a file or folder inside a bundle, regenerate, and answer
+   * with the fresh snapshot.
+   *
+   * The bundle sibling of {@link SkillsRuntime.rename}: same refuse-rather-than-
+   * replace rule for a taken destination, scoped to one entry inside a folder
+   * instead of the folder itself.
+   */
+  moveFile(name: string, from: string, to: string): Promise<SkillsSnapshot>;
+  /**
    * Move a skill's folder, regenerate, and answer with the fresh snapshot
    * (HIVE-99).
    *
@@ -63,6 +113,26 @@ export interface SkillsRuntime {
    * and this stays a move rather than becoming a move-and-edit.
    */
   rename(from: string, to: string): Promise<SkillsSnapshot>;
+  /**
+   * Copy whatever a native picker returns into a bundle, regenerate, and
+   * answer with the fresh snapshot (HIVE-148).
+   *
+   * `pick` is injected rather than called here for the reason `doneUrl` is a
+   * getter and `version` is passed in rather than read from `app`: this
+   * module's tests run under plain Node, and importing `electron` for a
+   * dialog would give them a runtime they do not have. `ipc/index.ts` owns
+   * the actual `dialog.showOpenDialog` call.
+   */
+  importFiles(name: string, dir: string, pick: () => Promise<string[]>): Promise<SkillsSnapshot>;
+  /**
+   * Copy `sources` — absolute paths only preload can produce — into a bundle,
+   * regenerate, and answer with the fresh snapshot (HIVE-148).
+   *
+   * The bundle sibling of {@link SkillsRuntime.importFiles}: same `copyInto`
+   * underneath, different origin for the paths. See `skills-contract.ts` for
+   * why the renderer cannot forge one of its own.
+   */
+  dropFiles(name: string, dir: string, sources: string[]): Promise<SkillsSnapshot>;
 }
 
 export interface SkillsRuntimeOptions {
@@ -173,13 +243,18 @@ export function createSkillsRuntime({
     `SkillsRead` is main's shape and `SkillsSnapshot` is the renderer's. They
     are kept separate rather than reused: the renderer has no business with a
     skill's `body` until it opens one, and shipping every file's full text on
-    every list would put the whole skills tree on the wire for a sidebar.
+    every list would put the whole skills tree on the wire for a sidebar. The
+    `manifest` carried below is the deliberate exception — it is metadata
+    (paths, sizes, exclusions), not content, and the pane needs it on every
+    row to dim an oversized file or grey out a symlink without a second round
+    trip. What still never crosses this boundary is a file's *body*.
   */
   const snapshot = (read: SkillsRead): SkillsSnapshot => ({
-    skills: read.skills.map(({ name, description }) => ({
+    skills: read.skills.map(({ name, description, manifest }) => ({
       name,
       description,
       valid: true,
+      manifest,
     })),
     invalid: read.invalid.map(({ name, reason }) => ({
       name,
@@ -188,6 +263,41 @@ export function createSkillsRuntime({
     })),
     skillsRoot: skillsRoot(),
   });
+
+  /**
+   * Whether `absPath` — already resolved by `resolveInSkill` — names the
+   * bundle root itself, however it got there.
+   *
+   * `''` is not the property that matters, and checking the request string
+   * for it was the bug: `assertSkillPath` refuses `''`, but it admits at
+   * least one spelling that still resolves to the very same place —
+   * `up/graphify` through a `symlink('..', ...)` planted inside the bundle.
+   * That clears the boundary's dot-segment rule the same way `self/SKILL.md`
+   * does for {@link isSkillManifest}, and for the same reason: comparing what
+   * a path *resolves to* is the only check that covers every spelling a
+   * symlink can produce, where comparing the string that named it covers
+   * exactly one.
+   */
+  const isSkillRoot = async (
+    name: string,
+    absPath: string,
+  ): Promise<boolean> => {
+    let real: string;
+    try {
+      real = await realpath(absPath);
+    } catch {
+      return false; // Nothing there to be the root.
+    }
+
+    let root: string;
+    try {
+      root = await realpath(join(skillsRoot(), name));
+    } catch {
+      return false; // No bundle to protect.
+    }
+
+    return real === root;
+  };
 
   return {
     sync,
@@ -202,7 +312,7 @@ export function createSkillsRuntime({
 
     async readOne(name: string): Promise<SkillFile> {
       const path = fileFor(name);
-      return { name, body: await readFile(path, 'utf8'), path };
+      return { name, body: await readFileRaw(path, 'utf8'), path };
     },
 
     async write(name: string, body: string): Promise<SkillsSnapshot> {
@@ -215,6 +325,165 @@ export function createSkillsRuntime({
 
     async remove(name: string): Promise<SkillsSnapshot> {
       await rm(join(skillsRoot(), name), { recursive: true, force: true });
+      return snapshot(await sync());
+    },
+
+    async readFile(name: string, path: string): Promise<SkillFileRead> {
+      const absPath = await resolveInSkill(name, path);
+      const info = await stat(absPath);
+
+      /*
+        The same two refusals `fs/read.ts` makes, in the same order and for the
+        same reason: a 40 MB binary reads better as "too large" than as
+        "binary". Reusing `FsRefusalReason` rather than minting a second
+        vocabulary keeps one rendering in the editor for one distinction.
+      */
+      if (info.size > MAX_BUNDLE_FILE_BYTES) {
+        return { name, path, absPath, size: info.size, body: null, refused: 'too-large' };
+      }
+
+      const buffer = await readFileRaw(absPath);
+      if (buffer.includes(0)) {
+        return { name, path, absPath, size: info.size, body: null, refused: 'binary' };
+      }
+
+      return {
+        name,
+        path,
+        absPath,
+        size: info.size,
+        body: buffer.toString('utf8'),
+        refused: null,
+      };
+    },
+
+    async writeFile(name: string, path: string, body: string): Promise<SkillsSnapshot> {
+      const absPath = await resolveInSkill(name, path);
+
+      /*
+        SKILL.md is what makes the folder a skill, and this verb has no
+        rename logic behind it — `write` above is what mirrors a changed
+        `name:` into the folder that holds it. Writing here with an empty
+        body, or any body at all, would blank or replace the manifest with
+        nothing to catch the mismatch: `readUserSkills` reports it invalid on
+        the next sync, silently, the same recovery trap `removeFile` and
+        `moveFile` already guard against for delete and rename.
+
+        Checked against the *resolved* path, not the request string, for the
+        reason {@link isSkillManifest} documents: a bundle holding
+        `self -> .` makes `self/SKILL.md` a second, symlinked name for the
+        exact same file, and `assertSkillPath` admits it (no dot segment,
+        depth 2). String equality on the request would miss it.
+      */
+      if (await isSkillManifest(name, absPath)) {
+        throw new Error(
+          'SKILL.md is edited through the skill itself, not the file tree.',
+        );
+      }
+
+      await mkdir(dirname(absPath), { recursive: true });
+      await writeFile(absPath, body, 'utf8');
+      /*
+        The content decides, and nothing else does (HIVE-148).
+
+        A blanket `+x` would show up in `~/.hive/skills` as a page of
+        `100644 -> 100755` with nothing behind it, and that directory is a
+        dotfiles directory for the people most likely to write skills. A
+        toggle would be a second thing to get wrong. `#!` is what the kernel
+        reads, so it is what this reads.
+      */
+      await chmod(absPath, body.startsWith('#!') ? 0o755 : 0o644);
+      return snapshot(await sync());
+    },
+
+    async makeDir(name: string, path: string): Promise<SkillsSnapshot> {
+      await mkdir(await resolveInSkill(name, path), { recursive: true });
+      return snapshot(await sync());
+    },
+
+    async removeFile(name: string, path: string): Promise<SkillsSnapshot> {
+      const absPath = await resolveInSkill(name, path);
+
+      /*
+        The bundle root itself. `assertSkillPath` already refuses the literal
+        `''` at the IPC boundary, but that string is not the property that
+        matters — `up/graphify` through a symlinked `up -> ..` also clears
+        the boundary's dot-segment rule and resolves to the same root.
+        Checked against the *resolved* path for the same reason the
+        `SKILL.md` guard below is: every other trap in this file is defended
+        a second time here, and an `rm -rf` of the whole skill is exactly the
+        kind of mistake one unguarded caller away should not survive.
+      */
+      if (await isSkillRoot(name, absPath)) {
+        throw new Error('Cannot remove the bundle root — remove the skill instead.');
+      }
+
+      /*
+        SKILL.md is what makes the folder a skill. Deleting it through the file
+        tree would leave a folder that `readUserSkills` reports as invalid, a
+        row the pane cannot open, and no way back except a text editor — the
+        recovery trap HIVE-99's self review found and fixed. Deleting the
+        *skill* is `skills:remove`, which asks first and says what it removes.
+
+        Checked against the *resolved* path, not the request string: a bundle
+        holding `self -> .` makes `self/SKILL.md` a second, symlinked name for
+        the same file, and `assertSkillPath` admits it (no dot segment, depth
+        2). String equality on the request would miss it entirely.
+      */
+      if (await isSkillManifest(name, absPath)) {
+        throw new Error('SKILL.md cannot be deleted — delete the skill instead.');
+      }
+      /*
+        `recursive`, not `force`. `force` swallows `ENOENT`, so a path that
+        was never there — `removeFile('graphify', 'never/was/here.txt')` —
+        resolved and reported a successful delete, which is worse than the
+        failure itself: the pane's Delete confirm claims a removal that never
+        happened and the user stops looking for the file. `recursive` alone
+        still removes a real directory and everything under it; nothing here
+        depended on `force` doing more than hiding that one case.
+      */
+      await rm(absPath, { recursive: true });
+      return snapshot(await sync());
+    },
+
+    async moveFile(name: string, from: string, to: string): Promise<SkillsSnapshot> {
+      const source = await resolveInSkill(name, from);
+
+      /*
+        The bundle root itself, for the same reason `removeFile` checks it —
+        and `moveFile('graphify', 'up/graphify', 'archive')` was reachable
+        here too until this landed. It happened to fail already, but only
+        because `rename(2)` refuses to move a directory into its own
+        subtree (`EINVAL`) — a syscall accident, not a defended trap, and the
+        one deliberate exception to this file's rule that every trap is
+        guarded on purpose rather than by what the OS happens to refuse.
+      */
+      if (await isSkillRoot(name, source)) {
+        throw new Error('Cannot move the bundle root — remove or rename the skill instead.');
+      }
+
+      /*
+        The same protection `removeFile` gives SKILL.md, because a move is a
+        second route to the same recovery trap: `moveFile(name, 'SKILL.md',
+        'archive.md')` leaves a folder with no `SKILL.md` just as surely as
+        deleting it would, and it must not be reachable by renaming around
+        the guard above.
+      */
+      if (await isSkillManifest(name, source)) {
+        throw new Error('SKILL.md cannot be moved — it must stay at the bundle root.');
+      }
+
+      const target = await resolveInSkill(name, to);
+
+      // Refused rather than left to `rename(2)`, for the reason the skill
+      // rename gives: the syscall replaces an empty directory silently and
+      // fails ENOTEMPTY on a full one, which is two outcomes and no refusal.
+      if (await exists(target)) {
+        throw new Error(`"${to}" already exists in this skill.`);
+      }
+
+      await mkdir(dirname(target), { recursive: true });
+      await rename(source, target);
       return snapshot(await sync());
     },
 
@@ -245,6 +514,25 @@ export function createSkillsRuntime({
       // One syscall, so there is no moment in which the skill exists twice or
       // not at all — the whole reason this verb is in main.
       await rename(join(skillsRoot(), from), target);
+      return snapshot(await sync());
+    },
+
+    async importFiles(
+      name: string,
+      dir: string,
+      pick: () => Promise<string[]>,
+    ): Promise<SkillsSnapshot> {
+      const sources = await pick();
+      // A cancelled dialog is not a failure, and re-reading the tree for it
+      // would flash the pane for a user who changed their mind.
+      if (sources.length === 0) return snapshot(await sync());
+
+      await copyInto(name, dir, sources);
+      return snapshot(await sync());
+    },
+
+    async dropFiles(name: string, dir: string, sources: string[]): Promise<SkillsSnapshot> {
+      await copyInto(name, dir, sources);
       return snapshot(await sync());
     },
   };
