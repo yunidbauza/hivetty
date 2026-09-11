@@ -173,7 +173,8 @@ export interface Session {
    * `` `feat/${id}` `` at spawn — a branch nothing created, displayed with total
    * confidence next to a session sitting on `main`, and still displayed after
    * the agent moved into a worktree.
-   * It was not stale, it was never true.
+   * It was not stale, it was never
+   * true.
    *
    * Now it is only ever what main *observed*: `git rev-parse` in the directory
    * a hook payload named. Absent means nobody has looked yet, or there is

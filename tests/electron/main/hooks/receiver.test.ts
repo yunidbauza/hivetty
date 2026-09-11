@@ -1652,8 +1652,8 @@ describe('hook receiver', () => {
   /**
    * The `cwd` half of HIVE-78.
    *
-   * The session's live working directory was
-   * the first thing main did not have, and the first plan was inspecting the shell
+   * The session's live working directory was the first thing main did not have,
+   * and the first plan was inspecting the shell
    * process with `lsof` to get it. These tests record that it was already in
    * the payload — and that it is the *agent's* cwd, so it follows a session
    * into a worktree.

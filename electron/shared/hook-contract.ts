@@ -650,8 +650,8 @@ export interface HookStatusEvent {
    * The directory the agent is working in, as the payload reported it (HIVE-78).
    *
    * **This is the field that makes an honest branch possible**, and it arrives
-   * free. The session's live working
-   * directory was the first of two things main did not have, and the first plan was
+   * free. The session's live working directory was the first of two things
+   * main did not have, and the first plan was
    * inspecting the shell process with `lsof -a -p <pid> -d cwd` to get it. That
    * is unnecessary: every Claude Code hook payload already carries `cwd`, and it
    * is the *agent's* cwd rather than the shell's — which is the more accurate of
