@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import type { AgentContainer, AgentsDirectory } from '@shared/agent-contract';
+import type { ProjectsDirectory } from '@shared/config-contract';
 import {
   DEFAULT_BIND,
   DEFAULT_RECEIVER,
@@ -8,6 +9,7 @@ import {
   type ReceiverBindConfig,
   type ResolvedContainer,
 } from '@shared/config-contract';
+import type { PrLookup, PrLookupReply } from '@shared/github-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_SESSION,
@@ -16,6 +18,7 @@ import {
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '@shared/hook-contract';
+import type { JiraToolHandlers } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
 
 import {
@@ -79,6 +82,12 @@ export interface HookRuntimeOptions {
    * (Claude Code drops its footer key hints) and the hooks have none.
    */
   sessionMetrics?: () => boolean;
+  /**
+   * The plugins a Hive session does not load, as `enabledPlugins` overrides
+   * (HIVE-176). Read at every write of the session settings file, so a change
+   * in Settings reaches the next session through {@link HookRuntime.rewriteSettings}.
+   */
+  enabledPlugins?: () => Promise<Record<string, boolean>>;
   /**
    * The hostname a container reaches this machine by (HIVE-132).
    *
@@ -173,6 +182,11 @@ export interface HookHandlers {
    * either of them.
    */
   onAgentsList: (caller: string) => Promise<AgentsDirectory>;
+  /** HIVE-173: the two workflow lookups; the receiver has honest defaults for both. */
+  onProjectsList?: (caller: string) => ProjectsDirectory;
+  onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** HIVE-174: the Jira tools; the receiver's default refuses with a reason. */
+  onJira?: JiraToolHandlers;
   onEvent: (event: HookStatusEvent) => void;
   /**
    * A hook event from an agent's headless turn (HIVE-115).
@@ -216,6 +230,12 @@ export interface HookRuntime {
    * a theme until HIVE-82, when the file stopped varying by one.
    */
   settingsPathFor(): string | null;
+  /**
+   * Write the session settings file again with what the config says now
+   * (HIVE-176). A running session keeps the file it started with; the next
+   * one reads this. A no-op before the receiver has bound.
+   */
+  rewriteSettings(): Promise<void>;
   /**
    * The `--settings` argument for an agent's headless turn (HIVE-119).
    *
@@ -329,6 +349,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
     userDataPath,
     port,
     sessionMetrics = () => true,
+    enabledPlugins,
     hostAlias = () => DEFAULT_RECEIVER.hostAlias,
     // Falls back to a set of exactly the global alias, through the same
     // getter file generation already reads — not `DEFAULT_RECEIVER.hostAlias`
@@ -344,6 +365,13 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
 
   let receiver: Receiver | null = null;
   let settingsPath: string | null = null;
+  /** The last successful session-settings write, replayable (HIVE-176). */
+  let rewrite: (() => Promise<void>) | null = null;
+  /**
+   * Rewrites run one after another, so a slow one cannot land after a newer
+   * one and put an older list back (HIVE-176).
+   */
+  let rewriting: Promise<void> = Promise.resolve();
   let agentSettingsPath: string | null = null;
   /**
    * The receiver's `boundHost`, captured independently of `receiver` itself
@@ -383,6 +411,19 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       return settingsPath;
     },
 
+    rewriteSettings() {
+      rewriting = rewriting.then(async () => {
+        try {
+          await rewrite?.();
+        } catch (cause) {
+          // The file from the last write still stands; say so rather than
+          // throw into a Settings click or a spawn that should go ahead.
+          console.info(`[hive] session settings could not be rewritten (${String(cause)})`);
+        }
+      });
+      return rewriting;
+    },
+
     agentSettingsPathFor() {
       return agentSettingsPath;
     },
@@ -391,6 +432,9 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       knowsSession,
       knowsAgent,
       onAgentsList,
+      onProjectsList,
+      onPrLookup,
+      onJira,
       onEvent,
       onAgentEvent,
       onTicketIntent,
@@ -430,6 +474,9 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onLedgerRead: (_caller, query) => ledger.read(query),
         onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
         onAgentsList,
+        onProjectsList,
+        onPrLookup,
+        onJira,
         knowsSession,
         knowsAgent,
         /*
@@ -519,6 +566,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           */
           created.readyUrl ?? undefined,
           transport,
+          await enabledPlugins?.(),
         );
         /*
           Written right after its sibling, with the same `url`/`readyUrl` — the
@@ -571,6 +619,20 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         }
 
         settingsPath = newSettingsPath;
+        /*
+          Same file, same path, so nothing is reassigned: a rewrite still in
+          flight when `stop` runs cannot bring `settingsPath` back to life.
+        */
+        rewrite = async () => {
+          await writeHookSettings(
+            userDataPath,
+            url,
+            sessionMetrics() ? (created.metricsUrl ?? undefined) : undefined,
+            created.readyUrl ?? undefined,
+            transport,
+            await enabledPlugins?.(),
+          );
+        };
         agentSettingsPath = newAgentSettingsPath;
         receiver = created;
 
@@ -630,6 +692,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
          */
         await created.stop();
         settingsPath = null;
+        rewrite = null;
         agentSettingsPath = null;
         // The socket really is closed now — `created.stop()` just ran — so
         // `null` here is the true state, not a premature guess at it.
@@ -828,6 +891,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       const running = receiver;
       receiver = null;
       settingsPath = null;
+      rewrite = null;
       agentSettingsPath = null;
       liveBoundHost = null;
       if (running !== null) await running.stop();

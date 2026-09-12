@@ -1,6 +1,16 @@
+import type { AdfBlock, JiraError, JiraToolIssue } from './jira-contract';
 import type { LedgerKind, LedgerReadQuery } from './ledger-contract';
 import { asInbound } from './ledger-derive';
-import { AGENTS_TOOL, APPROVE_TOOL, LEDGER_TOOLS } from './ledger-tools';
+import {
+  AGENTS_TOOL,
+  APPROVE_TOOL,
+  JIRA_COMMENT_TOOL,
+  JIRA_GET_TOOL,
+  JIRA_TRANSITION_TOOL,
+  LEDGER_TOOLS,
+  PR_TOOL,
+  PROJECTS_TOOL,
+} from './ledger-tools';
 import {
   LEDGER_READ_DEFAULT_LIMIT,
   ReceiverError,
@@ -259,6 +269,129 @@ export function createToolHandlers(
     );
   };
 
+  /**
+   * A Jira refusal as a tool error: the kind, the sentence, and the app's own
+   * diagnosis when it has one (a missing field, an ADF rule). `details` is
+   * composed and bounded in `client.ts`, never a quoted server body.
+   */
+  const jiraFailed = (tool: string, error: JiraError): CallToolResult => {
+    const notes = [
+      ...(error.details ?? []),
+      ...(error.retryAfter === undefined ? [] : [`retry after ${error.retryAfter}s`]),
+    ];
+    return failed(
+      `${tool}: ${error.message} (${error.kind})${notes.length === 0 ? '' : `; ${notes.join('; ')}`}`,
+    );
+  };
+
+  /** The ticket, rendered for a model (HIVE-174): prose first, the record beside it. */
+  const jiraGet = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    const key = stringArg(args, 'key');
+    if (key === undefined) return failed('jira_get needs key');
+
+    const result = await client.jiraGet({ key });
+    if (!result.ok) return jiraFailed('jira_get', result.error);
+
+    return ok(jiraIssueText(result.value), { ...result.value });
+  };
+
+  const jiraTransition = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    const key = stringArg(args, 'key');
+    const status = stringArg(args, 'status');
+    const from = stringArg(args, 'from');
+    if (key === undefined || status === undefined) {
+      return failed('jira_transition needs key and status');
+    }
+
+    const result = await client.jiraTransition({
+      key,
+      status,
+      ...(from === undefined ? {} : { from }),
+    });
+    if (!result.ok) return jiraFailed('jira_transition', result.error);
+
+    const { issue, transition, skipped } = result.value;
+    return ok(
+      transition === null
+        ? `${issue.key}: ${skipped ?? 'nothing was changed'}.`
+        : `${issue.key} is now ${issue.status} (transition "${transition.name}").`,
+      { issue, transition, ...(skipped === undefined ? {} : { skipped }) },
+    );
+  };
+
+  const jiraComment = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    const key = stringArg(args, 'key');
+    const markdown = stringArg(args, 'markdown');
+    if (key === undefined || markdown === undefined) {
+      return failed('jira_comment needs key and markdown');
+    }
+
+    const result = await client.jiraComment({ key, markdown });
+    if (!result.ok) return jiraFailed('jira_comment', result.error);
+
+    const comment = result.value;
+    return ok(`Commented on ${key}: comment ${comment.id} by ${comment.author} at ${comment.created}.`, {
+      comment,
+    });
+  };
+
+  /** The projects directory (HIVE-173), prose and structured, like `agents`. */
+  const projects = async (): Promise<CallToolResult> => {
+    const directory = await client.projects();
+
+    if (directory.projects.length === 0) {
+      return ok(
+        'No projects are configured in The Hive. Ask for an absolute checkout path instead of a project name.',
+        { projects: [] },
+      );
+    }
+
+    const lines = directory.projects.map((project) => {
+      const where = project.path === null ? `not on this machine (${project.status})` : project.path;
+      const notes = [
+        `${project.status}, ${project.origin}`,
+        project.autoMerge ? 'auto-merge on' : 'auto-merge off',
+        ...(project.container === undefined
+          ? []
+          : [`in a container, checkout mounted at ${project.container.workspace}`]),
+      ];
+      return `- ${project.id} (key ${project.key}, "${project.name}") — ${where} [${notes.join('; ')}]`;
+    });
+
+    return ok(`${directory.projects.length} project(s) configured:\n${lines.join('\n')}`, {
+      projects: directory.projects,
+    });
+  };
+
+  /** One PR record (HIVE-173). A missing record is an answer, not an error. */
+  const pr = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    const repo = stringArg(args, 'repo');
+    const number = args['number'];
+    if (
+      repo === undefined ||
+      typeof number !== 'number' ||
+      !Number.isInteger(number) ||
+      number < 1
+    ) {
+      return failed('pr needs repo (owner/name) and number (a positive integer)');
+    }
+
+    const reply = await client.pr({ repo, number });
+    if (reply.pr === null) {
+      const reason = reply.reason ?? 'not in the sweep';
+      return ok(
+        `No record of ${repo}#${number}: ${reason}. The sweep lists PRs you authored, open or merged in the last day, on configured projects only.`,
+        { pr: null, reason },
+      );
+    }
+
+    const record = reply.pr;
+    return ok(
+      `${repo}#${number} "${record.title}" — ${record.state}; ${record.findings} unresolved review thread(s); checks ${record.checks}; branch ${record.branch}; updated ${record.updatedAt}; ${record.url}`,
+      { pr: record },
+    );
+  };
+
   const claim = async (args: Record<string, unknown>): Promise<CallToolResult> => {
     const task = stringArg(args, 'task');
     if (task === undefined) return failed('ledger_claim needs a task');
@@ -448,7 +581,16 @@ export function createToolHandlers(
   return {
     // `approve` stays last: the tools a model is meant to call come first, and
     // that one is only ever reached by the CLI on its behalf.
-    listTools: (): readonly McpToolDefinition[] => [...LEDGER_TOOLS, AGENTS_TOOL, APPROVE_TOOL],
+    listTools: (): readonly McpToolDefinition[] => [
+      ...LEDGER_TOOLS,
+      AGENTS_TOOL,
+      PROJECTS_TOOL,
+      PR_TOOL,
+      JIRA_GET_TOOL,
+      JIRA_TRANSITION_TOOL,
+      JIRA_COMMENT_TOOL,
+      APPROVE_TOOL,
+    ],
 
     async callTool(name, args): Promise<CallToolResult> {
       // `approve` must never surface as `isError` or throw — the CLI can only
@@ -469,6 +611,16 @@ export function createToolHandlers(
         switch (name) {
           case 'agents':
             return await agents();
+          case 'projects':
+            return await projects();
+          case 'pr':
+            return await pr(args);
+          case 'jira_get':
+            return await jiraGet(args);
+          case 'jira_transition':
+            return await jiraTransition(args);
+          case 'jira_comment':
+            return await jiraComment(args);
           case 'ledger_read':
             return await read(args);
           case 'ledger_post':
@@ -504,4 +656,63 @@ export function createToolHandlers(
       }
     },
   };
+}
+
+/** The longest `jira_get` text a model is handed; the record beside it is whole. */
+export const JIRA_TEXT_MAX = 24_000;
+
+/**
+ * ADF blocks as the plain text a model reads (HIVE-174). Marks are dropped,
+ * structure is kept in the markdown-ish shape a model already knows.
+ */
+export function adfBlocksToText(blocks: readonly AdfBlock[]): string {
+  return blocks
+    .map((block) => {
+      const text = block.runs.map((run) => run.text).join('');
+      const indent = '  '.repeat(block.depth ?? 0);
+      switch (block.kind) {
+        case 'heading':
+          return `${'#'.repeat(Math.min(6, Math.max(1, block.level ?? 1)))} ${text}`;
+        case 'code':
+          return `\`\`\`${block.language ?? ''}\n${text}\n\`\`\``;
+        case 'quote':
+          return `> ${text}`;
+        case 'bullet':
+          return `${indent}- ${text}`;
+        case 'ordered':
+          return `${indent}1. ${text}`;
+        case 'rule':
+          return '---';
+        default:
+          return text;
+      }
+    })
+    .join('\n');
+}
+
+/** One ticket as prose (HIVE-174), bounded by {@link JIRA_TEXT_MAX}. */
+export function jiraIssueText(value: JiraToolIssue): string {
+  const { issue, detail, comments, links, partial } = value;
+  const lines = [
+    `${issue.key} "${issue.summary}"`,
+    `status: ${issue.status} (${issue.statusCategory}); type: ${issue.issueType}; priority: ${issue.priority ?? 'none'}; assignee: ${issue.assignee ?? 'unassigned'}; updated: ${issue.updated}`,
+    issue.url,
+  ];
+  if (detail?.parent) lines.push(`parent: ${detail.parent.key} "${detail.parent.summary}"`);
+  lines.push('', '## Description', detail === null ? '(not read)' : adfBlocksToText(detail.description) || '(none)');
+  lines.push('', `## Comments (${comments.length})`);
+  for (const comment of comments) {
+    lines.push(`- ${comment.author}, ${comment.created}:`, adfBlocksToText(comment.body).replace(/^/gm, '  '));
+  }
+  lines.push('', `## Links (${links.length})`);
+  for (const link of links) {
+    const notes = [link.relationship, link.status].filter((note) => note !== undefined).join('; ');
+    lines.push(`- [${link.kind}] ${link.title}${notes === '' ? '' : ` (${notes})`} ${link.url}`);
+  }
+  if (partial.length > 0) lines.push('', `Could not be read: ${partial.join('; ')}.`);
+
+  const text = lines.join('\n');
+  return text.length <= JIRA_TEXT_MAX
+    ? text
+    : `${text.slice(0, JIRA_TEXT_MAX)}\n… (${text.length - JIRA_TEXT_MAX} more characters; the record beside this text is whole)`;
 }

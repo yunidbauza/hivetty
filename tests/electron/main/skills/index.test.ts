@@ -88,6 +88,30 @@ describe('createSkillsRuntime', () => {
     expect(skills.pluginDirPath()).toBe(join(userDataPath, 'hive', 'plugin'));
   });
 
+  it('waits for `ready` before its first regeneration, and shrugs off its rejection', async () => {
+    // HIVE-162: the seed writes into the tree this runtime mirrors, and a
+    // spawn that raced it would mirror a half-copied folder.
+    let release: () => void = () => {};
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const skills = createSkillsRuntime({ userDataPath, version: '1.0.0', ready });
+    const first = skills.sync();
+
+    await writeSkill('seeded', skill('seeded'));
+    release();
+    await first;
+
+    expect(await pluginSkills()).toEqual(['done', 'seeded']);
+
+    const failing = createSkillsRuntime({
+      userDataPath,
+      version: '1.0.0',
+      ready: Promise.reject(new Error('seed failed')),
+    });
+    expect((await failing.sync()).skills.map((s) => s.name)).toEqual(['seeded']);
+  });
+
   it('picks up a skill added after the first sync', async () => {
     // The whole reason sync runs per spawn: a skill saved from Settings thirty
     // seconds ago has to be on the next command line, with nothing to notify.
@@ -1277,5 +1301,21 @@ describe('createSkillsRuntime — a zip that is not a skill', () => {
 
     expect(snap.skills.map((entry) => entry.name)).toEqual(['host']);
     expect(await readdir(join(hiveDir, 'skills', 'host', 'assets'))).toEqual(['template.zip']);
+  });
+});
+
+describe('the snapshot lists the installed plugins (HIVE-176)', () => {
+  it('reads their names from the registry it was given, and none without one', async () => {
+    const registryFile = join(userDataPath, 'installed_plugins.json');
+    await mkdir(userDataPath, { recursive: true });
+    await writeFile(
+      registryFile,
+      JSON.stringify({ version: 2, plugins: { 'workstream@claude-kit': [{ scope: 'user', installPath: '/p/w' }] } }),
+      'utf8',
+    );
+
+    const withRegistry = createSkillsRuntime({ userDataPath, version: '1.0.0', installedPlugins: () => registryFile });
+    expect((await withRegistry.list()).plugins).toEqual(['workstream']);
+    expect((await runtime().list()).plugins).toEqual([]);
   });
 });

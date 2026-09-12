@@ -1,3 +1,4 @@
+import { containsPath } from '@lib/explorer/session-root';
 import type {
   AddProjectRequest,
   BrowseListing,
@@ -16,6 +17,8 @@ import type {
   RepointProjectRequest,
   SetJiraRequest,
   SetNotificationsRequest,
+  SetSessionPluginRequest,
+  SetProjectAutoMergeRequest,
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
@@ -802,6 +805,16 @@ export const setProjectKeyInConfig = (
   request: SetProjectKeyRequest,
 ): Promise<void> => mutate((bridge) => bridge.config.setProjectKey(request));
 
+/** Set the plugins a Hive session does not load (HIVE-176). */
+export const setSessionPluginInConfig = (
+  request: SetSessionPluginRequest,
+): Promise<void> => mutate((bridge) => bridge.config.setSessionPlugin(request));
+
+/** Turn unattended merging on or off for one project (HIVE-166). */
+export const setProjectAutoMergeInConfig = (
+  request: SetProjectAutoMergeRequest,
+): Promise<void> => mutate((bridge) => bridge.config.setProjectAutoMerge(request));
+
 /** Point a project at a folder that moved (story 103). */
 export const repointProjectInConfig = (
   request: RepointProjectRequest,
@@ -966,6 +979,27 @@ export function projectPath(projectId: string): string | null {
   const entry = snapshot?.projects.find((project) => project.id === projectId);
   if (!entry || entry.status !== 'ok') return null;
   return entry.path;
+}
+
+/**
+ * The project whose checkout is, or holds, `path` (HIVE-172), or `null`.
+ *
+ * `containsPath`'s boundary rule: `/repos/the-hive` owns `/repos/the-hive/src`
+ * and not `/repos/the-hive-docs`. Unmapped projects have no path and own
+ * nothing.
+ */
+export function projectIdForPath(path: string): string | null {
+  let best: { id: string; depth: number } | null = null;
+  for (const project of snapshot?.projects ?? []) {
+    if (project.status !== 'ok' || project.path === null) continue;
+    if (!containsPath(project.path, path)) continue;
+    // The deepest checkout that holds the path: a sub-project mapped inside
+    // a monorepo root wins over the root, whatever order the config lists.
+    if (best === null || project.path.length > best.depth) {
+      best = { id: project.id, depth: project.path.length };
+    }
+  }
+  return best?.id ?? null;
 }
 
 /** Which field of a project answered to what the user typed (HIVE-94). */

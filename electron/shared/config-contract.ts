@@ -105,6 +105,17 @@ export interface ProjectConfig {
    * spawn is byte-identical to what it was before this key existed.
    */
   container?: ContainerConfig;
+  /**
+   * Whether the shipper agent may merge this project's pull requests without
+   * a card (HIVE-166).
+   *
+   * A grant, not a flag a skill reads: at wake time main turns every project
+   * with this set into a `Bash(gh pr merge * --repo <owner/name> *)` rule on
+   * the shipper's `HIVE_GRANTS`, so the one call the fence would otherwise
+   * stop goes through. Every other project's merge still lands on the inbox
+   * as a permission card. Absent means `false`.
+   */
+  autoMerge?: boolean;
 }
 
 /**
@@ -1321,6 +1332,13 @@ export interface ConfigSnapshot {
    */
   sessionMetrics: boolean;
   /**
+   * Plugin names a Hive session does not load (HIVE-176). Absent in the file
+   * means {@link DEFAULT_DISABLED_SESSION_PLUGINS}; an explicit `[]` means
+   * every installed plugin loads. Sessions only: agents already load none of
+   * the user's plugins.
+   */
+  disabledSessionPlugins: string[];
+  /**
    * Whether the app imports {@link LOGIN_ENV_IMPORT_KEYS} from the login shell
    * at startup (HIVE-84).
    *
@@ -1561,6 +1579,19 @@ export const DEFAULT_SUBSCRIPTION_AUTH = true;
 export const DEFAULT_SESSION_METRICS = true;
 
 /**
+ * The plugins a Hive session does not load until the user says otherwise
+ * (HIVE-176): the two whose skills the Hive's own replace. `hive:work-on` and
+ * `workstream:work-on` side by side, with near-identical descriptions, is a
+ * coin toss on "work on HIVE-123". Names, not `name@marketplace` keys: the
+ * marketplace differs between machines, and the session writer resolves the
+ * exact keys from the plugin registry at write time.
+ */
+export const DEFAULT_DISABLED_SESSION_PLUGINS: readonly string[] = ['workstream', 'superpowers'];
+
+/** A plugin name as Claude Code's registry spells the part before `@`. */
+export const SESSION_PLUGIN_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
  * The one definition of "what a spawned session's environment looks like"
  * (story 092, extended by story 108's fix round).
  *
@@ -1766,6 +1797,7 @@ export function emptySnapshot(
     claudeCommand: DEFAULT_CLAUDE_COMMAND,
     subscriptionAuth: DEFAULT_SUBSCRIPTION_AUTH,
     sessionMetrics: DEFAULT_SESSION_METRICS,
+    disabledSessionPlugins: [...DEFAULT_DISABLED_SESSION_PLUGINS],
     importLoginEnv: DEFAULT_IMPORT_LOGIN_ENV,
     env: {},
     projects: [],
@@ -1892,6 +1924,18 @@ export interface RenameProjectRequest {
 export interface SetProjectKeyRequest {
   id: string;
   key: string;
+}
+
+/**
+ * Payload of `config:set-project-auto-merge` (HIVE-166).
+ *
+ * A boolean per project, written into the entry like `key` is. Turning it on
+ * is consent to an unattended merge of that repository's pull requests by the
+ * shipper agent; the settings row says so in those words.
+ */
+export interface SetProjectAutoMergeRequest {
+  id: string;
+  autoMerge: boolean;
 }
 
 /**
@@ -2401,4 +2445,53 @@ export interface CloneDoneEvent {
   /** Why it failed, or `null` on success. */
   reason: string | null;
   snapshot: ConfigSnapshot;
+}
+
+/**
+ * The receiver route the projects directory is served on (HIVE-173).
+ *
+ * Its own path for the reason `AGENTS_PATH` has one: the route set is closed
+ * and each entry carries a body cap sized to the document it expects. This one
+ * reads no body at all.
+ */
+export const PROJECTS_PATH = '/projects';
+
+/**
+ * One project, as an **agent** sees it (HIVE-173).
+ *
+ * A projection of {@link ProjectConfig}, not the record itself: `env`, `shell`
+ * and `claudeCommand` are the user's machine, and an agent asking "where is
+ * the-hive" has no business with any of them. `autoMerge` is here because the
+ * shipper reads it as consent (HIVE-166), and `container.workspace` because a
+ * containerised project's checkout has two addresses and a shell command needs
+ * the right one.
+ */
+export interface ProjectsDirectoryEntry {
+  id: string;
+  /** The short alias a person types; an ask body may use it in place of the path. */
+  key: string;
+  name: string;
+  /** The host checkout, or `null` when this machine does not have it. */
+  path: string | null;
+  status: ProjectStatus;
+  origin: ProjectOrigin;
+  autoMerge: boolean;
+  /** Where the checkout is mounted inside the container, when there is one. */
+  container?: { workspace: string };
+}
+
+/** What {@link PROJECTS_PATH} answers. */
+export interface ProjectsDirectory {
+  projects: ProjectsDirectoryEntry[];
+}
+
+/**
+ * `config:set-session-plugin` (HIVE-176): one switch, one plugin. Main
+ * computes the list from the file as it stands, so two quick clicks cannot
+ * each send a list built from the same stale snapshot.
+ */
+export interface SetSessionPluginRequest {
+  plugin: string;
+  /** `true` keeps the plugin out of Hive sessions; `false` lets it load. */
+  off: boolean;
 }

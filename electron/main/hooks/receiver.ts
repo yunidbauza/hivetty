@@ -3,8 +3,21 @@ import { createServer, type Server } from 'node:http';
 import { StringDecoder } from 'node:string_decoder';
 
 import { AGENTS_PATH, type AgentsDirectory } from '@shared/agent-contract';
-import { DEFAULT_RECEIVER } from '@shared/config-contract';
-import { parseLedgerPostBody, parseLedgerReadQuery } from '@shared/guards';
+import { DEFAULT_RECEIVER, PROJECTS_PATH, type ProjectsDirectory } from '@shared/config-contract';
+import {
+  PR_LOOKUP_MAX_BYTES,
+  PR_PATH,
+  type PrLookup,
+  type PrLookupReply,
+} from '@shared/github-contract';
+import {
+  parseAddJiraCommentRequest,
+  parseJiraIssueRequest,
+  parseJiraTransitionByName,
+  parseLedgerPostBody,
+  parseLedgerReadQuery,
+  parsePrLookup,
+} from '@shared/guards';
 import {
   CLEAR_REASON,
   hookContextReply,
@@ -24,6 +37,17 @@ import {
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '@shared/hook-contract';
+import {
+  JIRA_COMMENT_PATH,
+  JIRA_GET_PATH,
+  JIRA_TOOL_MAX_BYTES,
+  JIRA_TRANSITION_PATH,
+  type JiraComment,
+  type JiraResult,
+  type JiraToolHandlers,
+  type JiraToolIssue,
+  type JiraToolTransitionReply,
+} from '@shared/jira-contract';
 import {
   LEDGER_POST_PATH,
   LEDGER_READ_PATH,
@@ -84,11 +108,12 @@ import { ticketKeyFromPrompt } from './ticket-intent';
  *    {@link tokenFor} applied to that one session's own id (HIVE-112) — so a
  *    session that leaks its token hands over only its own identity, not
  *    every other session's.
- * 3. It answers a **closed set of eight paths** — the hook event, the status
+ * 3. It answers a **closed set of ten paths** — the hook event, the status
  *    line's metrics (HIVE-79), `/done`, the boot-ready signal, a ledger post and
- *    a ledger read (HIVE-111), the agents directory (HIVE-127) and `POST /mcp`
- *    (HIVE-130) — and reads a **capped body** on each, so nothing about it is a
- *    general-purpose server.
+ *    a ledger read (HIVE-111), the agents directory (HIVE-127), `POST /mcp`
+ *    (HIVE-130), and the projects directory and the PR lookup (HIVE-173) — and
+ *    reads a **capped body** on each, so nothing about it is a general-purpose
+ *    server.
  *
  * Its authority is correspondingly wider than it once was: a valid POST can
  * still move a status dot or record usage percentages, but the ledger paths
@@ -206,6 +231,24 @@ export interface ReceiverOptions {
    * Everything else here answers from memory.
    */
   onAgentsList: (caller: string) => Promise<AgentsDirectory>;
+  /**
+   * The config's projects, as an agent may see them (HIVE-173). Synchronous,
+   * because the config is already in memory. Optional with an empty default:
+   * a receiver composed without a config (the live suites) has no projects,
+   * and that is an answer.
+   */
+  onProjectsList?: (caller: string) => ProjectsDirectory;
+  /**
+   * One PR from the GitHub sweep (HIVE-173). Optional for the same reason;
+   * the default says the integration is not wired rather than "no such PR".
+   */
+  onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /**
+   * The Jira tools (HIVE-174), optional for the reason the two above are. The
+   * default answers every call with a `JiraResult` refusal naming the cause,
+   * so a model told "not wired" does not go looking for a missing ticket.
+   */
+  onJira?: JiraToolHandlers;
   /** Whether an entity id is a session this app actually has. */
   knowsSession: (entityId: string) => boolean;
   /**
@@ -479,6 +522,16 @@ function liveBackgroundShellIds(
  */
 type Reply = number | { status: number; json: unknown };
 
+/** What the Jira routes answer when nothing composed them (HIVE-174). */
+const JIRA_NOT_WIRED: JiraToolHandlers = (() => {
+  const refused = <T,>(): Promise<JiraResult<T>> =>
+    Promise.resolve({
+      ok: false,
+      error: { kind: 'bad-query', message: 'the Jira integration is not wired to this receiver' },
+    });
+  return { get: refused, transition: refused, comment: refused };
+})();
+
 interface Route {
   readonly path: string;
   /** Bytes buffered before the body is drained; see the `data` handler. */
@@ -486,9 +539,10 @@ interface Route {
   /**
    * May be async (HIVE-127).
    *
-   * Only the agents route is, and only because the directory is read from disk
-   * per call. Every other handler answers from memory and stays synchronous —
-   * the union is a widening for one route, not an invitation.
+   * The agents route is, because the directory is read from disk per call;
+   * `/mcp` (HIVE-130) and the PR lookup (HIVE-173) are, because they wait on
+   * a handler. Everything that answers from memory stays synchronous: the
+   * union is a widening for what needs it, not an invitation.
    */
   readonly handle: (
     headers: Record<string, string | string[] | undefined>,
@@ -531,6 +585,10 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     onLedgerRead,
     onLedgerPost,
     onAgentsList,
+    onProjectsList = () => ({ projects: [] }),
+    onPrLookup = () =>
+      Promise.resolve({ pr: null, reason: 'the GitHub integration is not wired to this receiver' }),
+    onJira = JIRA_NOT_WIRED,
     knowsSession,
     knowsAgent,
     onAgentEvent,
@@ -972,6 +1030,94 @@ export function createReceiver(options: ReceiverOptions): Receiver {
   }
 
   /**
+   * The three Jira routes (HIVE-174) share one shape: refuse, cap, parse,
+   * answer. Jira's own refusals travel inside the 200 as a `JiraResult`; only
+   * the transport's are HTTP statuses, and a thrown error is a fixed sentence
+   * for the reason `/agents` gives one.
+   */
+  async function handleJira<T>(
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+    parse: (input: unknown) => T,
+    run: (request: T) => Promise<unknown>,
+  ): Promise<Reply> {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    if (truncated) {
+      return { status: 413, json: { reason: `body exceeds ${JIRA_TOOL_MAX_BYTES} bytes` } };
+    }
+
+    let request: T;
+    try {
+      request = parse(body === '' ? {} : JSON.parse(body));
+    } catch (cause) {
+      return { status: 400, json: { reason: describeCause(cause) } };
+    }
+
+    try {
+      return { status: 200, json: await run(request) };
+    } catch {
+      return { status: 500, json: { reason: 'Jira could not be reached through this receiver' } };
+    }
+  }
+
+  const handleJiraGet: Route['handle'] = (headers, body, truncated) =>
+    handleJira(headers, body, truncated, parseJiraIssueRequest, (request) => onJira.get(request));
+  const handleJiraTransition: Route['handle'] = (headers, body, truncated) =>
+    handleJira(headers, body, truncated, parseJiraTransitionByName, (request) =>
+      onJira.transition(request),
+    );
+  const handleJiraComment: Route['handle'] = (headers, body, truncated) =>
+    handleJira(headers, body, truncated, parseAddJiraCommentRequest, (request) =>
+      onJira.comment(request),
+    );
+
+  /** `/projects` (HIVE-173): the caller is the header, the body is unread. */
+  function handleProjects(headers: Record<string, string | string[] | undefined>): Reply {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+    try {
+      return { status: 200, json: onProjectsList(caller) };
+    } catch {
+      // A sentence, as `/agents` gives one: a bare 500 leaves the model nothing to read.
+      return { status: 500, json: { reason: 'the projects could not be read' } };
+    }
+  }
+
+  /** `/pr` (HIVE-173): a small JSON body, parsed by the shared guard. */
+  async function handlePr(
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+  ): Promise<Reply> {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    if (truncated) {
+      return { status: 413, json: { reason: `body exceeds ${PR_LOOKUP_MAX_BYTES} bytes` } };
+    }
+
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+    let lookup: PrLookup;
+    try {
+      lookup = parsePrLookup(body === '' ? {} : JSON.parse(body));
+    } catch (cause) {
+      return { status: 400, json: { reason: describeCause(cause) } };
+    }
+
+    try {
+      return { status: 200, json: await onPrLookup(caller, lookup) };
+    } catch {
+      // A fixed sentence, as `/agents` answers: a `gh` failure can quote a path.
+      return { status: 500, json: { reason: 'the pull request could not be looked up' } };
+    }
+  }
+
+  /**
    * A party asked who else is here (HIVE-127).
    *
    * The body is ignored entirely — the tool behind this takes no arguments,
@@ -1264,6 +1410,21 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       },
 
       agents: async () => unwrap<AgentsDirectory>(await handleAgents(headers)),
+      projects: async () => unwrap<ProjectsDirectory>(handleProjects(headers)),
+      pr: async (lookup) =>
+        unwrap<PrLookupReply>(await handlePr(headers, JSON.stringify(lookup), false)),
+      jiraGet: async (request) =>
+        unwrap<JiraResult<JiraToolIssue>>(
+          await handleJiraGet(headers, JSON.stringify(request), false),
+        ),
+      jiraTransition: async (request) =>
+        unwrap<JiraResult<JiraToolTransitionReply>>(
+          await handleJiraTransition(headers, JSON.stringify(request), false),
+        ),
+      jiraComment: async (request) =>
+        unwrap<JiraResult<JiraComment>>(
+          await handleJiraComment(headers, JSON.stringify(request), false),
+        ),
     };
   }
 
@@ -1683,7 +1844,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     start() {
       return new Promise<string | null>((resolve) => {
         /*
-          Eight paths now, and still nothing resembling a general-purpose
+          Ten paths now, and still nothing resembling a general-purpose
           server: the set is closed, every one of them is POST-only, each has
           its own body cap sized to the document it expects, and each
           authenticates on POST through the one `reject` that also decides
@@ -1715,6 +1876,13 @@ export function createReceiver(options: ReceiverOptions): Receiver {
             `/ready` treat theirs.
           */
           { path: AGENTS_PATH, cap: 0, handle: (headers) => handleAgents(headers) },
+          // HIVE-173: the two workflow lookups, one bodiless and one bounded.
+          { path: PROJECTS_PATH, cap: 0, handle: (headers) => handleProjects(headers) },
+          { path: PR_PATH, cap: PR_LOOKUP_MAX_BYTES, handle: handlePr },
+          // HIVE-174: the Jira tools, one route each, one cap.
+          { path: JIRA_GET_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraGet },
+          { path: JIRA_TRANSITION_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraTransition },
+          { path: JIRA_COMMENT_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraComment },
           { path: MCP_PATH, cap: MCP_MAX_BODY_BYTES, handle: handleMcp },
         ];
 

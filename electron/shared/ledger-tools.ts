@@ -64,7 +64,7 @@ export const ASK_INTENT_GUIDANCE =
  * does not do. `intent` on an ask is likewise its own key, not this one.
  */
 const META_DESCRIPTION =
-  'Optional structured detail carried with the entry — a ticket key, a PR number, a Slack timestamp. Free-form, with keys The Hive reads: if you posted a message in Slack, put its permalink at `slack.permalink` — `{"slack": {"permalink": "https://…slack.com/archives/…"}}` — and the card gets an "Open in Slack" link straight to it. Naming it in your body text instead does nothing.';
+  'Optional structured detail carried with the entry — a ticket key, a PR number, a Slack timestamp. Free-form, with keys The Hive reads: if you posted a message in Slack, put its permalink at `slack.permalink` — `{"slack": {"permalink": "https://…slack.com/archives/…"}}` — and the card gets an "Open in Slack" link straight to it. Naming it in your body text instead does nothing. The workflow agents\' riders are read the same way (HIVE-171): a post from `shipper` with `{"pr": 214, "repo": "owner/name", "stage": "ci"}` puts a `ship: ci` badge on that PR\'s card, and a post from `builder` with `{"ticket": "ABC-12", "stage": "build", "task": 3}` puts `task 3 done` on the ticket\'s; `pr` and `task` are numbers.';
 
 const meta = {
   type: 'object',
@@ -304,6 +304,120 @@ export const APPROVE_TOOL: McpToolDefinition = {
       },
     },
     required: ['tool_name', 'input'],
+  },
+};
+
+/**
+ * The projects directory (HIVE-173): what the config maps, so an ask body can
+ * say `the-hive` and the agent can turn it into a checkout path and a consent
+ * flag without reading `~/.hive/config.json` itself. No arguments, for
+ * {@link AGENTS_TOOL}'s reason.
+ */
+export const PROJECTS_TOOL: McpToolDefinition = {
+  name: 'projects',
+  description:
+    'List the projects configured in The Hive: each one\'s id, key (the short alias a person types), name, host checkout path, status, origin, whether auto-merge is on, and the container workspace when the project runs in one. Use it to turn a project named in an ask into its absolute path, and to read auto-merge consent, instead of opening the config file.',
+  inputSchema: {
+    type: 'object',
+    properties: {},
+  },
+};
+
+/**
+ * One PR record from the Hive's own GitHub sweep (HIVE-173): state, the
+ * unresolved review-thread count the PR badge shows (`findings`), checks,
+ * branch and URL. It exists so the shipper's gate has a contemporaneous thread
+ * count without `gh api`, which no glob can keep from merging.
+ */
+export const PR_TOOL: McpToolDefinition = {
+  name: 'pr',
+  description:
+    'Look up one pull request in The Hive\'s own GitHub sweep: its state (open, draft, approved, merged), `findings` (unresolved review threads), checks (passing, running, failing), branch, URL and when it was last updated. The sweep covers PRs you authored, open or merged in the last day, on configured projects only; anything else answers with no record and a reason. Use it for an unresolved-thread count when you hold no `gh api`.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      repo: { type: 'string', description: 'The repository as owner/name.' },
+      number: { type: 'integer', description: 'The pull request number.' },
+    },
+    required: ['repo', 'number'],
+  },
+};
+
+/**
+ * What every agent holds without naming it (HIVE-174): the ledger vocabulary,
+ * the reads, and the prompt tool the CLI calls on the agent's behalf.
+ *
+ * Named one by one rather than `mcp__hive__*`, because two tools on this
+ * server write to the user's Jira as the user, and a write to an external
+ * system is a `gh pr merge`, not a ledger append: it fires automation nobody
+ * can take back. Those two are {@link HIVE_CONSENT_TOOLS}: an agent lists them
+ * in `tools:` or its call becomes a card. `waker.ts` puts this list on
+ * `--allowedTools` and in `HOOK_ENV_GRANTS` unconditionally, so a new read
+ * tool is added here and nowhere else.
+ */
+export const HIVE_STANDING_GRANTS: readonly string[] = [
+  'mcp__hive__ledger_*',
+  'mcp__hive__agents',
+  'mcp__hive__projects',
+  'mcp__hive__pr',
+  'mcp__hive__jira_get',
+  'mcp__hive__approve',
+];
+
+/** The tools that write outside the Hive; consent is a `tools:` entry or a card. */
+export const HIVE_CONSENT_TOOLS: readonly string[] = [
+  'mcp__hive__jira_transition',
+  'mcp__hive__jira_comment',
+];
+
+/**
+ * The Jira tools (HIVE-174): the ticket, a transition, a comment, through the
+ * token the Work tab holds. They replace `jira-writer` on an agent's PATH and
+ * the Atlassian credential in a container's environment; the skills prefer
+ * them and fall back to the CLI where they are absent.
+ */
+export const JIRA_GET_TOOL: McpToolDefinition = {
+  name: 'jira_get',
+  description:
+    'Read one Jira issue through The Hive: its summary, status, type, priority, assignee and URL, the description as text, its parent (the Epic, for a story), every link, and the comments, oldest first, up to fifty (the answer says when there were more). Use it before working a ticket, and to read a status back after a transition. Prefer it over jira-writer: it uses the token The Hive already holds, so nothing is needed on your PATH or in your environment.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'The issue key, like HIVE-123.' },
+    },
+    required: ['key'],
+  },
+};
+
+export const JIRA_TRANSITION_TOOL: McpToolDefinition = {
+  name: 'jira_transition',
+  description:
+    'Move a Jira issue to a status by name ("In Progress", "In Review", "Done"), through The Hive. It applies the transition whose target is that status. An issue already there is left alone; so is one that would move backwards (Done to In Progress, In Progress to To Do), and so is one not at `from` when you give it. Every no-op says why. A status no transition reaches answers with the ones that are reachable. This tool writes to the person\'s Jira: it needs a `tools:` entry or their consent on a card.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'The issue key, like HIVE-123.' },
+      status: { type: 'string', description: 'The target status name, as Jira shows it.' },
+      from: {
+        type: 'string',
+        description: 'Optional. Apply only if the issue currently stands at this status; otherwise leave it alone and say so.',
+      },
+    },
+    required: ['key', 'status'],
+  },
+};
+
+export const JIRA_COMMENT_TOOL: McpToolDefinition = {
+  name: 'jira_comment',
+  description:
+    'Add a comment to a Jira issue through The Hive. `markdown` is plain markdown: paragraphs, headings, lists, fenced code and links; it is converted to the document format Jira stores. Answers with the comment as Jira recorded it. This tool writes to the person\'s Jira: it needs a `tools:` entry or their consent on a card.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      key: { type: 'string', description: 'The issue key, like HIVE-123.' },
+      markdown: { type: 'string', description: 'The comment, as markdown.' },
+    },
+    required: ['key', 'markdown'],
   },
 };
 

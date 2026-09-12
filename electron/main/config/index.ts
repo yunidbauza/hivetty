@@ -27,6 +27,8 @@ import {
   type RepointProjectRequest,
   type SetJiraRequest,
   type SetNotificationsRequest,
+  type SetSessionPluginRequest,
+  type SetProjectAutoMergeRequest,
   type SetProjectKeyRequest,
   type SetProjectRuntimeRequest,
   type SetReceiverRequest,
@@ -34,6 +36,7 @@ import {
   type SetRuntimeRequest,
   type SetServerRequest,
   type SetSlackRequest,
+  DEFAULT_DISABLED_SESSION_PLUGINS,
 } from '@shared/config-contract';
 import { resolveNotificationPrefs } from '@shared/notification-contract';
 
@@ -148,6 +151,8 @@ export function loadConfig(): ConfigSnapshot {
     */
     subscriptionAuth: parsed.subscriptionAuth ?? DEFAULT_SUBSCRIPTION_AUTH,
     sessionMetrics: parsed.sessionMetrics ?? DEFAULT_SESSION_METRICS,
+    // Absent means the default list (HIVE-176); an explicit `[]` is a decision.
+    disabledSessionPlugins: parsed.disabledSessionPlugins ?? [...DEFAULT_DISABLED_SESSION_PLUGINS],
     // Absent means on (HIVE-84) — see `DEFAULT_IMPORT_LOGIN_ENV` for why the
     // default has to be the one that makes a packaged build work.
     importLoginEnv: parsed.importLoginEnv ?? DEFAULT_IMPORT_LOGIN_ENV,
@@ -589,6 +594,57 @@ export function setProjectKey(request: SetProjectKeyRequest): ConfigSnapshot {
             : entry,
         ),
       };
+    }),
+  );
+}
+
+/**
+ * Turn unattended merging on or off for one project (HIVE-166).
+ *
+ * The plainest sibling of {@link setProjectKey}: no uniqueness to check, the
+ * entry is spread rather than rebuilt, and `false` is written as an explicit
+ * key rather than by deleting it, so a file that once said yes and now says
+ * no reads as a decision rather than as a default.
+ */
+export function setProjectAutoMerge(request: SetProjectAutoMergeRequest): ConfigSnapshot {
+  return commit(
+    writeConfig((draft) => {
+      const entries = projectsOf(draft);
+      if (!entries.some((entry) => idOf(entry) === request.id)) {
+        throw new WriteRefused(`no project with id "${request.id}"`);
+      }
+      return {
+        ...draft,
+        projects: entries.map((entry) =>
+          idOf(entry) === request.id
+            ? { ...(entry as Record<string, unknown>), autoMerge: request.autoMerge }
+            : entry,
+        ),
+      };
+    }),
+  );
+}
+
+/**
+ * Switch one plugin in or out of Hive sessions (HIVE-176).
+ *
+ * The list is read from the file being written, not from the caller: absent
+ * or malformed there means the default list, the same reading `loadConfig`
+ * makes. An emptied list is written as `[]` rather than deleted, so a user
+ * who turned everything back on is not handed the default list again.
+ */
+export function setSessionPlugin(request: SetSessionPluginRequest): ConfigSnapshot {
+  return commit(
+    writeConfig((draft) => {
+      const stated = draft.disabledSessionPlugins;
+      const current =
+        Array.isArray(stated) && stated.every((name) => typeof name === 'string')
+          ? (stated as string[])
+          : [...DEFAULT_DISABLED_SESSION_PLUGINS];
+      const next = request.off
+        ? [...new Set([...current, request.plugin])].sort()
+        : current.filter((name) => name !== request.plugin);
+      return { ...draft, disabledSessionPlugins: next };
     }),
   );
 }

@@ -45,6 +45,7 @@ import { ledgerRows } from '@lib/ledger/console-rows';
 import {
   projectConfigSnapshot,
   projectContainerised,
+  projectIdForPath,
   projectPath,
   resolveProjectRef,
   subscribeProjectConfig,
@@ -87,7 +88,15 @@ import {
   type LedgerSnapshot,
   type OpenAsk,
 } from '@shared/ledger-contract';
-import { matches, openAsks, thread } from '@shared/ledger-derive';
+import {
+  agentSiteFor,
+  buildProgressFor,
+  matches,
+  openAsks,
+  shipStageFor,
+  thread,
+  type BuildProgress,
+} from '@shared/ledger-derive';
 import type { SessionMetrics } from '@shared/metrics-contract';
 import { NOTIFICATION_CAP } from '@shared/notification-contract';
 import {
@@ -310,6 +319,28 @@ export interface SetSessionTicketOptions {
    *   {@link HiveState.renameSession}, which is its only caller.
    */
   source?: 'prompt' | 'branch' | 'rename';
+}
+
+/**
+ * Where a terminal for an agent starts (HIVE-172): the worktree its newest
+ * `post` names, under the project whose checkout that post also names. A
+ * string is the refusal the console prints. The agent has to name the checkout
+ * because its worktree lives under `~/.hive/work`, outside every project path,
+ * and a terminal needs a project for its shell and environment.
+ */
+function agentTerminalSite(
+  agentId: string,
+  entries: readonly LedgerEntry[],
+): { project: string; cwd: string } | string {
+  const site = agentSiteFor(entries, agentId);
+  if (site === undefined) return `${agentId} has named no worktree yet`;
+  const project = site.checkout === undefined ? null : projectIdForPath(site.checkout);
+  if (project === null) {
+    return site.checkout === undefined
+      ? `${agentId} named a worktree but no checkout — no project to start the shell under`
+      : `no project maps ${site.checkout} — add it in Settings › Projects`;
+  }
+  return { project, cwd: site.worktree };
 }
 
 /** What `spawnTerminal` may be told beyond the project (entry points). */
@@ -1052,7 +1083,7 @@ const HELP_ROWS: readonly (readonly [ParsedCommand['kind'], string])[] = [
   ['ask', '  ask <agent> <message>      ask an agent a question'],
   ['answer', '  answer <id> <text>         answer an open ask'],
   ['spawn', '  spawn <project> <task>     start a new session on a project'],
-  ['term', '  term [<project>]           open a terminal in a project, or beside the selected session'],
+  ['term', '  term [<project>|<agent>]   open a terminal in a project, on an agent\'s worktree, or beside the selected session'],
   ['agents', '  agents                     one line per agent'],
   ['run', '  run <agent> [prompt]       wake an agent now, optionally saying why'],
   ['pause', '  pause <agent>              stop an agent waking'],
@@ -2097,6 +2128,19 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         : (entity.cwd ?? projectPath(entity.project) ?? undefined);
       return get().spawnTerminal(entity.project, cwd === undefined ? {} : { cwd });
     }
+    if (isAgent(entity)) {
+      // An agent's "here" is the worktree it last posted (HIVE-172). A refusal
+      // is written to the console: the chord and the bar's button have no
+      // other surface, and a click that does nothing says nothing.
+      const site = agentTerminalSite(entity.id, get().ledger);
+      if (typeof site === 'string') {
+        set((state) => ({
+          orchLines: capLines([...state.orchLines, line(`  ${site}`, 'red')]),
+        }));
+        return null;
+      }
+      return get().spawnTerminal(site.project, { cwd: site.cwd });
+    }
     return null;
   },
 
@@ -2821,6 +2865,33 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 
       case 'term': {
         if (command.project !== undefined) {
+          /*
+            An agent's name before a project's (HIVE-172): `term builder` is a
+            terminal on the builder's worktree. Only an agent is taken here; a
+            session id falls through to the project lookup and its own refusal.
+          */
+          const ref = resolveEntityRef(command.project, get().entities);
+          const agent = ref.kind === 'found' ? get().entities[ref.id] : undefined;
+          if (agent !== undefined && isAgent(agent)) {
+            const site = agentTerminalSite(agent.id, get().ledger);
+            if (typeof site !== 'string') {
+              get().spawnTerminal(site.project, { cwd: site.cwd });
+              return;
+            }
+            /*
+              An agent named like a project key (`acr` is a legal key) must
+              not take the verb away from the project: with nothing to open
+              on the agent, a ref that also names a project falls through.
+            */
+            const snapshot = projectConfigSnapshot();
+            const alsoProject =
+              snapshot !== null &&
+              resolveProjectRef(command.project, snapshot.projects).kind !== 'none';
+            if (!alsoProject) {
+              pushOrch(`  ${site}`, 'red');
+              return;
+            }
+          }
           const target = resolveProjectForConsole(command.project);
           if (target === null) return;
           get().spawnTerminal(target);
@@ -2829,6 +2900,13 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         // Bare: beside the fleet table's caret. The console is the stage, so
         // the selected row is the only "session you are looking at" it has.
         const selected = useUiStore.getState().selId;
+        const chosen = selected === null ? undefined : get().entities[selected];
+        if (chosen !== undefined && isAgent(chosen)) {
+          // A session *is* selected; the usage line would be wrong. The
+          // refusal, when there is one, is `spawnTerminalBeside`'s (HIVE-172).
+          get().spawnTerminalBeside(chosen.id);
+          return;
+        }
         if (selected === null || get().spawnTerminalBeside(selected) === null) {
           pushOrch(`  ${USAGE.term}`, 'red');
         }
@@ -7398,6 +7476,25 @@ export const useLedgerEntries = (filter?: LedgerReadQuery): LedgerEntry[] => {
 };
 
 /**
+ * The shipper's latest stage for a PR, for its card's badge (HIVE-171).
+ *
+ * `slug` is `owner/name`. Memoised over the tail like `useBuildProgress`, so
+ * the scan runs once per ledger change rather than once per store change.
+ */
+export const useShipStage = (slug: string, n: number): string | undefined => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => shipStageFor(entries, slug, n), [entries, slug, n]);
+};
+
+/** The builder's latest progress on a ticket, for its card's line (HIVE-171). */
+export const useBuildProgress = (ticketKey: string): BuildProgress | undefined => {
+  const entries = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => buildProgressFor(entries, ticketKey), [entries, ticketKey]);
+};
+
+/**
  * Asks nobody has answered.
  *
  * `Date.now()` is read inside the memo, so `ageMs` is as fresh as the last
@@ -7448,6 +7545,7 @@ const resolvePrs = (
   records.map((pr) => ({
     n: pr.number,
     repo: pr.repo,
+    owner: pr.owner,
     title: pr.title,
     state: pr.state,
     findings: pr.findings,

@@ -20,6 +20,7 @@ import {
   isProjectKey,
   isServerBindHost,
   unsafeEnvReason,
+  SESSION_PLUGIN_NAME,
 } from './config-contract';
 import type {
   AddProjectRequest,
@@ -46,6 +47,8 @@ import type {
   SetJiraRequest,
   SetJiraTokenRequest,
   SetNotificationsRequest,
+  SetSessionPluginRequest,
+  SetProjectAutoMergeRequest,
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
@@ -64,6 +67,7 @@ import type {
   WriteFileRequest,
 } from './fs-contract';
 import { MAX_FILE_BYTES } from './fs-contract';
+import type { PrLookup } from './github-contract';
 import type {
   AckRequest,
   PromptReport,
@@ -72,7 +76,7 @@ import type {
   SpawnTerminalRequest,
   WriteRequest,
 } from './ipc-contract';
-import { ISSUE_KEY_PATTERN } from './jira-contract';
+import { ISSUE_KEY_PATTERN, type JiraTransitionByName } from './jira-contract';
 import {
   LEDGER_KINDS,
   type LedgerAnswerRequest,
@@ -724,6 +728,34 @@ export function parseSetProjectKeyRequest(input: unknown): SetProjectKeyRequest 
   return {
     id: assertId(raw.id, 'setProjectKey.id'),
     key: assertProjectKey(raw.key, 'setProjectKey.key'),
+  };
+}
+
+/**
+ * Payload guard for `config:set-session-plugin` (HIVE-176). A name in the
+ * registry's own alphabet, and never `hive`: the app's own plugin arrives by
+ * `--plugin-dir` and is not the user's to switch off here.
+ */
+export function parseSetSessionPluginRequest(input: unknown): SetSessionPluginRequest {
+  const raw = assertShape(input, ['plugin', 'off'], 'setSessionPlugin');
+  if (typeof raw.plugin !== 'string' || !SESSION_PLUGIN_NAME.test(raw.plugin) || raw.plugin === 'hive') {
+    throw new TypeError('setSessionPlugin.plugin: expected a plugin name');
+  }
+  if (typeof raw.off !== 'boolean') {
+    throw new TypeError('setSessionPlugin.off must be a boolean');
+  }
+  return { plugin: raw.plugin, off: raw.off };
+}
+
+/** Payload guard for `config:set-project-auto-merge` (HIVE-166). */
+export function parseSetProjectAutoMergeRequest(input: unknown): SetProjectAutoMergeRequest {
+  const raw = assertShape(input, ['id', 'autoMerge'], 'setProjectAutoMerge');
+  if (typeof raw.autoMerge !== 'boolean') {
+    throw new TypeError('setProjectAutoMerge.autoMerge must be a boolean');
+  }
+  return {
+    id: assertId(raw.id, 'setProjectAutoMerge.id'),
+    autoMerge: raw.autoMerge,
   };
 }
 
@@ -1873,6 +1905,35 @@ export function parseAddJiraCommentRequest(
   };
 }
 
+const MAX_STATUS_NAME = 64;
+
+/**
+ * `{ key, status }` for the `jira_transition` tool (HIVE-174). The status is a
+ * name a person would read in Jira: short, printable, non-empty.
+ */
+export function parseJiraTransitionByName(input: unknown): JiraTransitionByName {
+  const raw = assertShape(input, ['key', 'status'], 'jiraTransition', ['from']);
+  const status = assertStatusName(raw.status, 'jiraTransition.status');
+  return {
+    key: assertJiraIssueKey(raw.key, 'jiraTransition.key'),
+    status,
+    ...(raw.from === undefined ? {} : { from: assertStatusName(raw.from, 'jiraTransition.from') }),
+  };
+}
+
+function assertStatusName(value: unknown, label: string): string {
+  const status = assertString(value, label).trim();
+  if (status === '') return fail(`${label}: must not be empty`);
+  if (status.length > MAX_STATUS_NAME) return fail(`${label}: too long`);
+  for (const char of status) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) {
+      return fail(`${label}: control characters are not allowed`);
+    }
+  }
+  return status;
+}
+
 export function parseApplyJiraTransitionRequest(
   input: unknown,
 ): ApplyJiraTransitionRequest {
@@ -2651,4 +2712,30 @@ export function parseLedgerAnswerRequest(input: unknown): LedgerAnswerRequest {
   if (meta !== undefined) request.meta = meta;
 
   return request;
+}
+
+/**
+ * `owner/name` as GitHub spells them: an owner is alphanumerics and hyphens,
+ * at most 39; a name adds `_` and `.`, at most 100, and is never `.` or `..`.
+ * The slug is only ever compared to a sweep's records, never used as a path,
+ * so this is about refusing nonsense early with a sentence, not about safety.
+ */
+const REPO_SLUG = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/(?!\.\.?$)[A-Za-z0-9_.-]{1,100}$/;
+
+/**
+ * The body of a `PR_PATH` request (HIVE-173). Strict on both fields: the
+ * caller is a model, and "400, repo must be owner/name" is something it can act
+ * on where a lookup that quietly matched nothing is not.
+ */
+export function parsePrLookup(input: unknown): PrLookup {
+  const source = asRecord(input, 'pr lookup');
+  const repo = source.repo;
+  if (typeof repo !== 'string' || !REPO_SLUG.test(repo)) {
+    throw new TypeError('pr lookup.repo must be owner/name');
+  }
+  const number = source.number;
+  if (typeof number !== 'number' || !Number.isInteger(number) || number < 1) {
+    throw new TypeError('pr lookup.number must be a positive integer');
+  }
+  return { repo, number };
 }

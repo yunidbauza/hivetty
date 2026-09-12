@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentsDirectory } from '@shared/agent-contract';
+import type { ProjectsDirectory } from '@shared/config-contract';
 import {
   AUTH_ENV_KEYS,
   ENV_PLACEHOLDER,
   type ConfigSnapshot,
   type ProjectConfig,
 } from '@shared/config-contract';
+import type { PrLookup, PrLookupReply } from '@shared/github-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
   type HookNotificationType,
@@ -22,6 +24,7 @@ import {
   type PtyDiagnostics,
   type SessionLostEvent,
 } from '@shared/ipc-contract';
+import type { JiraToolHandlers } from '@shared/jira-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
 import { MAX_SESSIONS } from '@shared/pty-host-protocol';
 import type { ResumePoint } from '@shared/remote-contract';
@@ -180,6 +183,13 @@ export interface SessionsOptions {
    */
   onIdle?: (entityId: string) => void;
   /**
+   * A session ended, however it ended (HIVE-167): `ptyExit`, `ptyLost` and
+   * `/done` all pass through the same funnel, and this fires from it. Not on
+   * a restart, which passes through the funnel too but is not an ending. The
+   * one consumer re-addresses the asks that were waiting on that terminal.
+   */
+  onEnded?: (entityId: string) => void;
+  /**
    * A session's agent came up, including after a resume (HIVE-113).
    *
    * The same event `CH.sessionReady` reports to the renderer, offered to main's
@@ -210,6 +220,11 @@ export interface SessionsOptions {
    * answer there rather than a degraded one.
    */
   onAgentsList?: (caller: string) => Promise<AgentsDirectory>;
+  /** HIVE-173: forwarded to the receiver untouched; its defaults stand when absent. */
+  onProjectsList?: (caller: string) => ProjectsDirectory;
+  onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** HIVE-174: forwarded to the receiver untouched. */
+  onJira?: JiraToolHandlers;
   /**
    * An agent's headless turn ended — its `Stop` hook (HIVE-115).
    *
@@ -498,6 +513,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     branchReader,
     history,
     onIdle,
+    onEnded,
     onReady,
     /*
       An empty register is the honest default (HIVE-115): a build with no agents
@@ -510,6 +526,9 @@ export function createSessions(options: SessionsOptions): Sessions {
     // An empty directory rather than a refusal: a build with no agent runtime
     // genuinely has no peers, and that is an answer, not a failure.
     onAgentsList = () => Promise.resolve({ agents: [] }),
+    onProjectsList,
+    onPrLookup,
+    onJira,
     onAgentTurnEnded,
   } = options;
 
@@ -945,6 +964,9 @@ export function createSessions(options: SessionsOptions): Sessions {
       right now.
     */
     onAgentsList,
+    onProjectsList,
+    onPrLookup,
+    onJira,
     /**
      * An agent's hooks, and the end of the road for them (HIVE-115).
      *
@@ -1841,6 +1863,12 @@ export function createSessions(options: SessionsOptions): Sessions {
       // older one settling late.
       if (containerRemovals.get(entityId) === removal) containerRemovals.delete(entityId);
     });
+
+    // After the registry entry is gone, so a consumer asking `entities()` in
+    // its callback already sees the session as not live. A restart is not an
+    // ending (`restartOnce`'s own words): the same entity id is about to come
+    // back, and a question addressed to it can still be read there.
+    if (!restarting.has(entityId)) onEnded?.(entityId);
 
     const waiters = exitWaiters.get(entityId);
     if (!waiters) return;

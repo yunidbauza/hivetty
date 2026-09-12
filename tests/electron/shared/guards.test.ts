@@ -22,6 +22,7 @@ import {
   parseResizeRequest,
   parseRevokeDeviceRequest,
   parseSessionPrRequest,
+  parseSetProjectAutoMergeRequest,
   parseSetProjectKeyRequest,
   parseSetProjectRuntimeRequest,
   parseSetReceiverRequest,
@@ -32,6 +33,9 @@ import {
   parseSpawnRequest,
   parseSpawnTerminalRequest,
   parseWriteRequest,
+  parsePrLookup,
+  parseJiraTransitionByName,
+  parseSetSessionPluginRequest,
 } from '../../../electron/shared/guards';
 
 const validSpawn = { sessionId: 'sess-1', projectId: 'proj-1', cols: 80, rows: 24 };
@@ -861,6 +865,22 @@ describe('parseReorderProjectsRequest', () => {
  * is a fact about the file main is about to write, which this guard cannot see.
  * That check lives inside the write's mutation.
  */
+describe('parseSetProjectAutoMergeRequest', () => {
+  it('accepts an id and a boolean', () => {
+    expect(parseSetProjectAutoMergeRequest({ id: 'the-hive', autoMerge: true })).toEqual({
+      id: 'the-hive',
+      autoMerge: true,
+    });
+  });
+
+  it.each([['a string', 'yes'], ['a number', 1], ['absent', undefined]])(
+    'refuses %s for autoMerge',
+    (_label, value) => {
+      expect(() => parseSetProjectAutoMergeRequest({ id: 'a', autoMerge: value })).toThrow();
+    },
+  );
+});
+
 describe('parseSetProjectKeyRequest', () => {
   it('accepts an id and a key', () => {
     expect(parseSetProjectKeyRequest({ id: 'the-hive', key: 'hive' })).toEqual({
@@ -1839,5 +1859,77 @@ describe('parseSpawnTerminalRequest', () => {
     expect(() => parseSpawnTerminalRequest({ ...validTerminal, sessionId: 7 })).toThrow(
       /spawn-terminal\.sessionId/,
     );
+  });
+});
+
+describe('parsePrLookup (HIVE-173)', () => {
+  it('accepts owner/name and a positive integer, and nothing else', () => {
+    expect(parsePrLookup({ repo: 'acme/nova-web', number: 7 })).toEqual({ repo: 'acme/nova-web', number: 7 });
+    expect(parsePrLookup({ repo: 'Acme-1/the.hive_v2', number: 214 })).toEqual({ repo: 'Acme-1/the.hive_v2', number: 214 });
+
+    for (const bad of [
+      {},
+      { repo: 'nova-web', number: 7 },
+      { repo: 'acme/nova/web', number: 7 },
+      { repo: 'acme/nova web', number: 7 },
+      { repo: 'acme/..', number: 7 },
+      { repo: 'ac_me/nova', number: 7 },
+      { repo: `${'a'.repeat(40)}/nova`, number: 7 },
+      { repo: 'acme/nova', number: '7' },
+      { repo: 'acme/nova', number: 0 },
+      { repo: 'acme/nova', number: 1.5 },
+      [],
+      'acme/nova#7',
+    ]) {
+      expect(() => parsePrLookup(bad)).toThrow(/pr lookup/);
+    }
+  });
+});
+
+describe('parseJiraTransitionByName (HIVE-174)', () => {
+  it('accepts a key and a short printable status, trimmed, and nothing else', () => {
+    expect(parseJiraTransitionByName({ key: 'HIVE-7', status: '  In Review ' })).toEqual({ key: 'HIVE-7', status: 'In Review' });
+    expect(parseJiraTransitionByName({ key: 'HIVE-7', status: 'In Progress', from: ' To Do ' })).toEqual({
+      key: 'HIVE-7',
+      status: 'In Progress',
+      from: 'To Do',
+    });
+    expect(() => parseJiraTransitionByName({ key: 'HIVE-7', status: 'Done', from: '' })).toThrow(/jiraTransition\.from/);
+
+    for (const bad of [
+      {},
+      { key: 'HIVE-7' },
+      { key: 'nope', status: 'Done' },
+      { key: 'HIVE-7', status: '' },
+      { key: 'HIVE-7', status: '   ' },
+      { key: 'HIVE-7', status: 'x'.repeat(65) },
+      { key: 'HIVE-7', status: 'Done\u0007' },
+      { key: 'HIVE-7', status: 31 },
+    ]) {
+      expect(() => parseJiraTransitionByName(bad)).toThrow(/jiraTransition/);
+    }
+  });
+});
+
+describe('parseSetSessionPluginRequest (HIVE-176)', () => {
+  it('accepts one registry-shaped name and a boolean', () => {
+    expect(parseSetSessionPluginRequest({ plugin: 'jira-writer', off: true })).toEqual({ plugin: 'jira-writer', off: true });
+    expect(parseSetSessionPluginRequest({ plugin: 'ui.ux_pro-max', off: false })).toEqual({ plugin: 'ui.ux_pro-max', off: false });
+  });
+
+  it('refuses anything else, and the app\'s own plugin', () => {
+    for (const bad of [
+      {},
+      { plugin: 'workstream' },
+      { plugin: 'work stream', off: true },
+      { plugin: 'workstream@claude-kit', off: true },
+      { plugin: '../x', off: true },
+      { plugin: 1, off: true },
+      { plugin: 'hive', off: true },
+      { plugin: 'workstream', off: 'yes' },
+      { plugin: 'workstream', off: true, extra: 1 },
+    ]) {
+      expect(() => parseSetSessionPluginRequest(bad)).toThrow(/setSessionPlugin/);
+    }
   });
 });

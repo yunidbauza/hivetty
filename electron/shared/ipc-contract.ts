@@ -59,6 +59,8 @@ import type {
   SetJiraRequest,
   SetJiraTokenRequest,
   SetNotificationsRequest,
+  SetSessionPluginRequest,
+  SetProjectAutoMergeRequest,
   SetProjectKeyRequest,
   SetProjectRuntimeRequest,
   SetReceiverRequest,
@@ -179,6 +181,10 @@ export const CH = {
    * — a key already taken by another project — which a send could not report.
    */
   configSetProjectKey: 'config:set-project-key',
+  /** HIVE-166's per-project unattended-merge consent. `invoke`, like every config write. */
+  configSetProjectAutoMerge: 'config:set-project-auto-merge',
+  /** HIVE-176's plugins a Hive session does not load. `invoke`, like every config write. */
+  configSetSessionPlugin: 'config:set-session-plugin',
   /**
    * Story 102's clone verbs.
    *
@@ -1855,6 +1861,10 @@ export interface HiveBridge {
      * than against the caller's snapshot.
      */
     setProjectKey(request: SetProjectKeyRequest): Promise<ConfigSnapshot>;
+    /** Turn unattended merging on or off for one project (HIVE-166). */
+    setProjectAutoMerge(request: SetProjectAutoMergeRequest): Promise<ConfigSnapshot>;
+    /** Which plugins a Hive session does not load (HIVE-176). */
+    setSessionPlugin(request: SetSessionPluginRequest): Promise<ConfigSnapshot>;
     /**
      * Point a project at a folder that moved (story 103).
      *
@@ -3373,6 +3383,10 @@ export const BRIDGE_CONFIG_KEYS = [
   'reorderProjects',
   // HIVE-94.
   'setProjectKey',
+  // HIVE-166.
+  'setProjectAutoMerge',
+  // HIVE-176.
+  'setSessionPlugin',
   // Story 102.
   'startClone',
   'cancelClone',

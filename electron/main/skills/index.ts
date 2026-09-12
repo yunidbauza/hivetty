@@ -18,6 +18,7 @@ import {
   type SkillsSnapshot,
 } from '@shared/skills-contract';
 
+import { readInstalledPluginNames } from './available';
 import { copyInto } from './import';
 import { importSkill as importPackage, isSkillPackage } from './import-skill';
 import { PLUGIN_DIR, isSkillManifest, resolveInSkill, skillsRoot } from './paths';
@@ -144,6 +145,8 @@ export interface SkillsRuntime {
 
 export interface SkillsRuntimeOptions {
   userDataPath: string;
+  /** The Claude Code plugin registry, read for the snapshot's plugin names (HIVE-176). */
+  installedPlugins?: () => string;
   /**
    * The app's version, for the generated manifest.
    *
@@ -168,12 +171,26 @@ export interface SkillsRuntimeOptions {
    * `/done` is still a skills directory.
    */
   doneUrl?: () => string | null;
+  /**
+   * Something the first regeneration must wait for (HIVE-162).
+   *
+   * The seed writes shipped skills into `~/.hive/skills` at registration, and
+   * the plugin is regenerated before every spawn. The two are independent
+   * promises, and a spawn that raced the seed would mirror a half-copied
+   * folder — a `SKILL.md` whose script is not on disk yet, the exact shape
+   * HIVE-148 fixed. Awaiting it here, once, is cheaper than teaching every
+   * caller of `sync()` about the seed. Never rejects into the queue: a seed
+   * that failed already reported itself, and the tree is what it is.
+   */
+  ready?: Promise<unknown>;
 }
 
 export function createSkillsRuntime({
   userDataPath,
   version,
   doneUrl,
+  ready,
+  installedPlugins,
 }: SkillsRuntimeOptions): SkillsRuntime {
   const pluginRoot = join(userDataPath, PLUGIN_DIR);
   let written = false;
@@ -205,10 +222,10 @@ export function createSkillsRuntime({
    * writes, so the wait is not worth a more elaborate mechanism — and a spawn
    * that overlaps a save is precisely the case this exists for.
    */
-  let inFlight: Promise<SkillsRead> = Promise.resolve({
-    skills: [],
-    invalid: [],
-  });
+  let inFlight: Promise<SkillsRead> = (ready ?? Promise.resolve()).then(
+    () => ({ skills: [], invalid: [] }),
+    () => ({ skills: [], invalid: [] }),
+  );
 
   const regenerate = async (): Promise<SkillsRead> => {
     const read = await readUserSkills(skillsRoot());
@@ -256,7 +273,7 @@ export function createSkillsRuntime({
     row to dim an oversized file or grey out a symlink without a second round
     trip. What still never crosses this boundary is a file's *body*.
   */
-  const snapshot = (read: SkillsRead): SkillsSnapshot => ({
+  const snapshot = async (read: SkillsRead): Promise<SkillsSnapshot> => ({
     skills: read.skills.map(({ name, description, manifest }) => ({
       name,
       description,
@@ -269,6 +286,7 @@ export function createSkillsRuntime({
       valid: false,
     })),
     skillsRoot: skillsRoot(),
+    plugins: installedPlugins === undefined ? [] : await readInstalledPluginNames(installedPlugins()),
   });
 
   /**

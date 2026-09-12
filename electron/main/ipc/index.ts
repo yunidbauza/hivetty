@@ -72,6 +72,8 @@ import {
   parseLedgerReadQuery,
   parseRemoveProjectRequest,
   parseRenameProjectRequest,
+  parseSetSessionPluginRequest,
+  parseSetProjectAutoMergeRequest,
   parseSetProjectKeyRequest,
   parseReorderProjectsRequest,
   parseRepointProjectRequest,
@@ -158,8 +160,9 @@ import {
   type TokenStore,
 } from '../../remote-client/token-store';
 import { createAgentsRuntime, type AgentRegistry } from '../agents';
+import { createAutoMergeGrants, type AutoMergeGrants } from '../agents/auto-merge';
 import { resolveClaude } from '../agents/claude-path';
-import { agentsDirectoryFor } from '../agents/directory';
+import { agentsDirectoryFor, projectsDirectoryFor } from '../agents/directory';
 import {
   agentPromptFile,
   agentStateFile,
@@ -190,6 +193,8 @@ import {
   resetConfig,
   setJira,
   setNotifications,
+  setSessionPlugin,
+  setProjectAutoMerge,
   setProjectKey,
   setProjectRuntime,
   setReceiver,
@@ -216,9 +221,11 @@ import {
 import { createHookRuntime } from '../hooks';
 import { readGhStatus, runCommand } from '../integrations/gh';
 import { createGithub } from '../integrations/github';
+import { lookupPr } from '../integrations/github/lookup';
 import { runAsync, type RunAsync } from '../integrations/github/run';
 import { createJira } from '../integrations/jira';
 import { credentialFile } from '../integrations/jira/auth';
+import { jiraToolsFor } from '../integrations/jira/tools';
 import { createSlackBridge, type SlackBridge } from '../integrations/slack/bridge';
 import { openSlackSocket, openSlackWeb } from '../integrations/slack/clients';
 import { signInToSlack, signOutOfSlack } from '../integrations/slack/login';
@@ -250,6 +257,7 @@ import {
 } from '../notifications/delivery';
 import { badgeDock, clearDockBadge } from '../notifications/dock-badge';
 import { registerPtyHost } from '../pty-host';
+import { seedShippedIntoHive } from '../seed';
 import {
   pairDevice,
   pairOutcomeMessage,
@@ -265,7 +273,8 @@ import {
 } from '../sessions/history';
 import { onShutdown } from '../shutdown';
 import { createSkillsRuntime, type SkillsRuntime } from '../skills';
-import { PLUGIN_DIR } from '../skills/paths';
+import { readSessionPluginOverrides } from '../skills/available';
+import { installedPluginsFile, PLUGIN_DIR } from '../skills/paths';
 import {
   checkForUpdatesInteractively,
   setUpdateNotificationSink,
@@ -810,6 +819,14 @@ let scheduler: Scheduler | null = null;
  * at registration.
  */
 let permissions: Permissions | null = null;
+
+/**
+ * The shipper's per-project merge grant (HIVE-166), or `null` before the
+ * GitHub integration is composed. Read through the binding for the reason
+ * `permissions` is: `pendingGrants` is a closure invoked at wake time, long
+ * after registration has assigned this.
+ */
+let autoMergeGrants: AutoMergeGrants | null = null;
 /**
  * The agent names the ledger will accept as a party.
  *
@@ -1742,6 +1759,9 @@ export function registerIpcHandlers(
     markRead: (id) => hub.markRead(id),
     dismiss: (id) => hub.dismiss(id),
     isAgent: (id) => knownAgents.has(id),
+    // HIVE-167. `ledger` is bound a few lines below; the notifier runs only
+    // from inside its `onChange`, which cannot fire before it exists.
+    ask: (id) => ledger.read({}).entries.find((entry) => entry.id === id && entry.kind === 'ask'),
   });
 
   // The re-arm (HIVE-81): whatever is still blocked when the user looks away
@@ -1901,7 +1921,63 @@ export function registerIpcHandlers(
       */
       knownAgents.has(id) ||
       history?.resumable(id) !== undefined,
+    /*
+      HIVE-167. A session the ledger knows, that is not an agent, and that has
+      no terminal right now. `entities()` is the live register; a resumable
+      ended session is a party (so its own late writes are accepted) but it
+      cannot read a marker, and an ask to it is what this redirects.
+    */
+    isGoneSession: (id) =>
+      id !== OVERMIND &&
+      !knownAgents.has(id) &&
+      !(sessions?.entities().includes(id) ?? false) &&
+      /*
+        A session this app has *had*, not merely an id nobody knows. An agent
+        whose definition is mid-edit drops out of `knownAgents` while its
+        folder still exists; a typo'd `to` matches nothing at all. Neither is
+        a session that closed, and neither should land in the inbox on the
+        strength of it: the first is read on that agent's next wake as it
+        always was, the second expires as it always did.
+      */
+      history?.resumable(id) !== undefined,
   });
+
+  /**
+   * The other half of HIVE-167: asks that were open when their session ended.
+   *
+   * Each is re-surfaced to the overmind as an `event` on the ask's own
+   * thread, so the card the notifier raises answers into the original ask and
+   * the answer still wakes the asker. Nothing is re-posted as the asker; the
+   * party rule forbids main writing as anyone but `OVERMIND`, and the thread
+   * already holds the question.
+   */
+  const redirectOpenAsks = (entityId: string): void => {
+    const { entries, openAsks } = ledger.read({});
+    // The log is the dedup, as it is for the expiry sweep: an ask already
+    // re-surfaced once is not re-surfaced by a later ending of the same id.
+    const surfaced = new Set(
+      entries
+        .filter((entry) => entry.kind === 'event' && entry.from === OVERMIND)
+        .map((entry) => entry.meta?.['redirected'])
+        .filter((id): id is string => typeof id === 'string'),
+    );
+    for (const ask of openAsks) {
+      if (ask.to !== entityId || surfaced.has(ask.id)) continue;
+      const result = ledger.append({
+        from: OVERMIND,
+        to: OVERMIND,
+        kind: 'event',
+        thread: ask.id,
+        body: `${entityId} ended with this question open; it is yours now`,
+        meta: { redirected: ask.id, redirectedFrom: entityId },
+      });
+      if (!result.ok) {
+        console.warn(
+          `[ledger] could not re-surface ${ask.id} after ${entityId} ended: ${result.reason}`,
+        );
+      }
+    }
+  };
 
   /**
    * Delivery — what happens to an entry after it is written (HIVE-113).
@@ -2122,6 +2198,10 @@ export function registerIpcHandlers(
     userDataPath: app.getPath('userData'),
     // Read per call, so a config reload is picked up (HIVE-79).
     sessionMetrics: () => getConfig().sessionMetrics,
+    // HIVE-176. Resolved against the plugin registry at every write, and the
+    // file is rewritten before every spawn, so an install is picked up too.
+    enabledPlugins: () =>
+      readSessionPluginOverrides(installedPluginsFile(), getConfig().disabledSessionPlugins),
     // The same, for the hostname a container reaches this machine by (HIVE-132).
     hostAlias: () => getConfig().receiver.hostAlias,
     // Every hostname the guard admits, not just the global one — see
@@ -2364,6 +2444,16 @@ export function registerIpcHandlers(
   */
   onShutdown(() => remoteListener?.stop());
 
+  /*
+    The shipped skills and agents land in `~/.hive` before anything reads them
+    (HIVE-162). Started here, not awaited here: this function is synchronous.
+    The skills runtime waits for it before its first regeneration, and the
+    agents registry below watches its folder, so a definition the seed writes
+    after `refreshKnownAgents()` ran reaches the party set through the same
+    `onChange` a hand-written one does.
+  */
+  const seeded = seedShippedIntoHive();
+
   skills = createSkillsRuntime({
     userDataPath: app.getPath('userData'),
     version: app.getVersion(),
@@ -2373,6 +2463,9 @@ export function registerIpcHandlers(
       app. `sync()` happens before every spawn, which is always afterwards.
     */
     doneUrl: () => hooks.doneUrl(),
+    ready: seeded,
+    // HIVE-176. The plugin names the Settings switches list.
+    installedPlugins: installedPluginsFile,
   });
 
   /*
@@ -2499,7 +2592,11 @@ export function registerIpcHandlers(
     // `permissions` is armed later, alongside `scheduler` — read through the
     // module binding for the same reason `hooks`/`mcp` are read through
     // getters here rather than closed over as values.
-    pendingGrants: (name) => permissions?.grantsFor(name) ?? [],
+    pendingGrants: (name) => [
+      ...(permissions?.grantsFor(name) ?? []),
+      // HIVE-166: consent from the config becomes a rule on the shipper's wake.
+      ...(autoMergeGrants?.grantsFor(name) ?? []),
+    ],
     // HIVE-137. The container agent's settings file lives in the container
     // set `hooks` writes at start, and the alias is the receiver's global one,
     // read live so a config reload is honoured on the next wake.
@@ -2903,6 +3000,8 @@ export function registerIpcHandlers(
     */
     onIdle: (entityId) => deliver.onIdle(entityId),
     onReady: (entityId) => deliver.onReady(entityId),
+    // HIVE-167: the asks that were waiting on this terminal go to the inbox.
+    onEnded: (entityId) => redirectOpenAsks(entityId),
     /*
       The same register the ledger authenticates a party against (HIVE-115),
       and deliberately not a second one: an agent that may write to the log is
@@ -2948,6 +3047,32 @@ export function registerIpcHandlers(
       }
 
       return agentsDirectoryFor(caller, snapshot, agentState?.all() ?? {});
+    },
+    // HIVE-173: the config's projects, read per call so an edit in Settings shows.
+    onProjectsList: () => projectsDirectoryFor(getConfig()),
+    /*
+      HIVE-173. `github` is declared further down this function. The callback
+      runs only when a request arrives, after this whole body has executed, so
+      the binding is initialised by then. The sweep is the same one the PRs
+      panel runs, run fresh here: main keeps no snapshot of it. And the same
+      await `githubPrs` makes first (HIVE-84): a shipper wake inside the
+      boot window would otherwise read launchd's four-entry PATH and be told
+      `gh` is not installed.
+    */
+    onPrLookup: async (_caller, lookup) => {
+      await loginEnvStatus();
+      return lookupPr(await github.prs(), lookup);
+    },
+    /*
+      HIVE-174. `jira` is declared further down for the same reason `github`
+      is, and the same argument covers it: each method runs on a request, after
+      this body has executed. Built per call so nothing here captures a binding
+      before it exists.
+    */
+    onJira: {
+      get: (request) => jiraToolsFor(jira).get(request),
+      transition: (request) => jiraToolsFor(jira).transition(request),
+      comment: (request) => jiraToolsFor(jira).comment(request),
     },
     /*
       The uuid is forwarded, not dropped: `noteTurnEnded` ignores a `Stop`
@@ -3273,6 +3398,8 @@ export function registerIpcHandlers(
       connects nothing until some unrelated agent edit happens to sync.
     */
     slackBridge?.sync();
+    // HIVE-176. `disabledSessionPlugins` is hand-editable too.
+    void hooks.rewriteSettings();
 
     return snapshot;
   });
@@ -3364,6 +3491,30 @@ export function registerIpcHandlers(
     CH.configSetProjectKey,
     (_event, payload): ConfigSnapshot =>
       setProjectKey(parseSetProjectKeyRequest(payload)),
+  );
+
+  /*
+    HIVE-166. The consent behind the shipper's merge grant. The write is the
+    plain sibling of the key editor's; what it *means* is composed at wake
+    time by `autoMergeGrants`, from the config as it stands then.
+  */
+  handle(
+    CH.configSetProjectAutoMerge,
+    (_event, payload): ConfigSnapshot =>
+      setProjectAutoMerge(parseSetProjectAutoMergeRequest(payload)),
+  );
+
+  /*
+    HIVE-176. The config first, then the session settings file from it, so
+    the next session started is the first to see the change.
+  */
+  handle(
+    CH.configSetSessionPlugin,
+    async (_event, payload): Promise<ConfigSnapshot> => {
+      const snapshot = setSessionPlugin(parseSetSessionPluginRequest(payload));
+      await hooks.rewriteSettings();
+      return snapshot;
+    },
   );
 
   handle(
@@ -3645,6 +3796,29 @@ export function registerIpcHandlers(
     run: runAsync,
     now: () => Date.now(),
   });
+
+  /*
+    HIVE-166. Refreshed once now, in the background, so the first shipper wake
+    after boot already knows its repositories; and again whenever a wake finds
+    a flagged project it cannot place. `loginEnvStatus` first, for the reason
+    `githubPrs` below awaits it: a `gh` "not found" cached before the login
+    shell's PATH arrives would outlive the race.
+  */
+  autoMergeGrants = createAutoMergeGrants({
+    projects: () => getConfig().projects,
+    resolve: () => github.resolveProjects(),
+  });
+  void loginEnvStatus()
+    .then(() => {
+      // Only when something asked for it; `grantsFor` refreshes on demand later.
+      if (getConfig().projects.some((project) => project.autoMerge === true)) {
+        return autoMergeGrants?.refresh();
+      }
+      return undefined;
+    })
+    .catch(() => {
+      /* the login-env probe reports itself; the next wake asks again */
+    });
 
   handle(CH.githubPrs, async (): Promise<GhResult<PrsSnapshot>> => {
     // The poller's first tick can land before the boot-time import resolves,
@@ -4742,6 +4916,10 @@ export function registerIpcHandlers(
      * than any protocol that would tell us the tree changed.
      */
     await skills?.sync();
+    // HIVE-176. What the config and the plugin registry say now, before this
+    // session reads the settings file: a hand edit or a plugin installed since
+    // the last write both land here.
+    await hooks.rewriteSettings();
     /**
      * Wait for the MCP config write before a session can be spawned (HIVE-112).
      *
@@ -4823,6 +5001,10 @@ export function registerIpcHandlers(
     // And the same regeneration, for the same reason: a restart builds a fresh
     // command line, so it must see the skills the user has now (HIVE-96).
     await skills?.sync();
+    // HIVE-176. What the config and the plugin registry say now, before this
+    // session reads the settings file: a hand edit or a plugin installed since
+    // the last write both land here.
+    await hooks.rewriteSettings();
     // Same wait as `ptySpawn` above, for the same reason: a restart's `spawn()`
     // reads `mcp.configPathFor()` synchronously too (HIVE-112).
     await mcp.start();
@@ -5089,6 +5271,9 @@ export function resetIpcHandlers(options: { flush?: boolean } = {}): void {
   // here would let a next test's `ledger.onChange` reach a `permissions`
   // built against this test's disposed `agents`/`ledger`.
   permissions = null;
+  // HIVE-166. A boot refresh still in flight must not reach a `gh` spawn
+  // against a finished test's project paths.
+  autoMergeGrants = null;
   runs?.closeAll('reset');
   runs = null;
   /*

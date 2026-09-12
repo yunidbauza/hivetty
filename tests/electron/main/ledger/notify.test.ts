@@ -14,7 +14,7 @@ const entry = (over: Partial<LedgerEntry>): LedgerEntry => ({
   ...over,
 });
 
-const harness = () => {
+const harness = (extra: Partial<Parameters<typeof createLedgerNotifier>[0]> = {}) => {
   const raise = vi.fn();
   const markRead = vi.fn();
   const dismiss = vi.fn();
@@ -23,6 +23,7 @@ const harness = () => {
     markRead,
     dismiss,
     isAgent: (id: string) => id !== OVERMIND && !id.startsWith('sess-'),
+    ...extra,
   });
   return { raise, markRead, dismiss, onEntry };
 };
@@ -192,6 +193,104 @@ describe('createLedgerNotifier', () => {
       }),
     );
     expect(raise.mock.calls[0][0].link).toBeUndefined();
+  });
+
+  it('raises a session.goal card per receipt, keyed on the entry and the caller, never on meta.goal', () => {
+    const { raise, markRead, onEntry } = harness();
+    // In production `meta.goal` is Claude's own session uuid, written by the
+    // verifier from the Stop payload, and `from` is the Hive terminal id the
+    // receiver authenticated. They differ, and only the second is trusted.
+    const receipt = (id: string, status: string, turns: number) =>
+      onEntry({
+        id,
+        ts: 1,
+        from: 'sess-1',
+        kind: 'event',
+        body: `goal ${status}: Make the cache invalidate on write. (turn ${turns}/8)`,
+        meta: { goal: '3f9c1e04-uuid', status, turns_used: turns, turn_budget: 8 },
+      });
+
+    receipt('e1', 'ACTIVE', 1);
+    receipt('e2', 'ACTIVE', 2);
+
+    // Two raises with two ids: the hub collapses them through its supersede
+    // rule on the `session` action (`hub.test.ts`, "keeps only the newest row
+    // about one session"), which is what makes a repeated fixed id wrong here:
+    // `hub.raise` returns null for an id it has already seen.
+    expect(raise).toHaveBeenCalledTimes(2);
+    expect(raise).toHaveBeenLastCalledWith({
+      kind: 'session.goal',
+      id: 'e2',
+      title: 'goal ACTIVE: Make the cache invalidate on write. (turn 2/8)',
+      subject: 'sess-1',
+      action: { type: 'session', entityId: 'sess-1' },
+      createdAt: 1,
+    });
+    expect(markRead).not.toHaveBeenCalled();
+
+    receipt('e3', 'FAILED', 2);
+
+    expect(markRead).toHaveBeenCalledWith('e3');
+  });
+
+  it('lets a forged meta.goal reach nothing but the caller\'s own card', () => {
+    const { raise, markRead, onEntry } = harness();
+    onEntry({ id: 'e9', ts: 1, from: 'sess-2', kind: 'event', body: 'goal DONE: x', meta: { goal: 'sess-1', status: 'DONE' } });
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ id: 'e9', action: { type: 'session', entityId: 'sess-2' } }));
+    expect(markRead).toHaveBeenCalledWith('e9');
+  });
+
+  it('ignores a goal receipt written by an agent, which has no goal to hold', () => {
+    const { raise, onEntry } = harness();
+    onEntry({ id: 'e1', ts: 1, from: 'watcher', kind: 'event', body: 'goal ACTIVE', meta: { goal: 'watcher', status: 'ACTIVE' } });
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('raises the ask\'s own card, keyed on the ask, when main re-surfaces a question its session left open (HIVE-167)', () => {
+    const asks: Record<string, LedgerEntry> = {
+      a12: entry({ id: 'a12', to: 'sess-1', kind: 'ask', body: 'which colour?\nRed or blue.', meta: { options: ['red', 'blue'] } }),
+      a13: entry({ id: 'a13', to: 'sess-1', kind: 'ask', body: 'may I?', meta: { kind: 'permission', tool: 'Bash' } }),
+    };
+    const { raise, onEntry } = harness({ ask: (id) => asks[id] });
+    const redirect = (id: string, redirected: string) =>
+      onEntry({
+        id,
+        ts: 5,
+        from: OVERMIND,
+        to: OVERMIND,
+        kind: 'event',
+        thread: redirected,
+        body: 'sess-1 ended with this question open; it is yours now',
+        meta: { redirected, redirectedFrom: 'sess-1' },
+      });
+
+    redirect('e7', 'a12');
+    redirect('e8', 'a13');
+
+    // The ask's id, the ask's words, the asker as subject: everything that
+    // later marks, dismisses or expires the ask by its id finds this row.
+    expect(raise).toHaveBeenCalledWith({
+      kind: 'agent.ask',
+      id: 'a12',
+      title: 'which colour?',
+      body: 'Red or blue.',
+      subject: 'drone',
+      action: { type: 'ask', thread: 'a12' },
+      createdAt: 5,
+    });
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agent.permission', id: 'a13' }));
+  });
+
+  it('raises nothing for a redirect naming an ask it cannot find', () => {
+    const { raise, onEntry } = harness({ ask: () => undefined });
+    onEntry({ id: 'e9', ts: 5, from: OVERMIND, kind: 'event', body: 'x', meta: { redirected: 'nope' } });
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('ignores a redirect event any party but the overmind wrote', () => {
+    const { raise, onEntry } = harness();
+    onEntry({ id: 'e8', ts: 5, from: 'drone', kind: 'event', body: 'x', meta: { redirected: 'a12' } });
+    expect(raise).not.toHaveBeenCalled();
   });
 
   it('raises no link at all when the done entry carries none', () => {
