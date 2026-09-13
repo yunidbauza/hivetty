@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { AgentsDirectory } from '@shared/agent-contract';
-import type { ProjectsDirectory } from '@shared/config-contract';
+import type { ProjectAutoMergeRequest, ProjectsDirectory } from '@shared/config-contract';
 import {
   AUTH_ENV_KEYS,
   ENV_PLACEHOLDER,
@@ -26,6 +26,7 @@ import {
 } from '@shared/ipc-contract';
 import type { JiraToolHandlers } from '@shared/jira-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
+import type { PlansSnapshot } from '@shared/plan-contract';
 import { MAX_SESSIONS } from '@shared/pty-host-protocol';
 import type { ResumePoint } from '@shared/remote-contract';
 import {
@@ -62,6 +63,7 @@ import { createStatusTracker } from '../hooks/tracker';
 import { createPtyIpc, type PtyIpc, type ResumeResult } from '../ipc/pty';
 import type { SurfaceId } from '../ipc/surfaces';
 import type { McpRuntime } from '../mcp';
+import { createPlans, type Plans } from '../plans';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
 import type { SkillsRuntime } from '../skills';
 
@@ -223,6 +225,8 @@ export interface SessionsOptions {
   /** HIVE-173: forwarded to the receiver untouched; its defaults stand when absent. */
   onProjectsList?: (caller: string) => ProjectsDirectory;
   onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** Retro B: the auto-merge switch, forwarded to the receiver untouched. */
+  onProjectAutoMerge?: (caller: string, request: ProjectAutoMergeRequest) => ProjectsDirectory;
   /** HIVE-174: forwarded to the receiver untouched. */
   onJira?: JiraToolHandlers;
   /**
@@ -484,6 +488,10 @@ export interface Sessions {
    */
   containerRemoval(entityId: string): Promise<void>;
   diagnostics(): PtyDiagnostics[];
+  /** Every live plan (HIVE-179), for `CH.plansList` and the attach snapshot. */
+  plans(): PlansSnapshot;
+  /** The plans store itself, for the builder-progress fan-out (HIVE-180). */
+  planStore(): Plans;
   dispose(): void;
 }
 
@@ -535,10 +543,14 @@ export function createSessions(options: SessionsOptions): Sessions {
     // genuinely has no peers, and that is an answer, not a failure.
     onAgentsList = () => Promise.resolve({ agents: [] }),
     onProjectsList,
+    onProjectAutoMerge,
     onPrLookup,
     onJira,
     onAgentTurnEnded,
   } = options;
+
+  /** Every session's plan (HIVE-179). Main owns the rules; the renderer mirrors them. */
+  const plans = createPlans({ send });
 
   const registry: SessionRegistry = createSessionRegistry();
   /**
@@ -973,6 +985,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     */
     onAgentsList,
     onProjectsList,
+    onProjectAutoMerge,
     onPrLookup,
     onJira,
     /**
@@ -1118,6 +1131,8 @@ export function createSessions(options: SessionsOptions): Sessions {
         keys: [event.key],
         source: event.source,
       } satisfies SessionTicketIntentEvent),
+    // The plan panel's source 1 (HIVE-179); the receiver already filtered.
+    onPlanTool: (call) => plans.onTool(call),
     /**
      * The first prompt named the session (first-prompt naming).
      *
@@ -1144,6 +1159,8 @@ export function createSessions(options: SessionsOptions): Sessions {
        * running.
        */
       statusTracker.reset(entityId);
+      // The plan belonged to the conversation `/clear` just retired (HIVE-179).
+      plans.drop(entityId);
       /*
         A declaration belongs to the conversation that made it (HIVE-93).
         `/clear` retires that conversation and opens a successor on the same
@@ -1362,6 +1379,7 @@ export function createSessions(options: SessionsOptions): Sessions {
   }
 
   function publishFinished(entityId: string): void {
+    plans.drop(entityId);
     /*
       Asked rather than assumed. `history.resumable` is the only thing that knows
       whether a uuid still names this terminal's conversation — a `/clear`
@@ -1384,6 +1402,7 @@ export function createSessions(options: SessionsOptions): Sessions {
    * said into one of the two kinds this function forwards untouched.
    */
   function publishTerminalEnded(entityId: string, ending: TerminalEnding): void {
+    plans.drop(entityId);
     send(CH.sessionTerminalEnded, { entityId, ending } satisfies SessionTerminalEndedEvent);
   }
 
@@ -1775,6 +1794,13 @@ export function createSessions(options: SessionsOptions): Sessions {
       `terminated` status published moments later put it straight back.
     */
     lastStatus.delete(entityId);
+    /*
+      The plan belongs to the conversation this process was running (HIVE-179).
+      Dropped on every ending, not only `/done`'s: a kill, a plain `/exit` or
+      a crash never reaches `publishFinished`, and a restart reuses the entity
+      id, so a plan left standing would take the next conversation's tasks.
+    */
+    plans.drop(entityId);
     /**
      * Per-generation too, and for a sharper reason than the other two: a
      * restarted session reuses the entity id, and a retained entry would make
@@ -2827,11 +2853,16 @@ export function createSessions(options: SessionsOptions): Sessions {
     containerRemoval: (entityId) => containerRemovals.get(entityId) ?? Promise.resolve(),
     diagnostics: () => ptyIpc.diagnostics(),
 
+    plans: () => ({ plans: plans.list() }),
+
+    planStore: () => plans,
+
     dispose() {
       bootstrap.dispose();
       activity.dispose();
       ptyIpc.dispose();
       disposeErrors();
+      plans.dispose();
       /**
        * The socket goes down with everything else.
        *

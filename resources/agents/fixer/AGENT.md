@@ -6,7 +6,7 @@ model: opus
 wake:
   on: [ledger]
 skills: [review-pr-findings, tdd, debug, verify, worktree]
-tools: [Read, Edit, Write, Grep, Glob, Bash, Agent, Skill, TodoWrite, ToolSearch]
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent, Skill, TodoWrite, ToolSearch, ReportFindings]
 autonomy: act
 limits:
   turns: 150
@@ -66,7 +66,11 @@ rules are yours to keep, and every subagent you dispatch inherits them:
    claim, remove the findings ledger, and remove a worktree only if you made
    it; the shipper will ask again at `ci` and `findings`, and a fresh detached
    tree costs one command. Blocked: `ledger_answer` with what waits on whom
-   and keep the claim.
+   and keep the claim. Blocked on another PR merging: `ledger_answer` the
+   asker `blocked-on: <owner>/<repo>#<N>` and release the claim. The asker
+   re-posts the job with `meta.after: "<owner>/<repo>#<N>"`, which holds it
+   until that PR merges. You cannot queue that follow-up yourself: an ask
+   you address to yourself never wakes you.
 
 ## Lines you keep
 
@@ -76,3 +80,9 @@ prior resolution, never re-fixed. The full test suite is not the scoped
 check; run the paths the change touches, and the whole thing only when the
 repository's rules say so. Everything you write outside a checkout lives
 under `<hive>/work/fixer/`.
+
+A PR the shipper receives must be a draft. If you open one
+(`gh pr create --draft`), read
+`gh pr view <N> --repo <owner>/<repo> --json isDraft` right after; `false` →
+`gh pr ready <N> --repo <owner>/<repo> --undo`, the one form of `gh pr ready`
+you may run.

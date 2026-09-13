@@ -56,18 +56,23 @@ Bring it level first, or the gate reports `head moved` for ever.
 
 1. `gh pr view <N> --repo <owner>/<repo> --json headRefName,baseRefName --jq '[.headRefName, .baseRefName]'`
    Read both. Empty is a stop, not a default.
-2. `git -C <workspace> fetch origin`
-3. `git -C <workspace> merge --ff-only origin/<headRefName>`
+2. `git -C <workspace> branch --show-current` and `git -C <workspace> status --porcelain`.
+   The branch must be `<headRefName>` and the status empty. Anything else is
+   a stop, reported with what you read. The workspace may be the person's
+   own checkout: on another branch, a merge here lands in their work, and
+   with uncommitted files someone is working there right now.
+3. `git -C <workspace> fetch origin`
+4. `git -C <workspace> merge --ff-only origin/<headRefName>`
    A refused fast-forward means local commits nobody pushed. Stop and report;
    do not force either side.
-4. `git -C <workspace> rev-list --count HEAD..origin/<baseRefName>`
+5. `git -C <workspace> rev-list --count HEAD..origin/<baseRefName>`
    Zero: go to Step 3. More: `git -C <workspace> log --oneline HEAD..origin/<baseRefName>`
    and `git -C <workspace> diff --stat HEAD...origin/<baseRefName>` say what
    landed. No overlap with this PR's files: `git -C <workspace> merge origin/<baseRefName>`,
    then `git -C <workspace> push origin <headRefName>`, and wait for green
    before the gate. Overlap: the same merge, then the repository's targeted
    verification on the affected paths.
-5. A conflict: `git -C <workspace> log -p origin/<baseRefName> -- <file>` for
+6. A conflict: `git -C <workspace> log -p origin/<baseRefName> -- <file>` for
    both intents, resolve preserving both, never blanket `--ours` or
    `--theirs`. **A resolution that would change what this PR was reviewed as
    doing, or break a merged PR's behaviour, is a hard stop:** report both
@@ -186,23 +191,50 @@ does not use it for that either.
    the main working tree. A later block whose `branch` is `refs/heads/<headRefName>`
    names the linked worktree on the branch, if any.
 3. A linked worktree: `git -C <main working tree> worktree remove <that path>`.
-   No `--force`: a refusal means uncommitted files in it, and those are
-   somebody's; stop and report. Then `git -C <main working tree> worktree prune`.
-   An agent worktree under `~/.hive/work/<agent>/` is a linked worktree of the
-   project and goes the same way.
-4. `git -C <main working tree> checkout <defaultBranchName>`. The main working
-   tree is the person's own checkout and is often dirty; a checkout that fails
-   is a stop, because a pull into whatever branch is still checked out would
-   merge the default branch into their work.
+   On a refusal, `git -C <that path> status --porcelain --untracked-files=all`.
+   The worktree is disposable only when **all** of these hold:
+   - the path is under `$HOME/.hive/work/`, an agent's worktree and never the
+     person's checkout;
+   - the status prints at least one line, and no line is a tracked change:
+     every line starts with `??`;
+   - every `??` path starts with `.hive/`, the agent's own notes folder.
+
+   Disposable: `git -C <main working tree> worktree remove --force <that path>`,
+   and the report says "removed the agent's `.hive/` notes with it". Anything
+   else: no `--force`. Those files are somebody's work; stop and report the
+   paths. An empty status after a refusal is a stop too: git refused for
+   another reason (a submodule, a lock), and the report names it. A refusal
+   of `--force` is a stop; never `--force` twice. Then `git -C <main working tree> worktree prune`. An agent worktree
+   under `~/.hive/work/<agent>/` is a linked worktree of the project and goes
+   the same way.
+4. `git -C <main working tree> status --porcelain` and
+   `git -C <main working tree> branch --show-current`. The main working tree
+   is the person's own checkout, often with a live session working in it.
+   `git checkout` does not refuse a dirty tree: it carries uncommitted
+   changes that do not clash onto the branch it switches to. So a checkout
+   that *succeeds* can still move somebody's work onto the default branch,
+   where their next commit lands. Read both, then exactly one row:
+
+   | status | branch | Action |
+   | --- | --- | --- |
+   | any output | any | leave it: no checkout, no pull |
+   | empty | `<headRefName>` | `git -C <main working tree> checkout <defaultBranchName>`; a failure is a stop |
+   | empty | `<defaultBranchName>` | nothing to switch |
+   | empty | anything else, or empty (a detached HEAD) | someone else's branch: leave it, no checkout, no pull |
+
 5. `git -C <main working tree> branch -D <headRefName>` (`-D`: a squashed branch
-   is never "fully merged" locally; "not found" is fine).
+   is never "fully merged" locally; "not found" is fine, and so is git
+   refusing because a left tree still has it checked out).
 6. `git -C <main working tree> push origin --delete <headRefName>` ("remote ref
    does not exist" is fine).
-7. `git -C <main working tree> pull --ff-only origin <defaultBranchName>`.
-8. Report `main working tree: <path>`.
+7. `git -C <main working tree> pull --ff-only origin <defaultBranchName>`, only
+   when row two or three put it on the default branch with a clean status.
+8. Report `main working tree: <path>`, and for a tree left alone
+   `left on <branch>: <uncommitted changes | not this PR's branch>`.
 
 The project's own checkout is never touched beyond the checkout and pull of
-its default branch. When the branch was never checked out anywhere, nothing
+its default branch, and those only from a clean tree that was on the PR's
+branch or the default one. When the branch was never checked out anywhere, nothing
 is removed and the report says so. The fixer's findings ledger is the fixer's
 to remove; it does so when it answers `clean`.
 
@@ -254,5 +286,7 @@ Name the target in full; "merged PR 58" is unfalsifiable.
 - Merging on a reading taken before a wait, a push, or a question.
 - Resolving a thread to clear the gate.
 - `--delete-branch`.
+- A checkout, merge or pull in a tree with uncommitted files or on another branch.
+- `--force` on a worktree whose leftovers are not all under `.hive/`, on an empty status, twice, or on the person's checkout.
 - Transitioning on a branch-name key.
 - Reporting "no key supplied" without quoting the arguments line.

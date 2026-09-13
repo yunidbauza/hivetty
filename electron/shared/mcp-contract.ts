@@ -1,5 +1,5 @@
 import type { AgentsDirectory } from './agent-contract';
-import type { ProjectsDirectory } from './config-contract';
+import type { ProjectAutoMergeRequest, ProjectsDirectory } from './config-contract';
 import type { PrLookup, PrLookupReply } from './github-contract';
 import type {
   JiraComment,
@@ -65,6 +65,14 @@ export const LEDGER_READ_DEFAULT_LIMIT = 50;
 
 /** How long a receiver call may take before the tool reports a failure. */
 export const RECEIVER_TIMEOUT_MS = 5_000;
+
+/**
+ * The `pr` call's own limit. A lookup the last sweep cannot answer runs a fresh
+ * one, three to four seconds and sometimes more, so five was too tight. Above
+ * the `gh` runner's twenty seconds, so a stuck sweep ends in `gh`'s own
+ * readable error rather than this timeout.
+ */
+export const PR_LOOKUP_TIMEOUT_MS = 25_000;
 
 /** The only JSON-RPC version MCP uses. */
 export const JSONRPC_VERSION = '2.0';
@@ -175,6 +183,11 @@ export interface ReceiverClient {
   jiraGet(request: JiraToolKeyRequest): Promise<JiraResult<JiraToolIssue>>;
   jiraTransition(request: JiraTransitionByName): Promise<JiraResult<JiraToolTransitionReply>>;
   jiraComment(request: JiraToolCommentRequest): Promise<JiraResult<JiraComment>>;
+  /**
+   * Flip one project's auto-merge (retro B), answered with the directory
+   * `projects` returns. A refusal is a `ReceiverError` carrying its reason.
+   */
+  projectAutoMerge(request: ProjectAutoMergeRequest): Promise<ProjectsDirectory>;
 }
 
 /** The path `POST /mcp` is served on (HIVE-130). */

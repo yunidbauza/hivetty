@@ -138,7 +138,7 @@ contract for their owning story, not existing code.
 | Atom | File | Owner | Props | State |
 | --- | --- | --- | --- | --- |
 | `Chip` | `ui/chip.tsx` | 021 (also 040) | `children: ReactNode`, `tone?: Tone`, `title?: string`, `className?: string` | **built** |
-| `Badge` | `ui/badge.tsx` | **021** (also 030, 050) | `count: number`, `tone?: BadgeTone`, `label?: string`, `className?: string` | **built** |
+| `Badge` | `ui/badge.tsx` | **021** (also 030, 050, HIVE-182) | `count: number`, `tone?: BadgeTone` (`danger` \| `brand` \| `muted` \| `green`), `text?: string`, `label?: string`, `className?: string` | **built** |
 | `Tag` | `ui/tag.tsx` | **052** | `children: ReactNode`, `tone: 'brand' \| 'green' \| 'amber' \| 'red' \| 'subtle'`, `surface?: 'panel' \| 'raised'`, `title?: string`, `className?: string` | **built** |
 | `TabBar` | `ui/tab-bar.tsx` | **030** (reused by 050) | generic over `Id extends string`: `tabs: { id: Id; label: string; badgeCount?: number; badgeLabel?: string; badgeTone?: BadgeTone }[]`, `active: Id`, `onSelect(id: Id): void`, `label: string`, `className?: string` | **built** |
 | `StatusDot` | `ui/status-dot.tsx` | **030** (used by 031, 032, 041) | `status: SessionStatus \| 'online'`, `pulse?: boolean`, `label?: string`, `className?: string` | **built** |
@@ -550,6 +550,18 @@ the disk and the buffer disagree, and the CodeMirror surface itself.
   a tab deliberately.
 - **Notices are amber, never red.** An agent rewriting a file under you is the
   entire point of the app, not a failure.
+
+### `<PlanRail />` and `<PlanGlyph />`
+
+`src/features/plan/components/` — HIVE-181, built. The plan panel: a 34px glyph
+rail mounted by `center-stage.tsx` beside the terminal region (a sibling, never
+inside `components/terminal/`). Props only — `plan`, `pinned`,
+`onPinnedChange` — so the slice reads no store; the composition root passes
+`usePlan` and `appearance-store`'s pin. `PlanGlyph` is one task's 16px ring:
+numbered on `border-term-track` while pending, green and `ccpulse` while in
+progress, a filled `bg-green` check when done, "proposed" for a plan-mode task.
+The drawer peeks over the terminal by CSS (`group-hover`, `group-focus-within`)
+and docks at 232px when pinned.
 
 ### Region placeholders
 

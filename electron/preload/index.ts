@@ -117,6 +117,7 @@ import type {
   HiveNotification,
   NotificationAction,
 } from '@shared/notification-contract';
+import type { PlanChangedEvent, PlansSnapshot } from '@shared/plan-contract';
 import type {
   SessionBranchEvent,
   SessionClearedEvent,
@@ -347,6 +348,8 @@ const bridge: HiveBridge = {
     cancelClone: (): Promise<void> => ipcRenderer.invoke(CH.configCloneCancel),
     onCloneDone: (callback: (event: CloneDoneEvent) => void) =>
       subscribe<CloneDoneEvent>(CH.configCloneDone, callback),
+    onConfigChanged: (callback: (snapshot: ConfigSnapshot) => void) =>
+      subscribe<ConfigSnapshot>(CH.configChanged, callback),
   },
   // HIVE-142. Pairing and revoking a device for server mode — its own
   // namespace because neither verb is an ordinary settings write; see the
@@ -735,6 +738,14 @@ const bridge: HiveBridge = {
     /** One entry landed, from any party. */
     onChanged: (callback: (entry: LedgerEntry) => void) =>
       subscribe<LedgerEntry>(CH.ledgerChanged, callback),
+  },
+  plans: {
+    /** Every live plan. Boot and reattach hydration (HIVE-179). */
+    list: (): Promise<PlansSnapshot> =>
+      ipcRenderer.invoke(CH.plansList) as Promise<PlansSnapshot>,
+    /** One session's plan changed, or went (`plan: null`). */
+    onChanged: (callback: (event: PlanChangedEvent) => void) =>
+      subscribe<PlanChangedEvent>(CH.planChanged, callback),
   },
   updates: {
     status: (): Promise<UpdateStatus> =>

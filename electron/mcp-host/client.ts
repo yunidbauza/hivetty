@@ -1,5 +1,9 @@
 import { AGENTS_PATH, type AgentsDirectory } from '@shared/agent-contract';
-import { PROJECTS_PATH, type ProjectsDirectory } from '@shared/config-contract';
+import {
+  PROJECT_AUTO_MERGE_PATH,
+  PROJECTS_PATH,
+  type ProjectsDirectory,
+} from '@shared/config-contract';
 import { PR_PATH, type PrLookupReply } from '@shared/github-contract';
 import { HOOK_HEADER_SESSION, HOOK_HEADER_TOKEN } from '@shared/hook-contract';
 import {
@@ -17,6 +21,7 @@ import {
   type LedgerSnapshot,
 } from '@shared/ledger-contract';
 import {
+  PR_LOOKUP_TIMEOUT_MS,
   RECEIVER_TIMEOUT_MS,
   ReceiverError,
   type ReceiverClient,
@@ -69,7 +74,7 @@ export function createReceiverClient({
 }: ReceiverClientOptions): ReceiverClient {
   const base = url.replace(/\/$/, '');
 
-  const call = async <T>(path: string, body: unknown): Promise<T> => {
+  const call = async <T>(path: string, body: unknown, limitMs = timeoutMs): Promise<T> => {
     let response: Response;
     try {
       response = await fetch(`${base}${path}`, {
@@ -80,15 +85,23 @@ export function createReceiverClient({
           [HOOK_HEADER_TOKEN]: token,
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(limitMs),
       });
     } catch (cause) {
       /*
-        A transport failure, not a refusal: the app is not running, the socket
-        moved, or the call outran its timeout. Worded for the model, which is
-        the only reader — it needs to know this is not its fault and not worth
-        retrying in a tight loop.
+        A transport failure, not a refusal. Worded for the model, which is the
+        only reader: it needs to know this is not its fault and not worth
+        retrying in a tight loop. A timeout gets its own words. On loopback a
+        dead app refuses the connection at once, so a timeout means an app that
+        is up and slow, and "the app may have quit" had a shipper report the
+        Hive unreachable while its ledger calls in the same wake went through.
       */
+      if (cause instanceof Error && cause.name === 'TimeoutError') {
+        throw new ReceiverError(
+          0,
+          `the Hive did not answer within ${String(limitMs / 1000)}s. The app is most likely running but slow (this call can wait on GitHub or Jira), so the other hive tools still work. Try this call once more on your next wake, not in a loop.`,
+        );
+      }
       throw new ReceiverError(
         0,
         `could not reach the Hive (${String(cause)}). The app may have quit; stop and report this rather than retrying.`,
@@ -140,10 +153,12 @@ export function createReceiverClient({
     agents: () => call<AgentsDirectory>(AGENTS_PATH, {}),
     // HIVE-173: the same shape, the same empty body, for the same reason.
     projects: () => call<ProjectsDirectory>(PROJECTS_PATH, {}),
-    pr: (lookup) => call<PrLookupReply>(PR_PATH, lookup),
+    pr: (lookup) => call<PrLookupReply>(PR_PATH, lookup, PR_LOOKUP_TIMEOUT_MS),
     // HIVE-174: three small bodies, the same headers; Jira's own refusals ride in the 200.
     jiraGet: (request) => call<JiraResult<JiraToolIssue>>(JIRA_GET_PATH, request),
     jiraTransition: (request) => call<JiraResult<JiraToolTransitionReply>>(JIRA_TRANSITION_PATH, request),
     jiraComment: (request) => call<JiraResult<JiraComment>>(JIRA_COMMENT_PATH, request),
+    // Retro B: a small body; a refusal arrives as a 409 and its reason.
+    projectAutoMerge: (request) => call<ProjectsDirectory>(PROJECT_AUTO_MERGE_PATH, request),
   };
 }

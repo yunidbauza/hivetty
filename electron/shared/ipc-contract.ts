@@ -111,6 +111,7 @@ import type {
   HiveNotification,
   NotificationAction,
 } from './notification-contract';
+import type { PlanChangedEvent, PlansSnapshot } from './plan-contract';
 import type {
   SessionEffort,
   SessionModel,
@@ -733,6 +734,10 @@ export const CH = {
   ledgerAnswer: 'ledger:answer',
   /** Push: one entry landed, from any party. main → renderer. */
   ledgerChanged: 'ledger:changed',
+  /** Every live plan (HIVE-179). Boot hydration and the attach snapshot. */
+  plansList: 'plans:list',
+  /** Push: one session's plan changed, or went (`plan: null`). main → renderer. */
+  planChanged: 'plan:changed',
   /** What the app knows about a newer version of itself. */
   updatesStatus: 'updates:status',
   /**
@@ -745,6 +750,11 @@ export const CH = {
   configCloneStart: 'config:clone-start',
   configCloneCancel: 'config:clone-cancel',
   configCloneDone: 'config:clone-done', // main → renderer
+  /**
+   * The config changed by a write the renderer did not make (retro B): the
+   * `project_auto_merge` tool. Carries the fresh snapshot. main → renderer.
+   */
+  configChanged: 'config:changed',
   ptySpawn: 'pty:spawn',
   ptyWrite: 'pty:write',
   ptyResize: 'pty:resize',
@@ -1147,9 +1157,11 @@ export const EVENT_CHANNELS = [
   CH.sessionForeground,
   CH.sessionTerminalEnded,
   CH.configCloneDone,
+  CH.configChanged,
   CH.notificationsActivate,
   CH.fsChanged,
   CH.ledgerChanged,
+  CH.planChanged,
   CH.agentsChanged,
   CH.agentsStatus,
   CH.agentsLines,
@@ -2023,6 +2035,11 @@ export interface HiveBridge {
     cancelClone(): Promise<void>;
     /** Returns its own unsubscribe. Callers MUST invoke it on unmount. */
     onCloneDone(callback: (event: CloneDoneEvent) => void): () => void;
+    /**
+     * A config write the renderer did not make, with the fresh snapshot
+     * (retro B). Returns its own unsubscribe.
+     */
+    onConfigChanged(callback: (snapshot: ConfigSnapshot) => void): () => void;
   };
   /**
    * Pairing and revoking a device for server mode (HIVE-142).
@@ -2508,6 +2525,11 @@ export interface HiveBridge {
     answer: (request: LedgerAnswerRequest) => Promise<LedgerResult>;
     onChanged: (callback: (entry: LedgerEntry) => void) => () => void;
   };
+  /** Every session's plan (HIVE-179). Read-only; see {@link BRIDGE_PLANS_KEYS}. */
+  plans: {
+    list: () => Promise<PlansSnapshot>;
+    onChanged: (callback: (event: PlanChangedEvent) => void) => () => void;
+  };
   /**
    * Agent definitions on disk (HIVE-114).
    *
@@ -2784,6 +2806,12 @@ export const BRIDGE_KEYS = [
   'jira',
   'ledger',
   'notifications',
+  /**
+   * HIVE-179 adds `plans`. What a web page can now do that it could not
+   * before: read every session's task list and hear it change. Read-only —
+   * see {@link BRIDGE_PLANS_KEYS}.
+   */
+  'plans',
   'pty',
   /**
    * HIVE-144 adds `remote`. What a web page can now do that it could not
@@ -3362,6 +3390,18 @@ export const BRIDGE_LEDGER_KEYS = [
   'onChanged',
 ] as const;
 
+/**
+ * The exact key set of `window.hive.plans` (HIVE-179). Two reads and no
+ * write: main owns every rule about a plan, so a verb that set one from the
+ * page would be the change this list exists to catch.
+ */
+export const BRIDGE_PLANS_KEYS = [
+  // Every live plan. Boot and reattach hydration.
+  'list',
+  // One session's plan changed, or went — see `CH.planChanged`.
+  'onChanged',
+] as const;
+
 /** The exact key set of `window.hive.updates`. */
 export const BRIDGE_UPDATES_KEYS = ['status', 'check'] as const;
 
@@ -3391,6 +3431,8 @@ export const BRIDGE_CONFIG_KEYS = [
   'startClone',
   'cancelClone',
   'onCloneDone',
+  // Retro B.
+  'onConfigChanged',
   // Story 104.
   'setRuntime',
   'setProjectRuntime',

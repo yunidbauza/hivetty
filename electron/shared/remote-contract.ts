@@ -202,11 +202,15 @@ export const FRAME_KIND = {
   [CH.ledgerPost]: 'call',
   [CH.ledgerAnswer]: 'call',
   [CH.ledgerChanged]: 'event',
+  [CH.plansList]: 'call',
+  [CH.planChanged]: 'event',
   [CH.updatesStatus]: 'call',
   [CH.updatesCheck]: 'call',
   [CH.configCloneStart]: 'call',
   [CH.configCloneCancel]: 'call',
   [CH.configCloneDone]: 'event',
+  // Retro B. A normal broadcast, like the clone's: it carries a snapshot.
+  [CH.configChanged]: 'event',
   [CH.ptySpawn]: 'call',
   [CH.ptyWrite]: 'notify',
   [CH.ptyResize]: 'notify',
@@ -468,11 +472,14 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.ledgerPost]: 'execute',
   [CH.ledgerAnswer]: 'execute',
   [CH.ledgerChanged]: 'read',
+  [CH.plansList]: 'read',
+  [CH.planChanged]: 'read',
   [CH.updatesStatus]: 'read',
   [CH.updatesCheck]: 'execute',
   [CH.configCloneStart]: 'execute',
   [CH.configCloneCancel]: 'mutate',
   [CH.configCloneDone]: 'read',
+  [CH.configChanged]: 'read',
   [CH.ptySpawn]: 'execute',
   [CH.ptyWrite]: 'execute',
   [CH.ptyResize]: 'mutate',
@@ -968,7 +975,7 @@ export interface AttachAccepted {
 }
 
 /**
- * The six read channels a joining client needs to render the fleet at once
+ * The seven read channels a joining client needs to render the fleet at once
  * (HIVE-144) — what `buildAttachSnapshot` in `electron/main/ipc/index.ts`
  * fills {@link AttachAccepted.snapshot} with, keyed exactly as `CH` names
  * them so a client reads a key back with the same channel it would have
@@ -994,6 +1001,8 @@ export const SNAPSHOT_CHANNELS: readonly Channel[] = [
   CH.githubPrs,
   // The workspace config, set by `loadProjectConfig` (`src/lib/project-config.ts`).
   CH.configGet,
+  // The plans, merged by hydratePlans (hive-store.ts).
+  CH.plansList,
 ];
 
 /**

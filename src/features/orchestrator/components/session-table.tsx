@@ -14,6 +14,7 @@ import {
   recencyOf,
 } from '@/types/entity';
 
+import { Badge } from '@components/ui/badge';
 import { statusLabel, statusText } from '@components/ui/status-dot';
 import { SwarmCreature } from '@components/ui/swarm-creature';
 import { effectiveSelId } from '@features/orchestrator/utils/selection';
@@ -30,6 +31,7 @@ import {
   useHasResumable,
   useNavOrder,
   useOpenEntity,
+  usePlanProgress,
   useResumeSession,
   useSessionPr,
 } from '@stores/hive-store';
@@ -104,10 +106,19 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  *
  * Not "at no width at all" — that would be the same over-claim the budget made,
  * one threshold lower. Once the flexible three are at zero, what is left is the
- * `shrink-0` cells, and **they** overflow: 12 caret + 132 `STATUS` + 80
- * `LAST USED` + 34 `PR` + 52 Resume + 70 gaps + 16 `px-2` = **396px**. Below a
- * 396px flex line the header's fixed cells overflow the line while a row's
- * overflow the button, and `PR` and Resume diverge again by the difference.
+ * `shrink-0` cells, and **they** overflow: 12 caret + 176 `STATUS` + 80
+ * `LAST USED` + 34 `PR` + 52 Resume + 56 gaps (seven of `gap-2`) + 16 `px-2` =
+ * **426px**. Below a 426px flex line the fixed cells overflow their wrapper —
+ * the header's and a row's alike, since the header mirrors the row's box — and
+ * `LAST USED` paints under `PR`. `PR` and Resume still share an x with the
+ * header; before the mirror they did not, and diverged by the overflow.
+ *
+ * **The plan count raised it by 44px**, from 396 (HIVE-182): `STATUS` carries a
+ * session's `done/total` beside its label now, and that cell may not truncate.
+ * That put it at 440, past the 428px line the 1100px window gives a table with
+ * a Resume column, and `table-alignment.spec.ts` caught the header's `PR` 12px
+ * right of every row's. Retro D took the 14px back from the gaps (10px to 8px)
+ * rather than from a column, and mirrored the header on the row.
  *
  * **`LAST USED` raised that threshold by 90px**, from 306, and it is the one
  * cost of the column worth writing down. It buys nothing back: a fixed column
@@ -118,9 +129,11 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  * characters and a header word reading `PRO…`. The basis charges it once, to
  * the threshold, instead of to every row at every width.
  *
- * The basis moves that threshold from ~518px to 396px, which is what puts every
- * default layout — including the 1100px window with a Resume column, the case
- * this file was rewritten for — comfortably inside it. What remains outside is
+ * The basis moved that threshold from ~518px to 396px (426px since HIVE-182
+ * and retro D), which puts every default layout inside it — including the
+ * 1100px window with a Resume column, the case this file was rewritten for,
+ * though that one is now a 428px line and **2px** inside, not comfortably. A
+ * fixed column added here spends that margin first. What remains outside is
  * a user's own doing: HIVE-105 made the rails draggable, and
  * `STAGE_MIN_FRACTION` (`lib/rail-width.ts`) promises the stage only 20% of the
  * window, so 1100px can be squeezed to a 220px stage and a ~168px line. No
@@ -141,6 +154,13 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  * measurement taken on one machine's font stack, because the fallback chain
  * ends in a generic `monospace` whose metrics are the operating system's
  * business.
+ *
+ * Since HIVE-182 it is `w-[176px]`: the same cell carries a session's plan
+ * progress after its label, a green `Badge` reading `done/total`. Sized for
+ * the longest label plus the longest plausible count — 127.9px + a 6px gap +
+ * a 38px `10/12` badge (five 10px bold characters and the badge's `px-1`) —
+ * with the same four pixels of margin, because the count may not truncate for
+ * the label's reason: `2/…` has stopped saying anything.
  *
  * It and the two other fixed columns are what the flexible three shrink
  * *against*. `table-alignment.spec.ts` measures the result at 1100px, both with
@@ -201,10 +221,10 @@ const COL = {
     `whitespace-nowrap` keeps the one declaration that matters. A value too wide
     for the column overflows it — visibly, on one line, without disturbing the
     row — which is the honest failure and the one an e2e can measure. That
-    matters because the 132px is measured against *one* machine's font stack and
+    matters because the 176px is measured against *one* machine's font stack and
     the fallback chain ends in a generic `monospace`.
   */
-  status: 'w-[132px] shrink-0 whitespace-nowrap',
+  status: 'w-[176px] shrink-0 whitespace-nowrap',
   project: 'flex-[1_1_64px] truncate',
   branch: 'flex-[2_1_76px] truncate',
   /*
@@ -241,13 +261,13 @@ const COL = {
    * when does this run without me. `every 5m · slack.mention` does not fit in
    * `PROJECT`'s 64px and would be an ellipsis in it.
    *
-   * The basis is the two it replaces plus the 10px gap between them
-   * (`gap-2.5`), and the grow factor is their sum, so every column to the right
+   * The basis is the two it replaces plus the 8px gap between them
+   * (`gap-2`), and the grow factor is their sum, so every column to the right
    * of it — `LAST USED`, `PR`, the action slot — sits exactly where the header
    * puts it. That is the only property this cell has to preserve, and the one
    * a hand-picked width would quietly break at some window size nobody tested.
    */
-  wake: 'flex-[3_1_150px] truncate',
+  wake: 'flex-[3_1_148px] truncate',
 } as const;
 
 /**
@@ -341,7 +361,15 @@ export function SessionTable() {
       data-testid="session-table"
       className="min-h-0 overflow-y-auto bg-term-bg px-[18px] pt-4 font-mono text-[12.5px]"
     >
-      <div className="flex items-center gap-2.5 px-2 pb-1.5 text-[11px] tracking-[0.06em] text-term-head">
+      <div className="flex items-center gap-2 px-2 pb-1.5 text-[11px] tracking-[0.06em] text-term-head">
+        {/*
+          The same box a row's button is (retro D): the six cells a row opens a
+          terminal with sit in one `flex-1` wrapper, and `PR` and Resume sit
+          outside it. Header and rows are then the same two-level structure, so
+          `PR` shares an x with every row's at any width, even below the
+          threshold in `COL`'s note, where the fixed cells overflow.
+        */}
+        <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className={COL.caret} />
         {/*
           `title` on the truncating header cells, for the reason every row cell
@@ -371,7 +399,7 @@ export function SessionTable() {
         </span>
         {/*
           A third measurement handle. `LAST USED` is a `shrink-0` cell, so it is
-          a term in the 396px threshold above rather than something that gives
+          a term in the 426px threshold above rather than something that gives
           way — which makes it exactly the kind of column that takes the ones to
           its right with it when it is re-sized by someone who has not read the
           arithmetic.
@@ -383,6 +411,7 @@ export function SessionTable() {
         <span className={COL.lastUsed} data-col="last-used" title="LAST USED">
           LAST USED
         </span>
+        </div>
         {/*
           `data-col` is a measurement handle, not a style hook (HIVE-100). The
           header cell and every row's PR cell carry it, so one selector collects
@@ -542,6 +571,8 @@ function SessionTableRow({
    */
   const usedAt = entity && isSession(entity) ? recencyOf(entity) : 0;
   const lastUsed = useLastUsed(usedAt);
+  /** The session's plan progress (HIVE-182), before the guard for the same reason. */
+  const progress = usePlanProgress(id);
 
   /*
     Compared by id, not by position. `useNavOrder` is sorted by recency, so a
@@ -638,7 +669,7 @@ function SessionTableRow({
       ref={row}
       data-testid="session-row"
       className={cn(
-        'flex w-full items-center gap-2.5 rounded px-2',
+        'flex w-full items-center gap-2 rounded px-2',
         selected ? 'bg-term-row-active' : 'hover:bg-term-row-hover',
       )}
     >
@@ -655,7 +686,7 @@ function SessionTableRow({
       }}
       aria-current={activeTab === id ? 'true' : undefined}
       className={cn(
-        'flex min-w-0 flex-1 items-center gap-2.5 py-[3px] text-left',
+        'flex min-w-0 flex-1 items-center gap-2 py-[3px] text-left',
         ended && 'opacity-60',
       )}
     >
@@ -674,10 +705,24 @@ function SessionTableRow({
         {entityLabel(entity)}
       </span>
       <span
-        className={cn(COL.status, statusText(entity.status, entity.idleDetail))}
+        className={cn(
+          COL.status,
+          'flex items-center gap-1.5',
+          statusText(entity.status, entity.idleDetail),
+        )}
         data-col="status"
       >
         {statusLabel(entity.status, entity.idleDetail)}
+        {/* Plan progress after the label, which keeps priority (HIVE-182). */}
+        {progress === undefined ? null : (
+          <Badge
+            count={progress.total}
+            text={`${String(progress.done)}/${String(progress.total)}`}
+            tone="green"
+            label="tasks done"
+            className="shrink-0"
+          />
+        )}
       </span>
       <span className={cn(COL.project, 'text-subtle')} title={entity.project}>
         {entity.project}
@@ -896,7 +941,7 @@ function AgentTableRow({
       ref={row}
       data-testid="agent-row"
       className={cn(
-        'flex w-full items-center gap-2.5 rounded px-2',
+        'flex w-full items-center gap-2 rounded px-2',
         selected ? 'bg-term-row-active' : 'hover:bg-term-row-hover',
       )}
     >
@@ -907,7 +952,7 @@ function AgentTableRow({
           openEntity(id);
         }}
         aria-current={activeTab === id ? 'true' : undefined}
-        className="flex min-w-0 flex-1 items-center gap-2.5 py-[3px] text-left"
+        className="flex min-w-0 flex-1 items-center gap-2 py-[3px] text-left"
       >
         <span
           aria-hidden="true"

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import type { AgentContainer, AgentsDirectory } from '@shared/agent-contract';
-import type { ProjectsDirectory } from '@shared/config-contract';
+import type { ProjectAutoMergeRequest, ProjectsDirectory } from '@shared/config-contract';
 import {
   DEFAULT_BIND,
   DEFAULT_RECEIVER,
@@ -35,6 +35,7 @@ import {
   writeSharedContainerFiles,
 } from '../container/generated';
 import type { Ledger } from '../ledger';
+import type { PlanToolCall } from '../plans';
 
 import { withHostAlias } from './container-origin';
 import { createReceiver, type Receiver } from './receiver';
@@ -185,6 +186,8 @@ export interface HookHandlers {
   /** HIVE-173: the two workflow lookups; the receiver has honest defaults for both. */
   onProjectsList?: (caller: string) => ProjectsDirectory;
   onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** Retro B: the auto-merge switch; the receiver's default refuses with a reason. */
+  onProjectAutoMerge?: (caller: string, request: ProjectAutoMergeRequest) => ProjectsDirectory;
   /** HIVE-174: the Jira tools; the receiver's default refuses with a reason. */
   onJira?: JiraToolHandlers;
   onEvent: (event: HookStatusEvent) => void;
@@ -206,6 +209,8 @@ export interface HookHandlers {
    */
   onPromptName: (entityId: string, name: string) => void;
   onCleared: (entityId: string) => void;
+  /** A main-agent PostToolUse of a task tool (HIVE-179). See `ReceiverOptions.onPlanTool`. */
+  onPlanTool: (call: PlanToolCall) => void;
   /** A session reported its context and rate-limit usage (HIVE-79). */
   onMetrics: (entityId: string, metrics: SessionMetrics) => void;
   /** A session declared itself finished — `/done` (HIVE-93). */
@@ -433,6 +438,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       knowsAgent,
       onAgentsList,
       onProjectsList,
+      onProjectAutoMerge,
       onPrLookup,
       onJira,
       onEvent,
@@ -440,6 +446,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onTicketIntent,
       onPromptName,
       onCleared,
+      onPlanTool,
       onMetrics,
       onDone,
       onReady,
@@ -456,6 +463,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onTicketIntent,
         onPromptName,
         onCleared,
+        onPlanTool,
         onMetrics,
         onDone,
         onReady,
@@ -475,6 +483,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onLedgerPost: (caller, request) => ledger.append({ ...request, from: caller }),
         onAgentsList,
         onProjectsList,
+        onProjectAutoMerge,
         onPrLookup,
         onJira,
         knowsSession,

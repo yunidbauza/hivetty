@@ -160,9 +160,18 @@ import {
   type TokenStore,
 } from '../../remote-client/token-store';
 import { createAgentsRuntime, type AgentRegistry } from '../agents';
-import { createAutoMergeGrants, type AutoMergeGrants } from '../agents/auto-merge';
+import {
+  AUTO_MERGE_AGENT,
+  autoMergeNotices,
+  createAutoMergeGrants,
+  type AutoMergeGrants,
+} from '../agents/auto-merge';
 import { resolveClaude } from '../agents/claude-path';
-import { agentsDirectoryFor, projectsDirectoryFor } from '../agents/directory';
+import {
+  agentsDirectoryFor,
+  projectAutoMergeFor,
+  projectsDirectoryFor,
+} from '../agents/directory';
 import {
   agentPromptFile,
   agentStateFile,
@@ -185,6 +194,7 @@ import {
   addProject,
   configPath,
   getConfig,
+  onConfigChange,
   reloadConfig,
   removeProject,
   renameProject,
@@ -222,7 +232,7 @@ import {
 import { createHookRuntime } from '../hooks';
 import { readGhStatus, runCommand } from '../integrations/gh';
 import { createGithub } from '../integrations/github';
-import { lookupPr } from '../integrations/github/lookup';
+import { answerPrLookup } from '../integrations/github/lookup';
 import { runAsync, type RunAsync } from '../integrations/github/run';
 import { createJira } from '../integrations/jira';
 import { credentialFile } from '../integrations/jira/auth';
@@ -257,6 +267,7 @@ import {
   recordNotificationRefusal,
 } from '../notifications/delivery';
 import { badgeDock, clearDockBadge } from '../notifications/dock-badge';
+import { createBuilderProgress, type BuilderProgress } from '../plans';
 import { registerPtyHost } from '../pty-host';
 import { seedShippedIntoHive } from '../seed';
 import {
@@ -475,7 +486,7 @@ const noModeSwitcher: ModeSwitcher = () => {
  * `SNAPSHOT_CHANNELS` handler that called `surfaceFor` would register the
  * socket through `trackWindow` and have it graded a `window` surface — after
  * which `isForegroundFor` would read the *server's* `BrowserWindow` focus for a
- * device four time zones away. None of the six does today. One that grows the
+ * device four time zones away. None of the seven does today. One that grows the
  * dependency has to be tracked at attach instead.
  *
  * What is still absent is a **window**, and that is the fence that matters:
@@ -559,7 +570,7 @@ function handle<T>(
  * The payload each {@link SNAPSHOT_CHANNELS} entry is read with — the same one
  * `electron/preload/index.ts` sends for it, defaulting to `undefined` (HIVE-144).
  *
- * Every one of the six is called with no argument from the renderer at boot
+ * Every one of the seven is called with no argument from the renderer at boot
  * *except* `ledger:list`: its bridge method is `(query?) =>
  * ipcRenderer.invoke(CH.ledgerList, query ?? {})`, so `undefined` never
  * actually crosses that wire, and `parseLedgerReadQuery` — correctly — refuses
@@ -581,7 +592,7 @@ const SNAPSHOT_PAYLOAD: Partial<Record<Channel, unknown>> = {
  * cannot tell them apart).
  *
  * **Never rejects.** Every path resolves, which is what lets
- * {@link buildAttachSnapshot} run all six of these concurrently with a plain
+ * {@link buildAttachSnapshot} run all seven of these concurrently with a plain
  * `Promise.all` — one slow or broken read cannot take the others down with
  * it, and cannot make them wait for it either.
  *
@@ -632,7 +643,7 @@ function raceSnapshotRead(
     Promise.resolve()
       // The cast is the point, not a workaround for one: see the null branch
       // above. `await` on a non-promise is a no-op, so this one `.then` covers
-      // both `github:prs` (genuinely asynchronous) and the five that are not.
+      // both `github:prs` (genuinely asynchronous) and the six that are not.
       .then(() => (handler as CallHandler)(SNAPSHOT_PAYLOAD[channel], reporter))
       .then((value) => {
         /*
@@ -670,14 +681,14 @@ function raceSnapshotRead(
 }
 
 /**
- * Builds `AttachAccepted.snapshot` — the six {@link SNAPSHOT_CHANNELS} reads a
- * joining client needs to render the fleet without six round trips (HIVE-144).
+ * Builds `AttachAccepted.snapshot` — the seven {@link SNAPSHOT_CHANNELS} reads a
+ * joining client needs to render the fleet without seven round trips (HIVE-144).
  *
  * Calls each channel's handler through `remoteRegistry.call`, the exact
  * function a socket's own `call` frame would reach — the same one `handle`
  * above records — so there is no second source of truth for what a channel
  * answers. Read with {@link SNAPSHOT_PAYLOAD}'s entry for the channel, or
- * `undefined` when it has none — the payload every one of these six takes at
+ * `undefined` when it has none — the payload every one of these seven takes at
  * boot in the renderer.
  *
  * A snapshot is a convenience, not a precondition (Ruling 15, HIVE-144
@@ -685,9 +696,9 @@ function raceSnapshotRead(
  * registered is omitted, one whose handler throws or rejects is omitted, and
  * one that simply takes longer than {@link SNAPSHOT_READ_BUDGET_MS} is
  * omitted too — a slow read costs the same key a broken one would, never the
- * whole snapshot, and never the handshake itself. All six race that budget
+ * whole snapshot, and never the handshake itself. All seven race that budget
  * **concurrently** (`raceSnapshotRead`, via `Promise.all`), not one after
- * another: a sequential sum of six "safe" per-channel waits could still blow
+ * another: a sequential sum of seven "safe" per-channel waits could still blow
  * past the handshake's own deadline on its own, which a single shared budget
  * bounding the whole call cannot.
  *
@@ -728,6 +739,13 @@ let remoteListener: ReturnType<typeof createRemoteListener> | null = null;
 let remoteListenerPort: number | null = null;
 
 let sessions: Sessions | null = null;
+/**
+ * A builder's progress ticked onto the session that asked for the build
+ * (HIVE-180), or `null` until the first ledger entry after `sessions` exists.
+ * Built lazily inside the `ledger.onChange` listener, which is wired long
+ * before `createSessions` runs; cleared with `sessions` on a reset.
+ */
+let builderProgress: BuilderProgress | null = null;
 /** Releases the wake subscription `registerIpcHandlers` makes for `sessions`. */
 let stopDisplayWake: (() => void) | null = null;
 /**
@@ -2096,6 +2114,21 @@ export function registerIpcHandlers(
    * today, but registration order is an accident and this states it in code
    * instead — the broadcast lands first, then delivery, then the notifier.
    */
+  /*
+    A project's merge consent changed (retro C): tell the shipper, which only
+    wakes for the ledger. Settings, the `project_auto_merge` tool and a hand
+    edit then reload all install a snapshot through `onConfigChange`. One
+    directed post per flipped project; nothing when no shipper exists.
+  */
+  onConfigChange((before, after) => {
+    for (const post of autoMergeNotices(before, after, knownAgents.has(AUTO_MERGE_AGENT))) {
+      const written = ledger.append(post);
+      if (!written.ok) {
+        console.warn(`[hive] could not tell the shipper auto-merge changed (${written.reason})`);
+      }
+    }
+  });
+
   ledger.onChange((entry) => {
     // Not `send`: the notifier reads the ledger through its own subscription
     // below, and tapping here would show it every entry twice. HIVE-141 routes
@@ -2115,6 +2148,22 @@ export function registerIpcHandlers(
       deliver.onEntry(entry);
     } catch (cause) {
       console.warn(`[ledger] could not deliver ${entry.id}:`, cause);
+    }
+    /*
+      A build's progress, onto the plan of the session that asked for it
+      (HIVE-180). Guarded like `deliver`: a plan is a view, and a throw here
+      must not fail the write that triggered it.
+    */
+    try {
+      if (sessions !== null) {
+        builderProgress ??= createBuilderProgress({
+          plans: sessions.planStore(),
+          knowsSession: (id) => sessions?.entities().includes(id) ?? false,
+        });
+        builderProgress.onEntry(entry);
+      }
+    } catch (cause) {
+      console.warn(`[ledger] could not tick a build from ${entry.id}:`, cause);
     }
     /*
       The third and fourth consumers, sequenced against each other (HIVE-120,
@@ -2173,6 +2222,8 @@ export function registerIpcHandlers(
   });
 
   handle(CH.ledgerList, (_event, payload) => ledger.read(parseLedgerReadQuery(payload)));
+  // Every live plan (HIVE-179). Before `createSessions` there are none to list.
+  handle(CH.plansList, () => sessions?.plans() ?? { plans: [] });
   handle(CH.ledgerPost, (_event, payload) =>
     /*
       `from` is supplied here, never taken from the renderer — the same rule
@@ -3058,17 +3109,35 @@ export function registerIpcHandlers(
     // HIVE-173: the config's projects, read per call so an edit in Settings shows.
     onProjectsList: () => projectsDirectoryFor(getConfig()),
     /*
+      Retro B. `project_auto_merge` is a consent tool: the fence, or a
+      session's own permission prompt, asked the person before a call gets
+      here. The same write Settings makes; `autoMergeGrants` reads the config
+      live at the next shipper wake, so nothing else needs telling.
+    */
+    onProjectAutoMerge: (caller, request) => {
+      const directory = projectAutoMergeFor(request, {
+        config: getConfig,
+        setAutoMerge: setProjectAutoMerge,
+        // Settings › Projects shows a write it did not make (retro B, Task 4).
+        announce: (snapshot) => send(CH.configChanged, snapshot),
+      });
+      console.info(
+        `[projects] ${caller} set autoMerge ${request.on ? 'on' : 'off'} on ${request.project}`,
+      );
+      return directory;
+    },
+    /*
       HIVE-173. `github` is declared further down this function. The callback
       runs only when a request arrives, after this whole body has executed, so
       the binding is initialised by then. The sweep is the same one the PRs
-      panel runs, run fresh here: main keeps no snapshot of it. And the same
-      await `githubPrs` makes first (HIVE-84): a shipper wake inside the
-      boot window would otherwise read launchd's four-entry PATH and be told
-      `gh` is not installed.
+      panel runs: its last result when recent and holding the PR, a fresh one
+      otherwise (`answerPrLookup`). And the same await `githubPrs` makes
+      first (HIVE-84): a shipper wake inside the boot window would otherwise
+      read launchd's four-entry PATH and be told `gh` is not installed.
     */
     onPrLookup: async (_caller, lookup) => {
       await loginEnvStatus();
-      return lookupPr(await github.prs(), lookup);
+      return answerPrLookup(github, lookup);
     },
     /*
       HIVE-174. `jira` is declared further down for the same reason `github`
@@ -5214,6 +5283,7 @@ export function resetIpcHandlers(options: { flush?: boolean } = {}): void {
   stopDisplayWake = null;
   sessions?.dispose();
   sessions = null;
+  builderProgress = null;
   cloneFlow?.dispose();
   cloneFlow = null;
   fsWatch?.dispose();
