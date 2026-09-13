@@ -8,7 +8,7 @@ import {
 } from '../../../../electron/main/agents/wake-command';
 import type { AgentState } from '../../../../electron/main/agents/state';
 import type { McpServerSpec } from '../../../../electron/main/mcp/agent-config';
-import type { AgentRunState } from '../../../../electron/shared/agent-contract';
+import { STANDING_LANE, type AgentRunState } from '../../../../electron/shared/agent-contract';
 
 /**
  * The seam between a *name* and an argv (HIVE-115, task 9).
@@ -70,6 +70,23 @@ const state = (): AgentState => ({
   },
   recordRun: vi.fn(),
   clearSlackNeedsAuth: vi.fn(() => []),
+  lane: (name, key) => {
+    const agent = stored[name] ?? EMPTY;
+    if (key !== STANDING_LANE) return agent.lanes?.[key] ?? { runsSinceRotate: 0 };
+    const { status: _s, runs: _r, today: _t, skipsSinceRun: _k, forceRotate: _f, lanes: _l, ...lane } = agent;
+    return lane;
+  },
+  patchLane: (name, key, change) => {
+    const agent = stored[name] ?? EMPTY;
+    if (key === STANDING_LANE) {
+      stored[name] = { ...agent, ...change };
+      return { ...change, runsSinceRotate: stored[name].runsSinceRotate };
+    }
+    const next = { ...(agent.lanes?.[key] ?? { runsSinceRotate: 0 }), ...change };
+    stored[name] = { ...agent, lanes: { ...agent.lanes, [key]: next } };
+    return next;
+  },
+  forgetLane: vi.fn(),
   forget: (name) => {
     delete stored[name];
   },
@@ -88,7 +105,8 @@ const state = (): AgentState => ({
 const build = (over: Partial<WakeCommandDeps> = {}) =>
   createWakeCommand({
     agentsRoot: () => '/home/u/.hive/agents',
-    workdir: (name) => `/home/u/.hive/work/${name}`,
+    workdir: (name, lane) =>
+      lane === 'standing' ? `/home/u/.hive/work/${name}` : `/home/u/.hive/work/${name}/lanes/${lane}`,
     promptFile: (name) => `/data/hive/agents/${name}.system.md`,
     pluginDir: () => '/data/hive/plugin',
     agentSettingsPath: () => '/data/hive/claude-agent.settings.json',
@@ -645,6 +663,9 @@ Read the channel and report.
         },
         recordRun: vi.fn(),
         clearSlackNeedsAuth: vi.fn(() => []),
+        lane: vi.fn(() => ({ runsSinceRotate: 0 })),
+        patchLane: vi.fn(() => ({ runsSinceRotate: 0 })),
+        forgetLane: vi.fn(),
         forget: (name) => {
           delete localState[name];
         },
@@ -808,5 +829,134 @@ describe('a containerised agent (HIVE-137)', () => {
 
     expect('problem' in built && built.problem).toContain('slack');
     expect(written['/data/hive/agents/slack-watcher.mcp.json']).toBeUndefined();
+  });
+});
+
+describe('lanes (HIVE-185)', () => {
+  it('resumes the lane\'s own recorded session, never the standing one', () => {
+    stored['slack-watcher'] = {
+      status: 'sleeping', runsSinceRotate: 3, runs: [], sessionUuid: 'standing-uuid',
+      lanes: { 'thread:A': { sessionUuid: 'lane-a-uuid', runsSinceRotate: 1 } },
+    };
+
+    const built = build()('slack-watcher', 'ledger', undefined, { lane: 'thread:A' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.args).toContain('--resume');
+    expect(built.args).toContain('lane-a-uuid');
+    expect(built.args).not.toContain('standing-uuid');
+    expect(built.sessionUuid).toBe('lane-a-uuid');
+  });
+
+  it('mints a fresh --session-id for a lane that has none', () => {
+    stored['slack-watcher'] = { status: 'sleeping', runsSinceRotate: 3, runs: [], sessionUuid: 'standing-uuid' };
+
+    const built = build()('slack-watcher', 'ledger', undefined, { lane: 'thread:B' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.args).toContain('--session-id');
+    expect(built.args).toContain('minted-uuid');
+    expect(built.args).not.toContain('standing-uuid');
+  });
+
+  it('asks a lane for its handoff on its own count, and consumes only its own pending rotation', () => {
+    stored['slack-watcher'] = {
+      status: 'sleeping', runsSinceRotate: 0, runs: [], sessionUuid: 'standing-uuid',
+      pendingSession: { uuid: 'standing-next', handoff: 'standing notes' },
+      lanes: { 'repo:a/x': { sessionUuid: 'lane-uuid', runsSinceRotate: 999 } },
+    };
+
+    const built = build()('slack-watcher', 'ledger', undefined, { lane: 'repo:a/x' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.lastTurn).toBe(true);
+    expect(built.args).toContain('lane-uuid');
+    // The standing lane's parked rotation is untouched by another lane's wake.
+    expect(stored['slack-watcher'].pendingSession).toEqual({ uuid: 'standing-next', handoff: 'standing notes' });
+  });
+
+  it('starts a lane\'s own parked rotation with its handoff', () => {
+    stored['slack-watcher'] = {
+      status: 'sleeping', runsSinceRotate: 0, runs: [],
+      lanes: { 'repo:a/x': { sessionUuid: 'old', runsSinceRotate: 0, pendingSession: { uuid: 'lane-next', handoff: 'lane notes' } } },
+    };
+
+    const built = build()('slack-watcher', 'ledger', undefined, { lane: 'repo:a/x' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.args).toContain('lane-next');
+    expect(built.sessionUuid).toBe('lane-next');
+    expect(stored['slack-watcher'].lanes?.['repo:a/x']?.pendingSession).toBeUndefined();
+  });
+
+  it('never reads forceRotate from another lane — it is the standing lane\'s', () => {
+    stored['slack-watcher'] = {
+      status: 'sleeping', runsSinceRotate: 0, runs: [], sessionUuid: 's', forceRotate: true,
+      lanes: { 'thread:A': { sessionUuid: 'a', runsSinceRotate: 0 } },
+    };
+
+    const built = build()('slack-watcher', 'ledger', undefined, { lane: 'thread:A' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.lastTurn).toBe(false);
+    expect(stored['slack-watcher'].forceRotate).toBe(true);
+  });
+});
+
+describe('a lane\'s working directory (HIVE-188)', () => {
+  it('creates and runs a lane in its own directory, and a standing wake in the agent\'s own', () => {
+    const lane = build()('slack-watcher', 'ledger', undefined, { lane: 'thread:A' });
+
+    if ('problem' in lane) throw new Error(lane.problem);
+    expect(lane.cwd).toBe('/home/u/.hive/work/slack-watcher/lanes/thread:A');
+    expect(made).toContain('/home/u/.hive/work/slack-watcher/lanes/thread:A');
+
+    const standing = build()('slack-watcher', 'ledger');
+
+    if ('problem' in standing) throw new Error(standing.problem);
+    expect(standing.cwd).toBe('/home/u/.hive/work/slack-watcher');
+  });
+
+  it('runs a task run in the agent\'s own directory, whatever lane it names', () => {
+    const task = build()('slack-watcher', 'manual', 'review', { kind: 'task', lane: 'thread:A' });
+
+    if ('problem' in task) throw new Error(task.problem);
+    expect(task.cwd).toBe('/home/u/.hive/work/slack-watcher');
+  });
+});
+
+describe('the lane in the wake prompt (HIVE-188)', () => {
+  it('tells a lane run which lane it is', () => {
+    files['/home/u/.hive/agents/slack-watcher/AGENT.md'] = AGENT_MD.replace('model: sonnet\n', 'model: sonnet\nlane: thread\n');
+
+    const built = build()('slack-watcher', 'ledger', 'ask A from overmind', { lane: 'thread:A' });
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.args.at(-1)).toContain("You are slack-watcher's lane for ask A.");
+  });
+
+  it('tells the standing lane of a laning agent how to hand work over', () => {
+    files['/home/u/.hive/agents/slack-watcher/AGENT.md'] = AGENT_MD.replace('model: sonnet\n', 'model: sonnet\nlane: thread\n');
+
+    const built = build()('slack-watcher', 'ledger');
+
+    if ('problem' in built) throw new Error(built.problem);
+    expect(built.args.at(-1)).toContain('slack-watcher lanes by thread.');
+  });
+});
+
+describe('grants per lane (HIVE-187)', () => {
+  it('asks for the grants of the wake\'s own lane, and a task run for the standing lane\'s', () => {
+    const pendingGrants = vi.fn((_name: string, _lane: string): string[] => []);
+
+    build({ pendingGrants })('slack-watcher', 'ledger', undefined, { lane: 'thread:A' });
+    build({ pendingGrants })('slack-watcher', 'manual', 'review', { kind: 'task', lane: 'thread:A' });
+    build({ pendingGrants })('slack-watcher', 'ledger');
+
+    expect(pendingGrants.mock.calls).toEqual([
+      ['slack-watcher', 'thread:A'],
+      ['slack-watcher', 'standing'],
+      ['slack-watcher', 'standing'],
+    ]);
   });
 });

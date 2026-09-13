@@ -3,8 +3,10 @@ import { dirname } from 'node:path';
 
 import {
   AGENT_RUN_HISTORY,
+  STANDING_LANE,
   dayKey,
   type AgentRunState,
+  type LaneState,
   type RunSummary,
 } from '@shared/agent-contract';
 
@@ -41,6 +43,22 @@ export interface AgentState {
   all(): Record<string, AgentRunState>;
   read(name: string): AgentRunState;
   patch(name: string, change: Partial<AgentRunState>): AgentRunState;
+  /**
+   * One lane's conversation (HIVE-184, spec §2). `standing` reads the
+   * top-level fields; any other key reads `lanes[key]`, and a lane never
+   * written reads as a fresh one.
+   */
+  lane(name: string, key: string): LaneState;
+  /**
+   * Write one lane's fields where {@link AgentState.lane} reads them (HIVE-184).
+   * The standing lane never closes, so `closedAt` on it throws.
+   */
+  patchLane(name: string, key: string, change: Partial<LaneState>): LaneState;
+  /**
+   * Drop a closed lane's record (HIVE-188). Its runs stay in `runs[]` for the
+   * log. The standing lane is the agent itself, so forgetting it throws.
+   */
+  forgetLane(name: string, key: string): void;
   /**
    * File a finished run, and count it against `now`'s calendar day.
    *
@@ -144,6 +162,25 @@ function seed(path: string): Record<string, AgentRunState> {
   }
 }
 
+/** The lane fields of the top-level state: the standing lane (HIVE-184). */
+const LANE_KEYS = [
+  'sessionUuid',
+  'pendingWake',
+  'runsSinceRotate',
+  'pendingSession',
+  'rotateFailures',
+  'lastRunAt',
+  'nextRunAt',
+] as const satisfies readonly (keyof LaneState & keyof AgentRunState)[];
+
+function standingOf(agent: AgentRunState): LaneState {
+  const lane: LaneState = { runsSinceRotate: agent.runsSinceRotate };
+  for (const key of LANE_KEYS) {
+    if (agent[key] !== undefined) Object.assign(lane, { [key]: agent[key] });
+  }
+  return lane;
+}
+
 export function createAgentState(options: AgentStateOptions): AgentState {
   const debounceMs = options.debounceMs ?? PERSIST_DEBOUNCE_MS;
   const agents = seed(options.path);
@@ -187,6 +224,40 @@ export function createAgentState(options: AgentStateOptions): AgentState {
       schedule();
 
       return next;
+    },
+
+    lane(name, key) {
+      const agent = agents[name] ?? { ...EMPTY, runs: [] };
+      if (key === STANDING_LANE) return standingOf(agent);
+      return agent.lanes?.[key] ?? { runsSinceRotate: 0 };
+    },
+
+    patchLane(name, key, change) {
+      if (key === STANDING_LANE) {
+        // `closedAt` is not a top-level field; writing it would leave a stray key.
+        if ('closedAt' in change) throw new Error('the standing lane never closes');
+        return standingOf(state.patch(name, change));
+      }
+
+      const agent = agents[name] ?? { ...EMPTY, runs: [] };
+      const next: LaneState = { ...(agent.lanes?.[key] ?? { runsSinceRotate: 0 }), ...change };
+      agents[name] = { ...agent, lanes: { ...agent.lanes, [key]: next } };
+      schedule();
+      return next;
+    },
+
+    forgetLane(name, key) {
+      if (key === STANDING_LANE) throw new Error('the standing lane is the agent itself');
+
+      const agent = agents[name];
+
+      if (agent?.lanes?.[key] === undefined) return;
+
+      const { [key]: _gone, ...rest } = agent.lanes;
+      const { lanes: _all, ...without } = agent;
+
+      agents[name] = Object.keys(rest).length === 0 ? without : { ...agent, lanes: rest };
+      schedule();
     },
 
     recordRun(name, summary, now) {

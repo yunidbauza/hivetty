@@ -388,9 +388,14 @@ export function createAgentRegistry({
             ...(def.limits.dailyUsd === undefined
               ? {}
               : { dailyUsd: def.limits.dailyUsd }),
+            // The per-run reservation against that ceiling (HIVE-187).
+            ...(def.limits.budgetUsd === undefined
+              ? {}
+              : { budgetUsd: def.limits.budgetUsd }),
             // The tracker's gate and the scheduler's flush (HIVE-128) — cached
             // by `ipc/index.ts` beside the schedule and read off this listing.
             parallel: def.limits.parallel,
+            ...(def.lane === undefined ? {} : { lane: def.lane }),
             // The registry has never seen a run; `mergeRunState` fills this.
             runs: [],
             // HIVE-134 follow-up: `ipc/index.ts` reads `container?.hostAlias`

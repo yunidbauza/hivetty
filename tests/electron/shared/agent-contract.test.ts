@@ -11,6 +11,7 @@ import {
   KNOWN_AGENT_MCP,
   QUEUEABLE_REFUSALS,
   RESERVED_AGENT_NAMES,
+  STANDING_LANE,
   WAKE_CHECKS,
   WAKE_EVERY_FLOOR_MS,
   WAKE_ON_EVENTS,
@@ -18,11 +19,14 @@ import {
   dayKey,
   formatRunCost,
   isQueueableRefusal,
+  runReservation,
   isContainerCommand,
   isContainerName,
   isContainerRuntime,
   isReservedAgentName,
   isWakeOn,
+  repoLane,
+  threadLane,
 } from '../../../electron/shared/agent-contract';
 import {
   LEDGER_POST_PATH,
@@ -144,6 +148,7 @@ describe('agent-contract', () => {
       'mcp',
       'tools',
       'autonomy',
+      'lane',
       'limits.turns',
       'limits.budget_usd',
       'limits.daily_usd',
@@ -256,7 +261,7 @@ describe('AGENTS_PATH', () => {
 
 describe('the refusals that end on their own (HIVE-128)', () => {
   it('lists exactly the waits the queue is allowed to hold', () => {
-    expect([...QUEUEABLE_REFUSALS].sort()).toEqual(['paused', 'saturated', 'working']);
+    expect([...QUEUEABLE_REFUSALS].sort()).toEqual(['budget', 'paused', 'saturated', 'working']);
   });
 
   it('keeps a broken definition out of the queue', () => {
@@ -329,5 +334,47 @@ describe('slack.app_mention (HIVE-124)', () => {
     expect(isWakeOn('slack.mention')).toBe(true);
     expect(isWakeOn('slack.channel:#eng-code-review')).toBe(true);
     expect(isWakeOn('slack.app_mentions')).toBe(false);
+  });
+});
+
+describe('lane (HIVE-184)', () => {
+  it('declares lane as an optional enum of thread and repo', () => {
+    expect(AGENT_FIELDS).toContainEqual({
+      path: 'lane',
+      kind: 'enum',
+      required: false,
+      values: ['thread', 'repo'],
+    });
+  });
+});
+
+describe('lane keys (HIVE-184)', () => {
+  it('spells the three lane keys', () => {
+    expect(STANDING_LANE).toBe('standing');
+    expect(threadLane('01J9ASK')).toBe('thread:01J9ASK');
+    expect(repoLane('yunidbauza/the-hive')).toBe('repo:yunidbauza/the-hive');
+    // GitHub names are case-insensitive, so the key is too (HIVE-189).
+    expect(repoLane('Yunid/The-Hive')).toBe('repo:yunid/the-hive');
+  });
+
+  it('lets a pre-lane run state omit lanes entirely', () => {
+    const state: AgentRunState = { status: 'sleeping', runsSinceRotate: 0, runs: [] };
+    expect(state.lanes).toBeUndefined();
+  });
+});
+
+describe('the daily budget per run (HIVE-187)', () => {
+  it('queues behind a budget refusal', () => {
+    expect(isQueueableRefusal('budget')).toBe(true);
+  });
+
+  it('reserves budget_usd, or daily_usd ÷ parallel when no budget_usd is set', () => {
+    expect(runReservation({ budgetUsd: 3, dailyUsd: 5 }, 2)).toBe(3);
+    expect(runReservation({ dailyUsd: 8 }, 3)).toBeCloseTo(8 / 3);
+    // One run at a time cannot overshoot together with anything (decision Q1, revised).
+    expect(runReservation({ dailyUsd: 8 }, 1)).toBe(0);
+    expect(runReservation({ dailyUsd: 8 }, 0)).toBe(0);
+    expect(runReservation({ budgetUsd: 2, dailyUsd: 8 }, 1)).toBe(2);
+    expect(runReservation({}, 2)).toBe(0);
   });
 });

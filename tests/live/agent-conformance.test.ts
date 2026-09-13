@@ -12,9 +12,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   agentPromptFile,
   agentStateFile,
-  agentWorkdir,
   agentsRoot,
+  laneWorkdir,
 } from '../../electron/main/agents/paths';
+import { parseAgent } from '../../electron/main/agents/definition';
 import { createPermissions, type Permissions } from '../../electron/main/agents/permissions';
 import { agentsDirectoryFor } from '../../electron/main/agents/directory';
 import { createAgentRegistry, type AgentRegistry } from '../../electron/main/agents/registry';
@@ -39,10 +40,13 @@ import { createLedger, type Ledger } from '../../electron/main/ledger';
 import { agentMcpConfigFile } from '../../electron/main/mcp';
 import { hiveServerSpec, mcpConfig } from '../../electron/main/mcp/config';
 import { createSkillsRuntime } from '../../electron/main/skills';
-import type {
-  AgentRunState,
-  RunLine,
-  WakeSpec,
+import {
+  parseList,
+  readFrontmatter,
+  type AgentLane,
+  type AgentRunState,
+  type RunLine,
+  type WakeSpec,
 } from '../../electron/shared/agent-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
@@ -53,6 +57,7 @@ import {
 } from '../../electron/shared/hook-contract';
 import { CONFIG_PATH_ENV } from '../../electron/shared/config-contract';
 import { LEDGER_DIR, OVERMIND } from '../../electron/shared/ledger-contract';
+import { laneOfRun } from '../../electron/shared/ledger-derive';
 import {
   SLACK_TOOL_GLOB,
   SLACK_TOOL_PREFIX,
@@ -225,6 +230,9 @@ const FENCE = 'probe-fence';
 /** A party that stands in for a live session, which this suite has none of. */
 const SESSION = 'sess-live-probe';
 
+/** A second asker, so two sessions can ask one thread-laned agent at once (HIVE-191). */
+const SESSION_B = 'sess-live-probe-b';
+
 /** Every party the ledger and the receiver accept in this suite. */
 /**
  * The agent the **clock** wakes, twice (HIVE-121).
@@ -329,6 +337,14 @@ const SPECIALIST = 'probe-specialist';
  */
 const FANOUT = 'probe-fanout';
 
+/**
+ * Lane probes (HIVE-191): one that lanes by thread, one that lanes by
+ * repository, and one whose day's budget is the observable.
+ */
+const THREAD = 'probe-thread';
+const REPO = 'probe-repo';
+const PURSE = 'probe-purse';
+
 /** The agent that must remember, with no memory, why it asked (HIVE-135). */
 const INTENT = 'probe-intent';
 
@@ -361,6 +377,9 @@ const AGENTS = [
   FANOUT,
   INTENT,
   SOCKET,
+  THREAD,
+  REPO,
+  PURSE,
 ];
 
 const AGENT_MD = `---
@@ -784,6 +803,76 @@ Read your ledger inbox. If it contains an ask addressed to you, call
  * but read the prompt and call `ledger_done` — and two of these run at once, so
  * a runaway costs double.
  */
+/**
+ * Lanes by thread (HIVE-191). Every ask is its own conversation, and two run at
+ * once. The body is a small protocol the scenarios drive by what they ask.
+ */
+const THREAD_MD = (markers: string) => `---
+name: ${THREAD}
+description: Proves thread lanes run apart and come home.
+icon: Ghost
+model: haiku
+wake:
+  on: [ledger]
+lane: thread
+tools: [Read, TodoWrite]
+limits:
+  turns: 10
+  parallel: 2
+---
+This is a conformance probe. Read your ledger inbox. Act on the ask that opened
+your lane, and ignore every other ask:
+
+- "echo <word>": answer that ask with exactly <word>, then end your turn.
+- "remember <word>": ask the party who asked you, with ledger_ask, the single
+  question "which colour?", then end your turn. When you are woken by the
+  answer, answer the original ask with "<word> <colour>" and end your turn.
+- "touch <name>": call Bash with exactly \`touch ${markers}/<name>\`, then answer
+  the ask with "touched" and end your turn.
+
+Use the ledger tools (mcp__hive__ledger_*) for every ledger step, never Bash.
+Call Bash only for "touch", and only with that exact command. Say nothing else.
+`;
+
+/** Lanes by repository (HIVE-191): overlaps across repositories, queues within one. */
+const REPO_MD = `---
+name: ${REPO}
+description: Proves repo lanes overlap across repositories and queue within one.
+icon: Ghost
+model: haiku
+wake:
+  on: [ledger]
+lane: repo
+tools: [Read, TodoWrite]
+limits:
+  turns: 6
+  parallel: 2
+---
+This is a conformance probe. Read your ledger inbox, answer the ask that opened
+this wake with exactly the word "shipped", and end your turn. Do nothing else.
+`;
+
+/**
+ * A day's budget as the observable (HIVE-191). `budget_usd` makes each run's
+ * reservation exact: two live runs hold $2 of the $2.50, and a third does not fit.
+ */
+const PURSE_MD = `---
+name: ${PURSE}
+description: Proves the daily budget holds a start back.
+icon: Ghost
+model: haiku
+lane: thread
+tools: [Read]
+limits:
+  turns: 4
+  parallel: 3
+  budget_usd: 1
+  daily_usd: 2.5
+---
+This is a conformance probe. Report the word after "manual —" with ledger_done
+and end your turn.
+`;
+
 const FANOUT_MD = `---
 name: ${FANOUT}
 description: Proves two task runs land two receipts.
@@ -873,6 +962,8 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
   let marker: string;
   /** The standing-work probe's own marker, for the same reason `marker` exists. */
   let standingMarker: string;
+  /** Where {@link THREAD}'s "touch" writes (HIVE-191), outside every lane's own directory. */
+  let threadMarkers: string;
 
   let receiver: Receiver | null = null;
   let ledger: Ledger;
@@ -889,7 +980,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
   let slackConnected = false;
 
   /** Every argv this suite spawned, in order. */
-  const spawns: { file: string; args: string[] }[] = [];
+  const spawns: { file: string; args: string[]; grants?: string }[] = [];
   /** Every hook event that came back on the **agent** register. */
   const agentEvents: HookAgentEvent[] = [];
   /** Every hook event that came back on the **session** register. Must stay empty. */
@@ -922,6 +1013,14 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
    * being broken: the ask was written, the gate refused it, and nothing woke.
    */
   const ledgerWakers = new Set<string>();
+  /**
+   * Each probe's `lane:`, `limits.parallel` and day's limits, read off its
+   * parsed definition the way `ipc/index.ts` reads them into its caches
+   * (HIVE-191). The frontmatter stays the one place that decides.
+   */
+  const probeLanes = new Map<string, AgentLane>();
+  const probeParallel = new Map<string, number>();
+  const probeLimits = new Map<string, { dailyUsd?: number; budgetUsd?: number }>();
 
   beforeAll(async () => {
     /*
@@ -959,6 +1058,8 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
     // `afterAll` cleans it up as one directory rather than two.
     marker = join(dir, 'bash-ran.txt');
     standingMarker = join(dir, 'standing-ran.txt');
+    threadMarkers = join(dir, 'thread-markers');
+    await mkdir(threadMarkers, { recursive: true });
 
     for (const [name, body] of [
       [NAME, AGENT_MD],
@@ -976,6 +1077,9 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       [FANOUT, FANOUT_MD],
       [INTENT, INTENT_MD],
       [SOCKET, SOCKET_MD],
+      [THREAD, THREAD_MD(threadMarkers)],
+      [REPO, REPO_MD],
+      [PURSE, PURSE_MD],
     ] as const) {
       await mkdir(join(agentsRoot(), name), { recursive: true });
       await writeFile(join(agentsRoot(), name, 'AGENT.md'), body, 'utf8');
@@ -987,6 +1091,23 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
         scheduler is handed the answer rather than the file.
       */
       if (/^\s*on:\s*\[[^\]]*\bledger\b/m.test(body)) ledgerWakers.add(name);
+
+      // The same parse a wake makes: the skills the file declares count as present.
+      const declared = parseList(readFrontmatter(body)?.fields.get('skills')?.value ?? '[]') ?? [];
+      const parsed = parseAgent(body, {
+        folder: name,
+        skillNames: declared,
+        hiveSkillNames: [],
+        integrations: ['slack'],
+      });
+
+      if (!('def' in parsed)) throw new Error(`${name} does not parse: ${JSON.stringify(parsed.problems)}`);
+      if (parsed.def.lane !== undefined) probeLanes.set(name, parsed.def.lane);
+      probeParallel.set(name, parsed.def.limits.parallel);
+      probeLimits.set(name, {
+        ...(parsed.def.limits.dailyUsd === undefined ? {} : { dailyUsd: parsed.def.limits.dailyUsd }),
+        ...(parsed.def.limits.budgetUsd === undefined ? {} : { budgetUsd: parsed.def.limits.budgetUsd }),
+      });
     }
 
     /*
@@ -1008,7 +1129,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       // assertion 3 has nothing to find. `SESSION` stands in for the live
       // session this suite has no pty for (HIVE-120).
       knowsParty: (party) =>
-        AGENTS.includes(party) || party === OVERMIND || party === SESSION,
+        AGENTS.includes(party) || party === OVERMIND || party === SESSION || party === SESSION_B,
     });
 
     /*
@@ -1105,7 +1226,8 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
 
     const buildWakeCommand = createWakeCommand({
       agentsRoot,
-      workdir: agentWorkdir,
+      // Each lane in its own directory, as `ipc/index.ts` wires it (HIVE-188).
+      workdir: laneWorkdir,
       promptFile: (name) => agentPromptFile(userDataPath, name),
       pluginDir: () => pluginDir ?? '',
       agentSettingsPath: () => settingsPath,
@@ -1138,12 +1260,14 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       // `allow-once` this suite never exercises would otherwise have nowhere
       // to come from, and `grantsFor` is a no-op for every other agent here,
       // none of which ever answers a permission ask that way.
-      pendingGrants: (name) => permissions.grantsFor(name),
+      pendingGrants: (name, lane) => permissions.grantsFor(name, lane),
     });
 
     runs = createRunTracker({
       spawn: (file, args, options) => {
-        spawns.push({ file, args: [...args] });
+        const grants = (options as SpawnOptions).env?.['HIVE_GRANTS'];
+
+        spawns.push({ file, args: [...args], ...(grants === undefined ? {} : { grants }) });
 
         return spawnProcess(
           file,
@@ -1154,12 +1278,19 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       command: (name, trigger, extra, options) =>
         buildWakeCommand(name, trigger, extra, options),
       /*
-        The cap `ipc/index.ts` reads off each parsed definition (HIVE-128).
-        One above 1, for {@link FANOUT} alone: every other probe here is woken
-        serially and a cap above one would let a stray second wake start a
-        second process under a name whose assertions count spawns.
+        The cap `ipc/index.ts` reads off each parsed definition (HIVE-128),
+        read here off the probes' own frontmatter (HIVE-191). Only the probes
+        that fan out or lane declare one above 1.
       */
-      parallelFor: (name) => (name === FANOUT ? 2 : 1),
+      parallelFor: (name) => probeParallel.get(name) ?? 1,
+      /*
+        The run token beside the run id (HIVE-184). Without it the receiver
+        refuses, 403, every ledger write a run makes, and every probe's
+        `ledger_*` call fails.
+      */
+      runToken: (run) => receiver?.runToken(run) ?? null,
+      // The day's ceiling on every wake (HIVE-187).
+      limitsFor: (name) => probeLimits.get(name) ?? {},
       state: agentState,
       appendLedger: (entry) => {
         const result = ledger.append(entry);
@@ -1221,7 +1352,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       isAgent: (id) => AGENTS.includes(id),
       // The same cache the tracker above reads, for the same reason: the flush
       // fans a queue out only as wide as the cap it is told (HIVE-128).
-      parallelFor: (name) => (name === FANOUT ? 2 : 1),
+      parallelFor: (name) => probeParallel.get(name) ?? 1,
       /*
         The gate `ipc/index.ts` reads off each parsed definition into
         `ledgerAgents` — derived here from the definitions this suite actually
@@ -1234,6 +1365,12 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
         place that decides.
       */
       wakesOnLedger: (id) => ledgerWakers.has(id),
+      // Lanes, as `ipc/index.ts` wires them (HIVE-186, HIVE-188).
+      laneOf: (name) => probeLanes.get(name),
+      laneLive: (name, lane) =>
+        runs.liveRuns(name).some((run) => run.kind === 'standing' && (run.lane ?? 'standing') === lane),
+      // The temp root is removed whole in `afterAll`.
+      removeLaneDir: () => undefined,
       /*
         Empty until the interval scenario fills it (HIVE-121). Every other
         scenario drives its wake from a ledger entry or by hand, and a schedule
@@ -1343,6 +1480,16 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
     new Promise((resolve) => {
       settlers.set(name, resolve);
     });
+
+  /** Poll until `predicate` holds, in 100 ms steps, or fail naming it (HIVE-191). */
+  const until = async (predicate: () => boolean, ms: number): Promise<void> => {
+    const deadline = Date.now() + ms;
+
+    while (!predicate()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${predicate.toString()}`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  };
 
   /**
    * Wake the agent and resolve when the tracker has finalized the run.
@@ -1990,6 +2137,169 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       ]),
     );
   }, 300_000);
+
+  describe('lanes (HIVE-191)', () => {
+    it('runs two askers\' asks as two overlapping lanes, each answering its own asker', async () => {
+      const done = settled(THREAD);
+      const a = ledger.append({ from: SESSION, to: THREAD, kind: 'ask', body: 'echo amber' });
+      const b = ledger.append({ from: SESSION_B, to: THREAD, kind: 'ask', body: 'echo cobalt' });
+      if (!a.ok || !b.ok) throw new Error('asks refused');
+
+      await done;
+      await until(() => runs.liveRuns(THREAD).length === 0, 240_000);
+
+      const entries = (await onDisk()).filter((entry) => entry['from'] === THREAD);
+      const started = entries.filter((entry) => String(entry['body']).startsWith('run.started'));
+      const ended = entries.filter((entry) => String(entry['body']).startsWith('run.ended'));
+      const lanes = started.map((entry) => (entry['meta'] as Record<string, unknown>)['lane']);
+
+      expect(new Set(lanes)).toEqual(new Set([`thread:${a.id}`, `thread:${b.id}`]));
+
+      // Both started before either ended: the lanes really overlapped.
+      const lastStart = started.map((entry) => String(entry['id'])).sort().at(-1);
+      const firstEnd = ended.map((entry) => String(entry['id'])).sort().at(0);
+
+      expect(lastStart !== undefined && firstEnd !== undefined && lastStart < firstEnd).toBe(true);
+
+      const answers = entries.filter((entry) => entry['kind'] === 'answer');
+      const toA = answers.find((entry) => entry['thread'] === a.id);
+      const toB = answers.find((entry) => entry['thread'] === b.id);
+
+      expect(toA).toMatchObject({ to: SESSION });
+      expect(String(toA?.['body']).toLowerCase()).toContain('amber');
+      expect(toB).toMatchObject({ to: SESSION_B });
+      expect(String(toB?.['body']).toLowerCase()).toContain('cobalt');
+    }, 300_000);
+
+    it('resumes the asking lane\'s own session with the answer, and it remembers its first wake', async () => {
+      const first = settled(THREAD);
+      const ask = ledger.append({ from: SESSION, to: THREAD, kind: 'ask', body: 'remember walnut' });
+      if (!ask.ok) throw new Error('ask refused');
+      await first;
+
+      const lane = `thread:${ask.id}`;
+      const question = ledger.read({}).openAsks.find((open) => open.from === THREAD && open.to === SESSION);
+      expect(question).toBeDefined();
+      const uuid = agentState.lane(THREAD, lane).sessionUuid;
+      expect(uuid).toBeDefined();
+
+      // A sibling lane runs meanwhile and is untouched by what follows.
+      const sibling = ledger.append({ from: SESSION_B, to: THREAD, kind: 'ask', body: 'echo slate' });
+      if (!sibling.ok) throw new Error('sibling refused');
+
+      const second = settled(THREAD);
+      expect(ledger.answer({ thread: question!.id, body: 'green' }, SESSION).ok).toBe(true);
+      await second;
+      await until(() => runs.liveRuns(THREAD).length === 0, 240_000);
+
+      const resumed = spawns.filter((spawn) => spawn.args.includes('--resume') && spawn.args.includes(uuid!));
+      expect(resumed).toHaveLength(1);
+
+      const reply = (await onDisk()).find(
+        (entry) => entry['from'] === THREAD && entry['kind'] === 'answer' && entry['thread'] === ask.id,
+      );
+      expect(String(reply?.['body']).toLowerCase()).toContain('walnut');
+      expect(String(reply?.['body']).toLowerCase()).toContain('green');
+      expect(agentState.lane(THREAD, `thread:${sibling.id}`).sessionUuid).not.toBe(uuid);
+    }, 420_000);
+
+    it("brings a lane's allow-once grant home to that lane, and never to its sibling (flaky: haiku sometimes runs another Bash command first, or skips the touch)", { retry: 2, timeout: 420_000 }, async () => {
+      const first = settled(THREAD);
+      const ask = ledger.append({ from: SESSION, to: THREAD, kind: 'ask', body: 'touch home' });
+      if (!ask.ok) throw new Error('ask refused');
+      await first;
+
+      /*
+        The card this attempt's own lane raised for the touch itself. A model
+        that pokes at anything else first raises a card for that instead, and a
+        retried attempt must not answer an earlier attempt's card.
+      */
+      const log = ledger.read({});
+      const card = log.openAsks.find(
+        (open) =>
+          open.from === THREAD &&
+          open.meta?.['kind'] === 'permission' &&
+          laneOfRun(THREAD, open.meta?.['run'], log.entries) === `thread:${ask.id}` &&
+          JSON.stringify(open.meta?.['input'] ?? {}).includes('touch'),
+      );
+      expect(card).toBeDefined();
+      expect(existsSync(join(threadMarkers, 'home'))).toBe(false);
+
+      // The sibling wakes between the card and its answer, and must carry no grant.
+      const siblingDone = settled(THREAD);
+      const sibling = ledger.append({ from: SESSION_B, to: THREAD, kind: 'ask', body: 'echo ash' });
+      if (!sibling.ok) throw new Error('sibling refused');
+      await siblingDone;
+      const siblingUuid = agentState.lane(THREAD, `thread:${sibling.id}`).sessionUuid;
+      const siblingSpawn = spawns.find((spawn) => siblingUuid !== undefined && spawn.args.includes(siblingUuid));
+      expect(siblingSpawn).toBeDefined();
+      expect(siblingSpawn?.grants ?? '[]').not.toContain('touch');
+
+      const second = settled(THREAD);
+      expect(ledger.answer({ thread: card!.id, body: 'allow-once' }, OVERMIND).ok).toBe(true);
+      await second;
+
+      const laneUuid = agentState.lane(THREAD, `thread:${ask.id}`).sessionUuid;
+      const home = spawns.at(-1);
+      expect(home?.args).toContain(laneUuid);
+      expect(home?.grants).toContain('touch');
+      expect(existsSync(join(threadMarkers, 'home'))).toBe(true);
+    });
+
+    it('overlaps two repositories, and queues a second ask for the same one until the first run closes', async () => {
+      const done = settled(REPO);
+      const x1 = ledger.append({ from: SESSION, to: REPO, kind: 'ask', body: 'ship x1', meta: { repo: 'a/x' } });
+      const y = ledger.append({ from: SESSION, to: REPO, kind: 'ask', body: 'ship y', meta: { repo: 'b/y' } });
+      const x2 = ledger.append({ from: SESSION, to: REPO, kind: 'ask', body: 'ship x2', meta: { repo: 'a/x' } });
+      if (!x1.ok || !y.ok || !x2.ok) throw new Error('asks refused');
+
+      expect(agentState.lane(REPO, 'repo:a/x').pendingWake).toEqual([expect.objectContaining({ id: x2.id })]);
+      await done;
+      await until(
+        () => runs.liveRuns(REPO).length === 0 && (agentState.lane(REPO, 'repo:a/x').pendingWake ?? []).length === 0,
+        300_000,
+      );
+
+      const entries = (await onDisk()).filter((entry) => entry['from'] === REPO);
+      const lanesOf = (prefix: string) =>
+        entries
+          .filter((entry) => String(entry['body']).startsWith(prefix))
+          .map((entry) => {
+            const meta = entry['meta'] as Record<string, unknown>;
+            return { id: String(entry['id']), lane: meta['lane'], run: meta['run'] };
+          });
+      const starts = lanesOf('run.started');
+      const ends = lanesOf('run.ended');
+      const x = starts.filter((start) => start.lane === 'repo:a/x');
+      const yStart = starts.find((start) => start.lane === 'repo:b/y');
+      const firstXEnd = ends.find((end) => end.run === x[0]?.run);
+
+      expect(x).toHaveLength(2);
+      expect(yStart).toBeDefined();
+      expect(firstXEnd).toBeDefined();
+      // a/x and b/y overlapped:
+      expect(yStart!.id < firstXEnd!.id).toBe(true);
+      // the second a/x run started only after the first a/x run ended:
+      expect(firstXEnd!.id < x[1]!.id).toBe(true);
+    }, 420_000);
+
+    it('refuses a third concurrent start past daily_usd as budget, with the held-back card', async () => {
+      const done = settled(PURSE);
+      expect(runs.run(PURSE, 'manual', 'one', { lane: 'thread:p1' })).toMatchObject({ started: true });
+      expect(runs.run(PURSE, 'manual', 'two', { lane: 'thread:p2' })).toMatchObject({ started: true });
+      // $1 + $1 reserved of $2.50: a third $1 does not fit.
+      expect(runs.run(PURSE, 'manual', 'three', { lane: 'thread:p3' })).toMatchObject({ started: false, refused: 'budget' });
+
+      const card = (await onDisk()).find(
+        (entry) => entry['from'] === OVERMIND && (entry['meta'] as Record<string, unknown> | undefined)?.['agent'] === PURSE,
+      );
+      // Held back by live reservations, not a spent day (HIVE-187).
+      expect(card?.['meta']).toMatchObject({ dailyCap: 2.5, agent: PURSE, held: true });
+      expect(String(card?.['body'])).toContain('held back a run');
+      expect(agentState.read(PURSE).today?.capped).toBeUndefined();
+      await done;
+    }, 300_000);
+  });
 
   /**
    * The permission fence, end to end (HIVE-119).

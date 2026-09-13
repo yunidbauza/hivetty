@@ -1,5 +1,6 @@
 import { spawn, type SpawnOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -19,6 +20,8 @@ import { SNAPSHOT_READ_BUDGET_MS, createRemoteListener } from '@remote-host/list
 import {
   AGENT_LIMIT_DEFAULTS,
   formatRunCost,
+  STANDING_LANE,
+  type AgentLane,
   type AgentLinesPush,
   type AgentRotateResult,
   type AgentRunResult,
@@ -176,6 +179,7 @@ import {
   agentPromptFile,
   agentStateFile,
   agentWorkdir,
+  laneWorkdir,
   agentsRoot,
 } from '../agents/paths';
 import { createPermissions, type Permissions } from '../agents/permissions';
@@ -890,7 +894,7 @@ const ledgerAgents = new Set<string>();
  */
 const agentSchedules = new Map<
   string,
-  { wake: WakeSpec; dailyUsd?: number; mcp: string[] }
+  { wake: WakeSpec; dailyUsd?: number; budgetUsd?: number; mcp: string[] }
 >();
 /**
  * Every valid agent's `limits.parallel` (HIVE-128), for the tracker's gate and
@@ -898,6 +902,8 @@ const agentSchedules = new Map<
  * schedule rather than read off disk. Absent reads as 1, the default.
  */
 const agentParallel = new Map<string, number>();
+/** `lane:` per agent, from the same listing (HIVE-186). Absent: a pre-lane agent. */
+const agentLanes = new Map<string, AgentLane>();
 /**
  * Every valid agent's own `container.host_alias`, for the receiver's `Host`
  * guard (HIVE-134 follow-up).
@@ -973,6 +979,7 @@ function refreshKnownAgents(): void {
       ledgerAgents.clear();
       agentSchedules.clear();
       agentParallel.clear();
+      agentLanes.clear();
       agentHostAliases.clear();
 
       for (const agent of snapshot.agents) {
@@ -989,6 +996,7 @@ function refreshKnownAgents(): void {
         agentSchedules.set(agent.name, {
           wake: agent.wake,
           ...(agent.dailyUsd === undefined ? {} : { dailyUsd: agent.dailyUsd }),
+          ...(agent.budgetUsd === undefined ? {} : { budgetUsd: agent.budgetUsd }),
           mcp: agent.mcp,
         });
         // The parallel cap, for the same two synchronous askers (HIVE-128).
@@ -996,6 +1004,8 @@ function refreshKnownAgents(): void {
           agent.name,
           agent.parallel ?? AGENT_LIMIT_DEFAULTS.parallel,
         );
+        // The lane mode, for the scheduler's routing (HIVE-186).
+        if (agent.lane !== undefined) agentLanes.set(agent.name, agent.lane);
         // The receiver's `Host` guard (HIVE-134 follow-up), asked just as
         // synchronously as the two above. Absent means this agent inherits
         // the global alias, which `hostAliases` always admits on its own —
@@ -2627,7 +2637,7 @@ export function registerIpcHandlers(
 
   const buildWakeCommand = createWakeCommand({
     agentsRoot,
-    workdir: agentWorkdir,
+    workdir: laneWorkdir,
     promptFile: (name) => agentPromptFile(app.getPath('userData'), name),
     pluginDir: () => join(app.getPath('userData'), PLUGIN_DIR),
     // The agent-space file, never `hooks.settingsPathFor()`: that one carries
@@ -2646,8 +2656,8 @@ export function registerIpcHandlers(
     // `permissions` is armed later, alongside `scheduler` — read through the
     // module binding for the same reason `hooks`/`mcp` are read through
     // getters here rather than closed over as values.
-    pendingGrants: (name) => [
-      ...(permissions?.grantsFor(name) ?? []),
+    pendingGrants: (name, lane) => [
+      ...(permissions?.grantsFor(name, lane) ?? []),
       // HIVE-166: consent from the config becomes a rule on the shipper's wake.
       ...(autoMergeGrants?.grantsFor(name) ?? []),
     ],
@@ -2772,6 +2782,8 @@ export function registerIpcHandlers(
     },
     // The watcher's cache, filled in the same pass as `agentSchedules` (HIVE-128).
     parallelFor: (name) => agentParallel.get(name) ?? AGENT_LIMIT_DEFAULTS.parallel,
+    // The day's ceiling on every wake (HIVE-187), from the same cache.
+    limitsFor: (name) => agentSchedules.get(name) ?? {},
     state: agentState,
     /*
       The receiver's per-run grants registry, for `approve` over HTTP
@@ -2783,6 +2795,8 @@ export function registerIpcHandlers(
       set: (run, owner, grants) => hooks.receiverGrants()?.set(run, owner, grants),
       delete: (run) => hooks.receiverGrants()?.delete(run),
     },
+    // HIVE-184: read per call for the reason `grants` is; the receiver binds later.
+    runToken: (run) => hooks.runToken(run),
     /*
       A run's own entries are `from` the **agent**: a run is the agent's
       activity and the log is read back by name. That is the same rule
@@ -2868,6 +2882,24 @@ export function registerIpcHandlers(
     wakesOnLedger: (id) => ledgerAgents.has(id),
     // The watcher's cache, filled in the same pass as `agentSchedules` (HIVE-128).
     parallelFor: (name) => agentParallel.get(name) ?? AGENT_LIMIT_DEFAULTS.parallel,
+    laneOf: (name) => agentLanes.get(name),
+    // A pruned lane's directory goes with its record (HIVE-188).
+    removeLaneDir: (name, lane) => {
+      try {
+        rmSync(laneWorkdir(name, lane), { recursive: true, force: true });
+      } catch (cause) {
+        console.warn(`[hive] could not remove ${name}'s ${lane} directory: ${String(cause)}`);
+      }
+    },
+    /*
+      A lane is working while a conversation run holds it (HIVE-186). From the
+      tracker, not agents.json: a lane stores no status (spec §2), and the
+      tracker's map starts empty after a restart, as `wakeFromWorking` wants.
+    */
+    laneLive: (name, lane) =>
+      (runs?.liveRuns(name) ?? []).some(
+        (run) => run.kind === 'standing' && (run.lane ?? STANDING_LANE) === lane,
+      ),
     /*
       The schedule, from the cache the folder watcher rebuilds (HIVE-121).
 
@@ -5394,6 +5426,7 @@ export function resetIpcHandlers(options: { flush?: boolean } = {}): void {
   ledgerAgents.clear();
   agentSchedules.clear();
   agentParallel.clear();
+  agentLanes.clear();
   // Back to "nothing has been listed", not "nothing is scheduled": the next
   // registration must earn the right to clear a `nextRunAt` all over again.
   agentsListed = false;

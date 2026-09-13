@@ -833,6 +833,23 @@ describe('AgentRunLog', () => {
       }
     });
 
+    it('names a live run\'s lane on its row and its group (HIVE-185)', () => {
+      seed({ status: 'working', live: [standing({ lane: 'repo:a/x' })] });
+      lines(['lane line'], 'live-standing');
+
+      const { container } = render(<AgentRunLog name="watcher" />);
+
+      const output = screen.getByTestId('run-output');
+
+      expect(within(output).getByText(/a\/x · #live-sta/)).toBeInTheDocument();
+
+      const row = container.querySelector('[data-live-run="standing"]') as HTMLElement;
+
+      expect(row.textContent).toContain('a/x');
+      // The whole key, so a hover tells two lanes apart even across days.
+      expect(within(row).getByTitle('repo:a/x lane')).toBeInTheDocument();
+    });
+
     it('groups the output by run, standing first, and labels each group', () => {
       seed({ status: 'working', live: [task(1, 'review PR 166'), standing()] });
       lines(['task line'], 'live-task-1');

@@ -1,3 +1,4 @@
+import { STANDING_LANE } from '@shared/agent-contract';
 import {
   LEDGER_BODY_MAX,
   LEDGER_KINDS,
@@ -13,6 +14,7 @@ import {
   CLOSING_KINDS,
   claims,
   keepNewest,
+  laneOfRun,
   matches,
   openAsks,
   resolveRef,
@@ -246,9 +248,38 @@ export function createLedger(options: LedgerOptions): Ledger {
       */
       if (request.kind === 'release' && request.from !== OVERMIND) {
         const task = taskOf(request);
-        const holder = task === undefined ? undefined : claims(store.all())[task];
+        const log = store.all();
+        const holder = task === undefined ? undefined : claims(log)[task];
         if (holder !== undefined && holder !== request.from) {
           return refuse(403, `${task} is held by ${holder}, not by ${request.from}`);
+        }
+
+        /*
+          A holder's release must come from the lane that claimed (HIVE-188).
+          Lanes are separate conversations of one agent, and two builder lanes
+          must not release each other's ticket claims. Both entries' `meta.run`
+          is host-stamped and token-checked (HIVE-184); a claim or release that
+          names no run (a session, an older log) keeps the party rule above.
+          An agent's standing lane tidies up after its lanes (the shipper's
+          stranded rows, and a task run, which is never a lane), so it may
+          release any claim its own agent holds (HIVE-189). Two non-standing
+          lanes still can't release each other's claims.
+        */
+        if (task !== undefined && holder === request.from) {
+          const claimed = [...log]
+            .reverse()
+            .find((item) => item.kind === 'claim' && taskOf(item) === task);
+          const claimRun = claimed?.meta?.['run'];
+          const releaseRun = request.meta?.['run'];
+
+          if (claimed?.from === request.from && typeof claimRun === 'string' && typeof releaseRun === 'string') {
+            const held = laneOfRun(request.from, claimRun, log);
+            const releasing = laneOfRun(request.from, releaseRun, log);
+
+            if (held !== releasing && releasing !== STANDING_LANE) {
+              return refuse(403, `${task} is held by ${request.from}'s ${held} lane`);
+            }
+          }
         }
       }
 

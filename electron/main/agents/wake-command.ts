@@ -30,6 +30,7 @@ import { dirname, join } from 'node:path';
 import {
   AGENT_FILE,
   KNOWN_AGENT_MCP,
+  STANDING_LANE,
   parseList,
   readFrontmatter,
   type AgentContainer,
@@ -67,7 +68,8 @@ export interface WakeCommandDeps {
   /** `~/.hive/agents`. Read per call, so a relocated config is honoured. */
   agentsRoot: () => string;
   /** `~/.hive/work/<name>`, created before the spawn. */
-  workdir: (name: string) => string;
+  /** The lane's working directory (HIVE-188); `standing` is the agent's own. */
+  workdir: (name: string, lane: string) => string;
   /** `<userData>/hive/agents/<name>.system.md`, rewritten before the spawn. */
   promptFile: (name: string) => string;
   /** `<userData>/hive/plugin` — the skills The Hive generates. */
@@ -117,7 +119,8 @@ export interface WakeCommandDeps {
    * wake it answered rather than to whichever wake happened to be building
    * next.
    */
-  pendingGrants: (name: string) => string[];
+  /** The one-time grants for this wake's lane (HIVE-187); `standing` for a task run. */
+  pendingGrants: (name: string, lane: string) => string[];
   fs?: WakeFs;
   /**
    * How `resolveClaude` decides a candidate is runnable.
@@ -166,7 +169,7 @@ export type BuildWakeCommand = (
   name: string,
   trigger: string,
   extra?: string,
-  options?: { kind?: RunKind },
+  options?: { kind?: RunKind; lane?: string },
 ) => WakeInvocation | { problem: string };
 
 const describe = (cause: unknown): string =>
@@ -337,7 +340,18 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
           'receiver may still be starting. Try again in a moment.',
       };
     }
-    const previous = deps.state.read(name);
+    /*
+      The conversation this wake continues (HIVE-185). Every field below is
+      read from, and written to, this lane only: a lane never resumes, rotates
+      or consumes another lane's session.
+    */
+    const lane = options?.lane ?? STANDING_LANE;
+    const previous = deps.state.lane(name, lane);
+    /*
+      `forceRotate` is the console's `rotate <agent>`, and it means the
+      standing conversation (HIVE-122). Another lane never consumes it.
+    */
+    const forced = lane === STANDING_LANE && deps.state.read(name).forceRotate === true;
     /*
       A resumed session carries every earlier turn, so its cost per wake climbs
       without bound. Rotation bounds it — but as a handover, not an amnesia
@@ -376,9 +390,9 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
       !task &&
       pending === undefined &&
       previous.sessionUuid !== undefined &&
-      (previous.forceRotate === true ||
-        previous.runsSinceRotate >= def.limits.rotateAfter);
-    const workdir = deps.workdir(name);
+      (forced || previous.runsSinceRotate >= def.limits.rotateAfter);
+    // A task run has always run in the agent's own directory; a lane runs in its own (HIVE-188).
+    const workdir = deps.workdir(name, task ? STANDING_LANE : lane);
     const systemPrompt = deps.promptFile(name);
     let agentMcp: string | null = null;
 
@@ -415,11 +429,9 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
       the agent's memory gone anyway, which is strictly worse than the stale
       counter that ordering was originally written to prevent.
     */
-    if (!task && (pending !== undefined || previous.forceRotate === true)) {
-      deps.state.patch(name, {
-        pendingSession: undefined,
-        forceRotate: undefined,
-      });
+    if (!task && (pending !== undefined || forced)) {
+      deps.state.patchLane(name, lane, { pendingSession: undefined });
+      if (forced) deps.state.patch(name, { forceRotate: undefined });
     }
 
     const resuming =
@@ -438,6 +450,8 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
         ...(extra === undefined ? {} : { extra }),
         ...(lastTurn ? { lastTurn: true as const } : {}),
         ...(task || pending === undefined ? {} : { handoff: pending.handoff }),
+        // The lane sentence in the prompt (HIVE-188). A task run is no lane's.
+        ...(lane === STANDING_LANE || task ? {} : { lane }),
         kind,
         paths: {
           settings: containerSettings ?? settings,
@@ -461,7 +475,7 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
           hook: deps.hookEnv(name),
           subscriptionAuth: deps.subscriptionAuth(),
         },
-        grants: deps.pendingGrants(name),
+        grants: deps.pendingGrants(name, task ? STANDING_LANE : lane),
         ...(def.container === undefined
           ? {}
           : {

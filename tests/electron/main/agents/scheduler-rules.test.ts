@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { decide, decideForEvent } from '../../../../electron/main/agents/scheduler-rules';
+import { decide, decideForEvent, laneClaims, laneFor } from '../../../../electron/main/agents/scheduler-rules';
 import type { AgentStatus } from '../../../../electron/shared/agent-contract';
 import type { LedgerEntry } from '../../../../electron/shared/ledger-contract';
 
@@ -85,5 +85,166 @@ describe('decideForEvent (HIVE-124)', () => {
 
   it('wakes an asking agent, which is not running', () => {
     expect(decideForEvent('asking')).toBe('wake');
+  });
+});
+
+describe('laneFor (HIVE-186)', () => {
+  const at = (over: Partial<LedgerEntry>): LedgerEntry => ({
+    id: 'x', ts: 0, from: 'overmind', to: 'builder', kind: 'ask', body: 'b', ...over,
+  });
+  const started = (run: string, lane?: string): LedgerEntry =>
+    at({ id: `s-${run}`, from: 'builder', to: undefined, kind: 'event', body: 'run.started — ledger',
+         meta: { run, trigger: 'ledger', kind: 'standing', ...(lane === undefined ? {} : { lane }) } });
+
+  // thread lanes
+  it('opens a thread lane for a new ask', () => {
+    expect(laneFor('thread', at({ id: 'A' }), [at({ id: 'A' })])).toEqual({ lane: 'thread:A' });
+  });
+
+  it('routes the answer to a lane\'s own question back into that lane', () => {
+    const answer = at({ id: 'ans', from: 'overmind', to: 'builder', kind: 'answer', thread: 'Q' });
+    const log = [
+      at({ id: 'A' }),
+      started('r1', 'thread:A'),
+      at({ id: 'Q', from: 'builder', to: 'overmind', meta: { run: 'r1' } }),
+      answer,
+    ];
+    expect(laneFor('thread', answer, log)).toEqual({ lane: 'thread:A' });
+  });
+
+  it('routes the answer to a sibling lane\'s question into the sibling', () => {
+    const answer = at({ id: 'ans', from: 'overmind', to: 'builder', kind: 'answer', thread: 'QB' });
+    const log = [
+      at({ id: 'A' }), at({ id: 'B' }),
+      started('r1', 'thread:A'), started('r2', 'thread:B'),
+      at({ id: 'QB', from: 'builder', to: 'overmind', meta: { run: 'r2' } }),
+      answer,
+    ];
+    expect(laneFor('thread', answer, log)).toEqual({ lane: 'thread:B' });
+  });
+
+  it('routes a follow-up in the thread of the ask that opened a lane into that lane', () => {
+    const post = at({ id: 'p', kind: 'post', thread: 'A' });
+    const log = [at({ id: 'A' }), post];
+    expect(laneFor('thread', post, log)).toEqual({ lane: 'thread:A' });
+  });
+
+  it('routes into standing once the lane\'s opening ask has closed, but not for the closing entry itself', () => {
+    const closing = at({ id: 'done', kind: 'done', thread: 'A' });
+    const after = at({ id: 'late', kind: 'post', thread: 'A' });
+    const log = [at({ id: 'A' }), closing, after];
+    expect(laneFor('thread', closing, log)).toEqual({ lane: 'thread:A' });
+    expect(laneFor('thread', after, log)).toEqual({ lane: 'standing' });
+  });
+
+  it('routes into standing once the lane\'s opening ask has expired (spec §1)', () => {
+    const expired = at({ id: 'e', from: 'overmind', to: 'overmind', kind: 'event', thread: 'A', body: 'ask A expired', meta: { expired: 'A' } });
+    const forged = at({ id: 'f', from: 'sess-1', to: 'builder', kind: 'event', thread: 'A', body: 'x', meta: { expired: 'A' } });
+    const late = at({ id: 'late', kind: 'post', thread: 'A' });
+    expect(laneFor('thread', late, [at({ id: 'A' }), forged, late])).toEqual({ lane: 'thread:A' });
+    expect(laneFor('thread', late, [at({ id: 'A' }), expired, late])).toEqual({ lane: 'standing' });
+  });
+
+  // repo lanes
+  it('shares one lane between two asks for the same repo, and not across repos', () => {
+    const a = at({ id: 'A', meta: { repo: 'a/x' } });
+    const b = at({ id: 'B', meta: { repo: 'a/x' } });
+    const c = at({ id: 'C', meta: { repo: 'b/y' } });
+    const log = [a, b, c];
+    expect(laneFor('repo', a, log)).toEqual({ lane: 'repo:a/x' });
+    expect(laneFor('repo', b, log)).toEqual({ lane: 'repo:a/x' });
+    expect(laneFor('repo', c, log)).toEqual({ lane: 'repo:b/y' });
+  });
+
+  it('keys one repository as one lane, whatever its case (HIVE-189)', () => {
+    const a = at({ id: 'A', meta: { repo: 'A/x' } });
+    const b = at({ id: 'B', meta: { repo: 'a/X' } });
+    expect(laneFor('repo', a, [a, b])).toEqual({ lane: 'repo:a/x' });
+    expect(laneFor('repo', b, [a, b])).toEqual({ lane: 'repo:a/x' });
+  });
+
+  describe('a repo-less ask, by the claim (HIVE-189)', () => {
+    const claim = (task: string, id = `c-${task}`): LedgerEntry =>
+      at({ id, from: 'shipper', to: undefined, kind: 'claim', body: `claimed ${task}`, meta: { task } });
+
+    it('routes an overmind "merge PR #253" into the lane of the one repo holding #253', () => {
+      const ask = at({ id: 'M', to: 'shipper', body: 'merge PR #253' });
+      const log = [claim('yunidbauza/the-hive#253'), claim('other/repo#12'), ask];
+      expect(laneFor('repo', ask, log)).toEqual({ lane: 'repo:yunidbauza/the-hive' });
+    });
+
+    it('reads meta.pr when the body names no number', () => {
+      const ask = at({ id: 'M', to: 'shipper', body: 'merge it', meta: { pr: 12 } });
+      expect(laneFor('repo', ask, [claim('other/repo#12'), ask])).toEqual({ lane: 'repo:other/repo' });
+    });
+
+    it('lands on standing when no claim or two claims match, so the standing lane can ask which', () => {
+      const ask = at({ id: 'M', to: 'shipper', body: 'merge PR #7' });
+      expect(laneFor('repo', ask, [ask])).toEqual({ lane: 'standing' });
+      expect(laneFor('repo', ask, [claim('a/x#7'), claim('b/y#7'), ask])).toEqual({ lane: 'standing' });
+    });
+
+    it('ignores a claim someone else holds, or one already released', () => {
+      const ask = at({ id: 'M', to: 'shipper', body: 'merge PR #9' });
+      const theirs = { ...claim('a/x#9'), from: 'sess-1' };
+      const released = at({ id: 'r', from: 'shipper', to: undefined, kind: 'release', body: '', meta: { task: 'b/y#9' } });
+      expect(laneFor('repo', ask, [theirs, claim('b/y#9'), released, ask])).toEqual({ lane: 'standing' });
+    });
+
+    it('counts one repository once, however its claims spell it', () => {
+      const ask = at({ id: 'M', to: 'shipper', body: 'merge PR #5' });
+      expect(laneFor('repo', ask, [claim('Owner/Repo#5'), claim('owner/repo#5'), ask])).toEqual({ lane: 'repo:owner/repo' });
+    });
+
+    it('still refuses a repo-less ask from anyone but the overmind', () => {
+      const ask = at({ id: 'S', from: 'sess-1', to: 'shipper', body: 'ship it' });
+      expect(laneFor('repo', ask, [ask])).toEqual({ refuse: 'shipper lanes by repository; send meta.repo as owner/name.' });
+    });
+  });
+
+  it.each(['', '/abs/path', 'no-slash', 7])('refuses an ask with meta.repo %j, with a reason', (repo) => {
+    const ask = at({ id: 'A', meta: repo === undefined ? {} : { repo } });
+    expect(laneFor('repo', ask, [ask])).toEqual({
+      refuse: 'builder lanes by repository; send meta.repo as owner/name.',
+    });
+  });
+
+  // everything else
+  it('sends broadcasts, laneless entries and every entry of a pre-lane agent to standing', () => {
+    const ask = at({ id: 'A' });
+    expect(laneFor('thread', at({ id: 'bc', to: undefined, kind: 'post' }), [])).toEqual({ lane: 'standing' });
+    expect(laneFor('thread', at({ id: 'p', kind: 'post' }), [])).toEqual({ lane: 'standing' });
+    expect(laneFor(undefined, ask, [ask])).toEqual({ lane: 'standing' });
+  });
+});
+
+describe('decide on a self-addressed entry (HIVE-186)', () => {
+  const self: LedgerEntry = { id: 's', ts: 0, from: 'shipper', to: 'shipper', kind: 'ask', body: 'hand over' };
+
+  it('ignores it on the lane that wrote it, as before', () => {
+    expect(decide('sleeping', self)).toBe('ignore');
+    expect(decide('sleeping', self, { sameLane: true })).toBe('ignore');
+  });
+
+  it('wakes a different lane with it', () => {
+    expect(decide('sleeping', self, { sameLane: false })).toBe('wake');
+    expect(decide('working', self, { sameLane: false })).toBe('queue');
+  });
+});
+
+describe('laneClaims (HIVE-186)', () => {
+  const e = (over: Partial<LedgerEntry>): LedgerEntry => ({ id: 'x', ts: 0, from: 'shipper', kind: 'claim', body: 'b', ...over });
+  const begun = (run: string, lane: string) =>
+    e({ id: `s-${run}`, kind: 'event', body: 'run.started — ledger', meta: { run, lane } });
+
+  it('is the lanes of the agent\'s open claims, by the run that claimed', () => {
+    const log = [
+      begun('r1', 'repo:a/x'), begun('r2', 'repo:b/y'),
+      e({ id: 'c1', meta: { task: 'a/x#1', run: 'r1' } }),
+      e({ id: 'c2', meta: { task: 'b/y#2', run: 'r2' } }),
+      e({ id: 'r', kind: 'release', meta: { task: 'b/y#2', run: 'r2' } }),
+      e({ id: 'c3', from: 'builder', meta: { task: 'z#9', run: 'r1' } }),
+    ];
+    expect(laneClaims('shipper', log)).toEqual(new Set(['repo:a/x']));
   });
 });

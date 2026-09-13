@@ -1,13 +1,21 @@
 import {
   AGENT_KILL_GRACE_MS,
   AGENT_STALL_GRACE_MS,
+  STANDING_LANE,
+  dayKey,
+  runReservation,
   type LiveRunSummary,
   type QueueableRefusal,
   type RunKind,
   type RunLine,
   type RunOutcome,
 } from '@shared/agent-contract';
-import { HOOK_ENV_GRANTS, HOOK_ENV_RUN, HOOK_ENV_RUN_KIND } from '@shared/hook-contract';
+import {
+  HOOK_ENV_GRANTS,
+  HOOK_ENV_RUN,
+  HOOK_ENV_RUN_KIND,
+  HOOK_ENV_RUN_TOKEN,
+} from '@shared/hook-contract';
 import { OVERMIND } from '@shared/ledger-contract';
 import { SLACK_SERVER_KEY } from '@shared/slack-contract';
 
@@ -136,7 +144,7 @@ export interface RunTrackerDeps {
     name: string,
     trigger: string,
     extra?: string,
-    options?: { kind?: RunKind },
+    options?: { kind?: RunKind; lane?: string },
   ) =>
     | (WakeCommand & { sessionUuid: string; lastTurn: boolean; kind: RunKind })
     | { problem: string };
@@ -151,6 +159,12 @@ export interface RunTrackerDeps {
    * before any build does — their docblocks say why.
    */
   parallelFor: (name: string) => number;
+  /**
+   * `daily_usd` and `budget_usd` for this agent (HIVE-187), from the same
+   * cache as `parallelFor`. Optional so a spec without a budget needs none;
+   * absent means no ceiling.
+   */
+  limitsFor?: (name: string) => { dailyUsd?: number; budgetUsd?: number };
   state: AgentState;
   appendLedger: (entry: {
     from: string;
@@ -208,6 +222,11 @@ export interface RunTrackerDeps {
     set(run: string, owner: string, grants: readonly string[]): void;
     delete(run: string): void;
   };
+  /**
+   * The receiver's token for a run (HIVE-184), or null before the receiver
+   * exists. Optional so a host-only spec needs none.
+   */
+  runToken?: (run: string) => string | null;
 }
 
 export interface ChildLike {
@@ -224,15 +243,18 @@ export interface RunTracker {
    * A `job` is a wake carrying its own work — the console's
    * `run <agent> <prompt>`. It becomes a task run when the cap allows, and an
    * ordinary standing wake otherwise.
+   *
+   * `lane` is the conversation a standing wake continues (HIVE-185). Absent
+   * means the standing lane. A task run ignores it.
    */
   run(
     name: string,
     trigger: string,
     extra?: string,
-    options?: { job?: true },
+    options?: { job?: true; lane?: string },
   ): RunStart;
-  /** Every run under this name, signalled together. */
-  kill(name: string): boolean;
+  /** Every run under this name, or only `run` (HIVE-185). */
+  kill(name: string, run?: string): boolean;
   /**
    * The Stop hook fired for this agent. Arms the stall watchdog on the run
    * whose conversation `sessionUuid` names — a stale Stop for a run that has
@@ -278,6 +300,13 @@ interface LiveRun {
   run: string;
   /** Which conversation this is: the agent's own, or a one-off job (HIVE-128). */
   kind: RunKind;
+  /**
+   * The lane this run holds (HIVE-185); `standing` for the standing lane and
+   * for every task run.
+   */
+  lane: string;
+  /** What this run holds against the day while live (HIVE-187). */
+  reserved: number;
   trigger: string;
   /** The console prompt a task run carries, when it carries one. */
   extra?: string;
@@ -331,6 +360,8 @@ interface FinalizeInfo {
    * the one conversation, and a task run's uuid died with its turn.
    */
   kind: RunKind;
+  /** The lane the run held (HIVE-185). A close writes this lane's fields only. */
+  lane: string;
   trigger: string;
   startedAt: number;
   /**
@@ -380,6 +411,12 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
    * keys and an empty entry would report an agent as working.
    */
   const running = new Map<string, LiveRun[]>();
+  /**
+   * The day each agent's "held back" budget card last went out (HIVE-187).
+   * In memory: a held refusal is not a spent day, so it must not set the
+   * persisted `today.capped` the scheduler reads.
+   */
+  const heldCardDay = new Map<string, string>();
 
   const liveOf = (name: string): LiveRun[] => running.get(name) ?? [];
 
@@ -396,6 +433,7 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
     trigger: live.trigger,
     ...(live.extra === undefined ? {} : { extra: live.extra }),
     startedAt: live.startedAt,
+    ...(live.kind === 'standing' && live.lane !== STANDING_LANE ? { lane: live.lane } : {}),
   });
 
   const clearTimers = (live: LiveRun) => {
@@ -554,6 +592,7 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       // conversation did run 14 belong to" is the audit trail HIVE-122 needs.
       ...(sessionUuid === undefined ? {} : { sessionUuid }),
       ...(slack === undefined ? {} : { slack }),
+      ...(info.kind === 'standing' && info.lane !== STANDING_LANE ? { lane: info.lane } : {}),
     },
     /*
       The run counts against the day it *ended*, not the one it started.
@@ -566,6 +605,8 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
     endedAt);
 
     const current = deps.state.read(name);
+    // The closing run's lane: its counters are the ones this close reads (HIVE-185).
+    const laneNow = deps.state.lane(name, info.lane);
 
     /*
       A task run is a job, not the conversation (HIVE-128). Only a standing
@@ -612,8 +653,49 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       rotation. `null` is what makes both readers below safe by construction
       rather than by remembering to re-check `strike`.
     */
-    const failures = strike ? (current.rotateFailures ?? 0) + 1 : null;
+    const failures = strike ? (laneNow.rotateFailures ?? 0) + 1 : null;
 
+    /*
+      The closing run's own lane, and only it (HIVE-185). A conversation run
+      writes its lane's session fields, and a task run writes none.
+    */
+    if (standing) {
+      deps.state.patchLane(name, info.lane, {
+        /*
+          `lastRunAt` is the **standing** conversation's last run — the `onchange`
+          watermark the scheduler compares a ledger entry's timestamp against, and
+          the reference the Next tile reads. A task run reads no inbox, so moving
+          it on a task close would hide an ask that arrived before that close:
+          the entry would sit behind a watermark no wake ever looked past.
+
+          Per lane since HIVE-185: the standing lane's is the top-level field it
+          always was.
+        */
+        lastRunAt: endedAt,
+        /*
+          A rotation zeroes the counter instead of advancing it — the run that
+          just closed belongs to the session being left behind. A run that never
+          reached the model cost nothing and should not pull rotation forward.
+
+          Keyed off `handoff !== undefined` rather than a `rotated` boolean:
+          TypeScript narrows the former and not the latter, and
+          `pendingSession.handoff` is a `string`.
+        */
+        ...(handoff !== undefined
+          ? {
+              runsSinceRotate: 0,
+              rotateFailures: 0,
+              pendingSession: { uuid: deps.newUuid(), handoff },
+            }
+          : reachedModel
+            ? { runsSinceRotate: laneNow.runsSinceRotate + 1 }
+            : {}),
+        ...(failures === null ? {} : { rotateFailures: failures }),
+        ...(sessionUuid === undefined ? {} : { sessionUuid }),
+      });
+    }
+
+    // The agent-wide rollup, written at the top level exactly as before lanes.
     deps.state.patch(name, {
       /*
         An unanswered ask outranks the outcome for the *status*.
@@ -644,36 +726,6 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
             : outcome === 'asking' || asking || deps.hasOpenAsk(name)
               ? 'asking'
               : 'sleeping',
-      /*
-        `lastRunAt` is the **standing** conversation's last run — the `onchange`
-        watermark the scheduler compares a ledger entry's timestamp against, and
-        the reference the Next tile reads. A task run reads no inbox, so moving
-        it on a task close would hide an ask that arrived before that close:
-        the entry would sit behind a watermark no wake ever looked past.
-      */
-      ...(standing ? { lastRunAt: endedAt } : {}),
-      /*
-        A rotation zeroes the counter instead of advancing it — the run that
-        just closed belongs to the session being left behind. A run that never
-        reached the model cost nothing and should not pull rotation forward.
-
-        Keyed off `handoff !== undefined` rather than a `rotated` boolean:
-        TypeScript narrows the former and not the latter, and
-        `pendingSession.handoff` is a `string`.
-      */
-      ...(standing
-        ? handoff !== undefined
-          ? {
-              runsSinceRotate: 0,
-              rotateFailures: 0,
-              pendingSession: { uuid: deps.newUuid(), handoff },
-            }
-          : reachedModel
-            ? { runsSinceRotate: current.runsSinceRotate + 1 }
-            : {}
-        : {}),
-      ...(failures === null ? {} : { rotateFailures: failures }),
-      ...(sessionUuid === undefined || !standing ? {} : { sessionUuid }),
     });
 
     deps.appendLedger({
@@ -697,8 +749,15 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       deps.appendLedger({
         from: OVERMIND,
         kind: 'event',
-        body: `${name} could not rotate — three handoff wakes ended without a handoff.`,
-        meta: { rotateFailed: 3, agent: name },
+        body:
+          info.lane === STANDING_LANE
+            ? `${name} could not rotate — three handoff wakes ended without a handoff.`
+            : `${name} could not rotate its ${info.lane} lane: three handoff wakes ended without a handoff.`,
+        meta: {
+          rotateFailed: 3,
+          agent: name,
+          ...(info.lane === STANDING_LANE ? {} : { lane: info.lane }),
+        },
       });
     }
 
@@ -785,13 +844,21 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
         gate it always was.
       */
       const kind: RunKind = options?.job === true && parallel > 1 ? 'task' : 'standing';
+      /*
+        The lane this conversation is (HIVE-185). A task run is no lane's: it
+        is sessionless and never resumed, so it neither holds a lane's slot
+        nor reads one's state.
+      */
+      const lane = kind === 'task' ? STANDING_LANE : (options?.lane ?? STANDING_LANE);
+      const onLane = kind === 'standing' && lane !== STANDING_LANE;
 
       /*
-        One conversation at a time, whatever the cap says. Two `--resume`s of
-        the same session would interleave two turns into one transcript, which
-        is the memory corruption task runs exist to avoid by being sessionless.
+        One live run per lane, whatever the cap says. Two `--resume`s of one
+        session would interleave two turns into one transcript, which is the
+        memory corruption task runs exist to avoid by being sessionless. Keyed
+        by lane since HIVE-185: another lane is another conversation.
       */
-      if (kind === 'standing' && live.some((other) => other.kind === 'standing')) {
+      if (kind === 'standing' && live.some((other) => other.kind === 'standing' && other.lane === lane)) {
         return { started: false, refused: 'working' };
       }
 
@@ -825,7 +892,86 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
         };
       }
 
-      const command = deps.command(name, trigger, extra, { kind });
+      /*
+        The day's ceiling, on every wake (HIVE-187). The scheduler used to check
+        it on its own ticks only, and spend landed at close, so a ledger wake
+        past the ceiling ran and N parallel runs could each start under it.
+        Each live run now holds a reservation against `today.usd` until its
+        real cost replaces it at close. Before the build, like the other gates.
+      */
+      const limits = deps.limitsFor?.(name) ?? {};
+      const reservation = runReservation(limits, parallel);
+
+      if (limits.dailyUsd !== undefined) {
+        const now = deps.now();
+        const agent = deps.state.read(name);
+        const today = agent.today?.day === dayKey(now) ? agent.today : undefined;
+        const reserved = live.reduce((sum, other) => sum + other.reserved, 0);
+
+        // A day already spent refuses even a run that reserves nothing.
+        const spentOut = (today?.usd ?? 0) >= limits.dailyUsd;
+
+        if (spentOut || (today?.usd ?? 0) + reserved + reservation > limits.dailyUsd + 1e-9) {
+          const day = dayKey(now);
+          const spentText = `$${(today?.usd ?? 0).toFixed(2)}`;
+          const dailyText = `$${limits.dailyUsd.toFixed(2)}`;
+
+          if (spentOut) {
+            /*
+              The day is spent. Flagged and carded once a day through
+              `today.capped`, the flag the scheduler's tick reads, so the two
+              never post the card twice.
+            */
+            if (today?.capped !== true) {
+              deps.state.patch(name, {
+                today: { ...(today ?? { day, runs: 0, usd: 0 }), capped: true },
+              });
+              deps.appendLedger({
+                from: OVERMIND,
+                kind: 'event',
+                body: `${name} reached its daily budget — ${dailyText}`,
+                meta: { dailyCap: limits.dailyUsd, agent: name },
+              });
+            }
+
+            return {
+              started: false,
+              refused: 'budget',
+              reason: `${name} has spent today's budget: ${spentText} of ${dailyText}.`,
+            };
+          }
+
+          /*
+            The day has room, but not for this run beside what the live runs
+            hold. Not a spent day, so `today.capped` stays clear and the
+            scheduler's card still fires if the money runs out later. Carded
+            once a day from memory, and named as held rather than reached.
+          */
+          if (heldCardDay.get(name) !== day) {
+            heldCardDay.set(name, day);
+
+            const why =
+              limits.budgetUsd === undefined
+                ? ` (reserving $${reservation.toFixed(2)} per run: daily_usd ÷ parallel, since no budget_usd is set)`
+                : ` (reserving budget_usd $${reservation.toFixed(2)} per run)`;
+
+            deps.appendLedger({
+              from: OVERMIND,
+              kind: 'event',
+              body: `${name} held back a run: ${spentText} spent and $${reserved.toFixed(2)} held by live runs leave too little of today's ${dailyText}${why}`,
+              meta: { dailyCap: limits.dailyUsd, agent: name, held: true },
+            });
+          }
+
+          return {
+            started: false,
+            refused: 'budget',
+            reason: `${name} is out of today's budget for now: ${spentText} spent and $${reserved.toFixed(2)} held by live runs, of ${dailyText}.`,
+          };
+        }
+      }
+
+      const command = deps.command(name, trigger, extra, { kind, ...(onLane ? { lane } : {}) });
 
       if ('problem' in command) {
         return { started: false, refused: 'invalid', reason: command.problem };
@@ -838,7 +984,13 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
         from: name,
         kind: 'event',
         body: `run.started — ${trigger}`,
-        meta: { run, trigger, kind, ...(extra === undefined ? {} : { extra }) },
+        meta: {
+          run,
+          trigger,
+          kind,
+          ...(extra === undefined ? {} : { extra }),
+          ...(onLane ? { lane } : {}),
+        },
       });
 
       /*
@@ -847,10 +999,13 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
         the run writes, which is the only way main can later tell one
         run's asks and handoff from a concurrent neighbour's.
       */
+      const token = deps.runToken?.(run) ?? null;
       const env: Record<string, string> = {
         ...command.env,
         [HOOK_ENV_RUN]: run,
         [HOOK_ENV_RUN_KIND]: kind,
+        // HIVE-184: the run id is a claim the receiver checks against this token.
+        ...(token === null ? {} : { [HOOK_ENV_RUN_TOKEN]: token }),
       };
 
       /*
@@ -919,7 +1074,7 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
 
         finalizeRun(
           name,
-          { run, kind, trigger, startedAt, lastTurn: command.lastTurn },
+          { run, kind, lane, trigger, startedAt, lastTurn: command.lastTurn },
           'failed',
           null,
           message,
@@ -940,6 +1095,8 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       const started: LiveRun = {
         run,
         kind,
+        lane,
+        reserved: reservation,
         trigger,
         ...(extra === undefined ? {} : { extra }),
         startedAt,
@@ -1058,14 +1215,15 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       return { started: true, run, kind };
     },
 
-    kill(name) {
-      const live = liveOf(name);
+    kill(name, run) {
+      const live = liveOf(name).filter((candidate) => run === undefined || candidate.run === run);
 
       if (live.length === 0) return false;
 
-      // Every run under the name (HIVE-128). A kill is "stop this agent", and
-      // a stop button that left a task run writing would be lying.
-      for (const run of live) escalate(run, 'killed');
+      // Every run under the name when none is named (HIVE-128). A kill is "stop
+      // this agent", and a stop button that left a task run writing would be
+      // lying. One run when it is named (HIVE-185).
+      for (const each of live) escalate(each, 'killed');
 
       return true;
     },
