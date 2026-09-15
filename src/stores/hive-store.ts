@@ -59,6 +59,7 @@ import {
   requestSpawnTerminal,
 } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
+import { BRIDGE_ERROR } from '@lib/utils';
 import {
   SESSION_ID_PREFIX_PATTERN,
   type AgentLinesPush,
@@ -86,7 +87,6 @@ import {
   type LedgerReadQuery,
   type LedgerResult,
   type LedgerSnapshot,
-  type OpenAsk,
 } from '@shared/ledger-contract';
 import {
   agentSiteFor,
@@ -143,7 +143,7 @@ export const ACK_DELAY_MS = 2000;
 const ACK_LINE = '● Acknowledged — working on it';
 
 /** Where a message came from. The transcript records who spoke. */
-export type MessageOrigin = 'orchestrator' | 'session';
+type MessageOrigin = 'orchestrator' | 'session';
 
 /**
  * What happened to a message (story 097).
@@ -156,7 +156,7 @@ export type MessageOrigin = 'orchestrator' | 'session';
  * `demo` still carries the timer handle so the simulation (story 061) and the
  * tests keep cancelling deterministically rather than racing a real wait.
  */
-export type SendOutcome =
+type SendOutcome =
   | { kind: 'routed' }
   | { kind: 'refused'; reason: string }
   | { kind: 'demo'; timer: ReturnType<typeof setTimeout> };
@@ -203,7 +203,7 @@ export type TicketSource =
  * order. Comparing what came back against what the store last asked for is what
  * stops the slower of the two from painting over the newer.
  */
-export interface PrSearchState {
+interface PrSearchState {
   /** What produced `results`. `''` when nothing has been searched. */
   term: string;
   /**
@@ -345,7 +345,7 @@ function agentTerminalSite(
 }
 
 /** What `spawnTerminal` may be told beyond the project (entry points). */
-export interface SpawnTerminalOptions {
+interface SpawnTerminalOptions {
   /**
    * Where the shell starts. Absent means the project's path. "Terminal here"
    * passes a session's observed cwd, which differs from the project path
@@ -4953,7 +4953,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (epoch !== modeEpoch) return;
       if (status === null) {
         get().reportTicketFailure(
-          'The app could not reach its own main process.',
+          BRIDGE_ERROR,
         );
         return;
       }
@@ -4980,7 +4980,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (epoch !== modeEpoch) return;
       if (result === null) {
         get().reportTicketFailure(
-          'The app could not reach its own main process.',
+          BRIDGE_ERROR,
         );
         return;
       }
@@ -5178,7 +5178,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (epoch !== modeEpoch) return;
 
       if (result === null) {
-        get().reportPrFailure('The app could not reach its own main process.');
+        get().reportPrFailure(BRIDGE_ERROR);
         return;
       }
 
@@ -5259,7 +5259,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           term,
           results: [],
           searching: false,
-          error: 'The app could not reach its own main process.',
+          error: BRIDGE_ERROR,
         },
       });
       return;
@@ -5352,7 +5352,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           ...NO_TICKET_SEARCH,
           term,
           results: [],
-          error: 'The app could not reach its own main process.',
+          error: BRIDGE_ERROR,
         },
       });
       return;
@@ -6047,24 +6047,10 @@ export const useAgentOrder = () =>
   useHiveStore(useShallow((state) => state.agentOrder));
 
 /**
- * One agent by name, or `null` if that id is not an agent (HIVE-114).
- *
- * Narrows rather than casting, so a caller handed a *session*'s id gets `null`
- * instead of a row that renders half-correctly — `entities` is one map and the
- * two kinds share it.
- */
-export const useAgent = (name: string) =>
-  useHiveStore((state) => {
-    const entity = state.entities[name];
-
-    return entity !== undefined && isAgent(entity) ? entity : null;
-  });
-
-/**
  * One agent's run log.
  *
- * A selector rather than `useAgent(name).lines` so a line batch re-renders the
- * run view and nothing else — the same reason every other consumer here goes
+ * A selector of its own rather than a field read off the whole agent entity, so
+ * a line batch re-renders the run view and nothing else — the same reason every other consumer here goes
  * through a named hook.
  */
 export const useAgentLines = (name: string): TermLine[] =>
@@ -6081,7 +6067,7 @@ export const useAgentLines = (name: string): TermLine[] =>
  */
 const EMPTY_RUNS: RunSummary[] = [];
 
-export interface AgentGroup {
+interface AgentGroup {
   key: 'awake' | 'sleeping' | 'paused';
   label: string;
   ids: string[];
@@ -6203,7 +6189,7 @@ export const useAgentLiveCount = (name: string): number =>
     return entity !== undefined && isAgent(entity) ? entity.live.length : 0;
   });
 
-export interface AgentFacts {
+interface AgentFacts {
   status: AgentStatus;
   /** The open ask this agent is waiting on, when it is `asking`. */
   askRef?: string;
@@ -6521,7 +6507,7 @@ export const useAskingAgentCount = (): number =>
   });
 
 /** An agent's pull request: always a number, linkable only when the sweep knows it. */
-export interface AgentPr {
+interface AgentPr {
   n: number;
   url?: string;
 }
@@ -6944,7 +6930,7 @@ export const useUpdateTicket = (): ((issue: JiraIssue) => void) =>
  * `project` are what a pull request is matched against, `ticket` is the reverse
  * of `Session.ticket`, and `ended` is `isEnded(status)` already applied.
  */
-export interface SessionFacet {
+interface SessionFacet {
   id: string;
   /**
    * Optional since HIVE-78, because {@link Session.branch} is.
@@ -7018,7 +7004,7 @@ function sameFacets(
   });
 }
 
-export function selectSessionFacets(state: HiveState): SessionFacet[] {
+function selectSessionFacets(state: HiveState): SessionFacet[] {
   const next: SessionFacet[] = [];
 
   /*
@@ -7500,9 +7486,6 @@ export const useTicketCount = () =>
 export const useUnreadCount = () =>
   useHiveStore((state) => state.notifs.filter((notif) => notif.unread).length);
 
-/** Clear the whole inbox — the header bell (021) and the inbox panel (051). */
-export const useMarkAllRead = () => useHiveStore((state) => state.markAllRead);
-
 /** The inbox, newest first (story 051). */
 export const useNotifs = () => useHiveStore((state) => state.notifs);
 
@@ -7564,20 +7547,6 @@ export const useBuildProgress = (ticketKey: string): BuildProgress | undefined =
   const entries = useHiveStore((state) => state.ledger);
 
   return useMemo(() => buildProgressFor(entries, ticketKey), [entries, ticketKey]);
-};
-
-/**
- * Asks nobody has answered.
- *
- * `Date.now()` is read inside the memo, so `ageMs` is as fresh as the last
- * entry rather than as fresh as the last render. That is the right trade here:
- * the TTL is a day, and re-deriving on every tick to keep a minutes-old age
- * exact would re-render the inbox for nothing.
- */
-export const useOpenAsks = (): OpenAsk[] => {
-  const entries = useHiveStore((state) => state.ledger);
-
-  return useMemo(() => openAsks(entries, Date.now()), [entries]);
 };
 
 /** The badge. A number, so it needs no memo and no shallow compare. */

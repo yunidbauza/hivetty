@@ -1005,7 +1005,7 @@ export type SpawnRefusal =
   | { reason: 'host-unavailable' };
 
 /** The refusals main decides, and the exact wording each reaches the user with. */
-export type MainSpawnRefusal = Exclude<SpawnRefusal, { reason: 'not-desktop' }>;
+type MainSpawnRefusal = Exclude<SpawnRefusal, { reason: 'not-desktop' }>;
 
 export function spawnRefusal(refusal: MainSpawnRefusal): string {
   switch (refusal.reason) {

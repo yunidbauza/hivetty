@@ -125,7 +125,6 @@ export const WAKE_DAYS = [
 export type WakeDay = (typeof WAKE_DAYS)[number];
 
 export const WAKE_EVERY_FLOOR_MS = 60_000;
-export const WAKE_EVERY_DEFAULT_MS = 300_000;
 
 /**
  * Whether a scheduled tick has to justify itself (HIVE-121).
@@ -173,7 +172,7 @@ export type Autonomy = (typeof AUTONOMIES)[number];
  * lane, the standing one. `thread`: every ask opens its own lane. `repo`: one
  * lane per `meta.repo`. See `.hive/specs/2026-09-13-parallel-agent-lanes.md`.
  */
-export const AGENT_LANES = ['thread', 'repo'] as const;
+const AGENT_LANES = ['thread', 'repo'] as const;
 export type AgentLane = (typeof AGENT_LANES)[number];
 
 /**
@@ -588,7 +587,7 @@ export interface AgentsDirectory {
   agents: AgentsDirectoryEntry[];
 }
 
-export type FieldKind =
+type FieldKind =
   | 'text'
   | 'enum'
   | 'duration'
