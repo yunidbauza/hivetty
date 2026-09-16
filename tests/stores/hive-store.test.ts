@@ -21,7 +21,6 @@ import type {
 import type { RemoteLinkStatus } from '@shared/ipc-contract';
 import { LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
 import { isDesktop } from '@config/runtime';
-import { peek, stamp } from '@lib/fake-clock';
 import {
   projectConfigSnapshot,
   resetProjectConfig,
@@ -64,7 +63,6 @@ import {
   useIsAgentId,
   useLedgerEntries,
   useNavOrder,
-  useOpenAskCount,
   useSessionNameReports,
   useShipping,
   useTerminalHostIds,
@@ -2730,25 +2728,6 @@ describe('hive-store', () => {
     });
   });
 
-  /**
-   * The store no longer stamps anything through the clock — the activity feed
-   * was its only producer, and the project explorer replaced it. `reset()`
-   * still rewinds it, which is what this covers: the simulation story is the
-   * clock's next consumer and inherits a store that resets it.
-   */
-  describe('the fake clock', () => {
-    it('rewinds on reset', () => {
-      stamp();
-      stamp();
-      expect(peek()).toBe('14:40');
-
-      useHiveStore.getState().reset();
-      seedDemoFleet();
-
-      expect(peek()).toBe('14:38');
-    });
-  });
-
   describe('pushNotif', () => {
     /**
      * A distinct id per call, because `pushNotif` dedups on it now (HIVE-75).
@@ -5387,17 +5366,6 @@ describe('the ledger slice', () => {
     expect(kept).toHaveLength(LEDGER_MEMORY_CAP);
     expect(kept[kept.length - 1].id).toBe('zzzzz');
     expect(kept[0].id).toBe('00001');
-  });
-
-  it('counts open asks', () => {
-    useHiveStore.getState().hydrateLedger([
-      entry({ id: '1', kind: 'ask', ts: Date.now() }),
-      entry({ id: '2', kind: 'ask', ts: Date.now() }),
-      entry({ id: '3', kind: 'answer', thread: '1', ts: Date.now() }),
-    ]);
-
-    const { result } = renderHook(() => useOpenAskCount());
-    expect(result.current).toBe(1);
   });
 
   it('filters entries through the shared query rules', () => {

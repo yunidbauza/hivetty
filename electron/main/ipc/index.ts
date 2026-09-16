@@ -45,66 +45,65 @@ import type {
   FsChangedEvent,
   FsRefusal,
   FsResult,
+  ResolveResult,
   RootInfo,
   SearchResults,
   WriteFileResult,
 } from '@shared/fs-contract';
 import type { GhResult, PrRecord, PrsSnapshot } from '@shared/github-contract';
 import {
+  isRecord,
   parseAckRequest,
-  parsePromptReport,
+  parseAddJiraCommentRequest,
+  parseAddProjectRequest,
   parseAgentNameRequest,
   parseAgentRenameRequest,
   parseAgentRunRequest,
   parseAgentWriteRequest,
-  parseAddProjectRequest,
+  parseApplyJiraTransitionRequest,
   parseBrowseDirRequest,
   parseCloneRequest,
   parseDiagnoseCommandRequest,
-  parseReadDirRequest,
-  parseReadFileRequest,
-  parseRootRequest,
-  parseSearchRequest,
-  parseWatchRequest,
-  parseWriteFileRequest,
   parseDiagnoseEnvRequest,
-  parseSpawnRequest,
-  parseSpawnTerminalRequest,
-  parseKillRequest,
-  parseLedgerAnswerRequest,
-  parseLedgerPostBody,
-  parseLedgerReadQuery,
-  parseRemoveProjectRequest,
-  parseRenameProjectRequest,
-  parseSetSessionPluginRequest,
-  parseSetProjectAutoMergeRequest,
-  parseSetProjectKeyRequest,
-  parseReorderProjectsRequest,
-  parseRepointProjectRequest,
-  parseResizeRequest,
-  parseAddJiraCommentRequest,
-  parseApplyJiraTransitionRequest,
+  parseDismissRequest,
   parseJiraConversationRequest,
   parseJiraIssueRequest,
   parseJiraSearchRequest,
   parseJiraTransitionsRequest,
-  parseSetJiraRequest,
-  parseSetJiraTokenRequest,
-  parseSetReceiverRequest,
-  parseSetServerRequest,
-  parseSetSlackRequest,
-  parseSetSlackTokensRequest,
-  parseDismissRequest,
+  parseKillRequest,
+  parseLedgerAnswerRequest,
+  parseLedgerPostBody,
+  parseLedgerReadQuery,
   parseMarkReadRequest,
   parseNotificationAction,
   parsePairDeviceRequest,
+  parsePromptReport,
+  parseReadDirRequest,
+  parseReadFileRequest,
+  parseRemoveProjectRequest,
+  parseRenameProjectRequest,
+  parseReorderProjectsRequest,
+  parseRepointProjectRequest,
+  parseResizeRequest,
+  parseResolveRequest,
   parseRevokeDeviceRequest,
-  parseSetNotificationsRequest,
-  parseSetProjectRuntimeRequest,
-  parseSetRuntimeRequest,
+  parseRootRequest,
   parseSearchPrsRequest,
+  parseSearchRequest,
   parseSessionNoteRequest,
   parseSessionPrRequest,
+  parseSetJiraRequest,
+  parseSetJiraTokenRequest,
+  parseSetNotificationsRequest,
+  parseSetProjectAutoMergeRequest,
+  parseSetProjectKeyRequest,
+  parseSetProjectRuntimeRequest,
+  parseSetReceiverRequest,
+  parseSetRuntimeRequest,
+  parseSetServerRequest,
+  parseSetSessionPluginRequest,
+  parseSetSlackRequest,
+  parseSetSlackTokensRequest,
   parseSkillDropRequest,
   parseSkillFileWriteRequest,
   parseSkillImportRequest,
@@ -113,6 +112,10 @@ import {
   parseSkillPathRequest,
   parseSkillRenameRequest,
   parseSkillWriteRequest,
+  parseSpawnRequest,
+  parseSpawnTerminalRequest,
+  parseWatchRequest,
+  parseWriteFileRequest,
   parseWriteRequest,
 } from '@shared/guards';
 import {
@@ -231,6 +234,7 @@ import {
   readDirectory,
   readFileContent,
   readRoot,
+  resolvePaths,
   setSessionCwdLookup,
   searchProject,
   writeFileContent,
@@ -1073,9 +1077,6 @@ let cloneFlow: CloneFlow | null = null;
 let fsWatch: FsWatchLayer | null = null;
 
 /** A plain object, for the payload guards below. */
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 /**
  * What each surface has on its centre stage, and whether that surface is
  * focused (HIVE-81, HIVE-145).
@@ -4433,6 +4434,12 @@ export function registerIpcHandlers(
   );
 
   handle(
+    CH.fsResolve,
+    (_event, payload): Promise<FsResult<ResolveResult>> =>
+      resolvePaths(parseResolveRequest(payload)),
+  );
+
+  handle(
     CH.fsReadFile,
     (_event, payload): Promise<FsResult<FileContent | FsRefusal>> =>
       readFileContent(parseReadFileRequest(payload)),
@@ -4653,7 +4660,7 @@ export function registerIpcHandlers(
    * Wake an agent now (HIVE-115).
    *
    * The trigger is `'manual'` and is written **here**, not taken from the
-   * payload — see `parseAgentRunRequest` and `BRIDGE_AGENTS_KEYS`. It is the
+   * payload — see `parseAgentRunRequest` and `HiveBridge['agents']`. It is the
    * only trigger this channel could report honestly, and it goes into the
    * ledger entry and the wake prompt, so accepting a renderer's word for it
    * would let the page write history.
@@ -4771,7 +4778,7 @@ export function registerIpcHandlers(
    * check, `pause` on an unknown name writes `{"ghost": {"status": "paused"}}`
    * into `agents.json` permanently — and an agent later created under that name
    * would be born paused, refusing every trigger for a reason nothing on screen
-   * explains. `BRIDGE_AGENTS_KEYS` claims these two verbs cannot create an
+   * explains. `HiveBridge['agents']` claims these two verbs cannot create an
    * agent; this is what makes that true of its run state as well.
    *
    * HIVE-122's `rotate` is the third caller, for exactly this reason: it too

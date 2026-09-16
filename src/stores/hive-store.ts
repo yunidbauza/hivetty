@@ -37,7 +37,6 @@ import {
   describeWake,
   runsToday,
 } from '@lib/agents';
-import { reset as resetClock } from '@lib/fake-clock';
 import { readPullRequests, searchPullRequests } from '@lib/github';
 import { readJiraStatus, searchJiraIssues } from '@lib/jira';
 import { buildTicketSearchJql } from '@lib/jira-search';
@@ -5585,14 +5584,6 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     // answer cannot install itself into the fresh state.
     prSearchTicket += 1;
     ticketSearchTicket += 1;
-    /**
-     * Nothing in this store stamps through the clock any more — the activity
-     * feed was its only caller and the project explorer replaced it. The rewind
-     * stays because the clock itself stays: it is documented infrastructure for
-     * the simulation story, which will be its first consumer, and a store that
-     * quietly stopped resetting a global would be a trap for whoever writes it.
-     */
-    resetClock();
     set({
       ...emptySeeds(),
       notifs: [],
@@ -6034,17 +6025,6 @@ export const useHasResumable = (): boolean =>
       );
     }),
   );
-
-/**
- * The background agents, alphabetically (HIVE-114).
- *
- * Was "in fixture order (story 033)" — there are no agent fixtures any more.
- * The order comes from `hydrateAgents`, and it is alphabetical because a
- * folder listing has no meaningful order of its own and the user names these
- * themselves.
- */
-export const useAgentOrder = () =>
-  useHiveStore(useShallow((state) => state.agentOrder));
 
 /**
  * One agent's run log.
@@ -6513,6 +6493,24 @@ interface AgentPr {
 }
 
 /**
+ * The PR number a `done` entry carries, or `null`.
+ *
+ * A number, or a string that is one: main writes `meta` from whatever the agent
+ * handed `ledger_post`, so this is model-authored input in every sense that
+ * matters — `#12` and `"12"` are both things it will write, and neither may put
+ * `NaN` in the table.
+ */
+const donePrNumber = (entry: LedgerEntry): number | null => {
+  const written = entry.meta?.['pr'];
+  if (written === undefined) return null;
+
+  const n =
+    typeof written === 'number' ? written : Number(String(written).replace(/^#/, ''));
+
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
+/**
  * The pull request this agent last finished, if it named one (HIVE-117).
  *
  * Read from the **ledger**, not from `runs`: a `RunSummary` records what a wake
@@ -6529,41 +6527,33 @@ export const useAgentPr = (name: string): AgentPr | null => {
   const prs = useHiveStore((state) => state.prs);
 
   return useMemo(() => {
-    for (let i = ledger.length - 1; i >= 0; i -= 1) {
-      const entry = ledger[i];
-      if (entry === undefined || entry.from !== name || entry.kind !== 'done') {
-        continue;
-      }
-      const written = entry.meta?.['pr'];
-      /*
-        A number, or a string that is one. Main writes `meta` from whatever the
-        agent handed `ledger_post`, so this is model-authored input in every
-        sense that matters — `#12` and `"12"` are both things it will write, and
-        neither should put `NaN` in the table.
-      */
-      const n =
-        typeof written === 'number'
-          ? written
-          : Number(String(written).replace(/^#/, ''));
+    /*
+      The newest `done` from this agent **that carries a usable number**: one
+      without is skipped rather than taken as the answer, which is why the
+      number check is in the predicate rather than after the search.
+    */
+    const entry = ledger.findLast(
+      (candidate) =>
+        candidate.from === name &&
+        candidate.kind === 'done' &&
+        donePrNumber(candidate) !== null,
+    );
+    const n = entry === undefined ? null : donePrNumber(entry);
+    if (n === null) return null;
 
-      if (!Number.isInteger(n) || n <= 0) continue;
+    /*
+      The URL comes from the **sweep**, not from the number.
 
-      /*
-        The URL comes from the **sweep**, not from the number.
+      A `done` entry records that an agent opened a pull request; it does not
+      say which repository, and there is no honest URL to build from an integer
+      alone. A GitHub-wide search for "42" is a worse answer than no link — it
+      looks like a destination and lands on thousands of unrelated results. So
+      the number renders as plain text until the PR list happens to hold it,
+      which is the same standing a session's *remembered* PR has.
+    */
+    const known = prs.find((pr) => pr.number === n);
 
-        A `done` entry records that an agent opened a pull request; it does not
-        say which repository, and there is no honest URL to build from an
-        integer alone. A GitHub-wide search for "42" is a worse answer than no
-        link — it looks like a destination and lands on thousands of unrelated
-        results. So the number renders as plain text until the PR list happens
-        to hold it, which is the same standing a session's *remembered* PR has.
-      */
-      const known = prs.find((pr) => pr.number === n);
-
-      return { n, ...(known === undefined ? {} : { url: known.url }) };
-    }
-
-    return null;
+    return { n, ...(known === undefined ? {} : { url: known.url }) };
   }, [ledger, prs, name]);
 };
 
@@ -7549,10 +7539,6 @@ export const useBuildProgress = (ticketKey: string): BuildProgress | undefined =
   return useMemo(() => buildProgressFor(entries, ticketKey), [entries, ticketKey]);
 };
 
-/** The badge. A number, so it needs no memo and no shallow compare. */
-export const useOpenAskCount = (): number =>
-  useHiveStore((state) => openAsks(state.ledger, Date.now()).length);
-
 /** One conversation: the ask, and everything that named it. */
 export const useThread = (id: string): LedgerEntry[] => {
   const entries = useHiveStore((state) => state.ledger);
@@ -7680,9 +7666,6 @@ export const useSearchTickets = () =>
 export const useClearTicketSearchResults = () =>
   useHiveStore((state) => state.clearTicketSearch);
 
-
-/** Mark one notification read, by its id (story 051, HIVE-75). */
-export const useMarkRead = () => useHiveStore((state) => state.markRead);
 
 /** {@link HiveState.answerAsk}, for a component that must not touch the store. */
 export const useAnswerAsk = () => useHiveStore((state) => state.answerAsk);

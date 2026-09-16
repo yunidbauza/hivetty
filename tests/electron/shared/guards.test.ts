@@ -4,7 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { CLONE_ENTITY_ID } from '../../../electron/shared/config-contract';
 
 import {
+  hasControlCharacters,
+  hasControlCharactersOutsideWhitespace,
   IpcValidationError,
+  isRecord,
   parseAddProjectRequest,
   parseBrowseDirRequest,
   parseCloneRequest,
@@ -1931,5 +1934,33 @@ describe('parseSetSessionPluginRequest (HIVE-176)', () => {
     ]) {
       expect(() => parseSetSessionPluginRequest(bad)).toThrow(/setSessionPlugin/);
     }
+  });
+});
+
+describe('isRecord', () => {
+  it('is true for a plain object and false for null, arrays and primitives', () => {
+    expect(isRecord({})).toBe(true);
+    expect(isRecord({ a: 1 })).toBe(true);
+    expect(isRecord(null)).toBe(false);
+    expect(isRecord([])).toBe(false);
+    expect(isRecord('x')).toBe(false);
+    expect(isRecord(undefined)).toBe(false);
+  });
+});
+
+describe('hasControlCharacters', () => {
+  it('catches C0, DEL and C1, and nothing printable', () => {
+    expect(hasControlCharacters('plain text')).toBe(false);
+    expect(hasControlCharacters('tab\tinside')).toBe(true);
+    expect(hasControlCharacters('esc\u001b[31m')).toBe(true);
+    expect(hasControlCharacters('del\u007f')).toBe(true);
+    expect(hasControlCharacters('nel\u0085')).toBe(true);
+    expect(hasControlCharacters('héllo — ünïcode')).toBe(false);
+  });
+
+  it('the whitespace-tolerant form lets tab, LF and CR through and nothing else', () => {
+    expect(hasControlCharactersOutsideWhitespace('a\tb\nc\r\n')).toBe(false);
+    expect(hasControlCharactersOutsideWhitespace('a\u0000b')).toBe(true);
+    expect(hasControlCharactersOutsideWhitespace('a\u0085b')).toBe(true);
   });
 });

@@ -103,17 +103,6 @@ export default tseslint.config(
       // covers them — tsconfig.json includes `tests`.
       'tests/**',
       /**
-       * Vendored third-party bundles (HIVE-71).
-       *
-       * `marked` is copied verbatim so the ADF pipeline needs no runtime
-       * dependency — the same property the epic was protecting when it rejected
-       * the bash client. Linting somebody else's minified-ish bundle reports
-       * their style choices as our errors, and reformatting it would destroy
-       * the one thing that makes a vendored copy auditable: that it is
-       * byte-identical to upstream.
-       */
-      'electron/main/integrations/jira/adf/vendor/**',
-      /**
        * Git worktrees live under the repo now that the app sits at the root.
        * Each one is a whole second checkout — linting them re-lints the app
        * once per branch and walks their `node_modules`, which is what turned
@@ -184,9 +173,9 @@ export default tseslint.config(
              */
             {
               target: './src/components/terminal/**/*',
-              from: ['./src/features/**/*', './src/data/**/*', './src/stores/**/*'],
+              from: ['./src/features/**/*', './src/stores/**/*'],
               message:
-                'components/terminal/ speaks only TerminalTransport. It may not import features/, data/, or stores/.',
+                'components/terminal/ speaks only TerminalTransport. It may not import features/ or stores/.',
             },
 
             /**
@@ -197,9 +186,9 @@ export default tseslint.config(
              */
             {
               target: './src/components/editor/**/*',
-              from: ['./src/features/**/*', './src/data/**/*', './src/stores/**/*'],
+              from: ['./src/features/**/*', './src/stores/**/*'],
               message:
-                'components/editor/ knows only its props. It may not import features/, data/, or stores/.',
+                'components/editor/ knows only its props. It may not import features/ or stores/.',
             },
 
             /**
@@ -219,7 +208,6 @@ export default tseslint.config(
               from: [
                 './src/features/**/*',
                 './src/components/**/*',
-                './src/data/**/*',
                 './src/stores/**/*',
                 './src/hooks/**/*',
                 './src/lib/**/*',
@@ -250,7 +238,6 @@ export default tseslint.config(
               from: [
                 './src/features/**/*',
                 './src/components/**/*',
-                './src/data/**/*',
                 './src/stores/**/*',
                 './src/hooks/**/*',
               ],

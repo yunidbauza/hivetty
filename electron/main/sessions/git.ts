@@ -145,7 +145,6 @@ export interface BranchReaderOptions {
   gitPath?: () => string | null;
   /** Injected for tests; the wall clock otherwise. */
   now?: () => number;
-  minIntervalMs?: number;
 }
 
 /**
@@ -165,7 +164,6 @@ export function createBranchReader(
     run = runAsync,
     gitPath = () => resolveGit(process.env),
     now = () => Date.now(),
-    minIntervalMs = MIN_INTERVAL_MS,
   } = options;
 
   const cache = new Map<string, Entry>();
@@ -243,7 +241,7 @@ export function createBranchReader(
          * cheaper and no less fresh.
          */
         if (entry.pending !== null) return entry.pending;
-        if (!fresh && now() - entry.at < minIntervalMs) {
+        if (!fresh && now() - entry.at < MIN_INTERVAL_MS) {
           return Promise.resolve(entry.branch);
         }
       }

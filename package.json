@@ -1,7 +1,7 @@
 {
   "name": "the-hive",
   "private": true,
-  "version": "0.14.4",
+  "version": "0.15.0",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@10.2.1",
@@ -91,6 +91,7 @@
     "clsx": "^2.1.1",
     "electron-updater": "^6.8.9",
     "fflate": "0.8.3",
+    "marked": "13.0.3",
     "node-pty": "1.1.0",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",

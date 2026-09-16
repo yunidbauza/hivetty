@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import { spawn as spawnPty, type IPty } from 'node-pty';
 
+import { buildSessionEnv, TERM } from '@shared/config-contract';
 import {
   FOREGROUND_POLL_MS,
   KILL_GRACE_MS,
@@ -13,7 +14,6 @@ import {
   type SpawnCommand,
 } from '@shared/pty-host-protocol';
 
-import { TERM, buildEnv } from './env';
 import {
   processControl,
   type Descendant,
@@ -40,7 +40,6 @@ import type { SessionOperations } from './sessions';
 interface SessionManagerOptions {
   maxSessions?: number;
   scrollbackBytes?: number;
-  killGraceMs?: number;
   /** The environment sessions inherit from. Injected so tests are hermetic. */
   baseEnv?: NodeJS.ProcessEnv;
   /**
@@ -173,7 +172,6 @@ export function createSessionManager(
   const {
     maxSessions = MAX_SESSIONS,
     scrollbackBytes = SCROLLBACK_BYTES,
-    killGraceMs = KILL_GRACE_MS,
     baseEnv = process.env,
     control = processControl,
     spawn = spawnPty,
@@ -318,7 +316,7 @@ export function createSessionManager(
     // The grace is whichever is shorter: the usual one, or what is left of the
     // budget once the sweep has been reserved its settle.
     const grace = Math.min(
-      killGraceMs,
+      KILL_GRACE_MS,
       Math.max(0, remaining(deadline) - SWEEP_SETTLE_MS),
     );
 
@@ -534,11 +532,11 @@ export function createSessionManager(
       let pty: IPty;
       try {
         pty = spawn(shell, args, {
-          // `TERM` in the child. See `env.ts` — the single most consequential
-          // option here.
+          // `TERM` in the child. See `buildSessionEnv` — the single most
+          // consequential option here.
           name: TERM,
           cwd,
-          env: buildEnv(baseEnv, cwd, command.env, command.stripEnv),
+          env: buildSessionEnv(baseEnv, cwd, command.env, command.stripEnv),
           cols: Math.max(1, cols),
           rows: Math.max(1, rows),
           /**
