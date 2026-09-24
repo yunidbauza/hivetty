@@ -38,13 +38,14 @@ const brief = ({
   budget = 8,
   outcome = '- [x] done thing\n',
   evidence = '$ npm test\nok\n',
+  extra = '',
 } = {}) => `---
 status: ${status}
 route: code
 turns_used: ${turns}
 turn_budget: ${budget}
 branch: goal/x
----
+${extra}---
 
 ## Task
 
@@ -118,6 +119,57 @@ test('all checked plus real evidence releases and writes DONE', () => {
   const r = decide(md, { checkPr: () => 'match' });
   assert.equal(r.action, 'allow');
   assert.match(r.write, /^status: DONE$/m);
+});
+
+test('DONE records done_at with the same stamp as last_verified', () => {
+  // The ceiling judges a DONE brief only on the turn it settled: done_at equal to
+  // last_verified. Re-judging it every later turn blocked a finished session three
+  // times, each for a new reason.
+  const r = decide(brief({ outcome: '- [x] a\n' }), { now: () => '2026-09-24T13:00:00.000Z', checkPr: () => 'match' });
+  assert.match(r.write, /^status: DONE$/m);
+  assert.match(r.write, /^done_at: 2026-09-24T13:00:00\.000Z$/m);
+  assert.match(r.write, /^last_verified: 2026-09-24T13:00:00\.000Z$/m);
+});
+
+test('a later turn on a DONE brief moves last_verified past done_at', () => {
+  const md = brief({ status: 'DONE', extra: 'done_at: 2026-09-24T13:00:00.000Z\n' });
+  const r = decide(md, { now: () => '2026-09-24T14:00:00.000Z' });
+  assert.match(r.write, /^done_at: 2026-09-24T13:00:00\.000Z$/m);
+  assert.match(r.write, /^last_verified: 2026-09-24T14:00:00\.000Z$/m);
+});
+
+// --- the plan file -----------------------------------------------------------
+
+const planned = brief({ outcome: '- [x] a\n', extra: 'plan: /abs/.hive/plans/p.md\n' });
+
+test('unticked plan steps block DONE even when the Outcome is met', () => {
+  // A goal once went DONE with its plan panel stuck at 0/3: the brief was ticked,
+  // the plan file never was.
+  const plan = '## Task 1: a\n- [x] one\n- [ ] two thing\n## Task 2: b\n- [ ] three\n';
+  const r = decide(planned, { checkPr: () => 'match', readPlan: () => plan });
+  assert.equal(r.action, 'block');
+  assert.match(r.reason, /2 plan step\(s\) still unchecked in \/abs\/\.hive\/plans\/p\.md/);
+  assert.match(r.reason, /two thing/);
+  assert.match(r.write, /^turns_used: 1$/m);
+  assert.doesNotMatch(r.write, /^status: DONE$/m);
+});
+
+test('a fully ticked plan lets DONE through', () => {
+  const r = decide(planned, { checkPr: () => 'match', readPlan: () => '- [x] one\n- [x] two\n' });
+  assert.equal(r.action, 'allow');
+  assert.match(r.write, /^status: DONE$/m);
+});
+
+test('the plan is read from the brief header path', () => {
+  let asked = null;
+  decide(planned, { checkPr: () => 'match', readPlan: (p) => ((asked = p), '') });
+  assert.equal(asked, '/abs/.hive/plans/p.md');
+});
+
+test('no plan header, or an unreadable plan, adds no gate', () => {
+  const read = () => assert.fail('no plan: header, nothing to read');
+  assert.match(decide(brief(), { checkPr: () => 'match', readPlan: read }).write, /^status: DONE$/m);
+  assert.match(decide(planned, { checkPr: () => 'match', readPlan: () => null }).write, /^status: DONE$/m);
 });
 
 // --- stop rule ---------------------------------------------------------------

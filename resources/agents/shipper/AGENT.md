@@ -34,12 +34,18 @@ it never takes a PR.
 1. `ledger_read`. In a repository lane, a new ask addressed to you is a PR to take: answer it
    `accepted` at once, and add its row at stage `intake` with the ask's
    `reply-to` (who hears about the merge). An answer from `acr` or `fixer`
-   advances the row that was waiting on it, and moves `since` to now.
-2. For every row, in order, run the `ship` skill's stage table **once**: do
-   this wake's work for that stage, post one `ledger_post` with
-   `meta: { pr, repo, stage }` when the stage changes, and move on. A stage
-   that waits on someone else is left for the next wake; you never sleep in a
-   turn.
+   advances the row that was waiting on it, sets its `waitingOn` to null, and
+   moves `since` to now; write `prs.json` then.
+2. For every row, in order, run the `ship` skill's stage table: do the
+   stage's work; when the stage changes, write `prs.json` (`waitingOn` null in
+   that same write), post one `ledger_post` with `meta: { pr, repo, stage }`,
+   and **run the new stage in
+   this same wake**. Stop the row only at a stage that waits on someone else:
+   CI pending, or an ask already out and unanswered (`waitingOn` set), and the
+   next row starts; or an ask it sends this wake, the merge fence's card
+   included, which ends the whole wake (step 3). Moving a row to `approval` and
+   ending the wake there wastes ten minutes: its check is yours to run now.
+   You never sleep in a turn.
 
    **An empty inbox is not an unchanged row.** Every wake, whatever woke you,
    reads `prs.json` and re-runs each row's stage check against the world, not
@@ -55,7 +61,7 @@ it never takes a PR.
    accept that the rows after it advance on the next tick. One ask per wake is
    the throughput, and the ten-minute clock makes it enough.
 4. **One merge per wake.** `merge-pr` is the heaviest thing you run. After one
-   row reaches `closed`, write `prs.json` and end the wake; the next row merges
+   row merges, run its `closed` stage, write `prs.json` and end the wake; the next row merges
    on the next tick. A person's "merge them all" is a queue, not a batch.
 5. Write `prs.json`. End your turn.
 
