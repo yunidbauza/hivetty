@@ -95,6 +95,40 @@ describe('AskCard', () => {
     expect(answerAsk).toHaveBeenCalledWith('a41', 'the staging one');
   });
 
+  /**
+   * The options an asker offers are its guess at the answer, and when none of
+   * them is the answer the card used to leave the person with no way to say so
+   * short of the console verb. "Other…" opens the same input a no-options ask
+   * already has; the typed body goes out as the answer, as it does there.
+   */
+  it('offers Other… beside the options, which opens the free-text answer', async () => {
+    const answerAsk = vi.fn().mockResolvedValue(undefined);
+    seedLedger([ask], { answerAsk });
+    render(<AskCard notif={notif} thread="a41" />);
+
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Other…' }));
+
+    // The options give way to the input: one row, one decision.
+    expect(screen.queryByRole('button', { name: 'yes' })).not.toBeInTheDocument();
+    await userEvent.type(screen.getByRole('textbox'), 'neither, ship on friday{Enter}');
+
+    expect(answerAsk).toHaveBeenCalledWith('a41', 'neither, ship on friday');
+  });
+
+  it('draws no Other… on the permission ladder', () => {
+    const honest = honestPermissionAsk('Allow Bash?\npnpm test', {
+      kind: 'permission',
+      tool: 'Bash',
+      input: { command: 'pnpm test' },
+    });
+
+    seedLedger([{ ...ask, body: honest.body, meta: honest.meta }]);
+    render(<AskCard notif={{ ...notif, kind: 'agent.permission' }} thread="a41" />);
+
+    expect(screen.queryByRole('button', { name: 'Other…' })).not.toBeInTheDocument();
+  });
+
   it('shows a quote and opens it for editing, sending body approve plus meta.edited', async () => {
     const answerAsk = vi.fn().mockResolvedValue(undefined);
     seedLedger(

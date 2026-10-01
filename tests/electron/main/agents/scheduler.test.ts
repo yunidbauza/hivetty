@@ -843,7 +843,7 @@ describe('createScheduler', () => {
       // Spelled like every other wake — `<kind> <id> from <from>` — so a queued
       // expiry and an immediate one read the same to the model.
       expect(woke).toEqual([
-        { name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind' },
+        { name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind — your ask a7 expired unanswered' },
       ]);
     });
 
@@ -907,6 +907,10 @@ describe('createScheduler', () => {
       tick();
 
       expect(appended[0]?.body).toBe('ask a1 expired');
+      // The wake's sentence names the id for the same reason, and carries no ref.
+      expect(woke).toEqual([
+        { name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind — your ask a1 expired unanswered' },
+      ]);
     });
 
     it('queues the expiry when the asker is mid-run', () => {
@@ -921,14 +925,14 @@ describe('createScheduler', () => {
       expect(appended).toHaveLength(1);
       expect(woke).toEqual([]);
       expect(state.read(AGENT).pendingWake).toEqual([
-        { kind: 'expired', id: 'a1', from: 'overmind' },
+        { kind: 'expired', id: 'a1', from: 'overmind', ref: 'a7' },
       ]);
 
       state.patch(AGENT, { status: 'sleeping' });
       scheduler.onRunClosed(AGENT);
 
       expect(woke).toEqual([
-        { name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind' },
+        { name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind — your ask a7 expired unanswered' },
       ]);
     });
 
@@ -2174,7 +2178,7 @@ describe('createScheduler', () => {
       scheduler.start();
       tick();
 
-      expect(woke).toEqual([{ name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind', lane: 'thread:A' }]);
+      expect(woke).toEqual([{ name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind — your ask a7 expired unanswered', lane: 'thread:A' }]);
     });
 
     it('sends an expiry to standing when the asking lane has closed', () => {
@@ -2189,7 +2193,7 @@ describe('createScheduler', () => {
       scheduler.start();
       tick();
 
-      expect(woke).toEqual([{ name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind' }]);
+      expect(woke).toEqual([{ name: AGENT, trigger: 'ledger', extra: 'expired a1 from overmind — your ask a7 expired unanswered' }]);
     });
   });
 

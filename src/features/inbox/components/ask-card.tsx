@@ -142,6 +142,17 @@ export function AskCard({ notif, thread }: AskCardProps) {
 
   const [draft, setDraft] = useState<string | null>(null);
   const [reply, setReply] = useState('');
+  /**
+   * The person chose "Other…" over the options the asker offered.
+   *
+   * An asker's options are its guess at the answer, and a card whose only
+   * controls were those guesses left no way to say "none of these" short of
+   * the console's `answer` verb — which is how a real ask sat open for a day
+   * with the decision relayed through a session's `post` instead, a kind that
+   * closes nothing. Once chosen, the row becomes the same `Answer…` input a
+   * no-options ask already draws, and the typed body goes out as the answer.
+   */
+  const [other, setOther] = useState(false);
   const [sending, setSending] = useState(false);
   /**
    * The refusal's reason, shown inline (whole-branch review, finding 3).
@@ -513,31 +524,44 @@ export function AskCard({ notif, thread }: AskCardProps) {
             sending={sending}
             onAnswer={(body) => void send(body)}
           />
-        ) : options.length > 0 ? (
-          options.map((option, index) => (
-            <Button
-              // Index-qualified (whole-branch review, finding 4): a model can
-              // supply duplicate options, and `option` alone would then give
-              // React two elements with the same key.
-              key={`${index}-${option}`}
-              size="sm"
-              variant={
-                NEGATIVE.test(option)
-                  ? 'danger'
-                  : index === 0
-                    ? 'primary'
-                    : 'secondary'
-              }
-              disabled={sending}
-              onClick={() =>
-                EDIT.test(option) && quote !== undefined
-                  ? setDraft(quote)
-                  : void send(option)
-              }
-            >
-              {option}
-            </Button>
-          ))
+        ) : options.length > 0 && !other ? (
+          <>
+            {options.map((option, index) => (
+              <Button
+                // Index-qualified (whole-branch review, finding 4): a model can
+                // supply duplicate options, and `option` alone would then give
+                // React two elements with the same key.
+                key={`${index}-${option}`}
+                size="sm"
+                variant={
+                  NEGATIVE.test(option)
+                    ? 'danger'
+                    : index === 0
+                      ? 'primary'
+                      : 'secondary'
+                }
+                disabled={sending}
+                onClick={() =>
+                  EDIT.test(option) && quote !== undefined
+                    ? setDraft(quote)
+                    : void send(option)
+                }
+              >
+                {option}
+              </Button>
+            ))}
+            {/*
+              Never on a permission ask, even one that fell through to this
+              branch without a ladder: main reads a permission answer as a
+              rung id, and a free-text body there closes the thread with a
+              grant nobody can match.
+            */}
+            {isPermission ? null : (
+              <Button size="sm" disabled={sending} onClick={() => setOther(true)}>
+                Other…
+              </Button>
+            )}
+          </>
         ) : (
           <>
             <input

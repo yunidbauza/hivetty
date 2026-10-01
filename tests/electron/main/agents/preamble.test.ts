@@ -43,6 +43,27 @@ describe('AGENT_PREAMBLE', () => {
     something". An agent following it literally can never close an ask made of
     it. These three assertions are the rule that was missing.
   */
+  /*
+    The withdrawal contract. A real team-developer run asked the overmind a
+    two-option question neither of which was the answer; the decision was
+    relayed into the thread as a post, which closes nothing, and the agent moved
+    on to report done without ever withdrawing its question. The sweep would
+    have woken it a day later with `expired a6 from overmind`, and nothing told
+    it what that meant — so the party that had given it the job would never
+    have heard the job was incomplete. These assertions are the rule that was
+    missing: an expired or withdrawn ask is a no, the caller is told, the claim
+    is released, and a card is raised only when nobody asked.
+  */
+  it('tells an agent what an expired or withdrawn ask of its own means', () => {
+    expect(AGENT_PREAMBLE).toMatch(/expired unanswered/);
+    expect(AGENT_PREAMBLE).toMatch(/a no, not a retry/i);
+    expect(AGENT_PREAMBLE).toMatch(/`ledger_answer`[^.]*incomplete/is);
+    // The release is its own step, named with the claim: a real run answered
+    // its caller and left the claim standing, three wakes out of three.
+    expect(AGENT_PREAMBLE).toMatch(/`ledger_claim`[^.]*`ledger_release`[^.]*same `task`/is);
+    expect(AGENT_PREAMBLE).toMatch(/nobody asked you[^.]*`ledger_failed`/is);
+  });
+
   it('names ledger_answer as the way to close an ask', () => {
     expect(AGENT_PREAMBLE).toContain('ledger_answer');
     // `\s+`, not a literal space: the source is hard-wrapped prose and the

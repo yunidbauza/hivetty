@@ -1189,6 +1189,17 @@ export interface PendingWakeEntry {
   run?: string;
   /** The lane it queued on; absent is standing (HIVE-184). */
   lane?: string;
+  /**
+   * The expired ask's short ref, on a `kind: 'expired'` entry only.
+   *
+   * The wake's reason line is the one sentence a model is sure to read, and
+   * `expired <id> from overmind` told it nothing it could act on without a
+   * ledger read. The ref is what its own earlier ask answers to, so the
+   * sentence can say "your ask a7 expired unanswered". Not `text`: a queued
+   * entry carrying `text` is a job (`isJob` in `scheduler.ts`), and an expiry
+   * is the standing conversation's news, never a task run.
+   */
+  ref?: string;
 }
 
 /**

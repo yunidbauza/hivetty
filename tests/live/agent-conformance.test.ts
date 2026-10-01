@@ -202,6 +202,8 @@ const ASKER = 'probe-asker';
 const RESPONDER = 'probe-responder';
 /** The builder's shape (HIVE-170): asks the party the job named, not the overmind. */
 const REPLYTO = 'probe-replyto';
+/** Proves an expired ask ends the job honestly (the withdrawal contract). */
+const WITHDRAW = 'probe-withdraw';
 /** The builder's step 4, verbatim (HIVE-180): posts each task's start and commit in the ask's thread. */
 const BUILDSTEP = 'probe-buildstep';
 
@@ -365,6 +367,7 @@ const AGENTS = [
   NAME,
   ASKER,
   REPLYTO,
+  WITHDRAW,
   BUILDSTEP,
   RESPONDER,
   FENCE,
@@ -632,6 +635,42 @@ Read your ledger inbox, then do exactly one of these and end your turn:
   \`meta.intent\` set to "answer <the id of the ask you took> when told".
 
 Never address the overmind unless the reply-to line says so. Say nothing else.
+`;
+
+/**
+ * The withdrawal probe.
+ *
+ * Its body spells out the job — claim, ask the overmind with a one-second
+ * `ttlMs` — and says **nothing** about what an expiry means beyond pointing at
+ * the rules above the line. That is deliberate: the case is proving the
+ * preamble's withdrawal contract reaches a real model, not that a body which
+ * restates it does. The ttl is short so the sweep, fired by hand on the
+ * captured tick, finds the ask already past it.
+ */
+const WITHDRAW_MD = `---
+name: ${WITHDRAW}
+description: Proves an expired ask ends the job honestly, with the caller told and the claim released.
+icon: Ghost
+model: haiku
+wake:
+  on: [ledger]
+tools: [TodoWrite]
+limits:
+  turns: 8
+  rotate_after: 50
+---
+This is a conformance probe. Do not read files, search the disk, or run
+commands — there is nothing here to find.
+
+Read your ledger inbox. If it holds an open ask addressed to you whose body
+begins "Build", that ask is your job: call \`ledger_claim\` with \`task\`
+"probe-withdraw-job", then call \`ledger_ask\` with \`to\` "overmind", the
+body "which colour?", \`options\` ["red", "blue"], and \`meta\`
+{"ttlMs": 1000, "intent": "answer <the id of the job ask> with the colour when told"}.
+Then end your turn.
+
+If instead your own question has expired or been withdrawn, do exactly what
+the rules above the line say about that, and nothing else. Say nothing else.
 `;
 
 /**
@@ -1065,6 +1104,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       [NAME, AGENT_MD],
       [ASKER, ASKER_MD],
       [REPLYTO, REPLYTO_MD],
+      [WITHDRAW, WITHDRAW_MD],
       [BUILDSTEP, BUILDSTEP_MD],
       [RESPONDER, RESPONDER_MD],
       [FENCE, fenceMd(marker)],
@@ -1914,6 +1954,89 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
     expect(closes).toHaveLength(1);
     expect(closes[0]?.['to']).toBe(SESSION);
   }, 300_000);
+
+  /**
+   * An expired ask ends the job honestly: the withdrawal contract.
+   *
+   * The real case behind it: team-developer asked the overmind a two-option
+   * question neither of which was the answer, the decision was relayed into
+   * the thread as a post, and the agent moved on and reported done without
+   * withdrawing its question. A day later the sweep would have woken it with
+   * `expired <id> from overmind` and nothing told it what that meant — the
+   * party that gave it the job would never have heard it was incomplete.
+   *
+   * Three things only a real model can prove: that the reason line's words
+   * reach it, that it answers the ask that gave it the job rather than
+   * re-asking or posting a `done`, and that it releases what it held.
+   * Flaky by nature — a small model is following prose — so it retries.
+   */
+  it('reports the job incomplete to its caller and releases when its ask expires', { retry: 2, timeout: 300_000 }, async () => {
+    const before = spawns.length;
+    const first = settled(WITHDRAW);
+    const job = ledger.append({
+      from: SESSION,
+      to: WITHDRAW,
+      kind: 'ask',
+      body: 'Build HIVE-000: a probe that is going to be left waiting',
+    });
+    expect(job.ok).toBe(true);
+    expect(spawns).toHaveLength(before + 1);
+    await first;
+
+    const jobId = job.ok ? job.id : '';
+    /*
+      Read off the entries, not `openAsks`: the ask carries a one-second ttl
+      and the turn that wrote it took longer than that, so the derive already
+      hides it. The sweep reads `expiredAsks`, which is exactly what finds it.
+    */
+    const asked = ledger.read({ from: WITHDRAW, kind: 'ask' }).entries.at(-1);
+    expect(asked?.to).toBe(OVERMIND);
+    expect(asked?.meta?.['ttlMs']).toBe(1000);
+    expect(ledger.read({}).claims['probe-withdraw-job']).toBe(WITHDRAW);
+
+    await until(() => Date.now() - (asked?.ts ?? Date.now()) >= 1_000, 5_000);
+
+    // The sweep runs on the captured tick, retires the ask, and wakes the asker.
+    const second = settled(WITHDRAW);
+    fireTick?.();
+    expect(spawns).toHaveLength(before + 2);
+
+    // Told why, in the words the preamble's rule keys on, on the prompt's first line.
+    const prompt = spawns[before + 1]?.args.at(-1) ?? '';
+    expect(prompt).toContain('You woke because: ledger');
+    expect(prompt).toContain(`your ask ${asked?.ref ?? asked?.id ?? ''} expired unanswered`);
+    await second;
+
+    const entries = await onDisk();
+    // The caller is told, on its own thread, that the job is incomplete.
+    const closes = entries.filter(
+      (entry) =>
+        entry['from'] === WITHDRAW && entry['kind'] === 'answer' && entry['thread'] === jobId,
+    );
+    expect(closes).toHaveLength(1);
+    expect(closes[0]?.['to']).toBe(SESSION);
+    expect(String(closes[0]?.['body'])).toMatch(/incomplete/i);
+    /*
+      Nothing re-asked after the expiry, and no done raised at a person who
+      did not ask. Scoped to what landed after the expiry event — ids sort in
+      write order — because a retry of this case shares the ledger with the
+      attempt before it, and the first turn is free to ask more than once.
+    */
+    const expiry = entries.find(
+      (entry) => entry['kind'] === 'event' && entry['meta'] !== undefined
+        && (entry['meta'] as Record<string, unknown>)['expired'] === asked?.id,
+    );
+    expect(expiry).toBeDefined();
+    const afterExpiry = entries.filter(
+      (entry) => entry['from'] === WITHDRAW && String(entry['id']) > String(expiry?.['id']),
+    );
+    expect(afterExpiry.filter((entry) => entry['kind'] === 'ask')).toHaveLength(0);
+    expect(afterExpiry.filter((entry) => entry['kind'] === 'done')).toHaveLength(0);
+    expect(afterExpiry.filter((entry) => entry['kind'] === 'release')).toHaveLength(1);
+    // And the claim is released; the agent rests with nothing open.
+    expect(ledger.read({}).claims['probe-withdraw-job']).toBeUndefined();
+    expect(agentState.read(WITHDRAW).status).toBe('sleeping');
+  });
 
   /**
    * The builder's task progress (HIVE-180), from the shipped step 4.

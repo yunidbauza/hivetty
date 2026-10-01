@@ -287,10 +287,26 @@ export interface Scheduler {
  * the one kind that brought its own words. Shared by the immediate path and the
  * queue so a wake reads the same however it was reached.
  */
-const describeEntry = (entry: PendingWakeEntry): string =>
-  entry.text === undefined
-    ? `${entry.kind} ${entry.id} from ${entry.from}`
-    : `${entry.kind} ${entry.id} from ${entry.from} — ${entry.text}`;
+const describeEntry = (entry: PendingWakeEntry): string => {
+  const named = `${entry.kind} ${entry.id} from ${entry.from}`;
+
+  if (entry.text !== undefined) return `${named} — ${entry.text}`;
+  /*
+    An expiry says what it is in words the preamble's withdrawal rule keys on
+    (HIVE-120): the ref is what the agent's own ask answers to, and "expired
+    unanswered" is the fact it has to act on — report the job incomplete to
+    whoever gave it, and release. The id stays first so a queued expiry and an
+    immediate one still read `<kind> <id> from <from>` like every other wake.
+  */
+  if (entry.kind === EXPIRED_KIND) {
+    return `${named} — your ask ${entry.ref ?? entry.id} expired unanswered`;
+  }
+
+  return named;
+};
+
+/** The `kind` the sweep queues an expiry under; no ledger entry carries it. */
+const EXPIRED_KIND = 'expired';
 
 /** `ask a12 from overmind` — how a wake says what it woke for. */
 const describeEntries = (queued: readonly PendingWakeEntry[]): string =>
@@ -429,7 +445,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         route(
           ask.from,
           decideForStatus(laneStatus(ask.from, lane)),
-          { kind: 'expired', id: ask.id, from: OVERMIND },
+          {
+            kind: EXPIRED_KIND,
+            id: ask.id,
+            from: OVERMIND,
+            ...(ask.ref === undefined ? {} : { ref: ask.ref }),
+          },
           LEDGER_TRIGGER,
           lane,
         );
@@ -1001,6 +1022,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
           ...(entry.thread === undefined ? {} : { thread: entry.thread }),
           ...(entry.run === undefined ? {} : { run: entry.run }),
           ...(entry.lane === undefined ? {} : { lane: entry.lane }),
+          ...(entry.ref === undefined ? {} : { ref: entry.ref }),
         },
       ],
     });
