@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 
+import { ageLabel } from '@lib/ledger/console-rows';
+
 /**
  * How long ago, as the inbox spells it, kept current (HIVE-75).
  *
@@ -137,4 +139,13 @@ export function useRelativeTime(createdAt: number): string {
 /** {@link formatLastUsed}, kept current — the fleet table's `LAST USED` cell. */
 export function useLastUsed(usedAt: number): string {
   return formatLastUsed(usedAt, useTickingNow(usedAt));
+}
+
+/**
+ * `ageLabel`, kept current — the agent row's slot at rest (HIVE-204). The same
+ * vocabulary as the ledger's age column, because the row's line 2 is a ledger
+ * entry and the two should read the same age for it.
+ */
+export function useAge(ts: number): string {
+  return ageLabel(useTickingNow(ts) - ts);
 }

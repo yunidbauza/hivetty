@@ -58,7 +58,7 @@ export function PullIndicator({ distance, phase }: PullIndicatorProps) {
     >
       <div
         className={cn(
-          'flex items-center gap-1.5 pb-1 text-[11px]',
+          'flex items-center gap-1.5 pb-1 text-micro',
           armed || refreshing ? 'text-muted' : 'text-subtle',
         )}
       >

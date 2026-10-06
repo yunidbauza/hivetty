@@ -262,6 +262,18 @@ export interface JiraTransition {
   };
 }
 
+/** Forward is up this ladder (HIVE-174); the Work page's next step reads it too (HIVE-203). */
+export const STATUS_CATEGORY_RANK: Record<JiraStatusCategory, number> = { todo: 0, 'in-progress': 1, done: 2 };
+
+/** The first transition Jira lists whose target is exactly one category forward, or nothing. */
+export function nextTransition(
+  transitions: readonly JiraTransition[],
+  current: JiraStatusCategory,
+): JiraTransition | undefined {
+  const want = STATUS_CATEGORY_RANK[current] + 1;
+  return transitions.find((transition) => STATUS_CATEGORY_RANK[transition.to.statusCategory] === want);
+}
+
 /** How many of Jira's own error strings are carried across IPC (HIVE-70). */
 export const JIRA_MAX_DETAILS = 10;
 
@@ -295,6 +307,9 @@ export interface AdfNode {
     href?: string;
     isNumberColumnEnabled?: boolean;
     layout?: string;
+    /** A mention's account id and its display form, `@Name` (HIVE-216). */
+    id?: string;
+    text?: string;
   };
 }
 
@@ -319,6 +334,8 @@ export interface AdfRun {
   marks: ('strong' | 'em' | 'code' | 'strike')[];
   /** Present when the run is a link. */
   href?: string;
+  /** A mention of a person (HIVE-216): `text` is its display form, `@Dana Kim`. Drawn as a chip. */
+  mention?: true;
 }
 
 /**
@@ -349,15 +366,52 @@ export interface AdfBlock {
   depth?: number;
 }
 
+/** A page of an issue's comments, oldest first, and how many the thread holds (HIVE-203). */
+export interface JiraCommentPage {
+  comments: JiraComment[];
+  total: number;
+}
+
+/**
+ * The comment property the Hive writes when it posts for an agent (HIVE-216).
+ * Namespaced to the app so no other integration's property is misread as ours.
+ */
+export const JIRA_VIA_PROPERTY = 'hive.via';
+
+/** One person to mention: the account Jira notifies, and the name drawn (HIVE-216). */
+export interface JiraMention {
+  accountId: string;
+  name: string;
+}
+
+/** One person a user search found (HIVE-216). */
+export interface JiraUser {
+  accountId: string;
+  displayName: string;
+}
+
+/** `{ query }`: the `@` picker's search and the `jira_users` tool (HIVE-216). */
+export interface JiraUsersRequest {
+  query: string;
+}
+
 /** One comment on an issue (HIVE-71). */
 export interface JiraComment {
   id: string;
   author: string;
+  /** The author's `accountId`, when Jira sent one (HIVE-216). What Reply mentions. */
+  authorId?: string;
   /** ISO 8601, as Jira sent it. The renderer owns display. */
   created: string;
   /** Absent when never edited. */
   updated?: string;
   body: AdfBlock[];
+  /**
+   * Posted by the Hive for an agent (HIVE-216): read from the comment's
+   * {@link JIRA_VIA_PROPERTY} property. A label for drawing, never a grant:
+   * anyone who can edit the issue can set a property.
+   */
+  via?: { agent: string };
 }
 
 /**
@@ -377,6 +431,14 @@ export interface JiraLink {
   relationship?: string;
   /** Jira-to-Jira only. */
   status?: string;
+  /** Jira-to-Jira only (HIVE-202): the linked issue's key, title and category. */
+  key?: string;
+  summary?: string;
+  statusCategory?: JiraStatusCategory;
+  /** Jira-to-Jira only (HIVE-202): the link type's name, "Blocks", "Relates", "Duplicate". */
+  linkType?: string;
+  /** Jira-to-Jira only (HIVE-202): which end of the link the *other* issue is on. */
+  direction?: 'inward' | 'outward';
 }
 
 /** How many comments are read at once. Bounded, like every other list. */
@@ -394,8 +456,9 @@ export const JIRA_MAX_COMMENTS = 50;
 export const JIRA_GET_PATH = '/jira/get';
 export const JIRA_TRANSITION_PATH = '/jira/transition';
 export const JIRA_COMMENT_PATH = '/jira/comment';
+export const JIRA_USERS_PATH = '/jira/users';
 
-/** The body cap on the three routes: a comment's markdown, JSON-escaped, with room. */
+/** The body cap on the four routes: a comment's markdown, JSON-escaped, with room. */
 export const JIRA_TOOL_MAX_BYTES = 64 * 1024;
 
 /** `{ key }`: what `jira_get` takes. Structurally `JiraIssueRequest`. */
@@ -418,12 +481,16 @@ export interface JiraTransitionByName {
 export interface JiraToolCommentRequest {
   key: string;
   markdown: string;
+  /** People to mention at the front of the comment (HIVE-216). */
+  mentions?: JiraMention[];
 }
 
 /** The parent, when the issue has one: an Epic for a story, a story for a subtask. */
-interface JiraParentRef {
+export interface JiraParentRef {
   key: string;
   summary: string;
+  /** Jira's issue type name, "Epic" for an epic (HIVE-202). */
+  issueType?: string;
 }
 
 /**
@@ -462,12 +529,15 @@ export interface JiraToolTransitionReply {
 }
 
 /**
- * The three answers, as the receiver serves them and the tools call them.
+ * The four answers, as the receiver serves them and the tools call them.
  * Implemented by `jiraToolsFor` in main over the Jira integration; the
  * receiver takes it as one optional option with a "not wired" default.
  */
 export interface JiraToolHandlers {
   get(request: JiraToolKeyRequest): Promise<JiraResult<JiraToolIssue>>;
   transition(request: JiraTransitionByName): Promise<JiraResult<JiraToolTransitionReply>>;
-  comment(request: JiraToolCommentRequest): Promise<JiraResult<JiraComment>>;
+  /** `via` is set by the receiver from its caller header when an agent asked (HIVE-216). */
+  comment(request: JiraToolCommentRequest, via?: { agent: string }): Promise<JiraResult<JiraComment>>;
+  /** People to mention (HIVE-216). */
+  users(request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>>;
 }

@@ -191,6 +191,20 @@ describe('createLedger', () => {
     expect(answer.thread).toBe(ask.id);
   });
 
+  it('reports every closed ask thread, derived from the whole log (HIVE-198)', () => {
+    const ask = ledger.append({ from: 'sess-a', to: OVERMIND, kind: 'ask', body: 'ship it?' });
+    if (!ask.ok) throw new Error('setup failed');
+    ledger.answer({ thread: ask.id, body: 'yes' }, OVERMIND);
+    const open = ledger.append({ from: 'sess-a', to: OVERMIND, kind: 'ask', body: 'and this?' });
+    if (!open.ok) throw new Error('setup failed');
+
+    // A query filtered to someone else still reports the close: it is a fact about the log.
+    const snapshot = ledger.read({ from: 'nobody' });
+
+    expect(snapshot.closedAsks).toEqual([ask.id]);
+    expect(snapshot.closedAsks).not.toContain(open.id);
+  });
+
   it('refuses an answer to a thread that is not open, with a reason', () => {
     const result = ledger.answer({ thread: 'a99', body: 'yes' }, OVERMIND);
 

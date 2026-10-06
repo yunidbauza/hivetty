@@ -1,107 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import {
-  alphaFor,
-  keyFrame,
-  KEY_CLEAR,
-  KEY_SOLID,
-  LOG_SCHEDULE,
-  scheduleCopy,
-  showFallback,
-  WORDMARK_START,
-  WORDMARK_STEP,
-  type KeyingContext,
-} from '@/splash/chamber';
+import { LOG_SCHEDULE, scheduleCopy, TYPE_STEP, WORDMARK_START, WORDMARK_STEP } from '@/splash/chamber';
 
 /**
- * The chamber's logic, away from the document that runs it.
+ * The chamber's copy schedule, away from the document that runs it.
  *
- * `splash.ts` cannot be imported here — it reaches for `#sprite` the moment it
- * loads and pulls in a `data:` URI of an mp4 — which is exactly why everything
- * worth asserting was moved into `chamber.ts`. What a real browser has to prove
- * instead (that the video decodes, that the canvas is not tainted, that the
- * creature is actually on screen) is in `tests/e2e/electron/splash.spec.ts`.
+ * `splash.ts` reaches for the document the moment it loads, so everything
+ * worth asserting lives in `chamber.ts`, `globe.ts` and `stage.ts`. What a real
+ * browser has to prove instead (that the globe is actually on screen) is in
+ * `tests/e2e/electron/splash.spec.ts`.
  */
-
-describe('alphaFor', () => {
-  it('drops the white ground entirely', () => {
-    expect(alphaFor(255)).toBe(0);
-    expect(alphaFor(KEY_CLEAR)).toBe(0);
-  });
-
-  it('keeps the creature fully opaque', () => {
-    expect(alphaFor(0)).toBe(255);
-    expect(alphaFor(120)).toBe(255);
-    expect(alphaFor(KEY_SOLID)).toBe(255);
-  });
-
-  it('ramps between the two, rather than cutting', () => {
-    const midpoint = Math.round((KEY_CLEAR + KEY_SOLID) / 2);
-    const alpha = alphaFor(midpoint);
-    expect(alpha).toBeGreaterThan(0);
-    expect(alpha).toBeLessThan(255);
-  });
-
-  it('is monotonic — darker is never less opaque', () => {
-    for (let min = 1; min <= 255; min++) {
-      expect(alphaFor(min)).toBeLessThanOrEqual(alphaFor(min - 1));
-    }
-  });
-
-  it('clears the compression ringing that a 248 cutoff left behind', () => {
-    // The fringe this was tuned to remove: near-white, but not white.
-    expect(alphaFor(245)).toBe(0);
-  });
-});
-
-describe('keyFrame', () => {
-  /** Four pixels: white ground, mid-ramp, saturated creature, black. */
-  const pixels = () =>
-    new Uint8ClampedArray([
-      255, 255, 255, 255, 232, 232, 232, 255, 140, 90, 40, 255, 0, 0, 0, 255,
-    ]);
-
-  const contextWith = (data: Uint8ClampedArray) => {
-    const image = { data, width: 4, height: 1, colorSpace: 'srgb' } as ImageData;
-    const ctx: KeyingContext = {
-      clearRect: vi.fn(),
-      drawImage: vi.fn(),
-      getImageData: vi.fn(() => image),
-      putImageData: vi.fn(),
-    };
-    return { ctx, image };
-  };
-
-  it('rewrites alpha from the darkest channel and puts the frame back', () => {
-    const { ctx, image } = contextWith(pixels());
-    const source = {} as CanvasImageSource;
-
-    keyFrame(ctx, source, 4, 1);
-
-    expect(ctx.clearRect).toHaveBeenCalledWith(0, 0, 4, 1);
-    expect(ctx.drawImage).toHaveBeenCalledWith(source, 0, 0, 4, 1);
-    expect(ctx.putImageData).toHaveBeenCalledWith(image, 0, 0);
-
-    const alphas = [image.data[3], image.data[7], image.data[11], image.data[15]];
-    expect(alphas[0]).toBe(0); // white ground
-    expect(alphas[1]).toBe(alphaFor(232)); // in the ramp
-    expect(alphas[2]).toBe(255); // creature
-    expect(alphas[3]).toBe(255); // shadow
-  });
-
-  it('leaves colour untouched — only alpha is rewritten', () => {
-    const { ctx, image } = contextWith(pixels());
-    keyFrame(ctx, {} as CanvasImageSource, 4, 1);
-    expect([image.data[8], image.data[9], image.data[10]]).toEqual([140, 90, 40]);
-  });
-
-  it('judges a pixel by its darkest channel, not its brightness', () => {
-    // Bright green: two channels are pale, one is not. It is the creature.
-    const { ctx, image } = contextWith(new Uint8ClampedArray([250, 250, 30, 255]));
-    keyFrame(ctx, {} as CanvasImageSource, 1, 1);
-    expect(image.data[3]).toBe(255);
-  });
-});
 
 describe('scheduleCopy', () => {
   const chamber = (letters: number, lines: number) => {
@@ -130,6 +38,24 @@ describe('scheduleCopy', () => {
     ]);
   });
 
+  it('types tty on "hive cluster online", and shows the cursor once HIVE has assembled', () => {
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<p class="wordmark"><span>H</span><span>I</span><span>V</span><span>E</span><em class="tty"><i>t</i><i>t</i><i>y</i><b class="cursor"></b></em></p>';
+    scheduleCopy(root);
+
+    // The tty is not a glyph of the wordmark: HIVE's four letters keep the old clock.
+    expect(root.querySelectorAll<HTMLElement>('.wordmark span')[3]!.style.animationDelay).toBe(`${WORDMARK_START + WORDMARK_STEP * 3}s`);
+    const keys = [...root.querySelectorAll<HTMLElement>('.tty i')].map((key) => parseFloat(key.style.animationDelay));
+    keys.forEach((at, i) => expect(at).toBeCloseTo(LOG_SCHEDULE[4]! + i * TYPE_STEP, 9));
+    const cursor = root.querySelector<HTMLElement>('.cursor')!.style.animationDelay.split(',').map((d) => parseFloat(d));
+    expect(cursor).toHaveLength(2);
+    for (const at of cursor) {
+      expect(at).toBeGreaterThan(WORDMARK_START + WORDMARK_STEP * 3);
+      expect(at).toBeLessThan(LOG_SCHEDULE[4]!);
+    }
+  });
+
   it('lands every log line on its scheduled second', () => {
     const root = chamber(0, LOG_SCHEDULE.length);
     scheduleCopy(root);
@@ -154,27 +80,5 @@ describe('scheduleCopy', () => {
     );
     expect(delays.at(-1)).toBe(`${LOG_SCHEDULE.at(-1)}s`);
     expect(delays.at(-1)).not.toBe('0s');
-  });
-});
-
-describe('showFallback', () => {
-  it('swaps the canvas for the image', () => {
-    const canvas = document.createElement('canvas');
-    const image = document.createElement('img');
-    image.hidden = true;
-
-    showFallback(canvas, image);
-
-    expect(canvas.hidden).toBe(true);
-    expect(image.hidden).toBe(false);
-  });
-
-  it('clears the entrance delay, so a late swap is not late twice', () => {
-    const canvas = document.createElement('canvas');
-    const image = document.createElement('img');
-
-    showFallback(canvas, image);
-
-    expect(image.style.animationDelay).toBe('0s');
   });
 });

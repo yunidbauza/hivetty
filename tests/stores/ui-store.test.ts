@@ -15,13 +15,8 @@ describe('ui-store — view state', () => {
     useUiStore.getState().reset();
   });
 
-  it('starts on the orchestrator with the projects and inbox tabs', () => {
-    const state = useUiStore.getState();
-
-    expect(state.activeTab).toBe('orch');
-    expect(state.leftTab).toBe('projects');
-    expect(state.railTab).toBe('inbox');
-    expect(state.showActivityRail).toBe(true);
+  it('starts on the orchestrator', () => {
+    expect(useUiStore.getState().activeTab).toBe('orch');
   });
 
   it('openTab switches the center stage and dismisses the picker', () => {
@@ -96,31 +91,6 @@ describe('ui-store — view state', () => {
     });
   });
 
-  it('toggleProject collapses and expands', () => {
-    const { toggleProject } = useUiStore.getState();
-
-    toggleProject('nova-web');
-    expect(useUiStore.getState().collapsed['nova-web']).toBe(true);
-
-    toggleProject('nova-web');
-    expect(useUiStore.getState().collapsed['nova-web']).toBe(false);
-  });
-
-  it('tracks each project independently', () => {
-    useUiStore.getState().toggleProject('nova-web');
-
-    expect(useUiStore.getState().collapsed['nova-web']).toBe(true);
-    expect(useUiStore.getState().collapsed['referral-api']).toBeUndefined();
-  });
-
-  it('switches left and rail tabs', () => {
-    useUiStore.getState().setLeftTab('agents');
-    useUiStore.getState().setRailTab('prs');
-
-    expect(useUiStore.getState().leftTab).toBe('agents');
-    expect(useUiStore.getState().railTab).toBe('prs');
-  });
-
   it('clears a stale query when the picker reopens', () => {
     const { openPicker, setPickerQuery, closePicker } = useUiStore.getState();
 
@@ -144,11 +114,6 @@ describe('ui-store — view state', () => {
     expect(useUiStore.getState().newEffort).toBe('low');
   });
 
-  it('toggles the activity rail', () => {
-    useUiStore.getState().toggleActivityRail();
-    expect(useUiStore.getState().showActivityRail).toBe(false);
-  });
-
   it('tracks the orchestrator table selection by id', () => {
     useUiStore.getState().setSelId('webhooks');
     expect(useUiStore.getState().selId).toBe('webhooks');
@@ -169,17 +134,13 @@ describe('ui-store — view state', () => {
   it('reset returns every field to its initial value', () => {
     const state = useUiStore.getState();
     state.openTab('webhooks');
-    state.setLeftTab('agents');
     state.setSelId('webhooks');
-    state.toggleProject('nova-web');
 
     useUiStore.getState().reset();
 
     expect(useUiStore.getState()).toMatchObject({
       activeTab: 'orch',
-      leftTab: 'projects',
       selId: null,
-      collapsed: {},
     });
   });
 });
@@ -297,39 +258,6 @@ describe('the explorer tree', () => {
     useUiStore.getState().reset();
 
     expect(useUiStore.getState().explorerExpanded).toEqual({});
-  });
-});
-
-describe('revealRailTab (HIVE-93)', () => {
-  it('selects the tab and opens the rail', () => {
-    useUiStore.setState({ railTab: 'prs', showActivityRail: false });
-
-    useUiStore.getState().revealRailTab('inbox');
-
-    expect(useUiStore.getState().railTab).toBe('inbox');
-    expect(useUiStore.getState().showActivityRail).toBe(true);
-  });
-
-  it('is idempotent, so a second click does not hide the rail', () => {
-    /**
-     * The distinction from `toggleActivityRail`, which is what the header bell
-     * must not do: a user clicking the bell twice is asking for the inbox twice,
-     * not asking for it and then asking for it to go away.
-     */
-    useUiStore.getState().revealRailTab('inbox');
-    useUiStore.getState().revealRailTab('inbox');
-
-    expect(useUiStore.getState().showActivityRail).toBe(true);
-    expect(useUiStore.getState().railTab).toBe('inbox');
-  });
-
-  it('does not disturb the rail when only the tab differs', () => {
-    useUiStore.setState({ railTab: 'explorer', showActivityRail: true });
-
-    useUiStore.getState().revealRailTab('inbox');
-
-    expect(useUiStore.getState().railTab).toBe('inbox');
-    expect(useUiStore.getState().showActivityRail).toBe(true);
   });
 });
 
@@ -454,5 +382,591 @@ describe('ui-store — the work search', () => {
 
     expect(useUiStore.getState().workSearchTerm).toBe('');
     expect(useUiStore.getState().workSearchMineOnly).toBe(false);
+  });
+});
+
+describe('ui-store — the place machine (HIVE-195)', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+  });
+
+  const ui = () => useUiStore.getState();
+
+  it('opens on Home with the panel open', () => {
+    expect(ui().place).toBe('home');
+    expect(ui().panelOpen).toBe(true);
+  });
+
+  it('a new place opens its panel and dismisses the picker and settings', () => {
+    useUiStore.setState({ panelOpen: false, picker: true, settings: true });
+
+    ui().selectPlace('work');
+
+    expect(ui()).toMatchObject({ place: 'work', panelOpen: true, picker: false, settings: false });
+  });
+
+  it('the active place, under settings or the picker, dismisses them and leaves everything else', () => {
+    ui().selectPlace('sessions');
+    ui().openTab('hero-refresh');
+    useUiStore.setState({ settings: true, picker: true, panelOpen: true });
+
+    ui().selectPlace('sessions');
+
+    expect(ui()).toMatchObject({ place: 'sessions', settings: false, picker: false, panelOpen: true, activeTab: 'hero-refresh' });
+  });
+
+  it('the active place toggles its panel', () => {
+    ui().selectPlace('work');
+
+    ui().selectPlace('work');
+    expect(ui().panelOpen).toBe(false);
+
+    ui().selectPlace('work');
+    expect(ui().panelOpen).toBe(true);
+  });
+
+  it('Sessions with a session on stage goes back to the Overmind, panel untouched, then toggles', () => {
+    ui().selectPlace('sessions');
+    ui().openTab('hero-refresh');
+    useUiStore.setState({ panelOpen: false });
+
+    ui().selectPlace('sessions');
+    expect(ui()).toMatchObject({ activeTab: 'orch', panelOpen: false, place: 'sessions' });
+
+    ui().selectPlace('sessions');
+    expect(ui().panelOpen).toBe(true);
+  });
+
+  it('returning to Sessions puts back the session opened there, though Agents wrote the tab', () => {
+    ui().openTab('hero-refresh', 'sessions');
+    ui().openAgentPage('slack-agent', 'activity');
+    expect(ui().activeTab).toBe('slack-agent');
+
+    ui().selectPlace('sessions');
+    expect(ui()).toMatchObject({ place: 'sessions', activeTab: 'hero-refresh' });
+  });
+
+  it('returning to Sessions lands on the Overmind when asked to, and forgets the session', () => {
+    ui().openTab('hero-refresh', 'sessions');
+    ui().selectPlace('work');
+
+    ui().selectPlace('sessions', true);
+    expect(ui()).toMatchObject({ activeTab: 'orch', sessionsTab: 'orch' });
+  });
+
+  it('a first visit to Sessions, and one after the Overmind was chosen, show the Overmind', () => {
+    ui().selectPlace('sessions');
+    expect(ui().activeTab).toBe('orch');
+
+    ui().openTab('hero-refresh');
+    ui().backToOrch();
+    ui().selectPlace('work');
+    ui().selectPlace('sessions');
+    expect(ui().activeTab).toBe('orch');
+  });
+
+  it('remembering what a place shows keeps its page state until the row changes', () => {
+    ui().openWorkTicket('A-1');
+    ui().setWorkConversation('everything');
+    ui().rememberWorkTicket('A-1', 3);
+    expect(ui()).toMatchObject({ workTicket: 'A-1', workTicketAt: 3, workConversation: 'everything' });
+    ui().rememberWorkTicket('A-2', 3);
+    expect(ui()).toMatchObject({ workTicket: 'A-2', workConversation: 'comments' });
+
+    ui().openAgentPage('a', 'definition');
+    ui().rememberAgentPage('a', 1);
+    expect(ui()).toMatchObject({ agentPage: { name: 'a', view: 'definition' }, agentPageAt: 1 });
+    ui().rememberAgentPage('b', 1);
+    expect(ui().agentPage).toEqual({ name: 'b', view: 'activity' });
+
+    ui().openPrPage({ owner: 'Acme', repo: 'Server', n: 1 });
+    ui().setPrFile('a.ts');
+    ui().rememberPrPage({ owner: 'acme', repo: 'server', n: 1 }, 0);
+    expect(ui()).toMatchObject({ prFile: 'a.ts', prPageAt: 0 });
+    ui().rememberPrPage({ owner: 'acme', repo: 'server', n: 2 }, 0);
+    expect(ui()).toMatchObject({ prPage: { n: 2 }, prFile: null });
+  });
+
+  it('togglePanel flips panelOpen', () => {
+    ui().togglePanel();
+    expect(ui().panelOpen).toBe(false);
+    ui().togglePanel();
+    expect(ui().panelOpen).toBe(true);
+  });
+
+  it('openTab with a place moves it; without one it stays', () => {
+    ui().openTab('slack-agent', 'agents');
+    expect(ui().place).toBe('agents');
+
+    ui().openTab('hero-refresh');
+    expect(ui()).toMatchObject({ place: 'agents', activeTab: 'hero-refresh' });
+  });
+
+  it('backToOrch lands on Sessions', () => {
+    ui().backToOrch();
+    expect(ui()).toMatchObject({ activeTab: 'orch', place: 'sessions' });
+  });
+
+  it('reset restores Home with the panel open', () => {
+    ui().selectPlace('prs');
+    ui().togglePanel();
+
+    ui().reset();
+
+    expect(ui()).toMatchObject({ place: 'home', panelOpen: true });
+  });
+});
+
+describe('reset (HIVE-213)', () => {
+  it('restores Home with the panel open, and no rail fields exist', () => {
+    useUiStore.setState({ place: 'prs', panelOpen: false });
+    useUiStore.getState().reset();
+    const state = useUiStore.getState() as unknown as Record<string, unknown>;
+    expect(state.place).toBe('home');
+    expect(state.panelOpen).toBe(true);
+    for (const key of ['leftTab', 'railTab', 'showActivityRail', 'collapsed']) {
+      expect(key in state).toBe(false);
+    }
+  });
+});
+
+describe('Sessions place view state (HIVE-197)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('starts unfiltered, folded, Ended folded', () => {
+    const s = useUiStore.getState();
+    expect(s.sessionsProject).toBeNull();
+    expect(s.sessionsFilter).toBe('all');
+    expect(s.endedExpanded).toBe(false);
+    expect(s.expanded).toEqual({});
+  });
+
+  it('setSessionsProject filters and unfolds that project; null clears and keeps folds', () => {
+    useUiStore.getState().setSessionsProject('nova-web');
+    expect(useUiStore.getState().sessionsProject).toBe('nova-web');
+    expect(useUiStore.getState().expanded['nova-web']).toBe(true);
+    useUiStore.getState().setSessionsProject(null);
+    expect(useUiStore.getState().sessionsProject).toBeNull();
+    expect(useUiStore.getState().expanded['nova-web']).toBe(true);
+  });
+
+  it('toggleProjectFold flips, and expandProject only opens', () => {
+    useUiStore.getState().toggleProjectFold('a');
+    expect(useUiStore.getState().expanded.a).toBe(true);
+    useUiStore.getState().toggleProjectFold('a');
+    expect(useUiStore.getState().expanded.a).toBe(false);
+    useUiStore.getState().expandProject('a');
+    useUiStore.getState().expandProject('a');
+    expect(useUiStore.getState().expanded.a).toBe(true);
+  });
+
+  it('setSessionsFilter and expandEnded', () => {
+    useUiStore.getState().setSessionsFilter('ended');
+    useUiStore.getState().expandEnded();
+    expect(useUiStore.getState().sessionsFilter).toBe('ended');
+    expect(useUiStore.getState().endedExpanded).toBe(true);
+  });
+
+  it('the console starts folded and toggles (HIVE-197)', () => {
+    useUiStore.getState().reset();
+    expect(useUiStore.getState().consoleShown).toBe(false);
+    useUiStore.getState().toggleConsole();
+    expect(useUiStore.getState().consoleShown).toBe(true);
+  });
+});
+
+describe('back to the Overmind (HIVE-197)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('backToOrch selects the session left and keeps filters and folds', () => {
+    useUiStore.setState({
+      activeTab: 'hero-refresh',
+      sessionsProject: 'nova-web',
+      sessionsFilter: 'live',
+      expanded: { 'nova-web': true },
+    });
+    useUiStore.getState().backToOrch();
+    const s = useUiStore.getState();
+    expect(s.activeTab).toBe('orch');
+    expect(s.selId).toBe('hero-refresh');
+    expect(s.sessionsProject).toBe('nova-web');
+    expect(s.sessionsFilter).toBe('live');
+    expect(s.expanded).toEqual({ 'nova-web': true });
+  });
+
+  it('backToOrch from the Overmind leaves selId alone', () => {
+    useUiStore.setState({ activeTab: 'orch', selId: 'x' });
+    useUiStore.getState().backToOrch();
+    expect(useUiStore.getState().selId).toBe('x');
+  });
+
+  it('the Sessions icon with a session on stage does the same', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'lead-form', selId: null });
+    useUiStore.getState().selectPlace('sessions');
+    expect(useUiStore.getState().activeTab).toBe('orch');
+    expect(useUiStore.getState().selId).toBe('lead-form');
+    expect(useUiStore.getState().panelOpen).toBe(true);
+  });
+});
+
+describe('Work place (HIVE-203)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('opens a ticket on the Work place, on Comments, closing overlays', () => {
+    useUiStore.setState({ picker: true, settings: true, workConversation: 'everything' });
+    useUiStore.getState().openWorkTicket('HIVE-7');
+    expect(useUiStore.getState()).toMatchObject({
+      workTicket: 'HIVE-7',
+      place: 'work',
+      panelOpen: true,
+      workConversation: 'comments',
+      picker: false,
+      settings: false,
+    });
+  });
+
+  it('starts with Done folded and toggles one group', () => {
+    expect(useUiStore.getState().workFolded).toEqual({ todo: false, 'in-progress': false, done: true });
+    useUiStore.getState().toggleWorkGroup('done');
+    expect(useUiStore.getState().workFolded.done).toBe(false);
+  });
+
+  it('starts with every agent lane unfolded and folds one (HIVE-204)', () => {
+    expect(useUiStore.getState().agentsFolded).toEqual({ summons: false, morphing: false, burrowed: false });
+    useUiStore.getState().toggleAgentGroup('burrowed');
+    expect(useUiStore.getState().agentsFolded.burrowed).toBe(true);
+  });
+
+  it('switches the conversation mode', () => {
+    useUiStore.getState().setWorkConversation('everything');
+    expect(useUiStore.getState().workConversation).toBe('everything');
+  });
+});
+
+describe('ui-store — the agent page (HIVE-204)', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+  });
+
+  it('starts with no agent page', () => {
+    expect(useUiStore.getState().agentPage).toBeNull();
+  });
+
+  it('openAgentPage opens the Agents place on the asked view and dismisses overlays', () => {
+    useUiStore.getState().openSettings('agents');
+    useUiStore.getState().openAgentPage('acr', 'definition');
+    expect(useUiStore.getState()).toMatchObject({
+      agentPage: { name: 'acr', view: 'definition' },
+      place: 'agents',
+      panelOpen: true,
+      picker: false,
+      settings: false,
+    });
+  });
+
+  it('opening a named page also makes it the active tab; a new agent returns the tab to the orchestrator', () => {
+    useUiStore.getState().openAgentPage('acr', 'activity');
+    expect(useUiStore.getState().activeTab).toBe('acr');
+    useUiStore.getState().openAgentPage(null, 'definition');
+    expect(useUiStore.getState().activeTab).toBe('orch');
+    expect(useUiStore.getState().agentPage).toEqual({ name: null, view: 'definition' });
+  });
+
+  it('openTab to the agents place opens that agent on Activity', () => {
+    useUiStore.getState().openTab('shipper', 'agents');
+    expect(useUiStore.getState().agentPage).toEqual({ name: 'shipper', view: 'activity' });
+  });
+
+  it('openTab to another place leaves the agent page as it was', () => {
+    useUiStore.getState().openAgentPage('acr', 'definition');
+    useUiStore.getState().openTab('sess-1', 'sessions');
+    expect(useUiStore.getState().agentPage).toEqual({ name: 'acr', view: 'definition' });
+  });
+
+  it('setAgentPageView changes the view and keeps the agent', () => {
+    useUiStore.getState().openAgentPage('acr', 'activity');
+    useUiStore.getState().setAgentPageView('definition');
+    expect(useUiStore.getState().agentPage).toEqual({ name: 'acr', view: 'definition' });
+  });
+
+  it('setAgentPageView with nothing open does nothing', () => {
+    useUiStore.getState().setAgentPageView('definition');
+    expect(useUiStore.getState().agentPage).toBeNull();
+  });
+
+  it('closeAgentPage leaves nothing open and stays on the place', () => {
+    useUiStore.getState().openAgentPage('acr', 'activity');
+    useUiStore.getState().closeAgentPage();
+    expect(useUiStore.getState().agentPage).toBeNull();
+    expect(useUiStore.getState().place).toBe('agents');
+  });
+});
+
+describe('ui-store — the PRs place (HIVE-205)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('starts with no PR open, on Conversation, Hatched folded, Comments, no search', () => {
+    expect(useUiStore.getState()).toMatchObject({
+      prPage: null, prTab: 'conversation', prsFolded: true, prConversation: 'comments', prSearchOpen: false,
+    });
+  });
+
+  it('starts with no file, no filter, Unified (HIVE-207)', () => {
+    const s = useUiStore.getState();
+    expect([s.prFile, s.prFileFilter, s.prDiffView]).toEqual([null, '', 'unified']);
+  });
+
+  it('opening a PR resets the file and the filter but keeps the view and the Files tab (HIVE-207)', () => {
+    const s = useUiStore.getState();
+    s.setPrTab('files');
+    s.setPrFile('src/a.ts');
+    s.setPrFileFilter('fees');
+    s.setPrDiffView('split');
+    s.openPrPage({ owner: 'acme', repo: 'web', n: 2 });
+    const after = useUiStore.getState();
+    expect([after.prTab, after.prFile, after.prFileFilter, after.prDiffView]).toEqual(['files', null, '', 'split']);
+  });
+
+  it('openPrPage opens the PRs place on the PR, dismisses overlays, keeps the tab and resets the filter', () => {
+    useUiStore.getState().openPicker();
+    useUiStore.getState().setPrConversation('everything');
+    useUiStore.setState({ panelOpen: false });
+
+    useUiStore.getState().openPrPage({ owner: 'acme', repo: 'server', n: 1182 });
+
+    expect(useUiStore.getState()).toMatchObject({
+      prPage: { owner: 'acme', repo: 'server', n: 1182 },
+      place: 'prs', panelOpen: true, picker: false, settings: false,
+      prTab: 'conversation', prConversation: 'comments',
+    });
+  });
+
+  it('toggles the fold, sets the tab, the filter and the search', () => {
+    const ui = useUiStore.getState();
+    ui.togglePrsFolded();
+    ui.setPrTab('conversation');
+    ui.setPrConversation('everything');
+    ui.setPrSearchOpen(true);
+    expect(useUiStore.getState()).toMatchObject({ prsFolded: false, prTab: 'conversation', prConversation: 'everything', prSearchOpen: true });
+  });
+
+  it('is reset with the rest of the view state', () => {
+    useUiStore.getState().openPrPage({ owner: 'acme', repo: 'server', n: 1 });
+    useUiStore.getState().reset();
+    expect(useUiStore.getState().prPage).toBeNull();
+  });
+});
+
+describe('the Checks tab selection (HIVE-206)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('openPrChecks shows the Checks tab on a job', () => {
+    useUiStore.getState().openPrChecks(77);
+    expect(useUiStore.getState()).toMatchObject({ prTab: 'checks', prJob: 77 });
+  });
+
+  it('openPrChecks leaves an older push so the clicked job is looked up in the latest', () => {
+    useUiStore.setState({ prRun: 'oldsha1' });
+    useUiStore.getState().openPrChecks(77);
+    expect(useUiStore.getState()).toMatchObject({ prTab: 'checks', prRun: null, prJob: 77 });
+  });
+
+  it('showPrRun shows a push and lets go of the clicked job', () => {
+    useUiStore.setState({ prJob: 77 });
+    useUiStore.getState().showPrRun('9f3c2ab');
+    expect(useUiStore.getState()).toMatchObject({ prRun: '9f3c2ab', prJob: null });
+  });
+
+  it('showPrJob picks a job', () => {
+    useUiStore.getState().showPrJob(12);
+    expect(useUiStore.getState().prJob).toBe(12);
+  });
+
+  it('openPrPage forgets the shown push and job, and keeps the tab', () => {
+    useUiStore.setState({ prTab: 'checks', prRun: 'abc', prJob: 3 });
+    useUiStore.getState().openPrPage({ owner: 'acme', repo: 'server', n: 1 });
+    expect(useUiStore.getState()).toMatchObject({ prTab: 'checks', prRun: null, prJob: null });
+  });
+});
+
+describe('ui-store — the inbox arrival queue (HIVE-198)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('starts empty with the drawer shut', () => {
+    const s = useUiStore.getState();
+    expect(s.arrivals).toEqual([]);
+    expect(s.arrivalPulse).toBeNull();
+    expect(s.inboxDrawer).toEqual({ open: false, thread: null });
+  });
+
+  it('pushes newest first and never twice', () => {
+    const { pushArrival } = useUiStore.getState();
+    pushArrival('a', false);
+    pushArrival('b', false);
+    pushArrival('a', false);
+    expect(useUiStore.getState().arrivals).toEqual(['a', 'b']);
+  });
+
+  it('a quiet arrival pulses instead of rising', () => {
+    useUiStore.getState().pushArrival('a', true);
+    expect(useUiStore.getState().arrivals).toEqual([]);
+    expect(useUiStore.getState().arrivalPulse).toBe('a');
+  });
+
+  it('nothing rises while the drawer is open', () => {
+    useUiStore.getState().openInboxDrawer();
+    useUiStore.getState().pushArrival('a', false);
+    expect(useUiStore.getState().arrivals).toEqual([]);
+  });
+
+  it('folds the queue', () => {
+    useUiStore.getState().pushArrival('a', false);
+    useUiStore.getState().foldArrivals();
+    expect(useUiStore.getState().arrivals).toEqual([]);
+  });
+
+  it('opens the drawer on a thread, folding what was up, and closes it', () => {
+    useUiStore.getState().pushArrival('a', false);
+    useUiStore.getState().openInboxDrawer('t1');
+    expect(useUiStore.getState().inboxDrawer).toEqual({ open: true, thread: 't1' });
+    expect(useUiStore.getState().arrivals).toEqual([]);
+    useUiStore.getState().closeInboxDrawer();
+    expect(useUiStore.getState().inboxDrawer).toEqual({ open: false, thread: null });
+  });
+
+  it('opens without a thread', () => {
+    useUiStore.getState().openInboxDrawer();
+    expect(useUiStore.getState().inboxDrawer).toEqual({ open: true, thread: null });
+  });
+});
+
+describe('awaySince (HIVE-200)', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+  });
+
+  it('starts at store creation and moves with markAway', () => {
+    expect(typeof useUiStore.getState().awaySince).toBe('number');
+    useUiStore.getState().markAway(1_700_000_000_000);
+    expect(useUiStore.getState().awaySince).toBe(1_700_000_000_000);
+  });
+});
+
+describe('focusPrEvent (HIVE-208)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('lands on Conversation at the item, switching to Everything for a Hive event', () => {
+    useUiStore.getState().setPrTab('timeline');
+    useUiStore.getState().focusPrEvent('e-20261003-110500-0001', true);
+    expect(useUiStore.getState()).toMatchObject({ prTab: 'conversation', prFocus: 'e-20261003-110500-0001', prConversation: 'everything' });
+    useUiStore.getState().setPrConversation('comments');
+    useUiStore.getState().focusPrEvent('c-https://x', false);
+    expect(useUiStore.getState()).toMatchObject({ prFocus: 'c-https://x', prConversation: 'comments' });
+    useUiStore.getState().clearPrFocus();
+    expect(useUiStore.getState().prFocus).toBeNull();
+  });
+
+  it('each open clears it', () => {
+    useUiStore.getState().focusPrEvent('c-https://x', false);
+    useUiStore.getState().openPrPage({ owner: 'acme', repo: 'server', n: 1 });
+    expect(useUiStore.getState().prFocus).toBeNull();
+  });
+});
+
+describe('narrow (HIVE-211)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('crossing below 1,200px closes the panel; widening does not reopen it', () => {
+    useUiStore.setState({ place: 'work', panelOpen: true });
+    useUiStore.getState().setNarrow(true);
+    expect(useUiStore.getState()).toMatchObject({ narrow: true, panelOpen: false });
+    useUiStore.getState().setNarrow(false);
+    expect(useUiStore.getState()).toMatchObject({ narrow: false, panelOpen: false });
+  });
+
+  it('the bar icon still opens the panel while narrow', () => {
+    useUiStore.getState().setNarrow(true);
+    useUiStore.getState().selectPlace('work');
+    expect(useUiStore.getState().panelOpen).toBe(true);
+  });
+
+  it('a repeat is a no-op', () => {
+    useUiStore.getState().setNarrow(false);
+    const before = useUiStore.getState();
+    useUiStore.getState().setNarrow(false);
+    expect(useUiStore.getState()).toBe(before);
+  });
+});
+
+describe('a row pick while narrow (HIVE-211)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  const picks: [string, () => void][] = [
+    ['openWorkTicket', () => useUiStore.getState().openWorkTicket('HIVE-1')],
+    ['openAgentPage', () => useUiStore.getState().openAgentPage('acr', 'activity')],
+    ['openPrPage', () => useUiStore.getState().openPrPage({ owner: 'o', repo: 'r', n: 1 })],
+    ['openTab with a place', () => useUiStore.getState().openTab('s-1', 'sessions')],
+    ['setSessionsProject', () => useUiStore.getState().setSessionsProject('p1')],
+    ['setSessionsProject(null)', () => useUiStore.getState().setSessionsProject(null)],
+  ];
+
+  it.each(picks)('%s closes the overlay', (_name, pick) => {
+    useUiStore.getState().setNarrow(true);
+    useUiStore.setState({ panelOpen: true }); // opened from the bar icon
+    pick();
+    expect(useUiStore.getState().panelOpen).toBe(false);
+  });
+
+  it.each(picks.slice(0, 3))('%s still opens the panel when wide', (_name, pick) => {
+    useUiStore.setState({ panelOpen: false });
+    pick();
+    expect(useUiStore.getState().panelOpen).toBe(true);
+  });
+
+  it.each(picks.slice(3))('%s leaves the panel as it is when wide', (_name, pick) => {
+    useUiStore.setState({ panelOpen: false });
+    pick();
+    expect(useUiStore.getState().panelOpen).toBe(false);
+    useUiStore.setState({ panelOpen: true });
+    pick();
+    expect(useUiStore.getState().panelOpen).toBe(true);
+  });
+});
+
+describe('answeredHere (HIVE-218)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('remembers a thread answered in this window, and reset forgets it', () => {
+    useUiStore.getState().markAnsweredHere('q1');
+    expect(useUiStore.getState().answeredHere.has('q1')).toBe(true);
+    useUiStore.getState().reset();
+    expect(useUiStore.getState().answeredHere.has('q1')).toBe(false);
+  });
+
+  it('keeps the same set when the thread is already there', () => {
+    useUiStore.getState().markAnsweredHere('q1');
+    const before = useUiStore.getState().answeredHere;
+    useUiStore.getState().markAnsweredHere('q1');
+    expect(useUiStore.getState().answeredHere).toBe(before);
+  });
+});
+
+describe('ui-store — What’s new', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+  });
+
+  it('opens and closes the dialog', () => {
+    expect(useUiStore.getState().whatsNewOpen).toBe(false);
+    useUiStore.getState().setWhatsNewOpen(true);
+    expect(useUiStore.getState().whatsNewOpen).toBe(true);
+    useUiStore.getState().setWhatsNewOpen(false);
+    expect(useUiStore.getState().whatsNewOpen).toBe(false);
+  });
+
+  it('opening it from Settings closes Settings, so the card is not stacked under the overlay', () => {
+    useUiStore.getState().openSettings();
+    useUiStore.getState().setWhatsNewOpen(true);
+    expect(useUiStore.getState()).toMatchObject({ whatsNewOpen: true, settings: false });
   });
 });

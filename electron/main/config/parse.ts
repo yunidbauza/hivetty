@@ -46,6 +46,7 @@ import {
   RETIRED_SESSION_KEYS,
   isNotificationDelivery,
 } from '@shared/notification-contract';
+import { ticketWorkflowOf } from '@shared/ticket-workflow';
 
 /**
  * Parsing and shape-validation for `~/.hive/config.json` (story 090).
@@ -743,6 +744,12 @@ function optionalJira(
   for (const key of JIRA_KEYS) {
     const raw = value[key];
     if (raw === undefined) continue;
+    if (key === 'workflow') {
+      const workflow = ticketWorkflowOf(raw);
+      if (typeof workflow === 'string') errors.push(`${at}.workflow: ${workflow} — ignored`);
+      else jira.workflow = workflow;
+      continue;
+    }
     if (typeof raw !== 'string' || raw.trim() === '') {
       errors.push(`${at}.${key}: expected a non-empty string — ignored`);
       continue;

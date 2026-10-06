@@ -12,8 +12,8 @@ import {
 } from '../../../__mocks__/@xterm/xterm';
 
 import { CenterStage } from '@components/layout/center-stage';
-import { SessionRow } from '@features/projects/components/session-row';
-import { useAppearanceStore } from '@stores/appearance-store';
+import { EDITOR_FILE_PANEL, editorTabId } from '@features/editor/components/editor-tab-strip';
+import { STAGE_MIN, useAppearanceStore } from '@stores/appearance-store';
 import { fileKey, useEditorStore } from '@stores/editor-store';
 import { useHiveStore } from '@stores/hive-store';
 import { DECLINED_BACK_MS } from '@/hooks/use-declined-back';
@@ -34,20 +34,16 @@ vi.mock('@xterm/addon-web-links');
 vi.mock('@xterm/addon-webgl');
 
 /**
- * The meta bar, probed by the branch it names — scoped to the bar itself.
- *
- * A bare `queryByText` used to do it, back when the fleet table underneath
- * rendered `project · branch` as one joined string and so could never collide
- * with a branch on its own. `BRANCH` is a real column now, so the branch text
- * appears in two places and an unscoped probe finds the table's copy even when
- * no meta bar is mounted — which is exactly what the "no meta bar" assertions
- * below are for.
+ * The session header, probed by the branch it names — scoped to the header
+ * itself, because the fleet table underneath has a BRANCH column and an
+ * unscoped probe would find the table's copy even with no header mounted.
  */
-const metaBarFor = (branch: string) => {
-  const bar = screen.queryByTestId('session-meta-bar');
-  return bar ? within(bar).queryByText(branch) : null;
+const headerFor = (branch: string) => {
+  const header = screen.queryByTestId('session-header');
+  return header ? within(header).queryByText(new RegExp(branch)) : null;
 };
-const pickerTitle = () => screen.queryByText('Start a new session');
+// The search box, not the title: with no project configured the picker has no title.
+const picker = () => screen.queryByLabelText('Search all projects');
 const visibleSurfaces = () =>
   screen
     .queryAllByTestId('terminal-surface')
@@ -63,34 +59,40 @@ describe('CenterStage', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+    // The Sessions place with the console up: the stage itself, nothing covering it.
+    useUiStore.setState({ place: 'sessions', consoleShown: true });
     resetTerminalInstances();
     resetFitAddonInstances();
     resetWebLinksAddonInstances();
   });
 
-  it('opens on the orchestrator with no meta bar', () => {
+  it('opens on the orchestrator with no session header', () => {
     render(<CenterStage />);
 
     // The orchestrator is not an entity and has nothing to describe.
-    expect(metaBarFor('feat/hero-refresh')).not.toBeInTheDocument();
-    expect(pickerTitle()).not.toBeInTheDocument();
+    expect(headerFor('feat/hero-refresh')).not.toBeInTheDocument();
+    expect(picker()).not.toBeInTheDocument();
     expect(visibleSurfaces()).toHaveLength(1);
   });
 
-  it('shows the meta bar above the terminal for a session', () => {
+  it('keeps a floor the rails cannot crush (HIVE-223)', () => {
+    render(<CenterStage />);
+    expect(screen.getByRole('main').style.minWidth).toBe(`${String(STAGE_MIN)}px`);
+  });
+
+  it('shows the session header above the terminal for a session', () => {
     render(<CenterStage />);
 
     act(() => useUiStore.getState().openTab('hero-refresh'));
 
-    expect(metaBarFor('feat/hero-refresh')).toBeInTheDocument();
-    expect(screen.getByText('Refactor hero to semantic tokens')).toBeInTheDocument();
+    expect(headerFor('feat/hero-refresh')).toBeInTheDocument();
     expect(visibleSurfaces()).toHaveLength(1);
   });
 
   /**
    * An agent gets its own surface, not a terminal's (HIVE-116).
    *
-   * Opening one used to mount a session meta bar, a read-only xterm replaying
+   * Opening one used to mount a session header, a read-only xterm replaying
    * its lines, and a message row beneath — three pieces of terminal chrome
    * around something that is not a terminal, and a place to type that reached
    * no process.
@@ -102,18 +104,18 @@ describe('CenterStage', () => {
 
     expect(screen.getByText('Today')).toBeInTheDocument();
     expect(screen.getByText('Session')).toBeInTheDocument();
-    expect(screen.queryByTestId('session-meta-bar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('session-header')).not.toBeInTheDocument();
     expect(screen.queryByText('dedicated agent')).not.toBeInTheDocument();
   });
 
-  it('drops the meta bar again on the way back to the orchestrator', () => {
+  it('drops the session header again on the way back to the orchestrator', () => {
     render(<CenterStage />);
     act(() => useUiStore.getState().openTab('hero-refresh'));
-    expect(metaBarFor('feat/hero-refresh')).toBeInTheDocument();
+    expect(headerFor('feat/hero-refresh')).toBeInTheDocument();
 
     act(() => useUiStore.getState().backToOrch());
 
-    expect(metaBarFor('feat/hero-refresh')).not.toBeInTheDocument();
+    expect(headerFor('feat/hero-refresh')).not.toBeInTheDocument();
   });
 
   /**
@@ -192,7 +194,7 @@ describe('CenterStage', () => {
        * live terminal rather than in place of them.
        */
       expect(visibleSurfaces()).toHaveLength(0);
-      expect(metaBarFor('feat/hero-refresh')).not.toBeInTheDocument();
+      expect(headerFor('feat/hero-refresh')).not.toBeInTheDocument();
       // The instances survive, or settings would cost every session its
       // scrollback.
       expect(terminalInstances).toHaveLength(before);
@@ -218,7 +220,7 @@ describe('CenterStage', () => {
       act(() => useUiStore.getState().openSettings());
 
       expect(settingsTitle()).toBeInTheDocument();
-      expect(pickerTitle()).not.toBeInTheDocument();
+      expect(picker()).not.toBeInTheDocument();
     });
   });
 
@@ -230,10 +232,10 @@ describe('CenterStage', () => {
 
       act(() => useUiStore.getState().openPicker());
 
-      expect(pickerTitle()).toBeInTheDocument();
-      // Exactly one state on screen: no terminal, no meta bar.
+      expect(picker()).toBeInTheDocument();
+      // Exactly one state on screen: no terminal, no session header.
       expect(visibleSurfaces()).toHaveLength(0);
-      expect(metaBarFor('feat/hero-refresh')).not.toBeInTheDocument();
+      expect(headerFor('feat/hero-refresh')).not.toBeInTheDocument();
       // …but the instances survive, or the picker would cost every session its
       // scrollback.
       expect(terminalInstances).toHaveLength(before);
@@ -249,8 +251,8 @@ describe('CenterStage', () => {
       await user.click(screen.getByRole('button', { name: 'esc · cancel' }));
 
       // The picker never changed `activeTab`, which is what makes this work.
-      expect(pickerTitle()).not.toBeInTheDocument();
-      expect(metaBarFor('feat/hero-refresh')).toBeInTheDocument();
+      expect(picker()).not.toBeInTheDocument();
+      expect(headerFor('feat/hero-refresh')).toBeInTheDocument();
     });
 
     it('closes on Escape', async () => {
@@ -262,7 +264,7 @@ describe('CenterStage', () => {
 
       // Without this the only exit is the mouse, on a picker whose whole point
       // is being keyboard-first.
-      expect(pickerTitle()).not.toBeInTheDocument();
+      expect(picker()).not.toBeInTheDocument();
     });
   });
 
@@ -330,6 +332,8 @@ describe('CenterStage — interactive terminals', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+    // The Sessions place with the console up: the stage itself, nothing covering it.
+    useUiStore.setState({ place: 'sessions', consoleShown: true });
     resetTerminalInstances();
     resetFitAddonInstances();
     resetWebLinksAddonInstances();
@@ -445,16 +449,18 @@ describe('CenterStage — interactive terminals', () => {
       act(() =>
         useHiveStore.getState().setSessionStatus('hero-refresh', 'terminated'),
       );
+      // The ending took the stage to the Overmind; back on it, it is read-only.
+      act(() => useUiStore.getState().openTab('hero-refresh'));
 
       expect(optionsFor(1).disableStdin).toBe(true);
       expect(optionsFor(1).cursorBlink).toBe(false);
     });
 
-    it('does not navigate away — the exit notice is the point', () => {
+    it('goes back to the Overmind: an /exit is the user leaving', () => {
       /**
-       * Terminated sessions cannot be *re-entered*, but yanking the view out
-       * from under someone the instant their agent quits would make the ending
-       * impossible to read. The gate is about coming back, not about leaving.
+       * Story 108 stayed put so the ending could be read; the user asked
+       * (6 Oct 2026) for the ended card's ‹ Overmind click to go. A session
+       * opened after it ended still gets the card, which is where Resume is.
        */
       withBridge();
       render(<CenterStage />);
@@ -464,7 +470,8 @@ describe('CenterStage — interactive terminals', () => {
         useHiveStore.getState().setSessionStatus('hero-refresh', 'terminated'),
       );
 
-      expect(useUiStore.getState().activeTab).toBe('hero-refresh');
+      expect(useUiStore.getState().activeTab).toBe('orch');
+      expect(screen.queryByTestId('session-ended-cover')).toBeNull();
     });
   });
 
@@ -668,7 +675,7 @@ describe('CenterStage — text fields keep their native bindings', () => {
     await user.keyboard('{Meta>}{ArrowLeft}{/Meta}');
     await user.keyboard('{Control>}{Shift>}{ArrowLeft}{/Shift}{/Control}');
 
-    expect(pickerTitle()).toBeInTheDocument();
+    expect(picker()).toBeInTheDocument();
     expect(search).toHaveValue('hero');
   });
 });
@@ -725,6 +732,16 @@ describe('CenterStage — the editor', () => {
     expect(screen.getByRole('tab', { name: /Terminal/ })).toBeInTheDocument();
   });
 
+  it('full + tabs: the editor pane is the strip’s tabpanel (HIVE-225)', async () => {
+    render(<CenterStage />);
+    await openAFile();
+    // jsdom applies no Tailwind, so the `hidden` terminal column is still in its tree; look the pane up by id.
+    const panel = document.getElementById(EDITOR_FILE_PANEL);
+    expect(panel).toHaveAttribute('role', 'tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', editorTabId(useEditorStore.getState().activeKey));
+    expect(screen.getByRole('tab', { name: /app\.ts/ })).toHaveAttribute('aria-controls', EDITOR_FILE_PANEL);
+  });
+
   /**
    * The bug: no strip belongs here at all. The pane carries its own filename
    * header, and a Terminal entry contradicts the documented layout for this
@@ -774,9 +791,8 @@ describe('CenterStage — the editor', () => {
 /**
  * A terminal on the stage (terminals).
  *
- * A shell is not a session, and the chrome around it says so: no meta bar,
- * because there is no branch, ticket or status to name; no boot cover, because
- * nothing is starting that the user should be kept from watching.
+ * A shell is not a session, and the chrome around it says so: no boot cover,
+ * because nothing is starting that the user should be kept from watching.
  *
  * What it gets once its shell dies unasked is above, under `interactive
  * terminals` — that assertion needs a live surface to be worth anything, and
@@ -792,7 +808,7 @@ describe('CenterStage — terminals', () => {
     resetWebLinksAddonInstances();
   });
 
-  it('shows a terminal surface with no meta bar and no boot cover', () => {
+  it('shows a terminal surface with no boot cover', () => {
     const id = useHiveStore.getState().spawnTerminal('nova-web');
     render(<CenterStage />);
 
@@ -803,254 +819,474 @@ describe('CenterStage — terminals', () => {
       reading it would open a tab with no transport behind it.
     */
     expect(visibleSurfaces()).toHaveLength(1);
-    expect(screen.queryByTestId('session-meta-bar')).toBeNull();
     expect(screen.queryByTestId('session-boot-cover')).toBeNull();
     expect(useUiStore.getState().activeTab).toBe(id);
   });
 });
 
-/**
- * The plan rail (HIVE-181): mounted beside the terminal region for a session
- * with a plan, in the terminal view only, and pinned through appearance-store.
- */
-describe('CenterStage — the plan rail (HIVE-181)', () => {
-  const plan = (taskCount = 2) => ({
-    entityId: 'hero-refresh',
-    source: 'task-tools' as const,
-    allDone: false,
-    tasks: Array.from({ length: taskCount }, (_, index) => ({
-      id: String(index + 1),
-      title: `Task ${String(index + 1)}`,
-      status: 'pending' as const,
-    })),
-  });
-
+describe('CenterStage — an ended session (HIVE-211)', () => {
   beforeEach(() => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
-    useAppearanceStore.getState().setPlanPinned(false);
     resetTerminalInstances();
     resetFitAddonInstances();
     resetWebLinksAddonInstances();
   });
+  afterEach(() => useAppearanceStore.getState().reset());
 
-  afterEach(() => {
-    cleanup();
-  });
-
-  it("shows the rail beside the terminal for a session with a plan", () => {
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan()));
+  it('covers a terminated session, over its still-mounted terminal', () => {
+    useHiveStore.getState().setSessionStatus('hero-refresh', 'terminated');
+    useUiStore.getState().openTab('hero-refresh', 'sessions');
     render(<CenterStage />);
-    act(() => useUiStore.getState().openTab('hero-refresh'));
-
-    expect(screen.getByRole('button', { name: 'Plan, 0 of 2 done' })).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Plan' })).toBeInTheDocument();
+    expect(screen.getByTestId('session-ended-cover')).toBeInTheDocument();
+    expect(visibleSurfaces()).toHaveLength(1);
   });
 
-  it('shows nothing for a session with no plan, or a plan with no tasks', () => {
+  it('does not cover a live session', () => {
+    useUiStore.getState().openTab('hero-refresh', 'sessions');
     render(<CenterStage />);
-    act(() => useUiStore.getState().openTab('hero-refresh'));
-
-    expect(screen.queryByRole('region', { name: 'Plan' })).toBeNull();
-
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan(0)));
-
-    expect(screen.queryByRole('region', { name: 'Plan' })).toBeNull();
+    expect(screen.queryByTestId('session-ended-cover')).toBeNull();
   });
 
-  it('shows nothing on the overmind or an agent, whatever plans exist', () => {
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan()));
-    render(<CenterStage />);
-
-    expect(screen.queryByRole('region', { name: 'Plan' })).toBeNull();
-
-    act(() => useUiStore.getState().openTab('slack-agent'));
-
-    expect(screen.queryByRole('region', { name: 'Plan' })).toBeNull();
-  });
-
-  it('pins the drawer through appearance-store', async () => {
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan()));
-    render(<CenterStage />);
-    act(() => useUiStore.getState().openTab('hero-refresh'));
-
-    await userEvent.click(screen.getByRole('button', { name: 'Pin plan' }));
-
-    expect(useAppearanceStore.getState().planPinned).toBe(true);
-    expect(screen.getByRole('button', { name: 'Unpin plan' })).toHaveAttribute('aria-pressed', 'true');
-  });
 });
 
 /**
- * Show plan panel (HIVE-182): off hides the glyph rail only. The count on the
- * session row is a separate reading of the same plan, and stays.
+ * The composition root's half of terminal file links: *who* a printed path
+ * is resolved for, and what opening one does to the stage.
  */
-describe('CenterStage — Show plan panel (HIVE-182)', () => {
-  const plan = {
-    entityId: 'hero-refresh',
-    source: 'task-tools' as const,
-    allDone: false,
-    tasks: [
-      { id: '1', title: 'Task 1', status: 'pending' as const },
-      { id: '2', title: 'Task 2', status: 'pending' as const },
-    ],
-  };
-
+describe('CenterStage — file links', () => {
   beforeEach(() => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
-    useAppearanceStore.getState().setShowPlanPanel(true);
+    useUiStore.setState({ place: 'sessions', consoleShown: true });
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+  });
+
+  afterEach(() => cleanup());
+
+  const provider = () => terminalInstances.at(-1)?.linkProviders[0];
+  const links = (y: number): Promise<MockLink[] | undefined> =>
+    new Promise((done) => {
+      const found = provider();
+      if (!found) {
+        done(undefined);
+        return;
+      }
+      found.provideLinks(y, done);
+    });
+  /** Both, so the assertion holds on either platform. */
+  const open = (link: MockLink | undefined) =>
+    act(() =>
+      link?.activate(
+        new MouseEvent('click', { metaKey: true, ctrlKey: true }),
+        link.text,
+      ),
+    );
+
+  beforeEach(() => {
+    useEditorStore.getState().reset();
+    resolvePaths.mockClear();
+    resolvePaths.mockImplementation(
+      async (_projectId: string, _sessionId: string | undefined, paths: string[]) =>
+        paths.map((path) =>
+          path === 'src/a.ts' ? { relPath: 'src/a.ts', rootKey: '' } : null,
+        ),
+    );
+  });
+
+  it('resolves under the session on screen and opens the file on the stage', async () => {
+    render(<CenterStage />);
+    act(() => useUiStore.getState().openTab('hero-refresh'));
+    terminalInstances.at(-1)!.bufferLines = ['● Edit src/a.ts:4:2'];
+
+    const [link] = (await links(1)) ?? [];
+    expect(resolvePaths).toHaveBeenCalledWith('nova-web', 'hero-refresh', [
+      'src/a.ts',
+    ]);
+
+    open(link);
+    expect(useEditorStore.getState().activeKey).toBe(
+      fileKey('nova-web', 'src/a.ts'),
+    );
+  });
+
+  it('carries the line and column into the buffer', async () => {
+    render(<CenterStage />);
+    act(() => useUiStore.getState().openTab('hero-refresh'));
+    const instance = terminalInstances.at(-1);
+    expect(instance).toBeDefined();
+    instance!.bufferLines = ['src/a.ts:4:2'];
+
+    open((await links(1))?.[0]);
+
+    const file = useEditorStore
+      .getState()
+      .openFiles.find((entry) => entry.key === fileKey('nova-web', 'src/a.ts'));
+    expect(file?.pendingCursor).toEqual({ line: 4, col: 2 });
+  });
+
+  it('opens at the top when the path named no line', async () => {
+    render(<CenterStage />);
+    act(() => useUiStore.getState().openTab('hero-refresh'));
+    terminalInstances.at(-1)!.bufferLines = ['src/a.ts'];
+
+    open((await links(1))?.[0]);
+
+    const file = useEditorStore
+      .getState()
+      .openFiles.find((entry) => entry.key === fileKey('nova-web', 'src/a.ts'));
+    expect(file?.pendingCursor).toBeNull();
+  });
+
+  it('closes what was open first in single-file mode', async () => {
+    act(() => useAppearanceStore.getState().setEditorNav('single'));
+    render(<CenterStage />);
+    act(() => useUiStore.getState().openTab('hero-refresh'));
+    const instance = terminalInstances.at(-1);
+    expect(instance).toBeDefined();
+    instance!.bufferLines = ['src/a.ts'];
+
+    /*
+      Opened *after* the terminal has mounted. A file open at first render
+      puts the editor on the stage, so the host is handed `activeId={null}`,
+      mounts nothing, and there is no provider to drive. The kept-alive
+      instance survives the editor taking the stage, which is the point.
+    */
+    act(() => useEditorStore.getState().openFile('nova-web', 'src/old.ts'));
+
+    open((await links(1))?.[0]);
+    expect(
+      useEditorStore.getState().openFiles.map((file) => file.relPath),
+    ).toEqual(['src/a.ts']);
+  });
+
+  /**
+   * The overmind has no project, and a tree — or a link — rooted in a
+   * project nothing on screen is working in is the untruth
+   * `use-explorer-project` removed from the explorer. Same rule here.
+   */
+  it('resolves nothing on the orchestrator, which has no project', async () => {
+    render(<CenterStage />);
+    terminalInstances[0]!.bufferLines = ['src/a.ts'];
+
+    expect(await links(1)).toBeUndefined();
+    expect(resolvePaths).not.toHaveBeenCalled();
+  });
+});
+
+describe('CenterStage — Home (HIVE-195)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
     resetTerminalInstances();
     resetFitAddonInstances();
     resetWebLinksAddonInstances();
   });
 
   afterEach(() => {
-    cleanup();
-    useAppearanceStore.getState().setShowPlanPanel(true);
+    useAppearanceStore.getState().reset();
   });
 
-  it('hides the rail when the panel is switched off, and the row count stays', () => {
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan));
-    act(() => useAppearanceStore.getState().setShowPlanPanel(false));
-    render(
-      <>
-        <CenterStage />
-        <SessionRow id="hero-refresh" />
-      </>,
-    );
-    act(() => useUiStore.getState().openTab('hero-refresh'));
-
-    expect(screen.queryByRole('region', { name: 'Plan' })).toBeNull();
-    expect(screen.getByText('0/2')).toBeInTheDocument();
-  });
-
-  it('shows it again when switched back on', () => {
-    act(() => useHiveStore.getState().setPlan('hero-refresh', plan));
-    act(() => useAppearanceStore.getState().setShowPlanPanel(false));
+  it('shows the Home page and hides the terminal region without unmounting it', () => {
     render(<CenterStage />);
-    act(() => useUiStore.getState().openTab('hero-refresh'));
+    // Terminals mount on first activation, so one has to be watched first.
+    act(() => useUiStore.getState().openTab('hero-refresh', 'sessions'));
+    expect(visibleSurfaces()).toHaveLength(1);
+    const before = terminalInstances.length;
 
-    act(() => useAppearanceStore.getState().setShowPlanPanel(true));
+    act(() => useUiStore.getState().selectPlace('home'));
 
-    expect(screen.getByRole('region', { name: 'Plan' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Home', level: 1 })).toBeInTheDocument();
+    expect(visibleSurfaces()).toHaveLength(0);
+    expect(terminalInstances).toHaveLength(before);
+    expect(terminalInstances.some((instance) => instance.disposed)).toBe(false);
+
+    act(() => useUiStore.getState().selectPlace('sessions'));
+
+    expect(screen.queryByRole('heading', { name: 'Home', level: 1 })).not.toBeInTheDocument();
+    expect(visibleSurfaces()).toHaveLength(1);
+    expect(terminalInstances).toHaveLength(before);
   });
 
-  /**
-   * The composition root's half of terminal file links: *who* a printed path
-   * is resolved for, and what opening one does to the stage.
-   */
-  describe('file links', () => {
-    const provider = () => terminalInstances.at(-1)?.linkProviders[0];
-    const links = (y: number): Promise<MockLink[] | undefined> =>
-      new Promise((done) => {
-        const found = provider();
-        if (!found) {
-          done(undefined);
-          return;
-        }
-        found.provideLinks(y, done);
-      });
-    /** Both, so the assertion holds on either platform. */
-    const open = (link: MockLink | undefined) =>
-      act(() =>
-        link?.activate(
-          new MouseEvent('click', { metaKey: true, ctrlKey: true }),
-          link.text,
-        ),
-      );
+});
 
-    beforeEach(() => {
-      useEditorStore.getState().reset();
-      resolvePaths.mockClear();
-      resolvePaths.mockImplementation(
-        async (_projectId: string, _sessionId: string | undefined, paths: string[]) =>
-          paths.map((path) =>
-            path === 'src/a.ts' ? { relPath: 'src/a.ts', rootKey: '' } : null,
-          ),
-      );
-    });
+describe('CenterStage — Work (HIVE-203)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+  });
 
-    it('resolves under the session on screen and opens the file on the stage', async () => {
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it('owns the stage on the Work place and hides the terminal region', () => {
+    render(<CenterStage />);
+    act(() => useUiStore.getState().openTab('hero-refresh', 'sessions'));
+    expect(visibleSurfaces()).toHaveLength(1);
+
+    act(() => useUiStore.getState().selectPlace('work'));
+
+    expect(screen.getByRole('region', { name: /^(Work|Ticket )/ })).toBeInTheDocument();
+    expect(visibleSurfaces()).toHaveLength(0);
+  });
+
+  it('gives way to the picker', () => {
+    useUiStore.setState({ place: 'work' });
+    render(<CenterStage />);
+
+    act(() => useUiStore.getState().openPicker());
+
+    expect(screen.queryByText('Pick a ticket')).not.toBeInTheDocument();
+  });
+
+});
+
+describe('CenterStage — the reconnect line (HIVE-211)', () => {
+  const reconnecting = {
+    state: 'reconnecting',
+    serverName: 'mini',
+    attempt: 2,
+    nextAttemptAt: null,
+    reason: null,
+    epoch: 1,
+    lost: 0,
+  } as const;
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+    useHiveStore.getState().setRemoteLink(reconnecting);
+  });
+
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it.each(['home', 'work', 'agents', 'prs', 'sessions'] as const)(
+    'says the server is lost across the top of %s',
+    (place) => {
+      useUiStore.setState({ place });
       render(<CenterStage />);
-      act(() => useUiStore.getState().openTab('hero-refresh'));
-      terminalInstances.at(-1)!.bufferLines = ['● Edit src/a.ts:4:2'];
 
-      const [link] = (await links(1)) ?? [];
-      expect(resolvePaths).toHaveBeenCalledWith('nova-web', 'hero-refresh', [
-        'src/a.ts',
-      ]);
+      const line = screen.getByText('Lost Hive TTY on mini.').closest('[role="status"]');
+      expect(line).not.toBeNull();
+      // First in the stage, above whatever the place draws.
+      expect(screen.getByRole('main').firstElementChild).toBe(line);
+    },
+  );
 
-      open(link);
-      expect(useEditorStore.getState().activeKey).toBe(
-        fileKey('nova-web', 'src/a.ts'),
-      );
+  it('goes once the link is back', () => {
+    render(<CenterStage />);
+    act(() => useHiveStore.getState().setRemoteLink({ ...reconnecting, state: 'attached' }));
+
+    expect(screen.queryByText('Lost Hive TTY on mini.')).not.toBeInTheDocument();
+  });
+
+});
+
+describe('CenterStage — the Overmind head (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+  });
+
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it('heads the orchestrator view', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'orch' });
+    render(<CenterStage />);
+    expect(screen.getByRole('heading', { level: 1, name: 'Overmind' })).toBeInTheDocument();
+  });
+
+  it('is absent over a session', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'hero-refresh' });
+    render(<CenterStage />);
+    expect(screen.queryByRole('heading', { level: 1, name: 'Overmind' })).not.toBeInTheDocument();
+  });
+
+});
+
+describe('CenterStage — the console dock (HIVE-197)', () => {
+  const orchSurface = () => document.querySelector<HTMLElement>('[data-terminal-id="orch"]');
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+    useUiStore.setState({ place: 'sessions', activeTab: 'orch' });
+  });
+
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it('folded by default: no transcript on screen, the peek and the prompt show', () => {
+    render(<CenterStage />);
+    // `activeId` is null while folded, and `TerminalHost` mounts a surface on its
+    // first visit, so the transcript is not built until it is first shown.
+    expect(visibleSurfaces()).toHaveLength(0);
+    expect(screen.getByRole('button', { name: /Show the console/ })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Overmind command' })).toBeInTheDocument();
+    expect(screen.queryByRole('slider', { name: 'Resize the fleet table' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the same transcript surface across a fold and an unfold', async () => {
+    render(<CenterStage />);
+
+    await userEvent.click(screen.getByRole('button', { name: /Show the console/ }));
+    const shown = orchSurface();
+    expect(shown).not.toBeNull();
+    expect(shown?.closest('.hidden')).toBeNull();
+    expect(shown?.style.display).not.toBe('none');
+    expect(screen.getByRole('slider', { name: 'Resize the fleet table' })).toBeInTheDocument();
+    const instances = terminalInstances.length;
+
+    await userEvent.click(screen.getByRole('button', { name: /Hide the console/ }));
+    const folded = orchSurface();
+    expect(folded).toBe(shown);
+    expect(folded?.closest('.hidden')).not.toBeNull();
+    expect(folded?.style.display).toBe('none');
+
+    await userEvent.click(screen.getByRole('button', { name: /Show the console/ }));
+    expect(orchSurface()).toBe(shown);
+    expect(orchSurface()?.style.display).not.toBe('none');
+    expect(terminalInstances).toHaveLength(instances);
+    expect(terminalInstances.some((instance) => instance.disposed)).toBe(false);
+  });
+
+  it('does not hide a session’s terminal while the console is folded', () => {
+    useUiStore.setState({ activeTab: 'hero-refresh' });
+    render(<CenterStage />);
+    const surface = document.querySelector<HTMLElement>('[data-terminal-id="hero-refresh"]');
+    expect(surface?.closest('.hidden')).toBeNull();
+    expect(surface?.style.display).not.toBe('none');
+  });
+
+});
+
+describe('CenterStage — the session header (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    resetTerminalInstances();
+    resetFitAddonInstances();
+    resetWebLinksAddonInstances();
+  });
+
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it('heads a session with the session header and never the meta bar or the plan rail (HIVE-213)', () => {
+    useUiStore.setState({ activeTab: 'hero-refresh', place: 'sessions' });
+    render(<CenterStage />);
+    expect(screen.getByTestId('session-header')).toBeInTheDocument();
+    expect(screen.queryByTestId('session-meta-bar')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Plan' })).not.toBeInTheDocument();
+  });
+
+  it('shows over a terminal', () => {
+    act(() => {
+      useHiveStore.setState((state) => ({
+        entities: {
+          ...state.entities,
+          'term-5': {
+            kind: 'terminal',
+            id: 'term-5',
+            project: 'nova-web',
+            cwd: '/repos/nova-web',
+            status: 'prompt',
+            createdAt: 1,
+            lines: [],
+          },
+        },
+        order: [...state.order, 'term-5'],
+      }));
     });
+    useUiStore.setState({ activeTab: 'term-5', place: 'sessions' });
+    render(<CenterStage />);
+    expect(screen.getByTestId('session-header')).toHaveTextContent('term-5');
+  });
 
-    it('carries the line and column into the buffer', async () => {
-      render(<CenterStage />);
-      act(() => useUiStore.getState().openTab('hero-refresh'));
-      const instance = terminalInstances.at(-1);
-      expect(instance).toBeDefined();
-      instance!.bufferLines = ['src/a.ts:4:2'];
+  it('is absent over the Overmind', () => {
+    useUiStore.setState({ activeTab: 'orch', place: 'sessions' });
+    render(<CenterStage />);
+    expect(screen.queryByTestId('session-header')).not.toBeInTheDocument();
+  });
 
-      open((await links(1))?.[0]);
+});
 
-      const file = useEditorStore
-        .getState()
-        .openFiles.find((entry) => entry.key === fileKey('nova-web', 'src/a.ts'));
-      expect(file?.pendingCursor).toEqual({ line: 4, col: 2 });
+describe('CenterStage — the inbox corner (HIVE-198)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+    useHiveStore.setState({
+      notifs: [
+        {
+          id: 'q1',
+          kind: 'agent.ask',
+          title: 'ship it?',
+          body: '',
+          unread: true,
+          createdAt: 1,
+          action: { type: 'ask', thread: 'q1' },
+        },
+      ],
     });
+  });
 
-    it('opens at the top when the path named no line', async () => {
-      render(<CenterStage />);
-      act(() => useUiStore.getState().openTab('hero-refresh'));
-      terminalInstances.at(-1)!.bufferLines = ['src/a.ts'];
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
 
-      open((await links(1))?.[0]);
+  it('mounts the pill', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'orch' });
+    render(<CenterStage />);
+    expect(screen.getByRole('button', { name: 'Inbox, 1 needs you' })).toBeInTheDocument();
+  });
 
-      const file = useEditorStore
-        .getState()
-        .openFiles.find((entry) => entry.key === fileKey('nova-web', 'src/a.ts'));
-      expect(file?.pendingCursor).toBeNull();
-    });
+  it('opens the Inbox drawer with no setting seeded (HIVE-213)', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'orch' });
+    useUiStore.getState().openInboxDrawer();
+    render(<CenterStage />);
+    expect(screen.getByRole('dialog', { name: 'Needs you' })).toBeInTheDocument();
+  });
 
-    it('closes what was open first in single-file mode', async () => {
-      act(() => useAppearanceStore.getState().setEditorNav('single'));
-      render(<CenterStage />);
-      act(() => useUiStore.getState().openTab('hero-refresh'));
-      const instance = terminalInstances.at(-1);
-      expect(instance).toBeDefined();
-      instance!.bufferLines = ['src/a.ts'];
-
-      /*
-        Opened *after* the terminal has mounted. A file open at first render
-        puts the editor on the stage, so the host is handed `activeId={null}`,
-        mounts nothing, and there is no provider to drive. The kept-alive
-        instance survives the editor taking the stage, which is the point.
-      */
-      act(() => useEditorStore.getState().openFile('nova-web', 'src/old.ts'));
-
-      open((await links(1))?.[0]);
-      expect(
-        useEditorStore.getState().openFiles.map((file) => file.relPath),
-      ).toEqual(['src/a.ts']);
-    });
-
-    /**
-     * The overmind has no project, and a tree — or a link — rooted in a
-     * project nothing on screen is working in is the untruth
-     * `use-explorer-project` removed from the explorer. Same rule here.
-     */
-    it('resolves nothing on the orchestrator, which has no project', async () => {
-      render(<CenterStage />);
-      terminalInstances[0]!.bufferLines = ['src/a.ts'];
-
-      expect(await links(1)).toBeUndefined();
-      expect(resolvePaths).not.toHaveBeenCalled();
-    });
+  it('marks the Overmind dock as the stage input', () => {
+    useUiStore.setState({ place: 'sessions', activeTab: 'orch' });
+    render(<CenterStage />);
+    expect(document.querySelector('[data-stage-input]')).not.toBeNull();
   });
 
 });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1924,6 +1924,26 @@ describe('ServerModeGroup', () => {
         state and the one above — the whole reason they are two states.
       */
       expect(screen.getByText(/will not fix this on its own/)).toBeInTheDocument();
+    });
+
+    it('keeps focus on the action while its call runs, and announces the result (HIVE-225)', async () => {
+      const user = userEvent.setup();
+      let settle: (value: Awaited<ReturnType<typeof setRemoteConfig>>) => void = () => {};
+      vi.mocked(setRemoteConfig).mockReturnValueOnce(
+        new Promise((resolve) => {
+          settle = resolve;
+        }),
+      );
+      renderAttached(link({ state: 'disconnected' }));
+      const button = screen.getByRole('button', { name: /work locally/i });
+      await user.click(button);
+      expect(button).toHaveFocus();
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      await act(async () => {
+        settle({ switched: { ok: false, reason: 'connect-failed', message: 'ECONNREFUSED' }, changed: null });
+      });
+      expect(button).toHaveFocus();
+      expect(screen.getByRole('status')).toHaveTextContent(/ECONNREFUSED/);
     });
 
     it('offers the local exit in both, and it detaches', async () => {

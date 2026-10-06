@@ -305,7 +305,7 @@ export function useServerExposure(): string | null {
  * A separate hook from {@link useServerExposure} rather than a second field on
  * its return, because the two answer genuinely different questions that
  * happen to share a source object: `useServerExposure` gates whether
- * `ServingChip` renders at all (is a socket bound?), and this hook answers how
+ * the connection item shows a serving state at all (is a socket bound?), and this hook answers how
  * many devices are paired **independent of that** — `AppInfo.servingDeviceCount`
  * reads `server.devices` off disk, which exists whether or not anything is
  * currently listening. Folding them into one return would force every caller
@@ -376,7 +376,7 @@ export function useServingDeviceCount(): number {
  * value follow the socket rather than describe whatever was true at boot — and
  * it is load-bearing now that Settings reads it, because a stale `null` there
  * hides the detach control and a stale name offers one that has nothing to
- * detach. The header chip gets the same correction for free; it was quietly
+ * detach. The connection item gets the same correction for free; it was quietly
  * stale after any switch before this.
  *
  * The extra reads this costs are one `app:info` per config write, to a channel

@@ -52,7 +52,7 @@ describe('EmptyState', () => {
    */
   it('adds a flavour line above the copy without disturbing it', () => {
     render(
-      <EmptyState phrase="empty.inbox" action="Sessions will show up here.">
+      <EmptyState phrase="empty.work" action="Sessions will show up here.">
         Nothing needs you.
       </EmptyState>,
     );
@@ -63,28 +63,28 @@ describe('EmptyState', () => {
 
     const flavour = document.querySelector('[data-swarm-line]');
 
-    expect(PHRASES['empty.inbox']).toContain(flavour?.textContent);
+    expect(PHRASES['empty.work']).toContain(flavour?.textContent);
   });
 
   it('holds a creature at rail size when one is cast', () => {
     render(
-      <EmptyState phrase="empty.inbox" creature="overlord">
+      <EmptyState phrase="empty.work" creature="overlord">
         Nothing needs you.
       </EmptyState>,
     );
 
-    const img = screen.getByRole('presentation', { hidden: true });
+    const creature = document.querySelector('[data-creature]');
 
-    expect(img).toHaveAttribute('data-creature', 'overlord');
+    expect(creature).toHaveAttribute('data-creature', 'overlord');
     /**
-     * The size is the whole argument for allowing a sprite in a 320px rail at
-     * all, so it is asserted rather than left to a call site.
+     * The size is the whole argument for allowing a creature in a 320px rail
+     * at all, so it is asserted rather than left to a call site.
      */
-    expect(img).toHaveStyle({ height: '44px' });
+    expect(creature).toHaveStyle({ height: '44px' });
   });
 
   it('takes the flavour line without a creature', () => {
-    render(<EmptyState phrase="empty.inbox">Nothing needs you.</EmptyState>);
+    render(<EmptyState phrase="empty.work">Nothing needs you.</EmptyState>);
 
     expect(document.querySelector('[data-swarm-line]')).not.toBeNull();
     expect(document.querySelector('[data-creature]')).toBeNull();

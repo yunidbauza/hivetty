@@ -26,19 +26,16 @@ interface NewSessionLinkProps {
  * would only ask a question the click already answered. This spawns straight
  * away on the current defaults.
  *
- * ## Why the accessible name says more than the visible text
+ * ## An icon on the project's own line
  *
- * The visible label is `new session` — enough beside the folder row it hangs
- * under, and not enough for a screen-reader user who arrives at the button
- * without that row. The `aria-label` names the project too, and still contains
- * the visible text, which is what WCAG's Label in Name asks for.
+ * A `+` that shows on hovering the project row, beside the terminal glyph —
+ * no visible text, so the `aria-label` carries the whole name and names the
+ * project too, for a screen-reader user who arrives without the row.
  *
- * It does **not** make the button unambiguous to a locator: Playwright matches
- * accessible names as a case-insensitive substring, so `New session` finds the
- * header button and every link here. The fix belongs in the queries, and
- * `tests/e2e/electron/` passes `exact: true` where it means the header. Naming
- * this button something that does not contain "new session" would buy loose
- * locators at the cost of the visible label no longer being in the name.
+ * Playwright matches accessible names as a case-insensitive substring, so
+ * `New session` finds the header button and every link here. The fix belongs
+ * in the queries, and `tests/e2e/electron/` passes `exact: true` where it
+ * means the header.
  *
  * ## Why the disabled state carries no extra guard
  *
@@ -73,10 +70,9 @@ export function NewSessionLink({
       */
       title={access.reason ?? `Starts on ${newModel} · ${newEffort}`}
       aria-label={`New session in ${projectName}`}
-      className="flex items-center gap-1.5 rounded-lg py-[3px] pr-2.5 pl-[26px] text-left font-mono text-[11.5px] text-subtle hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-subtle"
+      className="rounded-full p-1 text-muted hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-transparent"
     >
-      <Plus size={10} weight="bold" aria-hidden="true" className="shrink-0" />
-      new session
+      <Plus size={13} weight="bold" aria-hidden="true" />
     </button>
   );
 }

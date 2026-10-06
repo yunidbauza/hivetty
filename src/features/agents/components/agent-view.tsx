@@ -1,23 +1,35 @@
-import { ArrowLeft } from '@phosphor-icons/react';
 import { useState, type KeyboardEvent } from 'react';
 
 import { cn } from '@/lib/utils';
 import type { Agent } from '@/types/entity';
 
-import { Icon } from '@components/ui/icon';
+import { Button } from '@components/ui/button';
 import { STATUS_TEXT, STATUS_LABEL } from '@components/ui/status-dot';
 import { AgentLedger } from '@features/agents/components/agent-ledger';
 import { AgentRunLog } from '@features/agents/components/agent-run-log';
 import { parseAgentInput } from '@lib/ledger/agent-input';
-import { agentRunQueued, agentRunRefusal, useAgentFacts } from '@stores/hive-store';
-import { useBackToOrch, useSettingsActions } from '@stores/ui-store';
+import { useAgentFacts } from '@stores/hive-store';
 
 interface AgentViewProps {
   entity: Agent;
+  /**
+   * The last refusal from a control on the page, or `null` — this view's
+   * input, or the page header's Run now and Pause (HIVE-204). Owned by the
+   * page, because the header that produces half of them is the page's.
+   *
+   * Both verbs answer with a **value** rather than throwing — `AgentRunResult`
+   * carries a `refused` word and `LedgerResult` a status and a reason — and
+   * both contracts say in as many words that they are values so the renderer
+   * can draw the reason. Discarding them made a refused Run now look like a
+   * dead button, and a rejected post silently eat what the user typed.
+   */
+  notice: string | null;
+  onNotice: (notice: string | null) => void;
 }
 
 /**
- * An agent's place on the centre stage (HIVE-116).
+ * An agent's Activity, under the agent page's header (HIVE-116; the header
+ * moved to `agent-page.tsx` in HIVE-204).
  *
  * **Deliberately not a terminal.** Nothing here is typed into a process: the
  * input posts to the ledger, and the log is a transcript of turns that have
@@ -37,7 +49,7 @@ interface AgentViewProps {
  *
  * The rule the three bands express is that *chrome* touches the edges and
  * *content* never does. The body carries the only inset, and it is `px-4`
- * because `SessionMetaBar` is — the two views are a tab apart and a gutter that
+ * because the session header is — the two views are a tab apart and a gutter that
  * changed as you switched between them would read as the stage moving. The
  * prompt keeps the console's own `px-[18px]` for the same reason, from the
  * other direction: it is the same control, so it is the same row.
@@ -70,91 +82,16 @@ interface AgentViewProps {
  * the narrowest a run line reads at all. `agents.spec.ts` narrows the window
  * to 1100px to cross it, where the stage is 464px.
  */
-export function AgentView({ entity }: AgentViewProps) {
+export function AgentView({ entity, notice, onNotice }: AgentViewProps) {
   const facts = useAgentFacts(entity.id);
-  const { openSettings } = useSettingsActions();
-  const backToOrch = useBackToOrch();
   const [draft, setDraft] = useState('');
-  /**
-   * The last refusal from a control on this surface, or `null`.
-   *
-   * Both verbs answer with a **value** rather than throwing — `AgentRunResult`
-   * carries a `refused` word (`QueueableRefusal | 'unknown' | 'invalid'`: one
-   * of working, paused, saturated, unknown, invalid) and `LedgerResult` a
-   * status and a reason — and both contracts say in as many words that they
-   * are values so the renderer can draw the reason. Discarding them made a
-   * refused Run now look like a dead button, and a rejected post silently eat
-   * what the user typed.
-   */
-  const [notice, setNotice] = useState<string | null>(null);
-
-  /** A rejected channel is news the user is owed, not a console line. */
-  const showFailure = (cause: unknown) => {
-    setNotice(cause instanceof Error ? cause.message : String(cause));
-  };
-
-  const runNow = () => {
-    setNotice(null);
-
-    /*
-      The wording comes from `agentRunRefusal`, not from a ternary here
-      (HIVE-117).
-
-      This chain used to end in a bare `else` reading "The agent runtime is not
-      up." — so the moment `AgentRunResult.refused` gained `paused`, pressing
-      Run now on an agent the user had paused thirty seconds earlier reported a
-      dead runtime. A fallback cannot be checked by the compiler; the shared
-      function switches exhaustively over the union, so the next member is an
-      error rather than a plausible sentence.
-    */
-    void window.hive?.agents
-      .run({ name: entity.id })
-      .then((result) => {
-        if (result.started) return;
-
-        // Woken, queued, or refused (HIVE-126). Pressing Run now on a working
-        // agent no longer asks the user to come back and press it again.
-        setNotice(
-          'queued' in result
-            ? agentRunQueued(entity.id, result)
-            : agentRunRefusal(entity.id, result),
-        );
-      })
-      .catch(showFailure);
-  };
-
-  /**
-   * Stop this agent waking, and let it wake again (HIVE-117).
-   *
-   * One control rather than two, because the states are exclusive and the
-   * button's job is to name what pressing it does. The status word beside it
-   * already says which state the agent is in, so a disabled twin would be a
-   * second thing to read for no extra fact.
-   *
-   * Both channels **reject** when the runtime is not up — answering a status
-   * they never wrote is what their contract calls the one outcome worth a
-   * rejected promise — so both need the catch.
-   */
-  const togglePause = () => {
-    setNotice(null);
-
-    const bridge = window.hive?.agents;
-
-    if (bridge === undefined) return;
-
-    void (
-      entity.status === 'paused'
-        ? bridge.resume({ name: entity.id })
-        : bridge.pause({ name: entity.id })
-    ).catch(showFailure);
-  };
 
   const submit = () => {
     const input = parseAgentInput(draft);
 
     if (input.kind === 'empty') return;
 
-    setNotice(null);
+    onNotice(null);
 
     const written =
       input.kind === 'answer'
@@ -180,7 +117,7 @@ export function AgentView({ entity }: AgentViewProps) {
         return;
       }
 
-      setNotice(result.reason);
+      onNotice(result.reason);
     });
   };
 
@@ -192,89 +129,9 @@ export function AgentView({ entity }: AgentViewProps) {
   };
 
   return (
-    <div
-      className="@container flex min-h-0 flex-1 flex-col"
-      data-view="agent"
-    >
-      <header className="flex shrink-0 items-center gap-2.5 border-b border-border-soft bg-panel px-4 py-2.5">
-        {/*
-          The way back, and until this story there was none: an agent tab could
-          be entered from three places and left from none, because the meta bar
-          that carries this button everywhere else is a session's and an agent
-          stopped mounting it in HIVE-116.
-
-          Same control, same wording, same native `title` as
-          `session-meta-bar.tsx` — the app mounts no `TooltipProvider`, and the
-          keyboard hint in the label is the point. It sits *before* the avatar
-          with a gap after it, so the row reads back → this agent rather than
-          back-from-this-agent: the button leaves the view, and the identity
-          beside it is what you are leaving.
-        */}
-        <button
-          type="button"
-          onClick={backToOrch}
-          /*
-            No `(←)` in the title, unlike `session-meta-bar.tsx`'s otherwise
-            identical button. That hint is true there because bare `←` reaches
-            `backToOrch` through `TERMINAL_CHORD_EVENT`, which only
-            `terminal-surface.tsx` emits — and this view mounts no terminal
-            surface. Copying the string across would have promised a key that
-            does nothing here.
-          */
-          title="Back to overmind"
-          aria-label="Back to overmind"
-          className="flex shrink-0 items-center gap-1 rounded-full bg-chip px-2.5 py-1 text-muted hover:text-ink"
-        >
-          <ArrowLeft size={12} weight="bold" aria-hidden="true" />
-        </button>
-
-        <span className="relative ml-1 flex size-7 shrink-0 items-center justify-center rounded-lg bg-chip">
-          <Icon name={entity.icon} size={15} className="text-brand" />
-        </span>
-
-        <span className="flex min-w-0 flex-col">
-          <span className="truncate text-[13px]">{entity.id}</span>
-          <span className="truncate text-[11px] text-subtle">{entity.sub}</span>
-        </span>
-
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={runNow}
-            className="rounded-md border border-brand px-2 py-1 text-[11px] text-brand hover:bg-hover"
-          >
-            ▶ Run now
-          </button>
-          {/*
-            Wired in HIVE-117. One button, not two: `paused` and everything else
-            are exclusive, so the control names the move rather than offering a
-            disabled twin. There is still no Stop — a run is one bounded turn,
-            and `kill` belongs in the console for a runaway.
-          */}
-          <button
-            type="button"
-            onClick={togglePause}
-            title={
-              entity.status === 'paused'
-                ? 'Let this agent wake again'
-                : 'Stop this agent waking. A turn already running finishes.'
-            }
-            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-hover hover:text-ink"
-          >
-            {entity.status === 'paused' ? '▶ Resume' : '⏸ Pause'}
-          </button>
-          <button
-            type="button"
-            onClick={() => openSettings('agents')}
-            className="rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-hover hover:text-ink"
-          >
-            Edit definition
-          </button>
-        </span>
-      </header>
-
+    <div className="@container flex min-h-0 flex-1 flex-col">
       {/*
-        The body — the only band with a gutter. The header above and the
+        The body — the only band with a gutter. The page header above and the
         prompt below are chrome and span the stage; everything between them
         is content and does not.
       */}
@@ -282,15 +139,15 @@ export function AgentView({ entity }: AgentViewProps) {
         {facts === null ? null : (
           <div
             /*
-              A container query, not `sm:`. The tiles live on the stage, and the
-              stage is not the viewport: with both rails dragged wide a 1100px
-              window leaves ~560px here, where `sm:` (a 640px *viewport*) still
-              fires and truncates `Session` and `Today` into five ~105px columns.
-              The same box this grid sits in is what knows.
+              Five even tiles, labels above values, as the agent page had before
+              HIVE-204 took the boxes away. Columns of at least 150px that share
+              the width evenly, and wrap onto a second row on a narrow stage
+              (both rails dragged wide) rather than truncate.
             */
-            className="grid grid-cols-2 gap-1.5 @min-[720px]:grid-cols-5"
+            className="grid gap-2.5 font-sans text-control [grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]"
           >
-            <Fact label="Status" tone={STATUS_TEXT[facts.status]}>
+            {/* Paused reads amber here (HIVE-211): the bar below says why nothing happens. `STATUS_TEXT` is shared and stays. */}
+            <Fact label="Status" tone={facts.status === 'paused' ? 'text-amber-text' : STATUS_TEXT[facts.status]}>
               {STATUS_LABEL[facts.status]}
               {facts.askRef === undefined ? '' : ` ${facts.askRef}`}
             </Fact>
@@ -326,7 +183,7 @@ export function AgentView({ entity }: AgentViewProps) {
         )}
 
         <div className="min-h-0 flex-1">
-          <div className="grid h-full min-h-0 gap-2 [grid-template-columns:minmax(0,1fr)_clamp(280px,22%,380px)] @max-[720px]:[grid-template-columns:minmax(0,1fr)]">
+          <div className="grid h-full min-h-0 gap-3 [grid-template-columns:minmax(0,1fr)_300px] @max-[720px]:[grid-template-columns:minmax(0,1fr)]">
             <AgentRunLog name={entity.id} />
             <AgentLedger name={entity.id} />
           </div>
@@ -348,8 +205,11 @@ export function AgentView({ entity }: AgentViewProps) {
         says `overmind ❯`: the row is addressed to somebody, and which somebody
         is the one thing a prompt should say.
       */}
-      <div className="flex shrink-0 items-center gap-2.5 border-t border-border-soft bg-term-input px-[18px] py-2.5">
-        <span className="shrink-0 font-mono text-[13px] text-green">
+      {entity.status === 'paused' ? (
+        <PauseBar id={entity.id} onNotice={onNotice} />
+      ) : (
+      <div data-stage-input="" className="flex shrink-0 items-center gap-2.5 border-t border-border-soft bg-term-input px-[18px] py-2.5">
+        <span className="shrink-0 font-mono text-ui text-green">
           {`${entity.id} ❯`}
         </span>
         <label htmlFor="agent-input" className="sr-only">
@@ -370,9 +230,10 @@ export function AgentView({ entity }: AgentViewProps) {
             one failure this surface's `notice` channel cannot report.
           */
           placeholder="a message, or answer a1 <text>"
-          className="min-w-0 flex-1 bg-transparent font-mono text-[12.5px] text-ink caret-green outline-none placeholder:text-subtle"
+          className="min-w-0 flex-1 bg-transparent font-mono text-control text-ink caret-green outline-none placeholder:text-subtle"
         />
       </div>
+      )}
 
       {/*
         The console's hint bar, in the one place it differs: the notice takes
@@ -386,18 +247,50 @@ export function AgentView({ entity }: AgentViewProps) {
         not exist in the log.
       */}
       {notice === null ? (
-        <p className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-[11px] text-subtle">
+        entity.status === 'paused' ? null : (
+        <p className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-micro text-subtle">
           ↵ posts to the ledger as the overmind · not a terminal — nothing here
           reaches a process
         </p>
+        )
       ) : (
         <p
           role="status"
-          className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-[11px] text-amber"
+          className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-micro text-amber-text"
         >
           {notice}
         </p>
       )}
+    </div>
+  );
+}
+
+const messageOf = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
+/**
+ * A paused agent's prompt row (HIVE-211): nothing it is told will wake it, so
+ * the input gives way to why, and the way back. The draft lives in
+ * `AgentView`, above this, so Resume brings the input back as it was typed.
+ */
+function PauseBar({ id, onNotice }: { id: string; onNotice: (notice: string | null) => void }) {
+  // The same call the row's Pause toggle makes; it rejects when the runtime is not up.
+  const resume = () => {
+    onNotice(null);
+    void window.hive?.agents.resume({ name: id }).catch((cause: unknown) => onNotice(messageOf(cause)));
+  };
+
+  return (
+    <div
+      role="status"
+      className="flex shrink-0 items-center gap-3 border-t border-border-soft bg-amber-soft px-[18px] py-2.5 text-control text-muted"
+    >
+      <span className="flex-1">
+        <b className="text-amber-text">{`${id} is paused.`}</b> Nothing wakes it, not the ledger, not a schedule, until
+        you resume it. Your draft is kept.
+      </span>
+      <Button variant="primary" onClick={resume}>
+        Resume
+      </Button>
     </div>
   );
 }
@@ -410,11 +303,9 @@ interface FactProps {
 
 function Fact({ label, tone, children }: FactProps) {
   return (
-    <div className="min-w-0 rounded-md border border-border-soft bg-panel px-2 py-1.5">
-      <span className="block text-[8.5px] tracking-[0.1em] text-subtle uppercase">
-        {label}
-      </span>
-      <span className={cn('block truncate text-[11px]', tone)}>{children}</span>
+    <div className="flex min-w-0 flex-col gap-0.5 rounded-lg border border-border-soft bg-panel px-3 py-2.5">
+      <span className="text-micro tracking-[0.06em] text-subtle uppercase">{label}</span>
+      <span className={cn('truncate', tone)}>{children}</span>
     </div>
   );
 }

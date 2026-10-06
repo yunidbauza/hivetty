@@ -2,14 +2,7 @@ import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { useShallow } from 'zustand/react/shallow';
 
-import {
-  clampRailWidths,
-  isRailDefault,
-  RAIL_MAX_PX,
-  RAIL_MIN,
-  type RailWidthInput,
-  type RailWidths,
-} from '@lib/rail-width';
+import type { SwarmPalette } from '@lib/swarm/palette';
 import {
   DEFAULT_TERMINAL_FONT,
   DEFAULT_TERMINAL_FONT_SIZE,
@@ -20,7 +13,15 @@ import {
 import { applyThemeColors } from '@lib/theme/apply';
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
 import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
-import { BUILT_IN_THEME_ID, type HiveTheme } from '@lib/theme/contract';
+import { swarmPaletteOf } from '@lib/theme/colour';
+import { BUILT_IN_THEME_ID, type HiveTheme, type UiColors } from '@lib/theme/contract';
+import {
+  activeThemeOf,
+  APPEARANCE_STORAGE_KEY,
+  resolveTheme,
+  type ResolvedTheme,
+  type ThemePreference,
+} from '@lib/theme/persisted';
 import { isHiveTheme } from '@lib/theme/validate';
 
 /**
@@ -47,16 +48,10 @@ import { isHiveTheme } from '@lib/theme/validate';
  * `theme` moved here out of `ui-store` for that reason.
  */
 
-/** What the user chose. `system` defers to the OS; it is not a third palette. */
-export type ThemePreference = 'system' | 'dark' | 'light';
-
-/** What the DOM actually gets. */
-type ResolvedTheme = 'dark' | 'light';
+export { activeThemeOf, APPEARANCE_STORAGE_KEY, resolveTheme } from '@lib/theme/persisted';
+export type { ThemePreference } from '@lib/theme/persisted';
 
 export type Density = 'comfortable' | 'compact';
-
-/** Which rail a width belongs to. */
-type RailSide = 'left' | 'right';
 
 /**
  * Where an opened file renders.
@@ -82,75 +77,48 @@ export type EditorSplitAxis = 'horizontal' | 'vertical';
  */
 export type EditorNav = 'tabs' | 'single';
 
+/** Round two's session panel tabs (HIVE-201). Ticket is HIVE-202's, PR is HIVE-209's. */
+export type SessionPanelTab = 'plan' | 'ticket' | 'pr' | 'files';
+
+const SESSION_PANEL_TABS: readonly SessionPanelTab[] = ['plan', 'ticket', 'pr', 'files'];
+
 interface AppearanceState {
   theme: ThemePreference;
   terminalFont: TerminalFontId;
   terminalFontSize: number;
   terminalScrollback: number;
   density: Density;
+  /**
+   * Round two's session panel (HIVE-201): open or closed is one setting for
+   * the app, and the last tab follows you from session to session. Ticket and
+   * PR exist from the start so HIVE-202 and HIVE-209 need no migration.
+   */
+  sessionPanelOpen: boolean;
+  sessionPanelTab: SessionPanelTab;
+  /** The list and session panels' widths in px, dragged from their seams; see {@link PANEL_WIDTHS}. */
+  listPanelWidth: number;
+  sessionPanelWidth: number;
 
   /**
-   * How wide the user dragged each rail, or `null` for "follow density"
-   * (HIVE-105).
-   *
-   * Appearance on this store's own test — a durable choice about how the screen
-   * looks, needed before the first paint, and meaningless to the browser
-   * target's absent config file. It is also the arrangement `editorSplitRatio`
-   * already established: persisted like everything here, but written by
-   * dragging rather than by a control in Settings, because a width has no
-   * sensible discrete choices and a number field would be a worse interface
-   * than the handle itself.
-   *
-   * **`null` is a real state, not a missing one.** It means the rail is
-   * following `--cc-rail-w-*` from the stylesheet, so a later density change
-   * still moves it; a width that happened to equal today's default would not.
-   * That is what double-click-to-reset restores.
-   *
-   * Stored *intent*, not painted pixels — bounded only by the per-rail minimum
-   * and the absolute cap, never by the current window. The window-dependent
-   * bounds live in `clampRailWidths` and are applied on the way to the screen,
-   * so shrinking the window and growing it back returns the rail to the width
-   * that was actually chosen. See `@lib/rail-width`.
-   */
-  railWidthLeft: number | null;
-  railWidthRight: number | null;
-
-  /**
-   * Whether each rail is showing its icon strip instead of its panel.
-   *
-   * Persisted like everything else here, which is exactly right for this one:
-   * a rail the user collapsed should still be collapsed at the next launch, and
-   * because it is persisted the strip paints on the *first* frame rather than
-   * after a hydration flash. See {@link applyStoredRailWidths}.
-   */
-  railCollapsedLeft: boolean;
-  railCollapsedRight: boolean;
-
-  /**
-   * The plan drawer docked beside the terminal (HIVE-181). A layout choice,
-   * persisted with the rail widths: unpinned, the drawer only peeks over the
-   * terminal on hover or focus.
-   */
-  planPinned: boolean;
-  /**
-   * Whether the plan panel shows beside the terminal at all (HIVE-182). Off
-   * hides the glyph rail only; the count on the session row stays, because it
-   * costs no terminal columns.
-   */
-  showPlanPanel: boolean;
-
-  /**
-   * The line under the wordmark, top-left — whose hive this is.
+   * The line under the wordmark — whose hive this is. The activity bar's brand
+   * tooltip shows it.
    *
    * Appearance rather than config, on this store's own test: it is a fact about
-   * the person looking at the screen, it is needed on the first paint of the
-   * header, and the browser target has no config file to read it from. That it
+   * the person looking at the screen, it is needed on the first paint, and the browser target has no config file to read it from. That it
    * happens to name a team does not make it workspace state — no session, PTY
    * or ticket ever reads it.
    *
    * Empty is a legitimate answer, and means the line is not drawn at all.
    */
   teamName: string;
+
+  /**
+   * What's new (1.0): the `major.minor` whose screen was last shown, closed any
+   * way, and the "Don't show What's new again" box. Persisted here, with every
+   * other per-install preference, so neither replays on the next launch.
+   */
+  whatsNewSeen: string | null;
+  whatsNewOff: boolean;
 
   /**
    * The editor block.
@@ -194,6 +162,11 @@ interface AppearanceState {
    * of scrolling a box eight rows tall.
    */
   runLogSplitRatio: number;
+  /**
+   * The Form pane's share of the agent page's Definition, beside its Source.
+   * The editor holds both panes to a minimum px width on top of this clamp.
+   */
+  agentSplitRatio: number;
   editorNav: EditorNav;
   /**
    * Whether the editor accepts keystrokes and offers a save. **On by default.**
@@ -254,21 +227,14 @@ interface AppearanceState {
   setTerminalFontSize: (size: number) => void;
   setTerminalScrollback: (lines: number) => void;
   setDensity: (density: Density) => void;
-  /**
-   * Record a dragged rail width. Bounded by the per-rail minimum and the
-   * absolute cap only — see {@link AppearanceState.railWidthLeft}.
-   */
-  setRailWidth: (side: RailSide, width: number) => void;
-  /** Hand the rail back to the stylesheet: `null`, not today's default number. */
-  resetRailWidth: (side: RailSide) => void;
-  setRailCollapsed: (side: RailSide, collapsed: boolean) => void;
-  /** The click-the-active-tab gesture, and both keyboard chords. */
-  toggleRailCollapsed: (side: RailSide) => void;
-  /** Dock the plan drawer beside the terminal, or let it peek again (HIVE-181). */
-  setPlanPinned: (pinned: boolean) => void;
-  /** Show or hide the plan panel beside the terminal (HIVE-182). */
-  setShowPlanPanel: (show: boolean) => void;
+  /** Open or close round two's session panel (HIVE-201). */
+  setSessionPanelOpen: (open: boolean) => void;
+  toggleSessionPanel: () => void;
+  /** The tab the session panel shows (HIVE-201). */
+  setSessionPanelTab: (tab: SessionPanelTab) => void;
   setTeamName: (name: string) => void;
+  setWhatsNewSeen: (version: string) => void;
+  setWhatsNewOff: (off: boolean) => void;
   setSystemDark: (dark: boolean) => void;
 
   setEditorPlacement: (placement: EditorPlacement) => void;
@@ -276,6 +242,9 @@ interface AppearanceState {
   setEditorSplitRatio: (ratio: number) => void;
   setConsoleSplitRatio: (ratio: number) => void;
   setRunLogSplitRatio: (ratio: number) => void;
+  setAgentSplitRatio: (ratio: number) => void;
+  setListPanelWidth: (px: number) => void;
+  setSessionPanelWidth: (px: number) => void;
   setEditorNav: (nav: EditorNav) => void;
   setEditorEditable: (editable: boolean) => void;
   setEditorFont: (font: TerminalFontId) => void;
@@ -320,7 +289,7 @@ export const EDITOR_FONT_SIZES: readonly number[] = [
 ] as const;
 
 /**
- * What the header says under "The Hive" until someone says otherwise.
+ * What the brand tooltip says under "The Hive" until someone says otherwise.
  *
  * A hive's workers are a swarm and this app is a command centre for them, so
  * the default names the room rather than any real team — anyone who has not
@@ -332,9 +301,34 @@ export const DEFAULT_TEAM_NAME = 'Swarm Command';
 export const MIN_SPLIT_RATIO = 0.2;
 export const MAX_SPLIT_RATIO = 0.8;
 
+/** The agent editor's Form share before anyone drags its seam. */
+export const DEFAULT_AGENT_SPLIT_RATIO = 0.45;
+
 export const clampSplitRatio = (ratio: number): number => {
   if (!Number.isFinite(ratio)) return 0.5;
   return Math.min(MAX_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio));
+};
+
+/**
+ * The two rails' drag bounds, px. Their minimums are also their CSS
+ * `min-width`: when a window cannot hold both rails at their saved widths
+ * beside {@link STAGE_MIN}, flexbox pulls them in toward these (HIVE-223).
+ */
+export const PANEL_WIDTHS = {
+  list: { min: 220, max: 400, initial: 300 },
+  session: { min: 260, max: 480, initial: 320 },
+} as const;
+
+/** The narrowest the centre stage may be drawn while both rails sit beside it (HIVE-223). */
+export const STAGE_MIN = 520;
+
+export type PanelRail = keyof typeof PANEL_WIDTHS;
+
+/** Whole pixels inside the rail's bounds; anything that is not a number reads as the initial width. */
+export const clampPanelWidth = (rail: PanelRail, px: unknown): number => {
+  const { min, max, initial } = PANEL_WIDTHS[rail];
+  if (typeof px !== 'number' || !Number.isFinite(px)) return initial;
+  return Math.round(Math.min(max, Math.max(min, px)));
 };
 
 const MEDIA_QUERY = '(prefers-color-scheme: dark)';
@@ -343,21 +337,6 @@ const MEDIA_QUERY = '(prefers-color-scheme: dark)';
 function prefersDark(): boolean {
   if (typeof window === 'undefined' || !window.matchMedia) return true;
   return window.matchMedia(MEDIA_QUERY).matches;
-}
-
-/**
- * Preference plus environment, in one place.
- *
- * Exported for the selectors below and for tests; the *stored* answer stays the
- * preference, and this is derived on every read rather than kept in state —
- * there is exactly one source of truth for what theme is showing.
- */
-export function resolveTheme(
-  theme: ThemePreference,
-  systemDark: boolean,
-): ResolvedTheme {
-  if (theme === 'system') return systemDark ? 'dark' : 'light';
-  return theme;
 }
 
 /**
@@ -383,8 +362,8 @@ function applyTheme(theme: ResolvedTheme) {
  * Write density to `<body data-density>`, the same mechanism as the theme.
  *
  * Comfortable is the default and carries no attribute, so the `:root` values in
- * tokens.css apply unmodified. One attribute write re-spaces both rails and
- * every row in them, and no component re-renders to do it.
+ * tokens.css apply unmodified. One attribute write re-spaces every list row and
+ * card, and no component re-renders to do it.
  */
 function applyDensity(density: Density) {
   if (typeof document === 'undefined') return;
@@ -396,210 +375,12 @@ function applyDensity(density: Density) {
   }
 }
 
-/**
- * The theme actually active, resolved from the built-ins and then the library.
- *
- * `null` does **not** mean "no theme" — it means *the Hive*, and specifically
- * that nothing needs to be written: `tokens.css` is already that palette, so
- * `applyThemeColors(null)` removes the style element and lets the stylesheet
- * paint. Every other shipped theme resolves to a real theme object and
- * paints through the same generated `<style>` an imported theme does.
- *
- * A dangling `activeThemeId` — a theme removed elsewhere, a store that only
- * half-restored — resolves to `null` rather than throwing: a store in that
- * state still has to paint something.
- *
- * Built-ins are looked up **before** the library so a shipped id can never be
- * shadowed by a stored one, whatever found its way into `localStorage`.
- *
- * Every lookup is `Object.hasOwn`, never `in` or a bare `?? `. `'toString' in
- * BUILT_IN_THEMES` is `true` for any object literal and the lookup yields
- * `Object.prototype.toString` — a function rather than `undefined`, so `??`
- * does not fire and a stored `activeThemeId` of `"toString"` reached
- * `applyThemeColors` and the terminal-palette selector as a function, throwing
- * on `.modes` on every render. That is the same unrecoverable boot this
- * store's rehydrate guard was written to close, arriving through the id
- * instead of through the theme.
- */
-export function activeThemeOf(
-  state: Pick<AppearanceState, 'themes' | 'activeThemeId'>,
-): HiveTheme | null {
-  const { activeThemeId } = state;
-  if (activeThemeId === BUILT_IN_THEME_ID) return null;
-  if (Object.hasOwn(BUILT_IN_THEMES, activeThemeId)) return BUILT_IN_THEMES[activeThemeId];
-  if (Object.hasOwn(state.themes, activeThemeId)) return state.themes[activeThemeId];
-  return null;
-}
-
-/**
- * Write the rail widths to the same two custom properties the stylesheet
- * declares (HIVE-105) — the mechanism `applyDensity` uses, for the same reason:
- * one write re-sizes a rail and no component re-renders to do it.
- *
- * ## Why the properties, and not a width prop on each rail
- *
- * `--cc-rail-w-left` / `--cc-rail-w-right` are not only read by the rails.
- * `header.tsx` used to size its right-hand button cluster with
- * `calc(var(--cc-rail-w-right) - 1rem)` so the buttons sit over the activity
- * rail rather than straddling its border. Deliver the width by any other route
- * and the rails move while the header stays where it was — a bug that looks
- * like a header bug and is not.
- *
- * ## Why it removes the property instead of writing the default
- *
- * An inline property on `<body>` beats `body[data-density='compact']`, which is
- * exactly the precedence a user override should have. But that same precedence
- * would freeze a rail the user never touched: write `320px` inline and
- * switching to compact leaves it at 320px forever. So a rail sitting at its
- * default has its property *removed*, and the stylesheet — density rules
- * included — takes back over.
- *
- * A **collapsed** rail always takes the write branch, and that is correct: 44px
- * is never equal to a minimum, so `isRailDefault` is false, and the stylesheet
- * has no notion of a strip — the inline property is the only thing that can
- * paint one. The `widths.right === 0` guard still catches the unmounted case
- * and is untouched.
- *
- * ## `--cc-rail-w-left-open` / `--cc-rail-w-right-open`
- *
- * A second pair, carrying `openWidths` — the same clamp, computed with both
- * rails forced `expanded` regardless of what either is actually doing. They
- * exist because `header.tsx` used to size its zones from the plain pair above,
- * and a **collapsed** rail paints those at 44px: a header zone claiming that
- * width shrank to a box its content did not fit in, and the neighbouring zone
- * slid over to fill the gap. The plain pair is correct for the rails
- * themselves, which really are 44px wide when collapsed; it was never correct
- * for a header that must not reflow every time a rail is toggled. The `-open`
- * pair is what lets the header claim "where this rail's edge is when
- * expanded" as a fact independent of the rail's current display, so collapsing
- * one never moves anything beside it.
- *
- * The same remove-vs-default rule applies, for the same reason: an `-open`
- * property sitting at the density minimum is removed rather than written, so a
- * later density change still reaches it through the stylesheet instead of
- * finding a stale inline value. Unlike the plain pair, `-open` never takes an
- * unconditional write branch — it is never asked to paint a 44px strip, since
- * forcing `expanded` is the entire point.
- */
-export function applyRailWidths(
-  widths: RailWidths,
-  min: { left: number; right: number },
-  openWidths: RailWidths,
-) {
-  if (typeof document === 'undefined') return;
-
-  const { style } = document.body;
-
-  if (isRailDefault(widths.left, min.left)) {
-    style.removeProperty('--cc-rail-w-left');
-  } else {
-    style.setProperty('--cc-rail-w-left', `${widths.left}px`);
-  }
-
-  /*
-    The right rail is skipped entirely when it is unmounted: `clampRailWidths`
-    reports 0 for it, which is not a width anybody should paint, and the header
-    already drops its `calc()` column in that case.
-  */
-  if (widths.right === 0 || isRailDefault(widths.right, min.right)) {
-    style.removeProperty('--cc-rail-w-right');
-  } else {
-    style.setProperty('--cc-rail-w-right', `${widths.right}px`);
-  }
-
-  if (isRailDefault(openWidths.left, min.left)) {
-    style.removeProperty('--cc-rail-w-left-open');
-  } else {
-    style.setProperty('--cc-rail-w-left-open', `${openWidths.left}px`);
-  }
-
-  if (isRailDefault(openWidths.right, min.right)) {
-    style.removeProperty('--cc-rail-w-right-open');
-  } else {
-    style.setProperty('--cc-rail-w-right-open', `${openWidths.right}px`);
-  }
-}
-
-/**
- * Clamp and paint in one call, for the callers that have no separate render
- * pass to hang the two halves off — {@link applyStoredRailWidths} below, and
- * the store's own tests.
- *
- * `use-rail-widths` deliberately does *not* use this. A React component can
- * clamp during render (it is pure) and write during layout, and splitting the
- * two is what keeps a drag from costing a second render per pointer event.
- *
- * Takes its whole input rather than reading the store, because half of that
- * input is not store state — the window's width belongs to the DOM and
- * `showActivityRail` belongs to `ui-store`, which this store may not read.
- *
- * Also derives the `-open` pair `applyRailWidths` now writes, the same way
- * `use-rail-widths` does: the same input, run through `clampRailWidths` a
- * second time with both rails forced `expanded`.
- */
-export function syncRailWidths(input: RailWidthInput): RailWidths {
-  const widths = clampRailWidths(input);
-  const openWidths = clampRailWidths({ ...input, left: 'expanded', right: 'expanded' });
-  applyRailWidths(widths, input.min, openWidths);
-  return widths;
-}
-
-/**
- * The rail widths implied by the store alone, for the paths that have no
- * `showActivityRail` to hand — rehydration and reset.
- *
- * Collapse **is** persisted, unlike `showActivityRail`, so this path has the
- * real answer and the strip paints on the first frame rather than after a
- * hydration flash. The right rail is still assumed mounted: `showActivityRail`
- * lives in `ui-store`, which this store may not read and which persists
- * nothing, so at rehydration — during module evaluation, before React mounts —
- * it is its initial `true` and there is no other answer it could have.
- *
- * `setDensity` is the one caller that can run later, with the rail genuinely
- * hidden. What it writes then is a `--cc-rail-w-right` for a rail nobody is
- * painting: unread, because the only other consumer of that property is the
- * header cluster, which drops its `calc()` column when the rail is hidden — and
- * corrected by `use-rail-widths` in the same commit phase regardless.
- */
-function applyStoredRailWidths(
-  state: Pick<
-    AppearanceState,
-    'railWidthLeft' | 'railWidthRight' | 'railCollapsedLeft' | 'railCollapsedRight' | 'density'
-  >,
-) {
-  syncRailWidths({
-    storedLeft: state.railWidthLeft,
-    storedRight: state.railWidthRight,
-    min: RAIL_MIN[state.density],
-    windowWidth: typeof window === 'undefined' ? 0 : window.innerWidth,
-    left: state.railCollapsedLeft ? 'collapsed' : 'expanded',
-    right: state.railCollapsedRight ? 'collapsed' : 'expanded',
-  });
-}
-
 /** Push everything that lives on `<body>` (and the theme style element) at once — rehydration and reset. */
 function applyAll(
-  state: Pick<
-    AppearanceState,
-    | 'theme'
-    | 'systemDark'
-    | 'density'
-    | 'themes'
-    | 'activeThemeId'
-    | 'railWidthLeft'
-    | 'railWidthRight'
-    | 'railCollapsedLeft'
-    | 'railCollapsedRight'
-  >,
+  state: Pick<AppearanceState, 'theme' | 'systemDark' | 'density' | 'themes' | 'activeThemeId'>,
 ) {
   applyTheme(resolveTheme(state.theme, state.systemDark));
   applyDensity(state.density);
-  /*
-    After `applyDensity`, and it has to stay that way: the density attribute
-    decides which `--cc-rail-w-*` the stylesheet offers, and this decides
-    whether an inline override sits on top of it.
-  */
-  applyStoredRailWidths(state);
   applyThemeColors(activeThemeOf(state));
 }
 
@@ -609,8 +390,8 @@ const initialAppearanceState = {
    *
    * This story adds `system` as an *option*; it does not change what the app
    * boots as. "Dark is the default" is story 011's decision, it is what
-   * `:root` in tokens.css encodes, and the smoke spec calls the header's theme
-   * button "the one observable proof of which theme booted". Quietly making a
+   * `:root` in tokens.css encodes, and the smoke spec seeds the theme it
+   * expects to boot with. Quietly making a
    * light-mode machine open light would reverse a documented decision this
    * story has no mandate to reverse — and would do it invisibly, since the
    * only symptom is that the app looks different on someone else's laptop.
@@ -620,21 +401,22 @@ const initialAppearanceState = {
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
   terminalScrollback: DEFAULT_TERMINAL_SCROLLBACK,
   density: 'comfortable' as Density,
-  /** `null` — follow the stylesheet — until somebody drags a rail. */
-  railWidthLeft: null as number | null,
-  railWidthRight: null as number | null,
-  railCollapsedLeft: false,
-  railCollapsedRight: false,
-  planPinned: false,
-  showPlanPanel: true,
+  /** Open, on Plan: Files is where the Explorer lived, so open shows the user what moved (D14). */
+  sessionPanelOpen: true,
+  sessionPanelTab: 'plan' as SessionPanelTab,
+  listPanelWidth: PANEL_WIDTHS.list.initial,
+  sessionPanelWidth: PANEL_WIDTHS.session.initial,
   teamName: DEFAULT_TEAM_NAME,
+  whatsNewSeen: null as string | null,
+  whatsNewOff: false,
 
   /** Full stage: the editor is a place you go, not a permanent tax on the terminal. */
   editorPlacement: 'full' as EditorPlacement,
   /**
    * Vertical, chosen against the merits and recorded as such.
    *
-   * With both rails mounted the shell already spends ~590px on chrome, so a
+   * With the bar, the list panel and the session panel open the shell
+   * spends ~680px on chrome, so a
    * vertical split leaves the terminal around 40 columns on a 1440px display —
    * narrow enough that agent output, tables and diffs wrap badly. `horizontal`
    * keeps the terminal full-width and is the better default on the merits; this
@@ -645,6 +427,7 @@ const initialAppearanceState = {
   editorSplitRatio: 0.5,
   consoleSplitRatio: 0.5,
   runLogSplitRatio: 0.4,
+  agentSplitRatio: DEFAULT_AGENT_SPLIT_RATIO,
   editorNav: 'tabs' as EditorNav,
   editorEditable: true,
   editorFont: DEFAULT_TERMINAL_FONT,
@@ -664,18 +447,19 @@ interface PersistedAppearanceState {
   terminalFontSize: number;
   terminalScrollback: number;
   density: Density;
-  railWidthLeft: number | null;
-  railWidthRight: number | null;
-  railCollapsedLeft: boolean;
-  railCollapsedRight: boolean;
-  planPinned: boolean;
-  showPlanPanel: boolean;
+  sessionPanelOpen: boolean;
+  sessionPanelTab: SessionPanelTab;
+  listPanelWidth: number;
+  sessionPanelWidth: number;
   teamName: string;
+  whatsNewSeen: string | null;
+  whatsNewOff: boolean;
   editorPlacement: EditorPlacement;
   editorSplitAxis: EditorSplitAxis;
   editorSplitRatio: number;
   consoleSplitRatio: number;
   runLogSplitRatio: number;
+  agentSplitRatio: number;
   editorNav: EditorNav;
   editorEditable: boolean;
   editorFont: TerminalFontId;
@@ -760,6 +544,17 @@ export function sanitizeThemeState(state: Record<string, unknown>): {
   return { themes, activeThemeId };
 }
 
+/** What HIVE-213 retired with Classic; dropped from every payload older than v4. */
+const CLASSIC_KEYS: readonly string[] = [
+  'layout',
+  'railWidthLeft',
+  'railWidthRight',
+  'railCollapsedLeft',
+  'railCollapsedRight',
+  'planPinned',
+  'showPlanPanel',
+];
+
 /**
  * Migrations. Exported for the test.
  *
@@ -783,7 +578,12 @@ export function sanitizeThemeState(state: Record<string, unknown>): {
  *
  * Every other key is carried across untouched, as in v1 → v2.
  *
- * From v3 on there is nothing to add, only the library to re-check
+ * **v3 → v4 (HIVE-213): Classic is deleted.** `layout`, the four rail keys,
+ * `planPinned` and `showPlanPanel` are dropped from the stored payload, because
+ * `merge` spreads it over the defaults and a stale key would otherwise ride into
+ * live state. Every other key is carried across untouched, as in v1 → v2.
+ *
+ * From v4 on there is nothing to add, only the library to re-check
  * ({@link sanitizeThemeState}) — a payload at the current version has been
  * writable by anything with a `localStorage` handle since the day it existed.
  */
@@ -791,7 +591,12 @@ export function migrateAppearance(
   persisted: unknown,
   version: number,
 ): Record<string, unknown> {
-  const state = (persisted ?? {}) as Record<string, unknown>;
+  const stored = (persisted ?? {}) as Record<string, unknown>;
+
+  if (version >= 4) return { ...stored, ...sanitizeThemeState(stored) };
+
+  // Before v4 the stored object may carry Classic's keys, and `merge` would spread them into live state.
+  const state = Object.fromEntries(Object.entries(stored).filter(([key]) => !CLASSIC_KEYS.includes(key)));
 
   if (version >= 3) return { ...state, ...sanitizeThemeState(state) };
 
@@ -808,8 +613,6 @@ export function migrateAppearance(
   return rest;
 }
 
-export const APPEARANCE_STORAGE_KEY = 'hive.appearance';
-
 export const useAppearanceStore = create<AppearanceState>()(
   persist(
     (set, get) => ({
@@ -825,7 +628,7 @@ export const useAppearanceStore = create<AppearanceState>()(
        * Commit to the opposite of what is on screen.
        *
        * From `system` this *leaves* system rather than cycling three ways: the
-       * header's button is a two-state control the user pressed to change what
+       * bar's toggle is a two-state control the user pressed to change what
        * they are looking at, and landing them in a third state they never chose
        * is not what that press meant. Choosing `system` again is a deliberate
        * act, and the appearance section is where it is made.
@@ -842,70 +645,18 @@ export const useAppearanceStore = create<AppearanceState>()(
       setDensity: (density) => {
         applyDensity(density);
         set({ density });
-        /*
-          Re-run the override after the attribute changes. A rail the user never
-          touched has no inline property, so this is what re-spaces it; a rail
-          they did set keeps its width, but its *minimum* just moved and the
-          override may now need clamping up to it.
-        */
-        applyStoredRailWidths({ ...get(), density });
       },
 
-      /**
-       * Clamped to `[min, RAIL_MAX_PX]` and no further.
-       *
-       * Deliberately not clamped against the window here. The window-dependent
-       * bounds — the 30% share and the stage floor — belong to
-       * `clampRailWidths` on the way to the screen, because a width stored
-       * after being squeezed by a small window is a width the user never chose
-       * and would never get back. What is stored is intent; what is painted is
-       * intent within today's window.
-       */
-      setRailWidth: (side, width) => {
-        if (!Number.isFinite(width)) return;
-
-        const min = RAIL_MIN[get().density][side];
-        const next = Math.round(Math.min(RAIL_MAX_PX, Math.max(min, width)));
-
-        /*
-          Writing a width is an unambiguous statement that the rail should be
-          visible at that width, and it is the only thing drag-to-expand calls.
-          Clearing here is what lets that gesture need no second action.
-        */
-        set(
-          side === 'left'
-            ? { railWidthLeft: next, railCollapsedLeft: false }
-            : { railWidthRight: next, railCollapsedRight: false },
-        );
-      },
-
-      resetRailWidth: (side) =>
-        set(side === 'left' ? { railWidthLeft: null } : { railWidthRight: null }),
-
-      setRailCollapsed: (side, collapsed) =>
-        set(
-          side === 'left'
-            ? { railCollapsedLeft: collapsed }
-            : { railCollapsedRight: collapsed },
-        ),
-
-      toggleRailCollapsed: (side) =>
-        set((state) =>
-          side === 'left'
-            ? { railCollapsedLeft: !state.railCollapsedLeft }
-            : { railCollapsedRight: !state.railCollapsedRight },
-        ),
-
-      setPlanPinned: (planPinned) => set({ planPinned }),
-
-      setShowPlanPanel: (showPlanPanel) => set({ showPlanPanel }),
+      setSessionPanelOpen: (sessionPanelOpen) => set({ sessionPanelOpen }),
+      toggleSessionPanel: () => set((state) => ({ sessionPanelOpen: !state.sessionPanelOpen })),
+      setSessionPanelTab: (sessionPanelTab) => set({ sessionPanelTab }),
 
       /**
        * Stored exactly as typed.
        *
        * Not trimmed here, though it is tempting: the field writes on every
-       * keystroke so the header updates live, and trimming on the way in eats
-       * the space between two words as it is typed. The header trims for
+       * keystroke so the brand tooltip updates live, and trimming on the way in
+       * eats the space between two words as it is typed. Readers trim for
        * display and the settings field trims when it commits.
        *
        * No fallback to the default on empty either — clearing the field is how
@@ -913,6 +664,8 @@ export const useAppearanceStore = create<AppearanceState>()(
        * impossible.
        */
       setTeamName: (teamName) => set({ teamName }),
+      setWhatsNewSeen: (whatsNewSeen) => set({ whatsNewSeen }),
+      setWhatsNewOff: (whatsNewOff) => set({ whatsNewOff }),
 
       /**
        * The OS changed its mind while the app was open.
@@ -943,6 +696,10 @@ export const useAppearanceStore = create<AppearanceState>()(
         set({ consoleSplitRatio: clampSplitRatio(ratio) }),
       setRunLogSplitRatio: (ratio) =>
         set({ runLogSplitRatio: clampSplitRatio(ratio) }),
+      setAgentSplitRatio: (ratio) =>
+        set({ agentSplitRatio: clampSplitRatio(ratio) }),
+      setListPanelWidth: (px) => set({ listPanelWidth: clampPanelWidth('list', px) }),
+      setSessionPanelWidth: (px) => set({ sessionPanelWidth: clampPanelWidth('session', px) }),
       setEditorNav: (editorNav) => set({ editorNav }),
       setEditorEditable: (editorEditable) => set({ editorEditable }),
       setEditorFont: (editorFont) => set({ editorFont }),
@@ -984,7 +741,7 @@ export const useAppearanceStore = create<AppearanceState>()(
     }),
     {
       name: APPEARANCE_STORAGE_KEY,
-      version: 3,
+      version: 4,
       /**
        * `migrateAppearance` is typed loosely (`Record<string, unknown>`) so the
        * test can hand it a bare v1 payload; the persist option needs the exact
@@ -997,8 +754,8 @@ export const useAppearanceStore = create<AppearanceState>()(
        * Where the theme library is actually re-checked.
        *
        * `migrate` only runs when the stored version differs from this one, so
-       * it can never be the gate: the overwhelmingly common case is a v2
-       * payload rehydrating into a v2 store, which skips migration entirely.
+       * it can never be the gate: the overwhelmingly common case is a current
+       * payload rehydrating into a current store, which skips migration entirely.
        * `merge` runs on every rehydrate, whichever path got here, which is what
        * makes {@link sanitizeThemeState} unskippable.
        */
@@ -1008,6 +765,15 @@ export const useAppearanceStore = create<AppearanceState>()(
           ...currentState,
           ...persisted,
           ...sanitizeThemeState(persisted),
+          // No version bump for HIVE-201: an absent or bad value reads as the default.
+          sessionPanelOpen:
+            typeof persisted.sessionPanelOpen === 'boolean' ? persisted.sessionPanelOpen : true,
+          sessionPanelTab: SESSION_PANEL_TABS.includes(persisted.sessionPanelTab as SessionPanelTab)
+            ? (persisted.sessionPanelTab as SessionPanelTab)
+            : 'plan',
+          // No version bump for the rails either: absent or bad reads as the initial width.
+          listPanelWidth: clampPanelWidth('list', persisted.listPanelWidth),
+          sessionPanelWidth: clampPanelWidth('session', persisted.sessionPanelWidth),
         } as AppearanceState;
       },
       storage: createJSONStorage(() => localStorage),
@@ -1021,18 +787,17 @@ export const useAppearanceStore = create<AppearanceState>()(
         terminalFontSize: state.terminalFontSize,
         terminalScrollback: state.terminalScrollback,
         density: state.density,
-        railWidthLeft: state.railWidthLeft,
-        railWidthRight: state.railWidthRight,
-        railCollapsedLeft: state.railCollapsedLeft,
-        railCollapsedRight: state.railCollapsedRight,
-        planPinned: state.planPinned,
-        showPlanPanel: state.showPlanPanel,
+        sessionPanelOpen: state.sessionPanelOpen,
+        sessionPanelTab: state.sessionPanelTab,
+        listPanelWidth: state.listPanelWidth,
+        sessionPanelWidth: state.sessionPanelWidth,
         teamName: state.teamName,
         editorPlacement: state.editorPlacement,
         editorSplitAxis: state.editorSplitAxis,
         editorSplitRatio: state.editorSplitRatio,
         consoleSplitRatio: state.consoleSplitRatio,
         runLogSplitRatio: state.runLogSplitRatio,
+        agentSplitRatio: state.agentSplitRatio,
         editorNav: state.editorNav,
         editorEditable: state.editorEditable,
         editorFont: state.editorFont,
@@ -1042,6 +807,8 @@ export const useAppearanceStore = create<AppearanceState>()(
         editorTabWidth: state.editorTabWidth,
         themes: state.themes,
         activeThemeId: state.activeThemeId,
+        whatsNewSeen: state.whatsNewSeen,
+        whatsNewOff: state.whatsNewOff,
       }),
       /**
        * `localStorage` is synchronous, so this runs during module evaluation —
@@ -1091,11 +858,6 @@ export function watchSystemTheme(): () => void {
  *
  * Components never read the store object directly and never call `getState()`.
  */
-const themeActionsSelector = (state: AppearanceState) => ({
-  setTheme: state.setTheme,
-  toggleTheme: state.toggleTheme,
-});
-
 const themeLibraryActionsSelector = (state: AppearanceState) => ({
   addTheme: state.addTheme,
   activateTheme: state.activateTheme,
@@ -1132,7 +894,6 @@ const appearanceActionsSelector = (state: AppearanceState) => ({
   setTerminalScrollback: state.setTerminalScrollback,
   setDensity: state.setDensity,
   setTeamName: state.setTeamName,
-  setShowPlanPanel: state.setShowPlanPanel,
 });
 
 const appearanceSettingsSelector = (state: AppearanceState) => ({
@@ -1142,21 +903,7 @@ const appearanceSettingsSelector = (state: AppearanceState) => ({
   terminalScrollback: state.terminalScrollback,
   density: state.density,
   teamName: state.teamName,
-  showPlanPanel: state.showPlanPanel,
 });
-
-/**
- * The theme actually on screen.
- *
- * Everything that paints reads this, never the stored preference — `system` is
- * not a palette and no consumer should have to know that.
- */
-export const useTheme = (): ResolvedTheme =>
-  useAppearanceStore((state) => resolveTheme(state.theme, state.systemDark));
-
-/** Theme actions, referentially stable across unrelated state changes. */
-export const useThemeActions = () =>
-  useAppearanceStore(useShallow(themeActionsSelector));
 
 /** The imported theme library, keyed by import id. */
 export const useThemes = (): Record<string, HiveTheme> =>
@@ -1183,8 +930,33 @@ export const useThemeLibraryActions = () =>
 export const useTerminalAppearance = () =>
   useAppearanceStore(useShallow(terminalAppearanceSelector));
 
+/** One palette per ui object, so a re-read hands back the same reference. */
+const swarmPalettes = new WeakMap<UiColors, SwarmPalette>();
+
 /**
- * The header's sublabel, trimmed — empty means the line is not drawn.
+ * The swarm canvas's colours (HIVE-199), built like the terminal's palette:
+ * from the active theme's resolved mode, never from `getComputedStyle`.
+ *
+ * Memoised on the theme's `ui` object rather than rebuilt per read, so an
+ * unrelated appearance write returns the same reference and Home does not
+ * repaint for it; a theme or mode switch is a different `ui` object and a new
+ * palette.
+ */
+export const useSwarmPalette = (): SwarmPalette =>
+  useAppearanceStore((state) => {
+    const ui = (activeThemeOf(state) ?? BUILT_IN_THEME).modes[
+      resolveTheme(state.theme, state.systemDark)
+    ].ui;
+    let palette = swarmPalettes.get(ui);
+    if (palette === undefined) {
+      palette = swarmPaletteOf(ui);
+      swarmPalettes.set(ui, palette);
+    }
+    return palette;
+  });
+
+/**
+ * The brand tooltip's sublabel, trimmed — empty means the line is not drawn.
  *
  * Trimming here rather than in the setter keeps the settings field typable
  * (see `setTeamName`), and keeps every reader from having to remember it.
@@ -1192,18 +964,39 @@ export const useTerminalAppearance = () =>
 export const useTeamName = (): string =>
   useAppearanceStore((state) => state.teamName.trim());
 
+const whatsNewSelector = (state: AppearanceState) => ({
+  seen: state.whatsNewSeen,
+  off: state.whatsNewOff,
+  setSeen: state.setWhatsNewSeen,
+  setOff: state.setWhatsNewOff,
+});
+
+/** What's new's persisted state and its two setters (1.0). */
+export const useWhatsNewPrefs = () => useAppearanceStore(useShallow(whatsNewSelector));
+
+/** What is on screen, `system` resolved against the OS (HIVE-213, the bar's toggle). */
+export const useResolvedTheme = (): ResolvedTheme =>
+  useAppearanceStore((state) => resolveTheme(state.theme, state.systemDark));
+export const useToggleTheme = () => useAppearanceStore((state) => state.toggleTheme);
+
 /** The appearance section's current values and its setters. */
 export const useAppearanceSettings = () =>
   useAppearanceStore(useShallow(appearanceSettingsSelector));
 export const useAppearanceActions = () =>
   useAppearanceStore(useShallow(appearanceActionsSelector));
 
-/** Whether the plan drawer is docked beside the terminal (HIVE-181). */
-export const usePlanPinned = () => useAppearanceStore((state) => state.planPinned);
-/** Dock or undock the plan drawer (HIVE-181). */
-export const useSetPlanPinned = () => useAppearanceStore((state) => state.setPlanPinned);
-/** Whether the plan panel shows beside the terminal (HIVE-182). */
-export const useShowPlanPanel = () => useAppearanceStore((state) => state.showPlanPanel);
+/** Whether round two's session panel is open (HIVE-201). */
+export const useSessionPanelOpen = () => useAppearanceStore((state) => state.sessionPanelOpen);
+/** The session panel's last tab (HIVE-201). */
+export const useSessionPanelTab = () => useAppearanceStore((state) => state.sessionPanelTab);
+export const useSetSessionPanelOpen = () => useAppearanceStore((state) => state.setSessionPanelOpen);
+export const useToggleSessionPanel = () => useAppearanceStore((state) => state.toggleSessionPanel);
+export const useSetSessionPanelTab = () => useAppearanceStore((state) => state.setSessionPanelTab);
+/** A rail's width in px, and its setter. */
+export const useListPanelWidth = () => useAppearanceStore((state) => state.listPanelWidth);
+export const useSessionPanelWidth = () => useAppearanceStore((state) => state.sessionPanelWidth);
+export const useSetListPanelWidth = () => useAppearanceStore((state) => state.setListPanelWidth);
+export const useSetSessionPanelWidth = () => useAppearanceStore((state) => state.setSessionPanelWidth);
 
 /**
  * Everything the CodeMirror surface needs, resolved.
@@ -1294,39 +1087,12 @@ export const useRunLogSplitRatio = () =>
 export const useSetRunLogSplitRatio = () =>
   useAppearanceStore((state) => state.setRunLogSplitRatio);
 
-/**
- * The stored rail widths, their collapse flags, and the density they are
- * bounded by (HIVE-105).
- *
- * Deliberately these fields and no more. `use-rail-widths` is the only
- * consumer, it runs at the composition root, and widening this selector would
- * re-run the clamp — and touch `<body>` — every time an unrelated appearance
- * field changed. The collapse flags belong here rather than behind a second
- * hook because every consumer of the widths also needs to know whether a rail
- * is currently a strip.
- */
-const railWidthSelector = (state: AppearanceState) => ({
-  railWidthLeft: state.railWidthLeft,
-  railWidthRight: state.railWidthRight,
-  railCollapsedLeft: state.railCollapsedLeft,
-  railCollapsedRight: state.railCollapsedRight,
-  density: state.density,
-});
+/** The Form pane's share of the agent page's Definition, and its setter. */
+export const useAgentSplitRatio = () =>
+  useAppearanceStore((state) => state.agentSplitRatio);
 
-export const useRailWidthState = () => useAppearanceStore(useShallow(railWidthSelector));
-
-/** Written by dragging a rail's handle, for the same reason as the divider above. */
-export const useSetRailWidth = () => useAppearanceStore((state) => state.setRailWidth);
-
-/** Double-click on a handle — back to following the stylesheet. */
-export const useResetRailWidth = () => useAppearanceStore((state) => state.resetRailWidth);
-
-/** The strip gesture and both chords. */
-export const useToggleRailCollapsed = () =>
-  useAppearanceStore((state) => state.toggleRailCollapsed);
-
-/** Drag-past-the-edge, and the header bell un-collapsing the activity rail. */
-export const useSetRailCollapsed = () => useAppearanceStore((state) => state.setRailCollapsed);
+export const useSetAgentSplitRatio = () =>
+  useAppearanceStore((state) => state.setAgentSplitRatio);
 
 /** The editor section's current values and its setters. */
 export const useEditorSettings = () =>

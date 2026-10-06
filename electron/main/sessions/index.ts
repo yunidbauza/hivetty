@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { AgentsDirectory } from '@shared/agent-contract';
+import type { ChangedFilesSnapshot } from '@shared/changed-files-contract';
 import type { ProjectAutoMergeRequest, ProjectsDirectory } from '@shared/config-contract';
 import {
   AUTH_ENV_KEYS,
@@ -56,6 +58,7 @@ import {
   CONTAINER_SETTINGS_FILE,
   removeSessionContainerFiles,
 } from '../container/generated';
+import { sessionRoot } from '../fs/session-roots';
 import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
 import { ticketKeysFromBranch } from '../hooks/ticket-intent';
@@ -69,6 +72,7 @@ import type { SkillsRuntime } from '../skills';
 
 import { createActivityTracker, type ActivityTracker } from './activity';
 import { createBootstrap, sessionCommand, type Bootstrap } from './bootstrap';
+import { createChangedFiles } from './changed-files';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
 import type { SessionHistory } from './history';
 import { createPathMap } from './path-map';
@@ -493,6 +497,8 @@ export interface Sessions {
   plans(): PlansSnapshot;
   /** The plans store itself, for the builder-progress fan-out (HIVE-180). */
   planStore(): Plans;
+  /** Every session's changed files (HIVE-201), for `CH.changedFilesList` and the attach snapshot. */
+  changedFiles(): ChangedFilesSnapshot;
   dispose(): void;
 }
 
@@ -705,6 +711,8 @@ export function createSessions(options: SessionsOptions): Sessions {
               ? { kind: 'lost', reason: `the shell was killed by signal ${data.signal}` }
               : { kind: 'finished' },
           );
+        } else if (data.signal !== undefined && data.signal !== 0) {
+          sessionLost(entityId, `its process was killed by signal ${data.signal}`);
         }
         settleCommand(entityId, {
           exitCode: data.exitCode,
@@ -721,6 +729,8 @@ export function createSessions(options: SessionsOptions): Sessions {
         send(channel, { ...data, sessionId: entityId } satisfies SessionLostEvent);
         if (terminalEntities.has(entityId)) {
           publishTerminalEnded(entityId, { kind: 'lost', reason: 'the pty host crashed' });
+        } else {
+          sessionLost(entityId, 'the pty host crashed');
         }
         // No code: nothing concluded. `-1` is the sentinel a command caller
         // reads as "did not finish", never as an exit status.
@@ -779,6 +789,26 @@ export function createSessions(options: SessionsOptions): Sessions {
    * build that has none.
    */
   const transcripts = new Map<string, { cwd: string; sessionUuid: string }>();
+
+  /**
+   * The Files tree's root for a session: its proved worktree, else its
+   * project, realpath'd (HIVE-201). The transcript's `cwd` is the project
+   * path the session was opened with, so it serves as the project here.
+   */
+  async function changedFilesRoot(entityId: string): Promise<string | null> {
+    const projectPath = transcripts.get(entityId)?.cwd;
+    if (projectPath === undefined) return null;
+    const projectReal = await realpath(projectPath).catch(() => null);
+    if (projectReal === null) return null;
+    return (await sessionRoot(projectReal, entityId)) ?? projectReal;
+  }
+
+  /** Every session's changed files, from its own transcript (HIVE-201). */
+  const changedFiles = createChangedFiles({
+    send,
+    transcriptOf: (entityId) => transcripts.get(entityId),
+    rootOf: changedFilesRoot,
+  });
 
   /**
    * The last title classified for each session, and what it was classified as.
@@ -1134,6 +1164,8 @@ export function createSessions(options: SessionsOptions): Sessions {
       } satisfies SessionTicketIntentEvent),
     // The plan panel's source 1 (HIVE-179); the receiver already filtered.
     onPlanTool: (call) => plans.onTool(call),
+    // Changed files (HIVE-201): a main-agent edit re-reads the transcript.
+    onFileTool: (entityId) => void changedFiles.onFileTool(entityId),
     /**
      * The first prompt named the session (first-prompt naming).
      *
@@ -1160,8 +1192,9 @@ export function createSessions(options: SessionsOptions): Sessions {
        * running.
        */
       statusTracker.reset(entityId);
-      // The plan belonged to the conversation `/clear` just retired (HIVE-179).
-      plans.drop(entityId);
+      // The plan, and the plan file it read, belonged to the conversation
+      // `/clear` just retired (HIVE-179, HIVE-201).
+      plans.forget(entityId);
       /*
         A declaration belongs to the conversation that made it (HIVE-93).
         `/clear` retires that conversation and opens a successor on the same
@@ -1380,7 +1413,8 @@ export function createSessions(options: SessionsOptions): Sessions {
   }
 
   function publishFinished(entityId: string): void {
-    plans.drop(entityId);
+    plans.forget(entityId);
+    changedFiles.drop(entityId);
     /*
       Asked rather than assumed. `history.resumable` is the only thing that knows
       whether a uuid still names this terminal's conversation — a `/clear`
@@ -1402,8 +1436,24 @@ export function createSessions(options: SessionsOptions): Sessions {
    * `forward` and `supervisor.onError` translate whatever the host actually
    * said into one of the two kinds this function forwards untouched.
    */
+  /**
+   * A session's process went without being asked: a signal, or the pty host
+   * crashing. Sent **before** `settleExit` publishes `terminated`, so the
+   * renderer knows why when the ending lands, and keeps the ended card over
+   * the terminal instead of leaving for the Overmind as a clean `/exit` does.
+   * Not for a session that declared `/done`: the force-kill after a wedged
+   * `/exit` is still the user's ending. Nor for one the app killed itself
+   * ({@link appKilled}): a restart or a close hangs the pty up with SIGHUP, and
+   * the exit that follows reports that signal.
+   */
+  function sessionLost(entityId: string, reason: string): void {
+    if (declaredDone(entityId) || appKilled.has(entityId)) return;
+    send(CH.sessionTerminalEnded, { entityId, ending: { kind: 'lost', reason } } satisfies SessionTerminalEndedEvent);
+  }
+
   function publishTerminalEnded(entityId: string, ending: TerminalEnding): void {
-    plans.drop(entityId);
+    plans.forget(entityId);
+    changedFiles.drop(entityId);
     send(CH.sessionTerminalEnded, { entityId, ending } satisfies SessionTerminalEndedEvent);
   }
 
@@ -1445,6 +1495,20 @@ export function createSessions(options: SessionsOptions): Sessions {
    * pty cannot make, now supplied by whoever typed `/done`.
    */
   const finishing = new Map<string, ReturnType<typeof setTimeout> | null>();
+
+  /**
+   * Sessions whose pty the app is killing on purpose — a restart, a close. The
+   * exit that follows carries the signal the app sent, which is not a loss.
+   * Cleared when the exit settles, so an unasked kill of the next generation
+   * still keeps its ended card.
+   */
+  const appKilled = new Set<string>();
+
+  /** Kill a session's pty at the app's own request. */
+  function killOnPurpose(entityId: string, sessionId: string): void {
+    appKilled.add(entityId);
+    ptyIpc.kill(sessionId);
+  }
 
   /** Whether this session has declared itself finished. */
   const declaredDone = (entityId: string): boolean => finishing.has(entityId);
@@ -1765,6 +1829,7 @@ export function createSessions(options: SessionsOptions): Sessions {
    * for that session id undeliverable.
    */
   function settleExit(entityId: string): void {
+    appKilled.delete(entityId);
     bootstrap.cancel(entityId);
     heldInput.delete(entityId);
     /**
@@ -1800,8 +1865,10 @@ export function createSessions(options: SessionsOptions): Sessions {
       Dropped on every ending, not only `/done`'s: a kill, a plain `/exit` or
       a crash never reaches `publishFinished`, and a restart reuses the entity
       id, so a plan left standing would take the next conversation's tasks.
+      The plan file and the changed files go with it (HIVE-201).
     */
-    plans.drop(entityId);
+    plans.forget(entityId);
+    changedFiles.drop(entityId);
     /**
      * Per-generation too, and for a sharper reason than the other two: a
      * restarted session reuses the entity id, and a retained entry would make
@@ -1951,6 +2018,7 @@ export function createSessions(options: SessionsOptions): Sessions {
          * to prevent, arrived at by way of a safety net.
          */
         setTimeout(() => {
+          appKilled.delete(request.entityId);
           reject(
             new Error(
               `restart: ${request.entityId} did not exit within ${RESTART_EXIT_TIMEOUT_MS}ms — its process may still be running`,
@@ -1959,7 +2027,7 @@ export function createSessions(options: SessionsOptions): Sessions {
         }, RESTART_EXIT_TIMEOUT_MS);
       });
 
-      ptyIpc.kill(sessionId);
+      killOnPurpose(request.entityId, sessionId);
       await exit;
     }
 
@@ -2812,7 +2880,7 @@ export function createSessions(options: SessionsOptions): Sessions {
       if (sessionId === undefined) return;
       // The transcript stays readable — killing ends the process, it does not
       // clear the terminal.
-      ptyIpc.kill(sessionId);
+      killOnPurpose(entityId, sessionId);
     },
 
     restart(request) {
@@ -2857,6 +2925,8 @@ export function createSessions(options: SessionsOptions): Sessions {
     plans: () => ({ plans: plans.list() }),
 
     planStore: () => plans,
+
+    changedFiles: () => changedFiles.list(),
 
     dispose() {
       bootstrap.dispose();

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AGENTS_PATH } from '@shared/agent-contract';
 import { PROJECT_AUTO_MERGE_PATH, PROJECTS_PATH } from '@shared/config-contract';
 import { PR_PATH } from '@shared/github-contract';
-import { JIRA_COMMENT_PATH, JIRA_GET_PATH, JIRA_TRANSITION_PATH } from '@shared/jira-contract';
+import { JIRA_COMMENT_PATH, JIRA_GET_PATH, JIRA_TRANSITION_PATH, JIRA_USERS_PATH } from '@shared/jira-contract';
 import { HOOK_HEADER_SESSION, HOOK_HEADER_TOKEN } from '@shared/hook-contract';
 import {
   LEDGER_POST_PATH,
@@ -258,6 +258,7 @@ describe('the Jira calls (HIVE-174)', () => {
       ['jiraGet', JIRA_GET_PATH, { key: 'HIVE-9' }],
       ['jiraTransition', JIRA_TRANSITION_PATH, { key: 'HIVE-9', status: 'Done' }],
       ['jiraComment', JIRA_COMMENT_PATH, { key: 'HIVE-9', markdown: 'hi' }],
+      ['jiraUsers', JIRA_USERS_PATH, { query: 'da' }],
     ] as const;
 
     for (const [method, path, request] of cases) {

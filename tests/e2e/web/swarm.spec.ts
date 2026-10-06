@@ -1,15 +1,17 @@
 import { expect, test } from '@playwright/test';
 
 import { PHRASES } from '../../../src/lib/swarm/phrases';
-import { selectRailTab } from '../fixtures/rail-tabs';
+import { expectCreatureDrawn, readCreature } from '../fixtures/creature';
+import { goToOvermind } from '../fixtures/places';
 
 /**
  * The swarm layer, in a real browser against production output.
  *
- * Unit tests prove the pools and the hook. They cannot prove that an animated
- * WebP survives the asset pipeline, that the creature is laid out rather than
- * collapsed to nothing, or that a flavour line actually reaches the rail — all
- * three are build-and-layout claims, and happy-dom performs no layout.
+ * Unit tests prove the pools, the hook and the drawing's plumbing. They cannot
+ * prove that the creature's canvas actually paints, that it is laid out rather
+ * than collapsed to nothing, or that a flavour line actually reaches the stage —
+ * all three are build-and-layout claims, and happy-dom has no canvas and
+ * performs no layout.
  *
  * The app boots empty, which is exactly the state this whole change is about,
  * so every surface asserted here is on screen at load with no setup.
@@ -19,28 +21,15 @@ const APP_URL = '/?sim=0';
 
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
+  await goToOvermind(page);
 });
 
 test('the dormant orchestrator holds a creature and a line', async ({ page }) => {
   const empty = page.getByTestId('session-table-empty');
   await expect(empty).toBeVisible();
 
-  const creature = empty.locator('[data-creature="hive"]');
-  await expect(creature).toBeVisible();
-
-  /**
-   * The asset has to have *decoded*, not merely resolved to a URL. A 404 still
-   * produces a visible <img>; a zero natural width is what a broken sprite
-   * looks like from the outside.
-   */
-  const decoded = await creature.evaluate(
-    (img) => (img as HTMLImageElement).naturalWidth,
-  );
-  expect(decoded).toBeGreaterThan(0);
-
-  // Laid out at the size it was asked for, not collapsed.
-  const box = await creature.boundingBox();
-  expect(box?.height).toBeGreaterThan(50);
+  // Painted, laid out at the size it was asked for, not collapsed.
+  await expectCreatureDrawn(empty.locator('[data-creature="overlord"]'));
 
   await expect(empty).toContainText('No sessions running — start one with New session.');
 
@@ -49,103 +38,19 @@ test('the dormant orchestrator holds a creature and a line', async ({ page }) =>
   expect(drew, `no phrase from empty.sessions in: ${text}`).toBe(true);
 });
 
-/**
- * Each rail panel, in its own empty state, carrying a flavour line above copy
- * that is still there. The second half is the point: the change is additive,
- * and a rail that lost its instruction would be a regression this spec should
- * catch before review does.
- *
- * PRs is deliberately absent.
- *
- * Its empty state only renders when the source is `live`, and the browser
- * build has no `gh` to be live against — it shows a "needs the desktop app"
- * message instead, which is a different state with no flavour line. The pool
- * is covered by the unit tests; proving it here would need the Electron
- * project and a signed-in `gh`.
- */
-const RAILS = [
-  {
-    tab: 'Inbox',
-    rail: 'Activity',
-    pool: 'empty.inbox' as const,
-    cast: 'overlord',
-    keeps: 'Nothing needs you.',
-  },
-  {
-    tab: 'Projects',
-    rail: 'Projects, work, and agents',
-    pool: 'empty.projects' as const,
-    cast: 'overlord',
-    /*
-      This was "No projects mapped." until the flavour line made it a
-      restatement — the same fact in prose one line under the same fact in
-      swarm. What the panel keeps is the half the line cannot carry, and it is
-      still the instruction this spec exists to protect.
-    */
-    keeps: 'Or clone one in Settings → Projects.',
-  },
-  {
-    tab: 'Agents',
-    rail: 'Projects, work, and agents',
-    pool: 'empty.agents' as const,
-    cast: 'hydralisk',
-    keeps: 'No agents yet — create one in Settings › Agents.',
-  },
-];
+test('holds the creature still when the user asked for less motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto(APP_URL);
+  await goToOvermind(page);
+  const creature = page.getByTestId('session-table-empty').locator('[data-creature="overlord"]');
+  await expectCreatureDrawn(creature);
 
-for (const { tab, rail, pool, cast, keeps } of RAILS) {
-  test(`the ${tab.toLowerCase()} rail leads with a phrase and keeps its copy`, async ({
-    page,
-  }) => {
-    const region = page.getByRole(
-      rail === 'Activity' ? 'complementary' : 'navigation',
-      { name: rail },
-    );
+  const first = await readCreature(creature);
+  await page.waitForTimeout(500);
+  expect((await readCreature(creature)).digest).toBe(first.digest);
+});
 
-    await selectRailTab(region.getByRole('tab', { name: tab }));
-
-    await expect(region).toContainText(keeps);
-
-    const line = region.locator('[data-swarm-line]').first();
-    await expect(line).toBeVisible();
-
-    const drew = (await line.textContent()) ?? '';
-    expect(PHRASES[pool], `"${drew}" is not in ${pool}`).toContain(drew);
-  });
-
-  test(`the ${tab.toLowerCase()} rail holds its creature, small`, async ({ page }) => {
-    /**
-     * The rails get a sprite, but only at rail size. `empty-state.tsx` argues a
-     * decorative empty state in a 320px column takes more attention than the
-     * thing it is apologising for, and the answer to that is the *size*: at
-     * 44px the creature is shorter than the copy beneath it. This asserts the
-     * ceiling, so a later change cannot quietly grow it into the illustration
-     * that argument rules out.
-     */
-    const region = page.getByRole(
-      rail === 'Activity' ? 'complementary' : 'navigation',
-      { name: rail },
-    );
-
-    await selectRailTab(region.getByRole('tab', { name: tab }));
-
-    /**
-     * Exactly one sprite in the rail, and it is the cast one. The count is
-     * half the guarantee: bounding only the sprite this test expects would let
-     * a second, larger creature appear beside it and still pass.
-     */
-    await expect(region.locator('[data-creature]')).toHaveCount(1);
-
-    const creature = region.locator(`[data-creature="${cast}"]`);
-    await expect(creature).toBeVisible();
-
-    // Decoded, not merely resolved: a 404 still renders a visible <img>.
-    expect(
-      await creature.evaluate((img) => (img as HTMLImageElement).naturalWidth),
-    ).toBeGreaterThan(0);
-
-    const box = await creature.boundingBox();
-    expect(box?.height).toBeGreaterThan(20);
-    expect(box?.height).toBeLessThanOrEqual(48);
-  });
-}
+/*
+  Round two draws no empty panel (HIVE-211): the stage pages that say why are
+  asserted by round-two.spec.ts, and the pools by the unit tests.
+*/

@@ -81,6 +81,7 @@ const CONFIGURED: JiraConfig = {
   site: 'behiques.atlassian.net',
   email: 'me@example.com',
   jql: null,
+  workflow: null,
 };
 
 describe('status', () => {
@@ -218,7 +219,7 @@ describe('clearToken', () => {
 describe('test', () => {
   it('refuses before a site is configured, without calling fetch', async () => {
     const result = await build({
-      jira: { site: null, email: 'me@example.com', jql: null },
+      jira: { site: null, email: 'me@example.com', jql: null, workflow: null },
     }).test();
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error.message).toMatch(/site/i);
@@ -226,7 +227,7 @@ describe('test', () => {
 
   it('refuses before an email is configured, without calling fetch', async () => {
     const result = await build({
-      jira: { site: 'behiques.atlassian.net', email: null, jql: null },
+      jira: { site: 'behiques.atlassian.net', email: null, jql: null, workflow: null },
     }).test();
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error.message).toMatch(/email/i);
@@ -319,6 +320,7 @@ describe('test', () => {
       site: 'first.atlassian.net',
       email: 'me@example.com',
       jql: null,
+      workflow: null,
     };
     const seen: string[] = [];
     const fetch: FetchLike = (url) => {
@@ -343,6 +345,7 @@ describe('test', () => {
       site: 'second.atlassian.net',
       email: 'me@example.com',
       jql: null,
+      workflow: null,
     };
     await jira.test();
 
@@ -447,7 +450,7 @@ describe('search - the query', () => {
 
   it('refuses before a site is configured, without calling fetch', async () => {
     const result = await build({
-      jira: { site: null, email: 'me@example.com', jql: null },
+      jira: { site: null, email: 'me@example.com', jql: null, workflow: null },
     }).search({});
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error.message).toMatch(/site/i);
@@ -682,7 +685,7 @@ describe('issue', () => {
   });
 
   it('refuses before configuration, without calling fetch', async () => {
-    const result = await build({ jira: { site: null, email: null, jql: null } }).issue({
+    const result = await build({ jira: { site: null, email: null, jql: null, workflow: null } }).issue({
       key: 'HIVE-68',
     });
     expect(result.ok).toBe(false);
@@ -779,7 +782,7 @@ describe('transitions (HIVE-70)', () => {
   });
 
   it('refuses before configuration, without asking', async () => {
-    const result = await build({ jira: { site: null, email: null, jql: null } })
+    const result = await build({ jira: { site: null, email: null, jql: null, workflow: null } })
       .transitions({ key: 'HIVE-70' });
     expect(result.ok).toBe(false);
   });
@@ -899,7 +902,7 @@ describe('applyTransition (HIVE-70)', () => {
   it('refuses before configuration, without writing anything', async () => {
     const seen: { url: string; method: string }[] = [];
     const result = await build({
-      jira: { site: null, email: null, jql: null },
+      jira: { site: null, email: null, jql: null, workflow: null },
       fetch: replies([[204, undefined]], seen),
     }).applyTransition({ key: 'HIVE-70', transitionId: '41' });
 

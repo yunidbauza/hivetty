@@ -82,7 +82,7 @@ describe('NewProjectLink', () => {
    * has to name what kind of thing it adds.
    */
   it('keeps the visible word in the accessible name', () => {
-    render(<NewProjectLink />);
+    render(<NewProjectLink variant="cta" />);
 
     expect(
       screen.getByRole('button', { name: 'Add a new project' }),
@@ -90,23 +90,19 @@ describe('NewProjectLink', () => {
   });
 
   /**
-   * Two registers, one control. The border is the whole difference: same role,
-   * same accessible name, same visible word — so nothing reached by name, by
-   * voice or by a screen reader can tell the empty state's button from the
-   * tree's ghost line, and nothing should, because they do the same thing.
-   *
-   * The `mb-2.5` is the other half of the pair: the panel's `gap-0.5` is the
-   * rhythm between *rows*, and the line above the tree is not a row. What the
-   * gap actually looks like is Playwright's to say; what is asserted here is
-   * that the two registers stayed one control.
+   * Two registers, one control: same role, same accessible name, so nothing
+   * reached by name, by voice or by a screen reader can tell the empty state's
+   * button from the panel head's +. The head's is the plus alone; the empty
+   * state's carries the words and the border.
    */
   it('keeps the same control in both registers', () => {
     const { unmount } = render(<NewProjectLink />);
 
-    const line = screen.getByRole('button', { name: 'Add a new project' });
-    expect(line).toHaveTextContent('new project');
-    expect(line.className).toContain('mb-2.5');
-    expect(line.className).not.toContain('border');
+    const icon = screen.getByRole('button', { name: 'Add a new project' });
+    expect(icon).toHaveTextContent('');
+    // The atom's ghost border is reset: the icon draws none (HIVE-225).
+    expect(icon).toHaveClass('border-0');
+    expect(icon.className).not.toContain('border-border');
 
     unmount();
     render(<NewProjectLink variant="cta" />);
@@ -124,7 +120,7 @@ describe('NewProjectLink', () => {
     const button = screen.getByRole('button', { name: /new project/i });
     await user.click(button);
 
-    await waitFor(() => expect(button).toBeDisabled());
+    await waitFor(() => expect(button).toHaveAttribute('aria-disabled', 'true'));
     expect(chooseProjectDirectory).toHaveBeenCalledTimes(1);
   });
 

@@ -151,6 +151,29 @@ describe('lists', () => {
     );
     expect(blocks[0]?.kind).toBe('ordered');
   });
+
+  it('maps a taskList to one bullet block per item, nested by depth (HIVE-202)', () => {
+    const item = (text: string, extra: object[] = []) => ({
+      type: 'taskItem',
+      attrs: { localId: text, state: 'TODO' },
+      content: [{ type: 'text', text }, ...extra],
+    });
+    const blocks = adfToBlocks(
+      doc([
+        {
+          type: 'taskList',
+          attrs: { localId: 'l' },
+          content: [item('first'), item('second'), { type: 'taskList', content: [item('nested')] }],
+        },
+      ]),
+    );
+
+    expect(blocks).toEqual([
+      { kind: 'bullet', runs: [{ text: 'first', marks: [] }], depth: 0 },
+      { kind: 'bullet', runs: [{ text: 'second', marks: [] }], depth: 0 },
+      { kind: 'bullet', runs: [{ text: 'nested', marks: [] }], depth: 1 },
+    ]);
+  });
 });
 
 describe('runs', () => {
@@ -281,5 +304,35 @@ describe('the round trip', () => {
     expect(text).toContain('two');
     expect(blocks.some((block) => block.kind === 'heading')).toBe(true);
     expect(blocks.some((block) => block.kind === 'bullet')).toBe(true);
+  });
+});
+
+describe('mentions (HIVE-216)', () => {
+  it('keeps a mention as a run marked mention, with its display text', () => {
+    const blocks = adfToBlocks(
+      doc([
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'mention', attrs: { id: '712020:9f3c', text: '@Dana Kim' } },
+            { type: 'text', text: ' can you look?' },
+          ],
+        },
+      ]),
+    );
+    expect(blocks).toEqual([
+      {
+        kind: 'paragraph',
+        runs: [
+          { text: '@Dana Kim', marks: [], mention: true },
+          { text: ' can you look?', marks: [] },
+        ],
+      },
+    ]);
+  });
+
+  it('names an unnamed mention rather than dropping it', () => {
+    const blocks = adfToBlocks(doc([{ type: 'paragraph', content: [{ type: 'mention', attrs: { id: 'x' } }] }]));
+    expect(blocks).toEqual([{ kind: 'paragraph', runs: [{ text: '@unknown', marks: [], mention: true }] }]);
   });
 });

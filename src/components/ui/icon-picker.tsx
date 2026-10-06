@@ -111,7 +111,7 @@ export function IconPicker({
           }
         }}
         className={cn(
-          'flex aspect-square items-center justify-center rounded-[4px] outline-none',
+          'flex aspect-square items-center justify-center rounded outline-none',
           active
             ? 'bg-active text-brand ring-1 ring-brand'
             : 'text-muted hover:bg-hover hover:text-ink',
@@ -128,7 +128,7 @@ export function IconPicker({
       role="radiogroup"
       aria-label={label}
       className={cn(
-        'grid grid-cols-[repeat(auto-fill,minmax(28px,1fr))] gap-1 rounded-[5px] border border-border-soft bg-panel-2 p-1.5',
+        'grid grid-cols-[repeat(auto-fill,minmax(28px,1fr))] gap-1 rounded-md border border-border-soft bg-panel-2 p-1.5',
         className,
       )}
     >

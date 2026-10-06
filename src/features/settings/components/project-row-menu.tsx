@@ -52,15 +52,11 @@ interface ProjectRowMenuProps {
  * is provable in unit tests. A lift mode would have made drag the only path to
  * that code, which is the fragile one.
  *
- * ## The primitive's own classes are inert here
+ * ## The primitive owns the look
  *
- * `dropdown-menu.tsx` is shadcn's, and this is its first consumer. Its defaults
- * name shadcn's palette (`bg-popover`, `bg-accent`, `text-destructive`), none of
- * which is defined in `tokens.css` — this app's colour comes from `--cc-*`. In
- * Tailwind v4 a utility whose token does not exist is simply never generated,
- * so those classes are no-ops rather than wrong colours. Every surface, border
- * and text colour below is therefore supplied explicitly; without them the menu
- * would render as unstyled text over the list.
+ * `dropdown-menu.tsx` draws the one menu surface (`MENU_SURFACE`) and the one
+ * item recipe from `--cc-*` tokens (HIVE-225), so this menu passes layout only:
+ * its `min-w`, and `variant="destructive"` for Remove.
  */
 export function ProjectRowMenu({
   projectName,
@@ -75,9 +71,6 @@ export function ProjectRowMenu({
   autoMerge,
   onToggleAutoMerge,
 }: ProjectRowMenuProps) {
-  const item =
-    'rounded-[4px] px-2 py-1 text-[12.5px] text-muted focus:bg-hover focus:text-ink data-[disabled]:opacity-35';
-
   /**
    * Whether the chosen item replaces the row with something that focuses itself.
    *
@@ -101,7 +94,7 @@ export function ProjectRowMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Actions for ${projectName}`}
-        className="shrink-0 rounded p-1 text-subtle hover:bg-hover hover:text-ink"
+        className="shrink-0 rounded-full p-1 text-subtle hover:bg-hover hover:text-ink"
       >
         <DotsThreeVertical size={13} weight="bold" />
       </DropdownMenuTrigger>
@@ -112,7 +105,7 @@ export function ProjectRowMenu({
           handsOffFocus.current = false;
           event.preventDefault();
         }}
-        className="min-w-[11rem] rounded-[7px] border border-border bg-panel p-1 shadow-lg"
+        className="min-w-[11rem]"
       >
         {/*
           Disabled at the ends of the list rather than removed: an item that
@@ -122,14 +115,12 @@ export function ProjectRowMenu({
         <DropdownMenuItem
           disabled={!canMoveUp}
           onSelect={() => select(onMoveUp)}
-          className={item}
         >
           Move up
         </DropdownMenuItem>
         <DropdownMenuItem
           disabled={!canMoveDown}
           onSelect={() => select(onMoveDown)}
-          className={item}
         >
           Move down
         </DropdownMenuItem>
@@ -138,7 +129,6 @@ export function ProjectRowMenu({
 
         <DropdownMenuItem
           onSelect={() => select(onRename, true)}
-          className={item}
         >
           Rename…
         </DropdownMenuItem>
@@ -151,7 +141,6 @@ export function ProjectRowMenu({
         <DropdownMenuCheckboxItem
           checked={autoMerge}
           onSelect={() => select(onToggleAutoMerge)}
-          className={`${item} pl-7`}
         >
           Merge PRs unattended
         </DropdownMenuCheckboxItem>
@@ -163,13 +152,11 @@ export function ProjectRowMenu({
         */}
         <DropdownMenuItem
           onSelect={() => select(onChangeKey, true)}
-          className={item}
         >
           Change key…
         </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={() => select(onRepoint)}
-          className={item}
         >
           Change folder…
         </DropdownMenuItem>
@@ -178,7 +165,7 @@ export function ProjectRowMenu({
 
         <DropdownMenuItem
           onSelect={() => select(onRemove, true)}
-          className={`${item} text-red focus:text-red`}
+          variant="destructive"
         >
           Remove
         </DropdownMenuItem>

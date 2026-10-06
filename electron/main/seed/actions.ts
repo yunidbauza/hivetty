@@ -166,10 +166,10 @@ async function shippedFolder(options: SeedOptions, request: ShippedRequest): Pro
   const folder = `${request.kind}/${request.name}`;
 
   if (!(await shippedFolders(options.source)).includes(folder)) {
-    throw new Error(`The Hive does not ship ${folder}.`);
+    throw new Error(`Hive TTY does not ship ${folder}.`);
   }
   if (await throughLink(options.target, folder)) {
-    throw new Error(`${folder} is a symlink in ~/.hive; The Hive does not write through it.`);
+    throw new Error(`${folder} is a symlink in ~/.hive; Hive TTY does not write through it.`);
   }
 
   return folder;

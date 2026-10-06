@@ -230,6 +230,7 @@ describe('on desktop', () => {
       kind: 'live',
       stale: true,
       capped: false,
+      failedAt: expect.any(Number),
     });
   });
 

@@ -1,17 +1,18 @@
 import { expect, test } from '@playwright/test';
 
+import { bar, goToOvermind, goToPlace, openConsole, placeButton } from '../fixtures/places';
+
 /**
  * Smoke — the shell renders in a real browser (story 070).
  *
  * The narrowest useful claim: a production build boots, React mounts, and the
- * three-column chrome is present and laid out. Everything else in the E2E suite
+ * round-two frame (the bar, the stage) is present and laid out. Everything else in the E2E suite
  * assumes this, so when the app is broken outright this is the spec that should
  * say so first.
  *
  * Locators are role- and text-based per story 070's selector policy. The shell
- * is built from real landmarks — `header`, `nav[aria-label]`, `main`,
- * `aside[aria-label]` — so no `data-testid` is needed here, and coupling to
- * Tailwind classes is banned.
+ * is built from real landmarks — `nav[aria-label]`, `main` — so no
+ * `data-testid` is needed here, and coupling to Tailwind classes is banned.
  */
 
 /**
@@ -27,35 +28,26 @@ test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
 });
 
-test('renders the three-column shell', async ({ page }) => {
-  await expect(page).toHaveTitle('The Hive');
-
-  // Header, both rails, center stage — the four regions of story 020.
-  await expect(page.getByRole('banner')).toBeVisible();
-  await expect(
-    page.getByRole('navigation', { name: 'Projects, work, and agents' }),
-  ).toBeVisible();
+test('renders the round-two frame', async ({ page }) => {
+  await expect(page).toHaveTitle('Hive');
+  await expect(bar(page)).toBeVisible();
   await expect(page.getByRole('main')).toBeVisible();
-  await expect(page.getByRole('complementary', { name: 'Activity' })).toBeVisible();
+  await expect(page.getByRole('banner')).toHaveCount(0);
 });
 
-test('renders the header chrome', async ({ page }) => {
-  const header = page.getByRole('banner');
-
-  await expect(header.getByText('The Hive')).toBeVisible();
-  /*
-   * The sublabel is the team name from Appearance, and a fresh profile has
-   * never set one — so what a first launch shows is the store's default.
-   */
-  await expect(header.getByText('Swarm Command')).toBeVisible();
-  await expect(header.getByRole('button', { name: 'New session', exact: true })).toBeVisible();
-
-  /**
-   * The theme toggle names the theme it switches *to*, so its accessible name
-   * is the one observable proof of which theme booted. Dark is the default.
-   */
-  await expect(header.getByRole('button', { name: 'Switch to light theme' })).toBeVisible();
+test('renders the bar', async ({ page }) => {
+  const brand = bar(page).getByRole('img', { name: 'Hive TTY' });
+  await expect(brand).toBeVisible();
+  // Loaded, not just laid out: a broken src still takes its 28px box.
+  await expect.poll(() => brand.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+  for (const name of ['Home', 'Sessions', 'Work', 'Agents', 'PRs'] as const) {
+    await expect(placeButton(page, name)).toBeVisible();
+  }
+  await expect(bar(page).getByRole('button', { name: 'Settings', exact: true })).toBeVisible();
+  // Dark is the default, and dark writes no data-theme.
+  await expect(page.locator('body')).not.toHaveAttribute('data-theme', /.*/);
 });
+
 /**
  * The three model-chip alignment tests that used to live here are gone.
  *
@@ -65,11 +57,9 @@ test('renders the header chrome', async ({ page }) => {
  * fleet any more and no way to start a real one, so their precondition is
  * unreachable rather than merely unmet.
  *
- * What they measured is still measured. `chip-alignment.spec.ts` pins the
- * chip cluster to the left rail's trailing edge in this same browser, and the
- * electron suite covers the model chip on the target that can actually open a
- * session. Nothing was traded away to make this file pass; the coverage moved
- * to where the subject exists.
+ * What they measured is still measured: the electron suite covers the model
+ * chip on the target that can actually open a session. Nothing was traded
+ * away to make this file pass; the coverage moved to where the subject exists.
  */
 
 /**
@@ -80,23 +70,9 @@ test('renders the header chrome', async ({ page }) => {
  * empty column with no explanation is indistinguishable from a failed render.
  */
 test('opens every panel on an empty state, not on sample data', async ({ page }) => {
-  const rail = page.getByRole('navigation', { name: 'Projects, work, and agents' });
-
-  /*
-    The projects rail's prose restatement of its flavour line is gone; the
-    block it leaves is the drawn line, the control, and the destination the
-    rail cannot route to. `swarm.spec.ts` owns the line's text.
-  */
-  await expect(rail.locator('[data-swarm-line]').first()).toBeVisible();
-  await expect(
-    rail.getByRole('button', { name: 'Add a new project' }),
-  ).toBeVisible();
-  await expect(page.getByText('Settings → Projects')).toBeVisible();
-
-  await rail.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(
-    page.getByText(/No agents yet — create one in Settings › Agents/i),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'An empty hive' })).toBeVisible();
+  await goToPlace(page, 'Agents');
+  await expect(page.getByRole('heading', { name: 'No agents yet' })).toBeVisible();
 });
 
 /**
@@ -108,21 +84,21 @@ test('opens every panel on an empty state, not on sample data', async ({ page })
  * part that must not move — `swarm.spec.ts` asserts the flavour half.
  */
 test('the orchestrator says its fleet is empty', async ({ page }) => {
+  await goToOvermind(page);
   await expect(page.getByTestId('session-table-empty')).toContainText(
     'No sessions running — start one with New session.',
   );
 });
 
 /**
- * The header counts, which is where the user first sees the app claim a fleet.
- * All four read zero because all four now count something real.
+ * The bar's counts, which is where the user first sees the app claim a fleet.
+ * A count renames its place's button (`Sessions, 2 working`), so the exact
+ * names prove there is none.
  */
-test('the header counts nothing on a fresh launch', async ({ page }) => {
-  const header = page.getByRole('banner');
-
-  await expect(header.getByText('0 working')).toBeVisible();
-  await expect(header.getByText('0 waiting')).toBeVisible();
-  await expect(header.getByText(/0 idle · 0 ended/)).toBeVisible();
+test('the bar counts nothing on a fresh launch', async ({ page }) => {
+  for (const name of ['Sessions', 'Agents', 'PRs']) {
+    await expect(bar(page).getByRole('button', { name, exact: true })).toBeVisible();
+  }
 });
 
 /**
@@ -140,50 +116,39 @@ test('the header counts nothing on a fresh launch', async ({ page }) => {
  *
  * So a page-wide "this string appears nowhere" would fail on data that is
  * supposed to be there, and would have to be weakened until it proved nothing.
- * The surfaces below are the ones the user reads as *the fleet* — the projects
- * tree, the orchestrator's table, and the work list — and those must be empty.
+ * The surfaces below are the ones the user reads as *the fleet* — the stage,
+ * the orchestrator's table, and the work list — and those must be empty.
  */
 test('paints no seeded session, project or ticket in the fleet surfaces', async ({
   page,
 }) => {
-  const rail = page.getByRole('navigation', { name: 'Projects, work, and agents' });
+  await goToOvermind(page);
   const seeded = ['hero-refresh', 'lead-form', 'nova-web', 'referral-api'];
 
-  // The projects tree: no seeded repository, and no session under one.
-  const projects = page.locator('[data-panel="projects"]');
+  // The stage: no seeded repository, and no session under one.
+  const stage = page.getByRole('main');
   for (const name of seeded) {
-    await expect(projects.getByText(name, { exact: false })).toHaveCount(0);
+    await expect(stage.getByText(name, { exact: false })).toHaveCount(0);
   }
 
   // The orchestrator table: the fleet stated as a list, and it has no rows.
   await expect(page.getByTestId('session-table-empty')).toBeVisible();
 
   // The work list: no ticket key, in any state, at any moment.
-  await rail.getByRole('tab', { name: /^Work/ }).click();
+  await goToPlace(page, 'Work');
   await expect(page.getByText(/GRAC-\d+/)).toHaveCount(0);
 });
 
 
 /**
- * The rails are fixed-width and the center column absorbs every resize (story
+ * The bar is fixed-width and the stage absorbs every resize (story
  * 020), which is what keeps the terminal the only thing that changes size. A
  * document-level horizontal scrollbar means that contract broke — usually a
  * missing `min-w-0` letting a long line widen the center column.
  */
 test('lays out at desktop width without overflowing horizontally', async ({ page }) => {
-  /**
-   * Named, not bare `getByRole('navigation')`. Stories 030 and 050 build tab
-   * bars and panels *inside* these rails; a nested `nav` or `aside` would make
-   * a bare role locator match two elements and fail strict mode — breaking this
-   * spec for a reason that has nothing to do with what it asserts.
-   */
-  await expect(
-    page.getByRole('navigation', { name: 'Projects, work, and agents' }),
-  ).toHaveCSS('width', '320px');
-  await expect(page.getByRole('complementary', { name: 'Activity' })).toHaveCSS(
-    'width',
-    '316px',
-  );
+  // The bar is fixed-width; the stage absorbs every resize.
+  await expect(bar(page)).toHaveCSS('width', '64px');
 
   const overflows = await page.evaluate(
     () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
@@ -217,6 +182,7 @@ test('lays out at desktop width without overflowing horizontally', async ({ page
  * seed; a browser has no way to open a session to render.
  */
 test('mounts a live xterm instance that has measured its container', async ({ page }) => {
+  await openConsole(page);
   const terminal = page.getByRole('main').locator('.xterm');
 
   await expect(terminal).toBeVisible();
@@ -269,6 +235,7 @@ test('mounts a live xterm instance that has measured its container', async ({ pa
 test('help names the spawn argument a project, and explains what one is', async ({
   page,
 }) => {
+  await openConsole(page);
   const console_ = page.getByRole('textbox', { name: 'Overmind command' });
 
   await console_.fill('help');
@@ -296,6 +263,7 @@ test('help names the spawn argument a project, and explains what one is', async 
 test('the console prompt is bare and the hint bar carries the grammar', async ({
   page,
 }) => {
+  await openConsole(page);
   await expect(
     page.getByRole('textbox', { name: 'Overmind command' }),
   ).not.toHaveAttribute('placeholder');

@@ -176,7 +176,7 @@ export async function readUserSkills(root: string): Promise<SkillsRead> {
     };
 
     if (name === RESERVED_SKILL_NAME) {
-      reject('"done" is reserved by The Hive — rename the folder.');
+      reject('"done" is reserved by Hive TTY — rename the folder.');
       continue;
     }
     if (!SKILL_NAME_PATTERN.test(name)) {

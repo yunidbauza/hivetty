@@ -656,7 +656,8 @@ export function createRemoteListener(options: {
 
               // Read fresh, not the array captured at `createRemoteListener`
               // time — see the option's doc comment.
-              const result = verifyDevice(devices(), request.deviceId, request.token);
+              const known = devices();
+              const result = verifyDevice(known, request.deviceId, request.token);
               if (result === 'unknown') {
                 refuse(socket, unauthorized('Unknown device, or the token did not match.'));
                 return;
@@ -693,6 +694,8 @@ export function createRemoteListener(options: {
               */
               const closeListeners: (() => void)[] = [];
               const socketHandle: AttachedSurface = {
+                // Who is on the other end, for where an answer was given (HIVE-218).
+                deviceName: known.find((device) => device.id === request.deviceId)?.name,
                 send(outgoing) {
                   send(socket, outgoing);
                 },

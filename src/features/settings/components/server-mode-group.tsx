@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Button } from '@components/ui/button';
 import { Switch } from '@components/ui/switch';
 import { TextField } from '@components/ui/text-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import {
   forgetRemoteDevice,
   pairDevice,
@@ -205,7 +205,7 @@ function nextTryIn(at: number): string {
  */
 function WorkLocallyButton({ onClick, busy }: { onClick: () => void; busy: boolean }) {
   return (
-    <Button variant="secondary" size="sm" onClick={onClick} disabled={busy} className="self-start">
+    <Button variant="secondary" size="sm" onClick={onClick} pending={busy} className="self-start">
       {busy ? 'Switching…' : 'Work locally'}
     </Button>
   );
@@ -222,8 +222,8 @@ function DeviceRow({
   return (
     <div className="flex items-center justify-between gap-2 py-1">
       <div className="flex min-w-0 flex-col">
-        <span className="truncate text-[12.5px] text-ink">{device.name}</span>
-        <span className="text-[11px] text-subtle">
+        <span className="truncate text-control text-ink">{device.name}</span>
+        <span className="text-micro text-subtle">
           Paired {device.paired}
           {device.revoked ? ' · revoked' : ''}
         </span>
@@ -303,7 +303,7 @@ interface ServerModeGroupProps {
    * `AppInfo.attachedServerName` has none of that problem: it is
    * `PROCESS_LOCAL` (Ruling 24), so it is answered by *this* process in both
    * modes, and it is exactly the question "is a socket open, and to what" —
-   * which is what the header chip has always used it for. The config-derived
+   * which is what `useAttachedServer` reads it for. The config-derived
    * source stays right where it is right, which is the not-attached case; see
    * {@link ServerModeGroupProps.attachedServer}.
    */
@@ -868,7 +868,7 @@ export function ServerModeGroup({
       {open ? (
         <>
           {attached ? (
-            <p className="text-[11.5px] text-muted">{SERVE_BIND_ATTACHED_HINT}</p>
+            <p className="text-ui-sm text-muted">{SERVE_BIND_ATTACHED_HINT}</p>
           ) : null}
 
           <TextField
@@ -956,7 +956,7 @@ export function ServerModeGroup({
       />
 
       {attachOpen ? (
-        <div className="flex flex-col gap-3 rounded-[7px] border border-border-soft bg-panel-2 p-3">
+        <div className="flex flex-col gap-3 rounded-lg border border-border-soft bg-panel-2 p-3">
           {/*
             Fix round 1, item 2 (IMPORTANT). Naming the machine from
             `attachedServer` is correct and stays — that field genuinely is
@@ -981,9 +981,9 @@ export function ServerModeGroup({
               pane. And it says the sessions are still running, because the
               fear this state produces is that they are gone.
             */
-            <div className="flex gap-2 rounded-md border border-amber/45 bg-amber/8 px-3 py-2.5">
-              <WarningCircle size={13} className="mt-0.5 shrink-0 text-amber" />
-              <div className="flex flex-col gap-2 text-[11.5px] text-subtle">
+            <div className="flex gap-2 rounded-md border border-amber-edge bg-amber-soft px-3 py-2.5">
+              <WarningCircle size={13} className="mt-0.5 shrink-0 text-amber-text" />
+              <div className="flex flex-col gap-2 text-ui-sm text-subtle">
                 <span>
                   Reconnecting to{' '}
                   <span className="font-medium text-ink">{attachedServerName}</span>.
@@ -997,13 +997,12 @@ export function ServerModeGroup({
           ) : attached && link?.state === 'disconnected' ? (
             /*
               Given up, for a reason another dial would reproduce. Red rather
-              than amber for the reason the header chip splits the two: the
-              user's next move is different, and "stopped trying" is the thing
-              they need to know to make it.
+              than amber, because the user's next move is different, and
+              "stopped trying" is the thing they need to know to make it.
             */
-            <div className="flex gap-2 rounded-md border border-red/45 bg-red/8 px-3 py-2.5">
+            <div className="flex gap-2 rounded-md border border-red-edge bg-red-soft px-3 py-2.5">
               <WarningCircle size={13} className="mt-0.5 shrink-0 text-red" />
-              <div className="flex flex-col gap-2 text-[11.5px] text-subtle">
+              <div className="flex flex-col gap-2 text-ui-sm text-subtle">
                 <span>
                   Disconnected from{' '}
                   <span className="font-medium text-ink">{attachedServerName}</span>.
@@ -1021,14 +1020,14 @@ export function ServerModeGroup({
               some config happened to mention. The config-derived line below is
               the not-attached case and says something different on purpose.
             */
-            <p className="text-[11.5px] text-subtle">
+            <p className="text-ui-sm text-subtle">
               Attached to{' '}
               <span className="font-medium text-ink">{attachedServerName}</span>.
               Everything this window shows comes from that machine. Turn the
               switch off to come back to this one.
             </p>
           ) : attachedServer ? (
-            <p className="text-[11.5px] text-subtle">
+            <p className="text-ui-sm text-subtle">
               Configured to attach to{' '}
               <span className="font-medium text-ink">{attachedServer.name}</span>.
               This is what <code>config.json</code> says right now — not
@@ -1071,7 +1070,7 @@ export function ServerModeGroup({
             unconditionally — which is what the hide was standing in for.
           */}
           {attached ? (
-            <p className="text-[11.5px] text-muted">
+            <p className="text-ui-sm text-muted">
               {target === null ? ATTACH_TARGET_PENDING : ATTACH_TARGET_HINT}
             </p>
           ) : null}
@@ -1134,7 +1133,7 @@ export function ServerModeGroup({
             this machine in both and there is nothing left to hide them from.
           */}
           {paired ? (
-            <div className="flex items-center gap-2 rounded-[6px] border border-border bg-panel px-2.5 py-2 text-[11.5px]">
+            <div className="flex items-center gap-2 rounded-md border border-border bg-panel px-2.5 py-2 text-ui-sm">
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand" />
               <span>Paired</span>
             </div>
@@ -1153,7 +1152,7 @@ export function ServerModeGroup({
               hint="Printed by `the-hive --pair <name>` on the server. Stored in this machine's keychain, never in config.json. Forget clears it here without ending a live attachment — the next dial is what needs a new one."
             />
             {remotePairError ? (
-              <p className="text-[11.5px] text-red">{remotePairError}</p>
+              <p className="text-ui-sm text-red">{remotePairError}</p>
             ) : null}
             <div className="flex items-center gap-2">
               <Button
@@ -1195,7 +1194,8 @@ export function ServerModeGroup({
             variant="primary"
             size="sm"
             className="w-fit"
-            disabled={attaching || serving}
+            disabled={serving}
+            pending={attaching}
             title={serving ? NO_ATTACH_WHILE_SERVING : undefined}
             onClick={handleAttach}
           >
@@ -1203,76 +1203,79 @@ export function ServerModeGroup({
           </Button>
           )}
 
-          {switchResult && !switchResult.ok && switchResult.reason === 'live-sessions' ? (
-            <div className="flex items-start gap-2 rounded-[6px] border border-red bg-red/8 px-3 py-2.5">
-              <WarningCircle size={14} className="mt-px shrink-0 text-red" />
-              <div className="flex flex-col gap-1 text-[11.5px]">
-                <p className="text-ink">Can&rsquo;t attach while sessions are running here.</p>
-                <p className="text-subtle">
-                  Attaching would hide terminals still running in this app. Close
-                  them first.
-                </p>
-                <ul className="flex flex-col gap-0.5 pl-4 text-subtle">
-                  {switchResult.sessions.map((name) => (
-                    <li key={name}>
-                      <code className="font-mono text-[11px] text-ink">{name}</code>
-                    </li>
-                  ))}
-                </ul>
+          {/* Always mounted: the attach or detach result lands here, and a live region that mounts with its text is not reliably announced (HIVE-225). */}
+          <div role="status" className="flex flex-col gap-3 empty:-mt-3">
+            {switchResult && !switchResult.ok && switchResult.reason === 'live-sessions' ? (
+              <div className="flex items-start gap-2 rounded-md border border-red bg-red-soft px-3 py-2.5">
+                <WarningCircle size={14} className="mt-px shrink-0 text-red" />
+                <div className="flex flex-col gap-1 text-ui-sm">
+                  <p className="text-ink">Can&rsquo;t attach while sessions are running here.</p>
+                  <p className="text-subtle">
+                    Attaching would hide terminals still running in this app. Close
+                    them first.
+                  </p>
+                  <ul className="flex flex-col gap-0.5 pl-4 text-subtle">
+                    {switchResult.sessions.map((name) => (
+                      <li key={name}>
+                        <code className="font-mono text-micro text-ink">{name}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
 
-          {/*
-            Fix round 1, item 5 (Minor, M2). `plaintext-refused` used to land
-            only as a hint-text swap beneath the address field, still showing
-            a client-side-valid address — the weakest-rendered of the four
-            arms, on the exact mistake (a public address) this whole fence
-            exists to catch. It now gets the same red bordered treatment
-            `live-sessions` does, not merely the ordinary field hint every
-            other validation failure in this file uses.
-          */}
-          {switchResult && !switchResult.ok && switchResult.reason === 'plaintext-refused' ? (
-            <div className="flex items-start gap-2 rounded-[6px] border border-red bg-red/8 px-3 py-2.5">
-              <WarningCircle size={14} className="mt-px shrink-0 text-red" />
-              <p className="text-[11.5px] text-ink">{ATTACH_HOST_INVALID}</p>
-            </div>
-          ) : null}
+            {/*
+              Fix round 1, item 5 (Minor, M2). `plaintext-refused` used to land
+              only as a hint-text swap beneath the address field, still showing
+              a client-side-valid address — the weakest-rendered of the four
+              arms, on the exact mistake (a public address) this whole fence
+              exists to catch. It now gets the same red bordered treatment
+              `live-sessions` does, not merely the ordinary field hint every
+              other validation failure in this file uses.
+            */}
+            {switchResult && !switchResult.ok && switchResult.reason === 'plaintext-refused' ? (
+              <div className="flex items-start gap-2 rounded-md border border-red bg-red-soft px-3 py-2.5">
+                <WarningCircle size={14} className="mt-px shrink-0 text-red" />
+                <p className="text-ui-sm text-ink">{ATTACH_HOST_INVALID}</p>
+              </div>
+            ) : null}
 
-          {/*
-            Fix round 1, item 1: "attach" and "detach" share one `SwitchOutcome`
-            arm (`connect-failed` — see `outcomeFor` in `router.ts`), so the
-            copy has to tell them apart itself. No new state needed to know
-            which one this was: a refused switch changes nothing (Ruling 19),
-            so a socket is still open exactly when the failure came from
-            `handleDetach`.
+            {/*
+              Fix round 1, item 1: "attach" and "detach" share one `SwitchOutcome`
+              arm (`connect-failed` — see `outcomeFor` in `router.ts`), so the
+              copy has to tell them apart itself. No new state needed to know
+              which one this was: a refused switch changes nothing (Ruling 19),
+              so a socket is still open exactly when the failure came from
+              `handleDetach`.
 
-            **`attached`, not `remote.mode` (Ruling 29.)** The original read
-            `remote.mode === 'remote'`, which is true of that sentence only
-            while the snapshot is this machine's own — and while attached it
-            is the server's and says `'local'`, so a failed *detach* announced
-            itself as "Could not attach". Same source, same defect, one line.
-          */}
-          {switchResult && !switchResult.ok && switchResult.reason === 'connect-failed' ? (
-            <p className="text-[11.5px] text-red">
-              {attached ? 'Could not detach' : 'Could not attach'}:{' '}
-              {switchResult.message}
-            </p>
-          ) : null}
+              **`attached`, not `remote.mode` (Ruling 29.)** The original read
+              `remote.mode === 'remote'`, which is true of that sentence only
+              while the snapshot is this machine's own — and while attached it
+              is the server's and says `'local'`, so a failed *detach* announced
+              itself as "Could not attach". Same source, same defect, one line.
+            */}
+            {switchResult && !switchResult.ok && switchResult.reason === 'connect-failed' ? (
+              <p className="text-ui-sm text-red">
+                {attached ? 'Could not detach' : 'Could not attach'}:{' '}
+                {switchResult.message}
+              </p>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
       <div className="flex flex-col gap-2 pt-1">
-        <h4 className="text-[11px] font-semibold uppercase tracking-wide text-subtle">
+        <h4 className="text-micro font-semibold uppercase tracking-wide text-subtle">
           Paired devices
         </h4>
 
         {attached ? (
-          <p className="text-[11.5px] text-muted">{SERVE_ROSTER_ATTACHED_HINT}</p>
+          <p className="text-ui-sm text-muted">{SERVE_ROSTER_ATTACHED_HINT}</p>
         ) : null}
 
         {devices.length === 0 ? (
-          <p className="text-[11.5px] text-subtle">No devices are paired.</p>
+          <p className="text-ui-sm text-subtle">No devices are paired.</p>
         ) : (
           <div className="flex flex-col divide-y divide-border-soft">
             {devices.map((device) => (
@@ -1282,7 +1285,7 @@ export function ServerModeGroup({
         )}
 
         {revokeError ? (
-          <p className="text-[11.5px] text-red">
+          <p className="text-ui-sm text-red">
             Could not revoke &quot;{revokeError.name}&quot;: {revokeError.message}
           </p>
         ) : null}
@@ -1298,7 +1301,8 @@ export function ServerModeGroup({
           <Button
             variant="secondary"
             size="sm"
-            disabled={pairing || pairName.trim() === ''}
+            disabled={pairName.trim() === ''}
+            pending={pairing}
             onClick={handlePair}
           >
             Pair
@@ -1306,16 +1310,16 @@ export function ServerModeGroup({
         </div>
 
         {pairError ? (
-          <p className="text-[11.5px] text-red">{pairError}</p>
+          <p className="text-ui-sm text-red">{pairError}</p>
         ) : null}
 
         {justPaired ? (
-          <div className="flex flex-col gap-1 rounded-[6px] border border-border bg-panel-2 p-2.5">
-            <p className="text-[11.5px] text-ink">
+          <div className="flex flex-col gap-1 rounded-md border border-border bg-panel-2 p-2.5">
+            <p className="text-ui-sm text-ink">
               Token for &quot;{justPaired.name}&quot; — copy it now. It will not be
               shown again.
             </p>
-            <code className="break-all font-mono text-[12px] text-ink">
+            <code className="break-all font-mono text-control text-ink">
               {justPaired.token}
             </code>
             {/*
@@ -1324,7 +1328,7 @@ export function ServerModeGroup({
               config.json, so a person holding the token had no way to
               actually use it.
             */}
-            <p className="text-[11px] text-subtle">Device id: {justPaired.deviceId}</p>
+            <p className="text-micro text-subtle">Device id: {justPaired.deviceId}</p>
             <Button
               variant="ghost"
               size="sm"

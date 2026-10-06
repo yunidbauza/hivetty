@@ -8,7 +8,6 @@ import {
 
 import { Icon } from '@components/ui/icon';
 import { TONE_TEXT } from '@components/ui/tag';
-import { AskCard } from '@features/inbox/components/ask-card';
 import { useReducedMotion } from '@hooks/use-reduced-motion';
 import { useRelativeTime } from '@hooks/use-relative-time';
 import {
@@ -33,7 +32,8 @@ interface NotificationCardProps {
 }
 
 /**
- * One thing that wants the user's attention.
+ * A row for every action other than `ask`; asks render as `AskCard`, chosen by
+ * the caller (`inbox-drawer`, `arrival-stack`).
  *
  * Clicking does two things at once, and both matter: it goes where the
  * notification points, and it **removes the card** (HIVE-93).
@@ -67,38 +67,8 @@ interface NotificationCardProps {
  * The glyph and its colour come from the kind's registry entry rather than from
  * the record, and the label comes from `createdAt` and ticks — so a row reading
  * "4m" is four minutes old, rather than having been four minutes old once.
- *
- * ## Why an `ask` forks to a different component (HIVE-118)
- *
- * An ask is not a row you click — it is a row you answer, and it must survive
- * the click that answers it. It cannot be a branch *inside* the button below
- * either: `AskCard` draws its own buttons, and a button nested inside a
- * button is interactive content nested in interactive content — invalid
- * HTML, and two targets no browser or screen reader can tell apart.
- *
- * The check has to live in *this* component, with no hooks of its own above
- * or below it, and {@link NotificationButtonRow} has to hold every hook the
- * button path needs. React's Rules of Hooks forbid an early return before a
- * hook even when a branch condition provably never changes for one mounted
- * instance (a notification's action never mutates after it is raised —
- * dismissal unmounts the row rather than rewriting it) — the lint rule has
- * no way to see that invariant, so the fork has to happen a component
- * boundary up instead of as an early return inside a component that also
- * calls hooks.
  */
 export function NotificationCard({ notif }: NotificationCardProps) {
-  if (notif.action.type === 'ask') {
-    return <AskCard notif={notif} thread={notif.action.thread} />;
-  }
-  return <NotificationButtonRow notif={notif} />;
-}
-
-/**
- * The clickable row for every action other than `ask` — the original
- * `NotificationCard` body, split out so its hooks run unconditionally. See
- * {@link NotificationCard}'s doc comment for why the split exists at all.
- */
-function NotificationButtonRow({ notif }: NotificationCardProps) {
   const openEntity = useOpenEntity();
   const dismissNotif = useDismissNotif();
   const reduced = useReducedMotion();
@@ -276,16 +246,16 @@ function NotificationButtonRow({ notif }: NotificationCardProps) {
       />
 
       <span className="flex min-w-0 flex-1 flex-col">
-        <span className="text-[12.5px] font-semibold text-ink">{title}</span>
+        <span className="text-control font-semibold text-ink">{title}</span>
         {notif.body === '' ? null : (
-          <span className="text-[11.5px] leading-[1.4] text-muted">
+          <span className="text-ui-sm leading-[1.4] text-muted">
             {notif.body}
           </span>
         )}
         {notif.unread ? <span className="sr-only">unread</span> : null}
       </span>
 
-      <span className="shrink-0 font-mono text-[10px] text-subtle">{time}</span>
+      <span className="shrink-0 tabular-nums text-micro text-subtle">{time}</span>
     </button>
   );
 
@@ -308,7 +278,7 @@ function NotificationButtonRow({ notif }: NotificationCardProps) {
           only one of.
         */
         onClick={(event) => event.stopPropagation()}
-        className="mt-1 block px-3 text-[11px] font-medium text-brand hover:underline"
+        className="mt-1 block px-3 text-micro font-medium text-brand hover:underline"
       >
         {notif.link.label}
       </a>

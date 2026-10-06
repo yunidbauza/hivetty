@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import { bar, openConsole } from '../fixtures/places';
+
 /**
  * The terminal follows the app theme, proved in a real browser.
  *
@@ -16,8 +18,8 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
  * `tokens.css`. Any drift between them shows up as a rectangle at the
  * terminal's edge, and it is invisible to every unit test in the suite.
  *
- * The theme is driven from the **header toggle**, not the settings pane: the
- * settings pane occupies the centre stage, which is where the terminal is.
+ * The theme is switched in Settings › Appearance, then Settings is closed
+ * before the terminal is read.
  */
 
 const APP_URL = '/?sim=0';
@@ -40,16 +42,17 @@ const expectTheme = async (page: Page, want: 'light' | 'dark') => {
   }
 };
 
-/** Toggle until the wanted theme is showing, whatever the machine defaulted to. */
 const setTheme = async (page: Page, want: 'light' | 'dark') => {
-  const showing = await page.locator('body').getAttribute('data-theme');
-  if ((showing === 'light') !== (want === 'light')) {
-    await page
-      .getByRole('button', {
-        name: want === 'light' ? 'Switch to light theme' : 'Switch to dark theme',
-      })
-      .click();
-  }
+  await bar(page).getByRole('button', { name: 'Settings', exact: true }).click();
+  await page
+    .getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('button', { name: 'Appearance', exact: true })
+    .click();
+  await page
+    .getByRole('radiogroup', { name: 'Mode' })
+    .getByRole('radio', { name: want === 'light' ? 'Light' : 'Dark' })
+    .click();
+  await page.getByRole('button', { name: 'Close settings' }).click();
   await expectTheme(page, want);
 };
 
@@ -73,6 +76,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
   await page.evaluate(() => localStorage.clear());
   await page.reload();
+  await openConsole(page);
 });
 
 test('the terminal repaints with the app theme, and its padding agrees', async ({

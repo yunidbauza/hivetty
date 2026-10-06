@@ -33,7 +33,7 @@ export function TerminalEndedCover({ terminal }: TerminalEndedCoverProps) {
       role="status"
       aria-live="polite"
       data-testid="terminal-ended-cover"
-      className="absolute inset-x-0 bottom-0 z-10 flex items-center gap-3 border-t border-border-soft bg-panel/90 px-3.5 py-2 font-mono text-[11.5px] text-muted backdrop-blur-sm"
+      className="absolute inset-x-0 bottom-0 z-10 flex items-center gap-3 border-t border-border-soft bg-panel/90 px-3.5 py-2 font-mono text-ui-sm text-muted backdrop-blur-sm"
     >
       <span className="flex-1 truncate">
         {terminal.id} — {reason}
@@ -42,7 +42,7 @@ export function TerminalEndedCover({ terminal }: TerminalEndedCoverProps) {
         type="button"
         onClick={() => removeTerminal(terminal.id)}
         aria-label={`Close ${terminal.id}`}
-        className="flex items-center gap-1 rounded-md px-2 py-0.5 text-ink hover:bg-hover"
+        className="flex items-center gap-1 rounded-full px-2.5 py-0.5 text-ink hover:bg-hover"
       >
         <X size={11} weight="bold" aria-hidden="true" />
         close

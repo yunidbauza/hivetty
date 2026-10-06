@@ -6,6 +6,7 @@ import { App } from '@/app';
 import { loadProjectConfig, watchProjectConfig } from '@lib/project-config';
 import { readSessionHistory } from '@lib/session-history';
 import { useHiveStore } from '@stores/hive-store';
+import '@/styles/fonts';
 import '@/styles/tokens.css';
 import '@/styles/global.css';
 

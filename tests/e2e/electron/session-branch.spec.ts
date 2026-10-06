@@ -5,6 +5,8 @@ import { join } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { goToOvermind } from '../fixtures/places';
+
 import { launchHive, startSession, writeProjectConfig } from './fixtures/hive-app';
 
 /**
@@ -76,7 +78,7 @@ function makeRepo(path: string): void {
   git('checkout', '--quiet', '-b', BRANCH);
 }
 
-test('the meta bar shows the repository branch, not a generated one', async ({}, testInfo) => {
+test('the session header shows the repository branch, not a generated one', async ({}, testInfo) => {
   const repo = testInfo.outputPath('scratch-repo');
   makeRepo(repo);
 
@@ -91,7 +93,7 @@ test('the meta bar shows the repository branch, not a generated one', async ({},
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const id = await startSession(page, 'scratch');
 
@@ -105,11 +107,11 @@ test('the meta bar shows the repository branch, not a generated one', async ({},
    * that reason — two elements, which is the correct answer. Naming them is
    * better than narrowing to one and losing the coverage.
    */
-  const metaBar = page.getByTestId('session-meta-bar');
-  await expect(metaBar.getByText(BRANCH)).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.getByRole('button', { name: new RegExp(`${id}.*${BRANCH}`) }),
-  ).toBeVisible();
+  const header = page.getByTestId('session-header');
+  await expect(header.getByText(BRANCH)).toBeVisible({ timeout: 15_000 });
+  // The second surface is the Overmind's fleet table: round two's Sessions list row draws no branch.
+  await goToOvermind(page);
+  await expect(page.getByTestId('session-row').filter({ hasText: id })).toContainText(BRANCH);
 
   /**
    * The regression this whole story exists for. `feat/sess-01` was rendered
@@ -155,14 +157,14 @@ test('a project that is not a repository shows an em dash', async ({}, testInfo)
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const id = await startSession(page, 'plain');
 
-  // The meta bar's branch chip. Scoped to it rather than the page, because the
+  // The session header's branch. Scoped to it rather than the page, because the
   // fleet table's PR column renders an em dash of its own for "no pull request".
-  const metaBar = page.getByTestId('session-meta-bar');
-  await expect(metaBar.getByText('—')).toBeVisible();
+  const header = page.getByTestId('session-header');
+  await expect(header.getByText('—')).toBeVisible();
   await expect(page.getByText(`feat/${id}`)).toHaveCount(0);
 
   await app.close();

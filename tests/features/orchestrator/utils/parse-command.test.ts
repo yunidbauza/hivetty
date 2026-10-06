@@ -320,6 +320,10 @@ describe('parseCommand', () => {
   });
 
   describe('answer', () => {
+    it('passes an uppercase ref through untouched; main resolves a ref in any case', () => {
+      expect(parseCommand('answer A12 main')).toMatchObject({ kind: 'answer', thread: 'A12', message: 'main' });
+    });
+
     it('splits the thread from the text', () => {
       expect(parseCommand('answer a12 main')).toEqual({
         kind: 'answer',

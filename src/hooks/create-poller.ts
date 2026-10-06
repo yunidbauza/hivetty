@@ -34,13 +34,23 @@ export function createPoller({ intervalMs }: PollerOptions) {
   let inFlight: Promise<void> | null = null;
   let missed = false;
   let refresh: (() => Promise<void>) | null = null;
+  /** The action the read still out was asked for. */
+  let inFlightAction: (() => Promise<void>) | null = null;
+  /** A different action subscribed while a read was out: read for it once that one answers. */
+  let pending = false;
 
   const canSeeVisibility = (): boolean => typeof document !== 'undefined';
 
   const sweep = (): void => {
     if (inFlight !== null || refresh === null) return;
+    inFlightAction = refresh;
     inFlight = refresh().finally(() => {
       inFlight = null;
+      inFlightAction = null;
+      if (pending) {
+        pending = false;
+        sweep();
+      }
     });
   };
 
@@ -76,6 +86,13 @@ export function createPoller({ intervalMs }: PollerOptions) {
           document.addEventListener('visibilitychange', onVisibilityChange);
         }
         timer = setInterval(tick, intervalMs);
+        /*
+          A read still out for another action (HIVE-206: the Checks tab's
+          action names the shown push, and a click swaps it) answers the old
+          question; the new one is read as soon as it settles, not an interval
+          later. The same action remounting mid-sweep needs nothing more.
+        */
+        if (inFlight !== null && inFlightAction !== action) pending = true;
         sweep();
       }
 
@@ -91,6 +108,7 @@ export function createPoller({ intervalMs }: PollerOptions) {
           document.removeEventListener('visibilitychange', onVisibilityChange);
         }
         missed = false;
+        pending = false;
         /*
           Dropped alongside the timer and the missed flag, so the cleanup is
           exhaustive rather than nearly so. Holding it costs nothing today —

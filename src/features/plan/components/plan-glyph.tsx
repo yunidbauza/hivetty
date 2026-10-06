@@ -33,7 +33,7 @@ export function PlanGlyph({ index, status, proposed = false }: PlanGlyphProps) {
       role="img"
       aria-label={`Task ${String(index + 1)}, ${label}`}
       className={cn(
-        'inline-grid size-4 shrink-0 place-items-center rounded-full border-[1.5px] font-mono text-[9px] leading-none font-semibold',
+        'inline-grid size-4 shrink-0 place-items-center rounded-full border-[1.5px] tabular-nums text-micro leading-none font-semibold',
         done && 'border-green bg-green text-panel',
         status === 'in_progress' && 'border-green text-green motion-safe:animate-ccpulse',
         status === 'pending' && 'border-term-track text-subtle',

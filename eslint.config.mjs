@@ -22,6 +22,7 @@ const FEATURE_SLICES = [
   'agents',
   'editor',
   'explorer',
+  'home',
   'inbox',
   'orchestrator',
   'plan',
@@ -29,6 +30,7 @@ const FEATURE_SLICES = [
   'pull-requests',
   'sessions',
   'settings',
+  'whats-new',
   'work',
 ];
 
@@ -200,8 +202,8 @@ export default tseslint.config(
              * puts in a chunk the splash then has to parse before it can paint,
              * which is the exact wait the window exists to cover. The ban is
              * wider than the component seams for that reason — it includes
-             * `components/`, `lib/` and `hooks/`, none of which the splash has
-             * any business reaching for.
+             * `components/` and `hooks/`, and `lib/` by the zone below, none of
+             * which the splash has any business reaching for.
              */
             {
               target: './src/splash/**/*',
@@ -210,10 +212,32 @@ export default tseslint.config(
                 './src/components/**/*',
                 './src/stores/**/*',
                 './src/hooks/**/*',
-                './src/lib/**/*',
               ],
               message:
                 'splash/ is a standalone document that must paint before the app loads. It may not import from the app at all.',
+            },
+
+            /**
+             * The splash and `lib/` (HIVE-212): banned, except the six pure
+             * modules the brood world draws with — the Brood mutalisk
+             * (`swarm/muta`, HIVE-221) with its tone and kit, the palette,
+             * `MUTA_SCALE` from the comb, and the colour helpers that derive
+             * the creature's colours. They import nothing outside `lib/swarm/`
+             * and `lib/theme/colour`, so the chunk they share with the app
+             * holds them and nothing behind them.
+             *
+             * A zone of its own because `except` must be ABSOLUTE (see the
+             * note above `featureIsolationZones`); a relative one silently
+             * never matches. It must also be a GLOB: the rule refuses a plain
+             * file path when `from` is a glob, so the six files are one brace
+             * pattern. `scripts/verify-boundaries.mjs` proves both halves.
+             */
+            {
+              target: './src/splash/**/*',
+              from: './src/lib/**/*',
+              except: [`${appRoot}/src/lib/{swarm/comb,swarm/muta,swarm/tone,swarm/kit,swarm/palette,theme/colour}.ts`],
+              message:
+                'splash/ may import from lib/ only the mutalisk (muta, tone, kit), the palette, the comb (for MUTA_SCALE) and the colour helpers (HIVE-212, HIVE-221).',
             },
 
             /**

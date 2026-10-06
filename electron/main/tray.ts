@@ -8,6 +8,7 @@ import {
   type NativeImage,
 } from 'electron';
 
+import { APP_DISPLAY_NAME } from '@shared/app-name';
 import type { ServerDevice } from '@shared/config-contract';
 
 import { trayIconPath } from './app-icon';
@@ -225,7 +226,7 @@ export function buildTrayTemplate(deps: TrayDeps): MenuItemConstructorOptions[] 
             : 'Not yet listening',
       enabled: false,
     },
-    { label: 'Open The Hive', click: () => deps.onOpenConsole() },
+    { label: `Open ${APP_DISPLAY_NAME}`, click: () => deps.onOpenConsole() },
     { type: 'separator' },
     { label: 'Quit', role: 'quit' },
   ];
@@ -270,7 +271,7 @@ function trayIcon(): NativeImage {
 export function createServerTray(deps: TrayDeps): { destroy: () => void } {
   const icon = trayIcon();
   const tray = new Tray(icon);
-  tray.setToolTip('The Hive · serving');
+  tray.setToolTip(`${APP_DISPLAY_NAME} · serving`);
   /*
     On the Mac mini this deployment targets there is no window and no dock
     icon (HIVE-142 review) — the tray is the *only* way a human reaches Pair,

@@ -126,6 +126,15 @@ describe('buildMenuTemplate', () => {
     });
   });
 
+  it('names Hide and Quit after the app, as their roles would after app.getName()', () => {
+    // The roles' own labels read app.getName(), which is the identity ("The Hive"), not the display name.
+    const submenu = buildMenuTemplate({ ...mac, appName: 'Hive TTY' })[0]?.submenu as MenuItemConstructorOptions[];
+    const hide = submenu.find((item) => item.role === 'hide');
+    const quit = submenu.find((item) => item.role === 'quit');
+    expect(hide?.label).toBe('Hide Hive TTY');
+    expect(quit?.label).toBe('Quit Hive TTY');
+  });
+
   it('keeps zoom and fullscreen available', () => {
     expect(roles(buildMenuTemplate(mac))).toEqual(
       expect.arrayContaining(['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen']),

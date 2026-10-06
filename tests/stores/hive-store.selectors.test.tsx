@@ -1,53 +1,115 @@
 import { act, renderHook } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@/types/entity';
+import { terminalOf, type Agent, type Entity, type Session, type Terminal } from '@/types/entity';
 import type { AgentSummary } from '@shared/agent-contract';
+import { LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
+import type { NotificationKind } from '@shared/notification-contract';
 import type { PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 
 import {
   emptySnapshot,
   type ConfigSnapshot,
 } from '../../electron/shared/config-contract';
-import type { PrRecord } from '../../electron/shared/github-contract';
+import type { PrRecord, PrTimeline } from '../../electron/shared/github-contract';
 import {
   resetProjectConfig,
   setProjectConfigForTest,
 } from '@lib/project-config';
 
 import {
+  accountLimitsOf,
+  agentWorksIn,
+  currentRowFor,
+  flapCountsOf,
+  fleetGroupsOf,
+  type FleetView,
+  repoDirName,
   useActiveEntity,
   useActiveSessions,
+  useCurrentRow,
   useAskingAgentCount,
+  useWorkingAgentCount,
   useAgentLive,
   useAgentLiveCount,
+  useDelegateTitle,
+  useDelegateWord,
   useAgentPr,
   useCounts,
   useFleetAgents,
+  useEndedMore,
+  useFleetGroup,
+  useFleetNavOrder,
+  useAgentsWorkingIn,
+  useOvermindHeadCounts,
+  useProjectCounts,
+  useSessionsHeadCounts,
   useEntity,
   useHasResumable,
   useHiveStore,
-  useIdleDetailCounts,
   useEndedSessions,
   useNavOrder,
-  useNotifs,
+  useChangedFileCount,
+  useChangedFileMark,
+  useChangedFiles,
   usePlan,
   usePlanProgress,
   useProjects,
   useProjectSessions,
   usePrs,
+  usePrsQuiet,
+  useAgentsListed,
+  usePrsListed,
+  useSessionsListed,
+  useWorkListed,
+  useHatchery,
+  useHatcherySearch,
+  usePrNeedsYouCount,
+  usePrFlapCounts,
   useSessionPr,
-  useTicketCount,
+  useSessionPrRow,
+  useNextTransition,
+  useOpenTicket,
+  useTicketEvents,
+  useTicketGroups,
   useTicketPrs,
+  useTicketProperties,
   useTickets,
   useTicketSessions,
   useUnreadCount,
+  useSummons,
+  useSummonsCount,
+  useYoursAgain,
+  useCombEntities,
+  useCombSummary,
+  useCommentOnPr,
+  useHolderPost,
+  useLoadPrDetail,
+  useChecksGraph,
+  usePrChecks,
+  usePrChecksActions,
+  usePrDetail,
+  usePushes,
+  useShownJob,
+  usePrEvents,
+  usePrOpener,
+  useReviewUrls,
+  useShipTrack,
+  useLoadPrTimeline,
+  usePrTimelineEntry,
+  useTimelineModel,
+  useAccountLimits,
+  useComingUp,
+  useWhileAway,
+  whileAwayOf,
 } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import { notif } from '../support/notifications';
-import { seedDemoFleet } from '@tests/support/demo-fleet';
+import { seedDemoFleet, seedDemoProjectConfig } from '@tests/support/demo-fleet';
 
 import { testProjectKey } from '@tests/support/project-key';
+import { prRecord } from '@tests/support/prs';
+import type { JiraIssue } from '@shared/jira-contract';
 
 /**
  * Every selector hook is asserted against the fixtures. Derived values are
@@ -122,22 +184,6 @@ describe('hive-store selectors', () => {
       const { result } = renderHook(() => useCounts());
 
       expect(result.current).toMatchObject({ working: 4, idle: 2 });
-    });
-
-    /**
-     * The breakdown still keys on the status field, which is what lets the
-     * tooltip say *why* those sessions are counted as working.
-     */
-    it('still reports the detail breakdown against the raw status', () => {
-      act(() => {
-        useHiveStore
-          .getState()
-          .setSessionStatus('rails-upgrade', 'idle', 'agents');
-      });
-
-      const { result } = renderHook(() => useIdleDetailCounts());
-
-      expect(result.current).toEqual({ agents: 1, script: 0 });
     });
 
     it('counts sessions only, never agents', () => {
@@ -323,7 +369,135 @@ describe('hive-store selectors', () => {
     });
   });
 
+  describe('the Hatchery (HIVE-215)', () => {
+    const shipper = (id: string, n: number, stage: string): LedgerEntry => ({
+      id, ts: Date.now(), from: 'shipper', kind: 'post', body: 'stage', meta: { pr: n, repo: 'acme/nova-web', stage },
+    });
+
+    beforeEach(() => {
+      act(() => {
+        useHiveStore.setState({
+          prSource: { kind: 'live', stale: false, repos: 1 },
+          prs: [
+            prRecord({ number: 1, findings: 0, checks: 'passing', branch: 'b1' }),
+            prRecord({ number: 2, findings: 2, branch: 'b2' }),
+            prRecord({ number: 3, findings: 0, state: 'draft', branch: 'b3' }),
+            prRecord({ number: 4, findings: 0, branch: 'b4' }),
+          ],
+          ledger: [shipper('l1', 4, 'merge')],
+        });
+      });
+    });
+
+    it('usePrFlapCounts agrees with useHatchery, in rank order (HIVE-200)', () => {
+      const rows = renderHook(() => useHatchery()).result.current;
+      const { result } = renderHook(() => usePrFlapCounts());
+      expect(result.current).toEqual(flapCountsOf(rows));
+      expect(result.current.map((c) => [c.flap, c.count])).toEqual([
+        ['SUMMONS', 1],
+        ['HATCHING', 1],
+        ['BURROWED', 1],
+        ['LARVA', 1],
+      ]);
+      expect(result.current[0]?.tone).toBe('amber');
+    });
+
+    it('usePrFlapCounts is empty unless the source is live (HIVE-200)', () => {
+      act(() => useHiveStore.setState({ prSource: { kind: 'loading' } }));
+      expect(renderHook(() => usePrFlapCounts()).result.current).toEqual([]);
+    });
+
+    it('usePrFlapCounts holds its identity across terminal output (HIVE-200)', () => {
+      const { result } = renderHook(() => usePrFlapCounts());
+      const first = result.current;
+      act(() =>
+        useHiveStore.getState().appendEntityLines('hero-refresh', [{ text: 'more', color: 'ink' }]),
+      );
+      expect(result.current).toBe(first);
+    });
+
+    it('lists every swept PR with its status, in the Hatchery\'s order', () => {
+      const { result } = renderHook(() => useHatchery());
+      expect(result.current.map((row) => [row.pr.n, row.hatch.flap])).toEqual([
+        [2, 'SUMMONS'],
+        [4, 'HATCHING'],
+        [1, 'BURROWED'],
+        [3, 'LARVA'],
+      ]);
+    });
+
+    it('reads an ask to the overmind naming a PR as SUMMONS', () => {
+      act(() => {
+        useHiveStore.setState((state) => ({
+          ledger: [...state.ledger, { id: 'a1', ts: Date.now(), from: 'shipper', kind: 'ask', to: 'overmind', body: 'PR #1 waits on a review', meta: { pr: 1, repo: 'acme/nova-web' } }],
+        }));
+      });
+      const { result } = renderHook(() => useHatchery());
+      expect(result.current.find((row) => row.pr.n === 1)?.hatch.flap).toBe('SUMMONS');
+    });
+
+    it('returns an equal list when the ledger grows by an entry naming no PR', () => {
+      const { result } = renderHook(() => useHatchery());
+      const before = result.current;
+      act(() => {
+        useHiveStore.setState((state) => ({
+          ledger: [...state.ledger, { id: 'z1', ts: Date.now(), from: 'sess-a', kind: 'post', body: 'hello' }],
+        }));
+      });
+      expect(result.current).toEqual(before);
+    });
+
+    it('useHatcherySearch is null with no search, and never summons for others', () => {
+      const { result } = renderHook(() => useHatcherySearch());
+      expect(result.current).toBeNull();
+      act(() => {
+        useHiveStore.setState((state) => ({
+          prSearch: { ...state.prSearch, results: [prRecord({ number: 9, findings: 3, mine: false })] },
+        }));
+      });
+      expect(result.current?.map((row) => row.hatch.flap)).toEqual(['BURROWED']);
+    });
+
+    it('usePrNeedsYouCount counts SUMMONS over the sweep', () => {
+      const { result } = renderHook(() => usePrNeedsYouCount());
+      expect(result.current).toBe(1);
+    });
+
+    it.each([
+      ['loading', { kind: 'loading' }],
+      ['unconfigured', { kind: 'unconfigured', message: 'x', reason: 'not-installed' }],
+      ['failed', { kind: 'failed', message: 'x' }],
+    ] as const)('usePrNeedsYouCount is 0 while %s', (_name, prSource) => {
+      act(() => useHiveStore.setState({ prSource }));
+      const { result } = renderHook(() => usePrNeedsYouCount());
+      expect(result.current).toBe(0);
+    });
+
+    it('usePrNeedsYouCount is 0 with no PRs', () => {
+      act(() => useHiveStore.setState({ prs: [] }));
+      const { result } = renderHook(() => usePrNeedsYouCount());
+      expect(result.current).toBe(0);
+    });
+  });
+
   describe('usePrs', () => {
+    it('carries updatedAt, mergedAt and mine through (HIVE-215)', () => {
+      act(() => {
+        useHiveStore.setState({
+          prs: [prRecord({ number: 7, state: 'merged', mergedAt: '2026-08-09T11:32:00Z', mine: true })],
+        });
+      });
+
+      const { result } = renderHook(() => usePrs());
+
+      expect(result.current[0]).toMatchObject({
+        n: 7,
+        updatedAt: '2026-08-09T12:00:00Z',
+        mergedAt: '2026-08-09T11:32:00Z',
+        mine: true,
+      });
+    });
+
     /**
      * The owning session is a *match*, not a stored field.
      *
@@ -438,6 +612,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing' as const,
               updatedAt: '2026-08-09T15:00:00Z',
+              mergedAt: null,
+              mine: true,
             },
           ],
         }));
@@ -515,6 +691,8 @@ describe('hive-store selectors', () => {
               status: 'In Progress',
               statusCategory: 'in-progress',
               title: 'Start a session from a ticket',
+              priority: null,
+              assignee: null,
             },
             ...state.tickets,
           ],
@@ -530,6 +708,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing' as const,
               updatedAt: '2026-08-09T12:55:04Z',
+              mergedAt: null,
+              mine: true,
             },
             ...state.prs,
           ],
@@ -551,6 +731,8 @@ describe('hive-store selectors', () => {
               status: 'In Progress',
               statusCategory: 'in-progress',
               title: 'Start a session from a ticket',
+              priority: null,
+              assignee: null,
             },
             ...state.tickets,
           ],
@@ -566,6 +748,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing' as const,
               updatedAt: '2026-08-09T12:55:04Z',
+              mergedAt: null,
+              mine: true,
             },
             ...state.prs,
           ],
@@ -592,6 +776,8 @@ describe('hive-store selectors', () => {
               status: 'To Do',
               statusCategory: 'todo',
               title: 'A different ticket',
+              priority: null,
+              assignee: null,
             },
             ...state.tickets,
           ],
@@ -607,6 +793,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing' as const,
               updatedAt: '2026-08-09T12:55:04Z',
+              mergedAt: null,
+              mine: true,
             },
             ...state.prs,
           ],
@@ -654,6 +842,8 @@ describe('hive-store selectors', () => {
         findings: 0,
         checks: 'passing' as const,
         updatedAt: '2026-08-09T15:00:00Z',
+        mergedAt: null,
+        mine: true,
       });
 
       act(() => {
@@ -677,6 +867,8 @@ describe('hive-store selectors', () => {
               status: 'To Do',
               statusCategory: 'todo',
               title: 'One session claims it',
+              priority: null,
+              assignee: null,
             },
           ],
         });
@@ -703,6 +895,181 @@ describe('hive-store selectors', () => {
     it('returns nothing for an unknown ticket', () => {
       const { result } = renderHook(() => useTicketPrs('NOPE-1'));
       expect(result.current).toEqual([]);
+    });
+  });
+
+  describe('useSummons and useSummonsCount (HIVE-214)', () => {
+    const ask = (id: string, kind: 'agent.ask' | 'agent.permission' = 'agent.ask') =>
+      notif({ id, kind, action: { type: 'ask', thread: id } });
+    const blocked = (id: string, terminal: string) =>
+      notif({ id, kind: 'session.blocked', action: { type: 'session', entityId: terminal } });
+    const closing = (id: string, kind: 'answer' | 'done' | 'failed', thread: string): LedgerEntry =>
+      ({ id, ts: 1, from: 'sess-a', kind, body: '', thread });
+
+    beforeEach(() => {
+      act(() => useHiveStore.setState({ notifs: [], ledger: [], closedAsks: new Set() }));
+    });
+
+    it('splits asks from sessions waiting on you, newest first, and ignores news', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([
+          { ...ask('q1'), createdAt: 3 },
+          { ...blocked('b1', 'term-1'), createdAt: 2 },
+          { ...ask('p1', 'agent.permission'), createdAt: 1 },
+          notif({ id: 'i', kind: 'session.idle', action: { type: 'session', entityId: 'term-2' } }),
+          notif({ id: 'm', kind: 'pr.merged', action: { type: 'none' } }),
+        ]);
+      });
+
+      const { result } = renderHook(() => useSummons(null));
+      expect(result.current.asks.map((n) => n.id)).toEqual(['q1', 'p1']);
+      // A session that is yours again waits on you too (6 Oct 2026).
+      expect(result.current.sessions.map((n) => n.id)).toEqual(['i', 'b1']);
+
+      const count = renderHook(() => useSummonsCount(null));
+      expect(count.result.current).toBe(4);
+    });
+
+    it('counts a session once after its input_needed row superseded its idle row', () => {
+      const action = { type: 'session', entityId: 'term-2' } as const;
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([
+          notif({ id: 'i', kind: 'session.idle', action }),
+          notif({ id: 'n', kind: 'session.input_needed', action }),
+        ]);
+        // What the hub announces when the notifier supersedes the idle row.
+        useHiveStore.getState().applyDismiss('i');
+      });
+
+      const { result } = renderHook(() => useSummons(null));
+      expect(result.current.sessions.map((n) => n.id)).toEqual(['n']);
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(1);
+    });
+
+    it.each(['answer', 'done', 'failed'] as const)('drops an ask closed by %s', (kind) => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([ask('q1')]);
+        useHiveStore.getState().hydrateLedger([closing('x1', kind, 'q1')]);
+      });
+
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(0);
+    });
+
+    it('drops an ask the overmind expired', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([ask('q1')]);
+        useHiveStore.getState().hydrateLedger([
+          { id: 'e1', ts: 1, from: 'overmind', kind: 'event', body: 'ask q1 expired', thread: 'q1', meta: { expired: 'q1' } },
+        ]);
+      });
+
+      expect(renderHook(() => useSummons(null)).result.current.asks).toEqual([]);
+    });
+
+    it('keeps an ask whose ask entry is not in the ledger mirror', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([ask('q-old')]);
+        useHiveStore.getState().hydrateLedger([closing('x1', 'answer', 'q-other')]);
+      });
+
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(1);
+    });
+
+    it('keeps an ask closed after its closing entry rolls out of the mirror', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([ask('q1')]);
+        useHiveStore.getState().ledgerAppend(closing('x1', 'answer', 'q1'));
+      });
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(0);
+
+      act(() => {
+        for (let i = 0; i < LEDGER_MEMORY_CAP; i += 1) {
+          useHiveStore.getState().ledgerAppend({ id: `y${String(i).padStart(4, '0')}`, ts: 1, from: 'a', kind: 'post', body: '' });
+        }
+      });
+
+      expect(useHiveStore.getState().ledger.some((entry) => entry.id === 'x1')).toBe(false);
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(0);
+    });
+
+    it('a close older than the mirror still closes the ask, via the snapshot (HIVE-198)', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([ask('a1')]);
+        // The entries lack both the ask and its answer: they rolled out of main's tail.
+        useHiveStore.getState().hydrateLedger([], ['a1']);
+      });
+
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(0);
+    });
+
+    it('merges closed threads from the snapshot rather than replacing them (HIVE-198)', () => {
+      act(() => {
+        useHiveStore.getState().hydrateLedger([], ['a1']);
+        useHiveStore.getState().hydrateLedger([], ['a2']);
+      });
+
+      expect([...useHiveStore.getState().closedAsks].sort()).toEqual(['a1', 'a2']);
+    });
+
+    it('leaves out the session on stage, and counts it for the dock', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([blocked('b1', 'term-1'), blocked('b2', 'term-2')]);
+      });
+
+      expect(renderHook(() => useSummons('term-1')).result.current.sessions.map((n) => n.id)).toEqual(['b2']);
+      expect(renderHook(() => useSummonsCount('term-1')).result.current).toBe(1);
+      expect(renderHook(() => useSummonsCount(null)).result.current).toBe(2);
+    });
+  });
+
+  describe('useCurrentRow (HIVE-198)', () => {
+    it('resolves a terminal to the row currentRowFor names', () => {
+      const row: Session = {
+        kind: 'session',
+        id: 'sess-row',
+        terminalId: 'term-row',
+        project: 'the-hive',
+        status: 'idle',
+        task: 'x',
+        cost: '$0.00',
+        lines: [],
+      };
+      act(() => useHiveStore.setState({ entities: { 'sess-row': row }, order: ['sess-row'] }));
+
+      expect(currentRowFor('term-row')).toBe('sess-row');
+      expect(renderHook(() => useCurrentRow('term-row')).result.current).toBe('sess-row');
+    });
+  });
+
+  describe('useYoursAgain (HIVE-214)', () => {
+    beforeEach(() => {
+      act(() => useHiveStore.setState({ notifs: [] }));
+    });
+
+    it.each(['session.idle', 'session.input_needed'] as const)('is true on an unswept %s row', (kind) => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([
+          notif({ id: 'y', kind, action: { type: 'session', entityId: 'term-1' } }),
+        ]);
+      });
+
+      const { result } = renderHook(() => useYoursAgain('term-1'));
+      expect(result.current).toBe(true);
+
+      act(() => {
+        useHiveStore.getState().applyDismiss('y');
+      });
+      expect(result.current).toBe(false);
+    });
+
+    it('is false for another terminal', () => {
+      act(() => {
+        useHiveStore.getState().hydrateNotifs([
+          notif({ id: 'y', kind: 'session.idle', action: { type: 'session', entityId: 'term-2' } }),
+        ]);
+      });
+
+      expect(renderHook(() => useYoursAgain('term-1')).result.current).toBe(false);
     });
   });
 
@@ -760,6 +1127,72 @@ describe('hive-store selectors', () => {
       });
 
       expect(result.current).toBeNull();
+    });
+  });
+
+  describe('useDelegateWord and useDelegateTitle (idle with agents)', () => {
+    const agent = (name: string): AgentSummary => ({
+      name,
+      description: 'Ships.',
+      icon: 'Robot',
+      status: 'sleeping',
+      wake: { on: [] },
+      mcp: [],
+      tools: [],
+      rotateAfter: 50,
+      runs: [],
+    });
+    const at = (id: string) => useHiveStore.getState().entities[id] as Session;
+    const ask = (id: string, from: string, to: string): LedgerEntry => ({
+      id,
+      ts: Date.now(),
+      from,
+      to,
+      kind: 'ask',
+      body: 'ship it',
+      meta: { pr: 106, repo: 'behiques/hivetty' },
+    });
+
+    beforeEach(() => {
+      act(() => {
+        useHiveStore.getState().hydrateAgents([agent('shipper'), agent('fixer')]);
+        useHiveStore.getState().setSessionStatus('hero-refresh', 'idle');
+      });
+    });
+
+    it('names the agent a quiet session asked, and who it brought in', () => {
+      const party = terminalOf(at('hero-refresh'));
+      act(() => useHiveStore.getState().ledgerAppend(ask('20261006-0001', party, 'shipper')));
+      act(() => useHiveStore.getState().ledgerAppend(ask('20261006-0002', 'shipper', 'fixer')));
+
+      expect(renderHook(() => useDelegateWord(at('hero-refresh'))).result.current).toBe('shipper');
+      expect(renderHook(() => useDelegateTitle(at('hero-refresh'))).result.current).toBe('Waiting on shipper (with fixer)');
+    });
+
+    it('says nothing once the job closes, or while the session works', () => {
+      const party = terminalOf(at('hero-refresh'));
+      act(() => useHiveStore.getState().ledgerAppend(ask('20261006-0001', party, 'shipper')));
+      act(() => useHiveStore.getState().setSessionStatus('hero-refresh', 'working'));
+      expect(renderHook(() => useDelegateWord(at('hero-refresh'))).result.current).toBeNull();
+
+      act(() => useHiveStore.getState().setSessionStatus('hero-refresh', 'idle'));
+      act(() =>
+        useHiveStore.getState().ledgerAppend({
+          id: '20261006-0003',
+          ts: Date.now(),
+          from: 'shipper',
+          kind: 'done',
+          body: 'merged',
+          thread: '20261006-0001',
+        }),
+      );
+      expect(renderHook(() => useDelegateWord(at('hero-refresh'))).result.current).toBeNull();
+    });
+
+    it('does not count an ask to something that is not an agent', () => {
+      const party = terminalOf(at('hero-refresh'));
+      act(() => useHiveStore.getState().ledgerAppend(ask('20261006-0001', party, 'nova-web')));
+      expect(renderHook(() => useDelegateWord(at('hero-refresh'))).result.current).toBeNull();
     });
   });
 
@@ -884,41 +1317,7 @@ describe('hive-store selectors', () => {
     });
   });
 
-  describe('useTicketCount', () => {
-    it('counts every fixture ticket, Done ones included', () => {
-      const { result } = renderHook(() => useTicketCount());
-
-      expect(result.current).toBe(8);
-    });
-
-    it('follows the store rather than caching a number', () => {
-      const { result } = renderHook(() => useTicketCount());
-
-      act(() => {
-        useHiveStore.setState({ tickets: [] });
-      });
-
-      expect(result.current).toBe(0);
-    });
-  });
-
-  describe('rail selectors', () => {
-    it('useNotifs returns the inbox newest first', () => {
-      const { result } = renderHook(() => useNotifs());
-      expect(result.current).toHaveLength(0);
-
-      act(() => {
-        useHiveStore
-          .getState()
-          .hydrateNotifs([
-            notif({ id: 'a', title: 'older', createdAt: 1_000 }),
-            notif({ id: 'b', title: 'newer', createdAt: 2_000 }),
-          ]);
-      });
-
-      expect(result.current.map((n) => n.title)).toEqual(['newer', 'older']);
-    });
-
+  describe('list selectors', () => {
     it('usePrs returns the seeded PRs, in order', () => {
       const { result } = renderHook(() => usePrs());
 
@@ -1167,13 +1566,13 @@ describe('hive-store selectors', () => {
 
     it('holds both slices while the same conclusion repeats', () => {
       act(() => {
-        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine');
+        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine', 'not-installed');
       });
       const { prs, prSource } = useHiveStore.getState();
       expect(prs).toEqual([]);
 
       act(() => {
-        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine');
+        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine', 'not-installed');
       });
 
       expect(useHiveStore.getState().prs).toBe(prs);
@@ -1182,12 +1581,12 @@ describe('hive-store selectors', () => {
 
     it('replaces the conclusion when its explanation changed', () => {
       act(() => {
-        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine');
+        useHiveStore.getState().reportPrsUnconfigured('no gh on this machine', 'not-installed');
       });
       const before = useHiveStore.getState().prSource;
 
       act(() => {
-        useHiveStore.getState().reportPrsUnconfigured('gh is not logged in');
+        useHiveStore.getState().reportPrsUnconfigured('gh is not logged in', 'unauthenticated');
       });
 
       expect(useHiveStore.getState().prSource).not.toBe(before);
@@ -1304,6 +1703,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing',
               updatedAt: '2026-08-10T09:00:00Z',
+              mergedAt: null,
+              mine: true,
             } satisfies PrRecord,
           ],
         }));
@@ -1337,6 +1738,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing',
               updatedAt: '2026-08-01T00:00:00Z',
+              mergedAt: null,
+              mine: true,
             } satisfies PrRecord,
             {
               number: 700,
@@ -1349,6 +1752,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing',
               updatedAt: '2026-08-20T00:00:00Z',
+              mergedAt: null,
+              mine: true,
             } satisfies PrRecord,
           ],
         }));
@@ -1381,6 +1786,8 @@ describe('hive-store selectors', () => {
               findings: 0,
               checks: 'passing',
               updatedAt: '2099-01-01T00:00:00Z',
+              mergedAt: '2099-01-01T00:00:00Z',
+              mine: true,
             } satisfies PrRecord,
           ],
         }));
@@ -1720,6 +2127,58 @@ describe('hive-store selectors', () => {
     });
   });
 
+  describe('useWorkingAgentCount (HIVE-196)', () => {
+    const agent = (over: Partial<AgentSummary> = {}): AgentSummary => ({
+      name: 'slack-watcher',
+      description: 'Watches.',
+      icon: 'Robot',
+      status: 'sleeping',
+      wake: { on: [] },
+      mcp: [],
+      tools: [],
+      rotateAfter: 50,
+      runs: [],
+      ...over,
+    });
+
+    it('counts only the working agents', () => {
+      act(() => {
+        useHiveStore.getState().hydrateAgents([
+          agent({ name: 'a', status: 'working' }),
+          agent({ name: 'b', status: 'working' }),
+          agent({ name: 'c', status: 'asking' }),
+        ]);
+      });
+
+      const { result } = renderHook(() => useWorkingAgentCount());
+
+      expect(result.current).toBe(2);
+    });
+
+    it('re-renders only when the count changes', () => {
+      act(() => {
+        useHiveStore.getState().hydrateAgents([agent({ name: 'a', status: 'working' })]);
+      });
+      let renders = 0;
+      renderHook(() => {
+        renders += 1;
+        return useWorkingAgentCount();
+      });
+      const before = renders;
+
+      act(() => useHiveStore.getState().appendEntityLines('hero-refresh', [{ text: 'more', color: 'ink' }]));
+      expect(renders).toBe(before);
+
+      act(() => {
+        useHiveStore.getState().hydrateAgents([
+          agent({ name: 'a', status: 'working' }),
+          agent({ name: 'b', status: 'working' }),
+        ]);
+      });
+      expect(renders).toBe(before + 1);
+    });
+  });
+
   /**
    * An agent's pull request comes from the **ledger**, not from a run summary:
    * a `RunSummary` records what a wake cost and how it ended, never what it
@@ -1878,5 +2337,983 @@ describe('plan selectors (HIVE-179)', () => {
     act(() => useHiveStore.getState().setPlan('sess-01', plan('sess-01', ['pending'])));
 
     expect(rendersA).toBe(beforeA);
+  });
+});
+
+describe('agentWorksIn (HIVE-197)', () => {
+  const agent = (lanes: (string | undefined)[]) =>
+    ({
+      kind: 'agent',
+      live: lanes.map((lane, i) => ({ run: `r${String(i)}`, kind: 'task', trigger: 'ledger', startedAt: 1, lane })),
+    }) as unknown as Agent;
+
+  it('matches a repo lane’s name to the folder name, case-insensitively', () => {
+    expect(agentWorksIn(agent(['repo:behiques/Incorpx-Server']), 'incorpx-server')).toBe(true);
+  });
+  it('ignores standing, thread and other repos', () => {
+    expect(agentWorksIn(agent([undefined, 'standing', 'thread:20261002-1-1', 'repo:o/ai-sdk']), 'incorpx-server')).toBe(false);
+  });
+  it('repoDirName takes the last path segment, lowercased; null stays null', () => {
+    expect(repoDirName('/Users/me/Projects/Incorpx-Server/')).toBe('incorpx-server');
+    expect(repoDirName(null)).toBeNull();
+  });
+});
+
+describe('fleetGroupsOf (HIVE-197)', () => {
+  const NOW = new Date(2026, 9, 2, 15, 0).getTime();
+  const TODAY = new Date(2026, 9, 2, 9, 0).getTime();
+  const YESTERDAY = new Date(2026, 9, 1, 9, 0).getTime();
+  const sess = (id: string, project: string, status: Session['status'], over: Partial<Session> = {}): Session => ({
+    kind: 'session', id, project, branch: `b/${id}`, status, task: `task ${id}`, cost: '$0', lines: [], ...over,
+  });
+  const agent = (id: string, lane?: string) =>
+    ({
+      kind: 'agent', id, status: 'working',
+      live: lane ? [{ run: 'r', kind: 'task', trigger: 'ledger', startedAt: 1, lane }] : [],
+    }) as unknown as Agent;
+  const entities: Record<string, Entity> = {
+    a: sess('a', 'p1', 'working', { createdAt: 3 }),
+    b: sess('b', 'p2', 'waiting', { createdAt: 2 }),
+    c: sess('c', 'p1', 'done', { endedAt: TODAY }),
+    d: sess('d', 'p1', 'terminated', { endedAt: YESTERDAY }),
+    e: sess('e', 'p2', 'done', { endedAt: YESTERDAY - 1 }),
+    builder: agent('builder', 'repo:o/p1'),
+    slack: agent('slack'),
+  };
+  const state = { entities, order: ['a', 'b', 'c', 'd', 'e'], agentOrder: ['builder', 'slack'] };
+  const view = (over: Partial<FleetView> = {}): FleetView => ({ project: null, filter: 'all', endedAll: false, ...over });
+
+  it('unfiltered: every live session, every agent, today’s endings and the rest counted', () => {
+    const g = fleetGroupsOf(state, view(), null, NOW);
+    expect(g.live).toEqual(['a', 'b']);
+    expect(new Set(g.agents)).toEqual(new Set(['builder', 'slack']));
+    expect(g.ended).toEqual(['c']);
+    expect(g.endedMore).toBe(2);
+  });
+
+  it('endedAll reveals every ending', () => {
+    const g = fleetGroupsOf(state, view({ endedAll: true }), null, NOW);
+    expect(g.ended).toEqual(['c', 'd', 'e']);
+    expect(g.endedMore).toBe(0);
+  });
+
+  it('a project narrows all three groups and shows its endings whole', () => {
+    const g = fleetGroupsOf(state, view({ project: 'p1' }), 'p1', NOW);
+    expect(g.live).toEqual(['a']);
+    expect(g.agents).toEqual(['builder']);
+    expect(g.ended).toEqual(['c', 'd']);
+    expect(g.endedMore).toBe(0);
+  });
+
+  it('a project with no folder has no agents working in it', () => {
+    expect(fleetGroupsOf(state, view({ project: 'p1' }), null, NOW).agents).toEqual([]);
+  });
+
+  it('orders by recency and fleet rank, not by insertion order', () => {
+    const shuffled = { entities, order: ['b', 'e', 'a', 'd', 'c'], agentOrder: ['slack', 'builder'] };
+    const g = fleetGroupsOf(shuffled, view({ endedAll: true }), null, NOW);
+    expect(g.live).toEqual(['a', 'b']);
+    expect(g.agents).toEqual(['builder', 'slack']);
+    expect(g.ended).toEqual(['c', 'd', 'e']);
+  });
+
+  it('Live hides Ended; Ended shows only Ended, whole', () => {
+    const live = fleetGroupsOf(state, view({ filter: 'live' }), null, NOW);
+    expect(live.ended).toEqual([]);
+    expect(live.endedMore).toBe(0);
+    expect(live.agents).toHaveLength(2);
+    const ended = fleetGroupsOf(state, view({ filter: 'ended' }), null, NOW);
+    expect(ended.live).toEqual([]);
+    expect(ended.agents).toEqual([]);
+    expect(ended.ended).toEqual(['c', 'd', 'e']);
+  });
+});
+
+describe('fleet hooks (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useUiStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  it('useFleetNavOrder is the whole fleet under All with Ended unfolded', () => {
+    useUiStore.setState({ endedExpanded: true });
+    const nav = renderHook(() => useNavOrder()).result.current;
+    expect(renderHook(() => useFleetNavOrder()).result.current).toEqual(nav);
+  });
+
+  it('a project filter narrows the order to that project’s rows', () => {
+    useUiStore.setState({ sessionsProject: 'nova-web' });
+    const order = renderHook(() => useFleetNavOrder()).result.current;
+    const live = renderHook(() => useFleetGroup('live')).result.current;
+    expect(live.length).toBeGreaterThan(0);
+    for (const id of live) expect((useHiveStore.getState().entities[id] as Session).project).toBe('nova-web');
+    expect(order.slice(0, live.length)).toEqual(live);
+  });
+
+  it('the Ended filter leaves only ended rows', () => {
+    useUiStore.setState({ sessionsFilter: 'ended' });
+    expect(renderHook(() => useFleetGroup('live')).result.current).toEqual([]);
+    expect(renderHook(() => useEndedMore()).result.current).toBe(0);
+  });
+});
+
+describe('count hooks (HIVE-197)', () => {
+  const NOW = new Date(2026, 9, 2, 15, 0).getTime();
+  const sess = (id: string, project: string, status: Session['status'], over: Partial<Session> = {}): Session => ({
+    kind: 'session', id, project, branch: `b/${id}`, status, task: `task ${id}`, cost: '$0', lines: [], ...over,
+  });
+  const term = (id: string, project: string, over: Partial<Terminal> = {}): Terminal => ({
+    kind: 'terminal', id, project, cwd: `/repos/${project}`, status: 'prompt', createdAt: 1, lines: [], ...over,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    useHiveStore.getState().reset();
+    useHiveStore.setState({
+      entities: {
+        a: sess('a', 'p1', 'working'),
+        b: sess('b', 'p1', 'waiting'),
+        c: sess('c', 'p2', 'idle'),
+        d: sess('d', 'p1', 'done', { endedAt: NOW - 1000 }),
+        e: sess('e', 'p2', 'done', { endedAt: NOW - 3 * 86_400_000 }),
+        t1: term('t1', 'p1'),
+        t2: term('t2', 'p1', { ended: { reason: 'lost', at: 1 } }),
+      },
+      order: ['a', 'b', 'c', 'd', 'e', 't1', 't2'],
+      agentOrder: [],
+    });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('useProjectCounts splits needs you from the other live entries', () => {
+    expect(renderHook(() => useProjectCounts('p1')).result.current).toEqual({ needs: 1, other: 2 });
+    expect(renderHook(() => useProjectCounts('p3')).result.current).toEqual({ needs: 0, other: 0 });
+  });
+
+  it('useSessionsHeadCounts sums entries', () => {
+    expect(renderHook(() => useSessionsHeadCounts()).result.current).toEqual({ live: 4, needs: 1 });
+  });
+
+  it('useOvermindHeadCounts counts sessions, unfiltered and filtered', () => {
+    expect(renderHook(() => useOvermindHeadCounts(null)).result.current).toEqual({
+      live: 3, projects: 2, needs: 1, ended: 2, endedToday: 1,
+    });
+    expect(renderHook(() => useOvermindHeadCounts('p1')).result.current).toEqual({
+      live: 2, projects: 1, needs: 1, ended: 1, endedToday: 1,
+    });
+  });
+
+  it('useAgentsWorkingIn names agents with a run in the project', () => {
+    expect(renderHook(() => useAgentsWorkingIn(null)).result.current).toEqual([]);
+  });
+});
+
+describe('comb selectors (HIVE-199)', () => {
+  const NOW = new Date(2026, 9, 2, 15, 0).getTime();
+  const sess = (id: string, project: string, status: Session['status'], over: Partial<Session> = {}): Session => ({
+    kind: 'session', id, project, branch: `b/${id}`, status, task: `task ${id}`, cost: '$0', lines: [], ...over,
+  });
+  const term = (id: string, project: string, over: Partial<Terminal> = {}): Terminal => ({
+    kind: 'terminal', id, project, cwd: `/repos/${project}`, status: 'prompt', createdAt: 1, lines: [], ...over,
+  });
+  const summary = (over: Partial<AgentSummary>): AgentSummary => ({
+    name: 'x', description: '', icon: 'Robot', status: 'sleeping', wake: { on: [] }, mcp: [], tools: [], rotateAfter: 50, runs: [], ...over,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    useHiveStore.getState().reset();
+    act(() => {
+      useHiveStore.getState().hydrateAgents([
+        summary({ name: 'asker', status: 'asking' }),
+        summary({ name: 'broken', status: 'sleeping', invalid: 'bad frontmatter' }),
+        summary({ name: 'quitter', status: 'failed', runs: [{ outcome: 'failed', reason: 'hit the 150-turn limit', startedAt: 1, endedAt: 2 } as never] }),
+        summary({ name: 'resting', status: 'paused' }),
+        summary({ name: 'runner', status: 'working' }),
+      ]);
+      useHiveStore.setState((s) => ({
+        entities: {
+          ...s.entities,
+          a: sess('a', 'p1', 'working', { name: 'Alpha' }),
+          b: sess('b', 'p1', 'waiting'),
+          c: sess('c', 'p2', 'idle'),
+          d: sess('d', 'p2', 'idle', { idleDetail: 'agents' }),
+          e: sess('e', 'p1', 'done'),
+          t1: term('t1', 'p1'),
+          t2: term('t2', 'p1', { ended: { reason: 'lost', at: 1 } }),
+        },
+        order: ['a', 'b', 'c', 'd', 'e', 't1', 't2'],
+        ledger: [{ id: '20261002-145000-0001', ts: NOW - 14 * 60_000, from: 'asker', to: 'overmind', kind: 'ask', ref: 'a1', body: 'Merge #305?\nIt is approved.' }],
+      }));
+      useHiveStore.getState().setPlan('a', {
+        entityId: 'a', source: 'task-tools', allDone: false,
+        tasks: [{ id: '1', title: 'x', status: 'completed' }, { id: '2', title: 'y', status: 'pending' }],
+      });
+    });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('maps sessions, terminals and agents to comb states, and drops what has ended', () => {
+    const { result } = renderHook(() => useCombEntities());
+    const by = Object.fromEntries(result.current.map((e) => [e.id, e]));
+    expect(Object.keys(by).sort()).toEqual(['a', 'asker', 'b', 'broken', 'c', 'd', 'quitter', 'resting', 'runner', 't1']);
+    expect(by.a).toMatchObject({ name: 'Alpha', kind: 'session', project: 'p1', state: 'morphing', done: 1, total: 2 });
+    expect(by.b).toMatchObject({ name: 'b', state: 'summons' });
+    expect(by.c).toMatchObject({ state: 'burrowed' });
+    expect(by.d).toMatchObject({ state: 'morphing', idleDetail: 'agents' });
+    expect(by.t1).toMatchObject({ kind: 'terminal', state: 'terminal', status: 'prompt' });
+    expect(by.asker).toMatchObject({ kind: 'agent', project: 'swarm', state: 'summons', ask: 'Merge #305?', askedAt: NOW - 14 * 60_000 });
+    expect(by.broken).toMatchObject({ state: 'failed', reason: 'bad frontmatter' });
+    expect(by.quitter).toMatchObject({ state: 'failed', reason: 'hit the 150-turn limit' });
+    expect(by.resting).toMatchObject({ state: 'burrowed', nextRun: 'paused' });
+    expect(by.runner).toMatchObject({ state: 'morphing' });
+  });
+
+  it('does not re-render on a transcript line or an unrelated write', () => {
+    let renders = 0;
+    renderHook(() => { renders += 1; return useCombEntities(); });
+    const before = renders;
+    act(() => useHiveStore.getState().appendEntityLines('a', [{ text: 'more', color: 'ink' }]));
+    act(() => useHiveStore.setState((s) => ({ entities: { ...s.entities, a: { ...(s.entities.a as Session), cost: '$9' } } })));
+    expect(renders).toBe(before);
+  });
+
+  it('re-renders when a state changes', () => {
+    const { result } = renderHook(() => useCombEntities());
+    act(() => useHiveStore.getState().appendEntityLines('c', [], 'waiting'));
+    expect(result.current.find((e) => e.id === 'c')!.state).toBe('summons');
+  });
+
+  it('summarises for the headline', () => {
+    const { result } = renderHook(() => useCombSummary());
+    expect(result.current).toEqual({ working: 3, failed: 2, resting: 3, projects: 2, agents: 5 });
+  });
+
+  describe('changed-file selectors (HIVE-201)', () => {
+    const a = { path: 'src/a.ts', mark: 'M' as const, added: 2, removed: 1 };
+    const b = { path: 'b.ts', mark: 'A' as const, added: 4, removed: 0 };
+
+    it('count and mark derive from the list', () => {
+      act(() => {
+        useHiveStore.getState().setChangedFiles('s1', [a, b]);
+      });
+      expect(renderHook(() => useChangedFileCount('s1')).result.current).toBe(2);
+      expect(renderHook(() => useChangedFileCount(undefined)).result.current).toBe(0);
+      expect(renderHook(() => useChangedFileMark('s1', 'b.ts')).result.current).toBe('A');
+      expect(renderHook(() => useChangedFileMark('s1', 'nope')).result.current).toBeUndefined();
+      expect(renderHook(() => useChangedFileMark(undefined, 'b.ts')).result.current).toBeUndefined();
+      expect(renderHook(() => useChangedFiles('s1')).result.current).toEqual([a, b]);
+      expect(renderHook(() => useChangedFiles(undefined)).result.current).toBeUndefined();
+    });
+  });
+});
+
+/** The Work page's selectors (HIVE-203). */
+describe('Work page selectors (HIVE-203)', () => {
+  const entry = (id: string, ticket: string, from = 'builder') => ({
+    id,
+    ts: 1,
+    from,
+    kind: 'post' as const,
+    body: 'x',
+    meta: { ticket, stage: 'build' },
+  });
+  const sessionOn = (ticket: string): Session => {
+    const id = useHiveStore.getState().order.find((key) => {
+      const entity = useHiveStore.getState().entities[key];
+      return entity?.kind === 'session' && entity.ticket === ticket;
+    });
+    return useHiveStore.getState().entities[id!] as Session;
+  };
+  const setSession = (session: Session) =>
+    useHiveStore.setState((state) => ({ entities: { ...state.entities, [session.id]: session } }));
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useHiveStore.setState({ prs: [], ledger: [] });
+  });
+
+  describe('useTicketGroups', () => {
+    it('turns a ticket amber, and counts it, when a session on it waits', () => {
+      setSession({ ...sessionOn('GRAC-3018'), status: 'working' });
+      const { result } = renderHook(() => useTicketGroups());
+      const rowOf = () =>
+        result.current.groups.flatMap((group) => group.rows).find((row) => row.ticket.key === 'GRAC-3018');
+      const before = result.current.needYou;
+      expect(rowOf()?.tone).toBe('green');
+
+      act(() => setSession({ ...sessionOn('GRAC-3018'), status: 'waiting' }));
+
+      expect(rowOf()).toMatchObject({ tone: 'amber', fact: 'waiting on you' });
+      expect(result.current.needYou).toBe(before + 1);
+      expect(result.current.total).toBe(useHiveStore.getState().tickets.length);
+      expect(result.current.groups.map((group) => group.category)).toEqual(['in-progress', 'done']);
+    });
+  });
+
+  describe('useTicketProperties', () => {
+    const tag = (title: string, priority: string | null = null) =>
+      useHiveStore.setState((state) => ({
+        tickets: state.tickets.map((ticket) =>
+          ticket.key === 'GRAC-3018' ? { ...ticket, title, priority, assignee: null } : ticket,
+        ),
+      }));
+
+    it('reads the tag priority over Jira, the side, the project, the agent and Unassigned', () => {
+      tag('[BE][P4]-Hero', 'High');
+      useHiveStore.setState({ ledger: [entry('20261002-100000-0001', 'GRAC-3018', 'fixer')] });
+      const { result } = renderHook(() => useTicketProperties('GRAC-3018'));
+
+      expect(result.current).toEqual({
+        status: 'In Progress',
+        priority: 'P4',
+        side: 'BE',
+        project: sessionOn('GRAC-3018').project,
+        assignee: 'Unassigned',
+        agent: 'fixer',
+      });
+    });
+
+    it("uses Jira's priority without a tag, and has no side", () => {
+      tag('Hero', 'High');
+      const { result } = renderHook(() => useTicketProperties('GRAC-3018'));
+
+      expect(result.current?.priority).toBe('High');
+      expect(result.current).not.toHaveProperty('side');
+      expect(result.current).not.toHaveProperty('agent');
+    });
+
+    it('has no project without a live session, and an epic once the slice holds a parent', () => {
+      const { result } = renderHook(() => useTicketProperties('GRAC-2810'));
+      expect(result.current).not.toHaveProperty('project');
+      expect(result.current).not.toHaveProperty('priority');
+      expect(result.current).not.toHaveProperty('epic');
+
+      act(() =>
+        useHiveStore.setState({
+          ticketDetails: {
+            'GRAC-2810': {
+              key: 'GRAC-2810',
+              detail: { description: [], parent: { key: 'GRAC-1', summary: 'Epic' } },
+              problems: {},
+            },
+          },
+        }),
+      );
+
+      expect(result.current?.epic).toBe('GRAC-1');
+    });
+
+    it('is undefined for an unknown ticket', () => {
+      const { result } = renderHook(() => useTicketProperties('NOPE-1'));
+      expect(result.current).toBeUndefined();
+    });
+  });
+
+  describe('useTicketEvents', () => {
+    it('merges the history with the tail, deduped and in id order, for this ticket only', () => {
+      const a = entry('20261002-100000-0001', 'GRAC-3018');
+      const b = entry('20261002-100000-0002', 'grac-3018');
+      const c = entry('20261002-100000-0003', 'GRAC-3018');
+      const other = entry('20261002-100000-0004', 'GRAC-3022');
+      useHiveStore.setState({
+        ledger: [c, b, other],
+        ticketDetails: { 'GRAC-3018': { key: 'GRAC-3018', history: [a, b], problems: {} } },
+      });
+      const { result } = renderHook(() => useTicketEvents('GRAC-3018'));
+
+      expect(result.current.map((event) => event.id)).toEqual([a.id, b.id, c.id]);
+    });
+
+    it("ignores another ticket's history", () => {
+      useHiveStore.setState({
+        ticketDetails: {
+          'GRAC-3022': { key: 'GRAC-3022', history: [entry('20261002-100000-0001', 'GRAC-3022')], problems: {} },
+        },
+      });
+      const { result } = renderHook(() => useTicketEvents('GRAC-3018'));
+
+      expect(result.current).toEqual([]);
+    });
+  });
+
+  describe('useNextTransition', () => {
+    it('is undefined without transitions, and the forward one with them', () => {
+      const { result } = renderHook(() => useNextTransition('GRAC-3018'));
+      expect(result.current).toBeUndefined();
+
+      const done = { id: '31', name: 'Finish', to: { name: 'Done', statusCategory: 'done' as const } };
+      const back = { id: '11', name: 'Reopen', to: { name: 'To Do', statusCategory: 'todo' as const } };
+      act(() => useHiveStore.setState({ ticketDetails: { 'GRAC-3018': { key: 'GRAC-3018', transitions: [back, done], problems: {} } } }));
+
+      expect(result.current).toEqual(done);
+    });
+  });
+
+  describe('useOpenTicket', () => {
+    it('prefers the list, falls back to the issue the slice read, else nothing', () => {
+      const issue = { key: 'HIVE-8', status: 'To Do', statusCategory: 'todo' as const, title: 'x', priority: null, assignee: null };
+      useHiveStore.setState({ ticketDetails: { 'HIVE-8': { key: 'HIVE-8', issue, problems: {} } } });
+
+      expect(renderHook(() => useOpenTicket('GRAC-3018')).result.current?.key).toBe('GRAC-3018');
+      expect(renderHook(() => useOpenTicket('HIVE-8')).result.current).toEqual(issue);
+      expect(renderHook(() => useOpenTicket('HIVE-9')).result.current).toBeUndefined();
+      expect(renderHook(() => useOpenTicket(null)).result.current).toBeUndefined();
+    });
+  });
+});
+
+describe('the PR page selectors (HIVE-205)', () => {
+  const slug = 'acme/server';
+  const ledger: LedgerEntry[] = [
+    { id: '1', ts: 1_000, from: 'builder', kind: 'ask', to: 'shipper', body: 'ship', meta: { pr: 1182, repo: slug, stage: 'intake' } },
+    { id: '2', ts: 2_000, from: 'shipper', kind: 'claim', body: '', meta: { task: 'acme/server#1182' } },
+    { id: '3', ts: 3_000, from: 'shipper', kind: 'post', body: 'findings', meta: { pr: 1182, repo: slug, stage: 'findings' } },
+    { id: '4', ts: 3_000, from: 'shipper', kind: 'ask', to: 'fixer', body: 'acme/server#1182: three findings' },
+    { id: '5', ts: 4_000, from: 'fixer', kind: 'post', body: 'On it: acme/server#1182 finding 2' },
+    { id: '6', ts: 5_000, from: 'acr', kind: 'answer', body: 'done', meta: { review_url: 'https://github.com/acme/server/pull/1182#pullrequestreview-7' } },
+  ];
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useHiveStore.setState({ ledger });
+  });
+
+  it('reads the track, the events, the opener and the holder’s post from the tail', () => {
+    expect(renderHook(() => useShipTrack(slug, 1182)).result.current.current).toMatchObject({ stage: 'findings', holder: 'fixer' });
+    expect(renderHook(() => usePrEvents(slug, 1182)).result.current.map((e) => e.id)).toEqual(['1', '2', '3', '4', '5']);
+    expect(renderHook(() => usePrOpener(slug, 1182)).result.current).toBe('builder');
+    expect(renderHook(() => useHolderPost(slug, 1182, 'fixer')).result.current?.id).toBe('5');
+    expect(renderHook(() => useHolderPost(slug, 1182, null)).result.current).toBeNull();
+    expect([...renderHook(() => useReviewUrls()).result.current]).toEqual(['https://github.com/acme/server/pull/1182#pullrequestreview-7']);
+  });
+
+  it('keeps the same answer until the ledger changes', () => {
+    const { result, rerender } = renderHook(() => usePrEvents(slug, 1182));
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
+  });
+
+  it('reads one detail entry and hands out the two actions', () => {
+    useHiveStore.setState({ prDetails: { 'acme/server#1182': { key: 'acme/server#1182', state: 'loading' } } });
+    expect(renderHook(() => usePrDetail('acme/server#1182')).result.current).toEqual({ key: 'acme/server#1182', state: 'loading' });
+    expect(renderHook(() => useLoadPrDetail()).result.current).toBe(useHiveStore.getState().loadPrDetail);
+    expect(renderHook(() => useCommentOnPr()).result.current).toBe(useHiveStore.getState().commentOnPr);
+  });
+});
+
+describe('the Timeline selectors (HIVE-208)', () => {
+  const slug = 'acme/server';
+  const KEY = 'acme/server#1182';
+  const T0 = Date.parse('2026-10-03T11:00:00Z');
+  const MIN = 60_000;
+  const pr = { owner: 'acme', repo: 'server', n: 1182, mine: true };
+  const timeline: PrTimeline = {
+    createdAt: new Date(T0).toISOString(), mergedAt: null, isDraft: false,
+    commits: [], runs: [], reviews: [], comments: [], events: [],
+  };
+  const intake: LedgerEntry = { id: '20261003-110400-0001', ts: T0 + 4 * MIN, from: 'builder', kind: 'ask', to: 'shipper', body: 'ship', meta: { pr: 1182, repo: slug, stage: 'intake' } };
+  const claim: LedgerEntry = { id: '20261003-110500-0001', ts: T0 + 5 * MIN, from: 'shipper', kind: 'claim', body: '', meta: { task: 'acme/server#1182' } };
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+  });
+
+  it('is null before any read, and hands out the entry and the load action', () => {
+    expect(renderHook(() => useTimelineModel(pr, T0 + 60 * MIN)).result.current).toBeNull();
+    expect(renderHook(() => usePrTimelineEntry(KEY)).result.current).toBeUndefined();
+    expect(renderHook(() => useLoadPrTimeline()).result.current).toBe(useHiveStore.getState().loadPrTimeline);
+  });
+
+  it('merges the history read on open with the live tail, and keeps the same model for the same now', () => {
+    useHiveStore.setState({
+      prTimelines: { [KEY]: { key: KEY, state: 'ok', timeline, history: [intake] } },
+      ledger: [intake, claim],
+    });
+    const { result, rerender } = renderHook(() => useTimelineModel(pr, T0 + 60 * MIN));
+    expect(result.current?.holds.map((h) => h.who)).toEqual(['builder', 'shipper']);
+    expect(result.current?.holds[1]).toMatchObject({ from: T0 + 5 * MIN, to: T0 + 60 * MIN });
+    const first = result.current;
+    rerender();
+    expect(result.current).toBe(first);
+    expect(renderHook(() => usePrTimelineEntry(KEY)).result.current?.timeline).toBe(timeline);
+  });
+});
+
+describe('usePrsQuiet (HIVE-205)', () => {
+  it('is true only for a live, empty sweep', () => {
+    useHiveStore.setState({ prs: [], prSource: { kind: 'live', stale: false, repos: 2 } });
+    expect(renderHook(() => usePrsQuiet()).result.current).toBe(true);
+    useHiveStore.setState({ prs: [prRecord()] });
+    expect(renderHook(() => usePrsQuiet()).result.current).toBe(false);
+    for (const prSource of [
+      { kind: 'loading' },
+      { kind: 'unconfigured', message: 'x', reason: 'not-installed' },
+      { kind: 'failed', message: 'x' },
+    ] as const) {
+      useHiveStore.setState({ prs: [], prSource });
+      expect(renderHook(() => usePrsQuiet()).result.current).toBe(false);
+    }
+  });
+});
+
+describe('the Checks selectors (HIVE-206)', () => {
+  const KEY = 'acme/nova-web#482';
+  const run = (id: number, headSha: string, conclusion: string | null = 'success') => ({
+    id, number: id, attempt: 1, status: 'completed', conclusion, headSha, event: 'push',
+    workflowName: 'CI', createdAt: '2026-10-03T14:00:00Z', updatedAt: 'u', url: 'u' });
+  const job = (id: number, runId: number, conclusion = 'success') => ({ id, runId, name: `job${String(id)}`, status: 'completed',
+    conclusion, startedAt: null, completedAt: null, url: 'u', steps: [] });
+
+  beforeEach(() => {
+    useHiveStore.setState({ prChecks: { [KEY]: { key: KEY, state: 'ok', workflows: [],
+      runs: [run(2, 'new', 'failure'), run(1, 'old')],
+      jobs: { 2: [job(21, 2), job(22, 2, 'failure')], 1: [job(11, 1)] }, logs: {} } } });
+  });
+
+  it('folds the runs into pushes, oldest first', () => {
+    const { result } = renderHook(() => usePushes(KEY));
+    expect(result.current.map((p) => [p.sha, p.state])).toEqual([['old', 'passed'], ['new', 'failed']]);
+  });
+
+  it('lays out the newest push, or the one asked for', () => {
+    expect(renderHook(() => useChecksGraph(KEY, null, new Set())).result.current?.nodes.map((n) => n.jobId)).toEqual([21, 22]);
+    expect(renderHook(() => useChecksGraph(KEY, 'old', new Set())).result.current?.nodes.map((n) => n.jobId)).toEqual([11]);
+    expect(renderHook(() => useChecksGraph('acme/x#1', null, new Set())).result.current).toBeNull();
+  });
+
+  it('shows the clicked job, else the failed one, else none', () => {
+    expect(renderHook(() => useShownJob(KEY, null, null)).result.current?.id).toBe(22);
+    expect(renderHook(() => useShownJob(KEY, null, 21)).result.current?.id).toBe(21);
+    expect(renderHook(() => useShownJob(KEY, 'old', null)).result.current).toBeNull();
+    expect(renderHook(() => useShownJob('acme/x#1', null, null)).result.current).toBeNull();
+  });
+
+  it('hands the entry and the three actions through', () => {
+    expect(renderHook(() => usePrChecks(KEY)).result.current?.state).toBe('ok');
+    expect(Object.keys(renderHook(() => usePrChecksActions()).result.current).sort()).toEqual(['loadJobLog', 'loadPrChecks', 'rerunFailed']);
+  });
+});
+
+describe('useSessionPrRow (HIVE-209)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  it("pairs the session's PR with its Hatchery row", () => {
+    const { result } = renderHook(() => useSessionPrRow('hero-refresh'));
+    expect(result.current?.pr.n).toBe(482);
+    expect(result.current?.row?.pr.url).toBe('https://github.com/demo/nova-web/pull/482');
+    expect(result.current?.row?.hatch.flap).toBeDefined();
+  });
+
+  it('is null with no PR, and a remembered PR has no row', () => {
+    act(() => useHiveStore.setState({ prs: [] }));
+    const { result, rerender } = renderHook(() => useSessionPrRow('hero-refresh'));
+    expect(result.current).toBeNull();
+
+    act(() =>
+      useHiveStore.setState((state) => ({
+        entities: {
+          ...state.entities,
+          'hero-refresh': {
+            ...state.entities['hero-refresh'],
+            lastPr: { number: 118, url: 'https://github.com/demo/nova-web/pull/118' },
+          } as never,
+        },
+      })),
+    );
+    rerender();
+    expect(result.current).toEqual({ pr: { n: 118, url: 'https://github.com/demo/nova-web/pull/118' }, row: null });
+  });
+
+  it('matches by URL, so the same number in another repo is not this row', () => {
+    act(() =>
+      useHiveStore.setState((state) => ({
+        prs: [
+          { ...state.prs[0]!, repo: 'other', url: 'https://github.com/demo/other/pull/482', branch: 'x' },
+          ...state.prs,
+        ],
+      })),
+    );
+    const { result } = renderHook(() => useSessionPrRow('hero-refresh'));
+    expect(result.current?.row?.pr.repo).toBe('nova-web');
+  });
+
+  it('is null for an id that is not a session', () => {
+    const { result } = renderHook(() => useSessionPrRow('nope'));
+    expect(result.current).toBeNull();
+  });
+});
+
+describe('Home strip selectors (HIVE-200)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+  });
+
+  describe('useAccountLimits', () => {
+    const setMetrics = (metrics: Record<string, object>) =>
+      act(() => useHiveStore.setState({ metrics: metrics as never }));
+
+    it('is empty with no metrics', () => {
+      setMetrics({});
+      expect(renderHook(() => useAccountLimits()).result.current).toEqual({});
+    });
+
+    it('carries one window alone', () => {
+      setMetrics({ a: { fiveHourPct: 38, fiveHourResetsAt: 1_900_000_000 } });
+      expect(renderHook(() => useAccountLimits()).result.current).toEqual({
+        fiveHourPct: 38,
+        fiveHourResetsAt: 1_900_000_000,
+      });
+    });
+
+    it('carries both windows', () => {
+      setMetrics({
+        a: {
+          fiveHourPct: 38,
+          fiveHourResetsAt: 1_900_000_000,
+          sevenDayPct: 61,
+          sevenDayResetsAt: 1_900_500_000,
+        },
+      });
+      expect(renderHook(() => useAccountLimits()).result.current).toEqual({
+        fiveHourPct: 38,
+        fiveHourResetsAt: 1_900_000_000,
+        sevenDayPct: 61,
+        sevenDayResetsAt: 1_900_500_000,
+      });
+    });
+
+    it('two sessions: the latest reset wins, then the highest percentage (D7)', () => {
+      setMetrics({
+        old: { fiveHourPct: 90, fiveHourResetsAt: 1_899_000_000 }, // an already-rolled window
+        a: { fiveHourPct: 30, fiveHourResetsAt: 1_900_000_000 },
+        b: { fiveHourPct: 38, fiveHourResetsAt: 1_900_000_000 },
+        c: { fiveHourPct: 99 }, // no reset: ranks below every reading with one
+      });
+      expect(accountLimitsOf(useHiveStore.getState().metrics)).toEqual({
+        fiveHourPct: 38,
+        fiveHourResetsAt: 1_900_000_000,
+      });
+    });
+
+    it('a pct with no reset still shows when nothing better exists', () => {
+      expect(accountLimitsOf({ c: { sevenDayPct: 12 } } as never)).toEqual({ sevenDayPct: 12 });
+    });
+
+    it('holds its identity across terminal output', () => {
+      setMetrics({ a: { fiveHourPct: 38, fiveHourResetsAt: 1_900_000_000 } });
+      const { result } = renderHook(() => useAccountLimits());
+      const before = result.current;
+      act(() =>
+        useHiveStore.getState().appendEntityLines('hero-refresh', [{ text: 'more', color: 'ink' }]),
+      );
+      expect(result.current).toBe(before);
+    });
+  });
+
+  describe('useComingUp', () => {
+    const agent = (id: string, nextRunAt?: number): Agent =>
+      ({
+        kind: 'agent',
+        id,
+        icon: 'Robot',
+        sub: `${id} does its thing`,
+        task: '',
+        status: 'sleeping',
+        wake: { on: [] },
+        mcp: [],
+        ...(nextRunAt === undefined ? {} : { nextRunAt }),
+      }) as unknown as Agent;
+    const held = (id: string, extra: Partial<LedgerEntry> = {}): LedgerEntry => ({
+      id,
+      ts: 1,
+      from: 'sess-1',
+      to: 'builder',
+      kind: 'ask',
+      body: 'Build HIVE-214\nmore',
+      meta: { after: 'acme/nova-web#589', ticket: 'HIVE-214' },
+      ...extra,
+    });
+    const seed = (agents: Agent[], ledger: LedgerEntry[]) =>
+      act(() =>
+        useHiveStore.setState((s) => ({
+          entities: { ...s.entities, ...Object.fromEntries(agents.map((a) => [a.id, a])) },
+          agentOrder: agents.map((a) => a.id),
+          ledger,
+        })),
+      );
+
+    it('orders scheduled agents soonest first, then held asks', () => {
+      seed([agent('slack', 2_000), agent('pr-patrol', 1_000), agent('fixer')], [held('h1')]);
+      expect(renderHook(() => useComingUp()).result.current).toEqual([
+        { id: 'pr-patrol', agent: 'pr-patrol', what: 'pr-patrol does its thing', at: 1_000 },
+        { id: 'slack', agent: 'slack', what: 'slack does its thing', at: 2_000 },
+        { id: 'h1', agent: 'builder', what: 'picks up HIVE-214 when nova-web#589 ships' },
+      ]);
+    });
+
+    it('falls back to the ask body first line without meta.ticket', () => {
+      seed([], [held('h1', { meta: { after: 'acme/nova-web#589' } })]);
+      expect(renderHook(() => useComingUp()).result.current[0]?.what).toBe(
+        'picks up Build HIVE-214 when nova-web#589 ships',
+      );
+    });
+
+    it('drops a released ask', () => {
+      seed(
+        [],
+        [
+          held('h1'),
+          {
+            id: 'c1',
+            ts: 2,
+            from: 'shipper',
+            kind: 'post',
+            body: 'closed',
+            meta: { stage: 'closed', repo: 'acme/nova-web', pr: 589 },
+          },
+        ],
+      );
+      expect(renderHook(() => useComingUp()).result.current).toEqual([]);
+    });
+
+    it('caps at five rows', () => {
+      seed(
+        [1, 2, 3, 4, 5, 6].map((n) => agent(`a${n}`, n)),
+        [],
+      );
+      expect(renderHook(() => useComingUp()).result.current).toHaveLength(5);
+    });
+
+    it('holds its identity across terminal output', () => {
+      seed([agent('slack', 2_000)], []);
+      const { result } = renderHook(() => useComingUp());
+      const before = result.current;
+      act(() =>
+        useHiveStore.getState().appendEntityLines('hero-refresh', [{ text: 'more', color: 'ink' }]),
+      );
+      expect(result.current).toBe(before);
+    });
+  });
+
+  describe('useWhileAway', () => {
+    const SINCE = Date.parse('2026-10-03T13:10:00Z');
+    const before = '2026-10-03T12:00:00Z';
+    const after = '2026-10-03T14:00:00Z';
+    const run = (id: string, ts: number, outcome: string): LedgerEntry => ({
+      id,
+      ts,
+      from: 'acr',
+      kind: 'event',
+      body: `run.ended — ${outcome}`,
+      meta: { run: id, outcome },
+    });
+    const closed = (pr: number): LedgerEntry => ({
+      id: `c${pr}`,
+      ts: SINCE + 1,
+      from: 'shipper',
+      kind: 'post',
+      body: 'closed',
+      meta: { stage: 'closed', repo: 'acme/nova-web', pr },
+    });
+
+    beforeEach(() => {
+      act(() =>
+        useHiveStore.setState({
+          prs: [
+            prRecord({ number: 302, state: 'merged', mergedAt: after, updatedAt: after, branch: 'm1' }),
+            prRecord({ number: 303, state: 'merged', mergedAt: after, updatedAt: after, branch: 'm2' }),
+            prRecord({ number: 290, state: 'merged', mergedAt: before, updatedAt: before, branch: 'm0' }),
+          ],
+          notifs: [
+            notif({ kind: 'session.goal', title: 'pty-resize goal done', createdAt: SINCE + 5 }),
+            notif({ kind: 'session.goal', title: 'old goal', createdAt: SINCE - 5 }),
+          ],
+          ledger: [
+            run('r0', SINCE - 1, 'done'),
+            run('r1', SINCE + 1, 'done'),
+            run('r2', SINCE + 2, 'failed'),
+            closed(302),
+            closed(303),
+          ],
+          tickets: [],
+        }),
+      );
+    });
+
+    it('counts what happened after since and nothing before it', () => {
+      const { result } = renderHook(() => useWhileAway(SINCE));
+      expect(result.current.hatched).toEqual({ numbers: [302, 303], by: 'shipper' });
+      expect(result.current.goals).toEqual(['pty-resize goal done']);
+      expect(result.current.runs).toEqual({ total: 2, failed: 1 });
+    });
+
+    it('counts the Echoes after since and nothing before it', () => {
+      const echo = (kind: NotificationKind, title: string, at: number, body = '') =>
+        notif({ kind, title, body, createdAt: at, action: { type: 'none' } });
+      const notifs = [
+        echo('pr.checks_failed', 'Checks failed on #301', SINCE - 5),
+        echo('pr.checks_failed', 'Checks failed on #305', SINCE + 5),
+        echo('pr.checks_failed', 'Checks failed on #306', SINCE + 6),
+        echo('pr.approved', 'old approval', SINCE - 5),
+        echo('pr.approved', '#305 approved', SINCE + 5),
+        echo('clone.done', 'Clone finished', SINCE - 5, 'The repository is ready.'),
+        echo('clone.done', 'Clone finished', SINCE + 5, 'The repository is ready.'),
+        echo('clone.done', 'Clone failed', SINCE + 6, 'fatal: repository not found'),
+      ];
+      const away = whileAwayOf({ prs: [], notifs, ledger: [], readyKeys: [] }, SINCE);
+      expect(away.checksFailed).toEqual({ total: 2, first: 'Checks failed on #305' });
+      expect(away.approved).toEqual({ total: 1, first: '#305 approved' });
+      expect(away.clones).toEqual([
+        { failed: false, detail: '' },
+        { failed: true, detail: 'fatal: repository not found' },
+      ]);
+    });
+
+    it('draws none of the other Echoes, so a merged PR is counted once', () => {
+      act(() =>
+        useHiveStore.setState((s) => ({
+          notifs: [
+            ...s.notifs,
+            ...(['pr.merged', 'agent.done', 'agent.failed', 'app.update_available', 'app.update_ready'] as const).map(
+              (kind) => notif({ kind, title: '#302 merged', createdAt: SINCE + 5, action: { type: 'none' } }),
+            ),
+          ],
+        })),
+      );
+      const { result } = renderHook(() => useWhileAway(SINCE));
+      expect(result.current.hatched.numbers).toEqual([302, 303]);
+      expect(result.current.goals).toEqual(['pty-resize goal done']);
+      expect(result.current.checksFailed).toEqual({ total: 0 });
+      expect(result.current.approved).toEqual({ total: 0 });
+      expect(result.current.clones).toEqual([]);
+    });
+
+    it('counts a run cut off by its budget or its turns as failed', () => {
+      const ledger = [run('r1', SINCE + 1, 'budget'), run('r2', SINCE + 2, 'turns'), run('r3', SINCE + 3, 'asking')];
+      expect(whileAwayOf({ prs: [], notifs: [], ledger, readyKeys: [] }, SINCE).runs).toEqual({ total: 3, failed: 2 });
+    });
+
+    it('names no merging party when no closed post covers every PR', () => {
+      act(() => useHiveStore.setState((s) => ({ ledger: s.ledger.filter((e) => e.id !== 'c303') })));
+      expect(renderHook(() => useWhileAway(SINCE)).result.current.hatched).toEqual({
+        numbers: [302, 303],
+      });
+    });
+
+    it('names ready tickets with no session, the first two keys and the total', () => {
+      expect(
+        whileAwayOf({ prs: [], notifs: [], ledger: [], readyKeys: ['A-1', 'B-2', 'C-3'] }, SINCE).ready,
+      ).toEqual({ keys: ['A-1', 'B-2'], total: 3 });
+    });
+
+    it('reads todo tickets with no live session from the store', () => {
+      const ticket = (key: string) => ({
+        key,
+        status: 'To Do',
+        statusCategory: 'todo' as const,
+        title: key,
+        priority: null,
+        assignee: null,
+      });
+      // GRAC-3018 has a fixture session in seedDemoFleet; a fresh todo key has none.
+      act(() => useHiveStore.setState({ tickets: [ticket('NEW-1'), ticket('GRAC-3018')] }));
+      expect(renderHook(() => useWhileAway(SINCE)).result.current.ready).toEqual({
+        keys: ['NEW-1'],
+        total: 1,
+      });
+    });
+
+    it('holds its identity across terminal output', () => {
+      const { result } = renderHook(() => useWhileAway(SINCE));
+      const first = result.current;
+      act(() =>
+        useHiveStore.getState().appendEntityLines('hero-refresh', [{ text: 'more', color: 'ink' }]),
+      );
+      expect(result.current).toBe(first);
+    });
+  });
+});
+
+describe('listed (HIVE-211): no list without items', () => {
+  const jiraIssue = (over: Partial<JiraIssue> = {}): JiraIssue => ({
+    key: 'HIVE-1',
+    summary: 'A real ticket',
+    status: 'In Progress',
+    statusCategory: 'in-progress',
+    issueType: 'Story',
+    priority: 'Medium',
+    assignee: 'Yunid Bauza',
+    updated: '2026-08-07T00:00:00.000-0400',
+    url: 'https://behiques.atlassian.net/browse/HIVE-1',
+    ...over,
+  });
+
+  beforeEach(() => useHiveStore.getState().reset());
+  afterEach(() => resetProjectConfig());
+
+  it('Work is listed while loading and with tickets, not when unconfigured, failed or empty', () => {
+    const { result, rerender } = renderHook(() => useWorkListed());
+    expect(result.current).toBe(true); // loading: the skeleton is the message
+    act(() => useHiveStore.setState({ ticketSource: { kind: 'unconfigured' } }));
+    rerender();
+    expect(result.current).toBe(false);
+    act(() => useHiveStore.setState({ ticketSource: { kind: 'failed', message: 'x' } }));
+    rerender();
+    expect(result.current).toBe(false);
+    act(() =>
+      useHiveStore.setState({ ticketSource: { kind: 'live', stale: false, capped: false }, tickets: [] }),
+    );
+    rerender();
+    expect(result.current).toBe(false);
+    act(() => useHiveStore.getState().hydrateTickets([jiraIssue()], false));
+    rerender();
+    expect(result.current).toBe(true);
+  });
+
+  it('PRs are listed while loading and with PRs only', () => {
+    const { result, rerender } = renderHook(() => usePrsListed());
+    expect(result.current).toBe(true);
+    act(() => useHiveStore.setState({ prSource: { kind: 'unconfigured', message: 'm', reason: 'unauthenticated' } }));
+    rerender();
+    expect(result.current).toBe(false);
+    act(() => useHiveStore.setState({ prSource: { kind: 'failed', message: 'x' } }));
+    rerender();
+    expect(result.current).toBe(false);
+    act(() => useHiveStore.setState({ prSource: { kind: 'live', stale: false, repos: 1 }, prs: [] }));
+    rerender();
+    expect(result.current).toBe(false);
+    act(() => useHiveStore.setState({ prs: [prRecord()] }));
+    rerender();
+    expect(result.current).toBe(true);
+  });
+
+  it('Agents are listed once one agent exists', () => {
+    const { result, rerender } = renderHook(() => useAgentsListed());
+    expect(result.current).toBe(false);
+    act(() => {
+      seedDemoFleet();
+    });
+    rerender();
+    expect(result.current).toBe(true);
+  });
+
+  it('Sessions are listed once one project is configured', () => {
+    setProjectConfigForTest(emptySnapshot('/tmp/hive/config.json'));
+    const { result, rerender } = renderHook(() => useSessionsListed());
+    expect(result.current).toBe(false);
+    act(() => seedDemoProjectConfig());
+    rerender();
+    expect(result.current).toBe(true);
   });
 });

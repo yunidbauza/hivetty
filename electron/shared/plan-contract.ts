@@ -19,6 +19,12 @@ export interface PlanTask {
   id: string;
   title: string;
   status: PlanTaskStatus;
+  /** Present continuous wording Claude shows in its spinner ("Pushing the branch"). task-tools only. */
+  activeForm?: string;
+  /** Epoch ms the task first went `in_progress` (HIVE-201). Never re-stamped. */
+  startedAt?: number;
+  /** Epoch ms the task went `completed` (HIVE-201). */
+  endedAt?: number;
   /** plan-file only (HIVE-180). */
   steps?: PlanStep[];
 }
@@ -34,8 +40,10 @@ export interface SessionPlan {
   tasks: PlanTask[];
   /** No task left unfinished. Main drops the plan {@link PLAN_GRACE_MS} later. */
   allDone: boolean;
-  /** plan-file: the absolute path it was read from (HIVE-180). */
+  /** The session's last plan file, absolute (HIVE-180). Set on a plan-file plan, and carried onto a later plan from any source (HIVE-201). */
   file?: string;
+  /** Epoch ms main accepted the read of {@link file} (HIVE-201). */
+  fileAt?: number;
   /** A builder is working this plan (HIVE-180). */
   build?: PlanBuild;
 }

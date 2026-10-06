@@ -29,7 +29,7 @@ export function useLedgerSync(): void {
       remounts, so a dropped entry would never be re-fetched.
     */
     const stop = ledger.onChanged(append);
-    void ledger.list().then((snapshot) => hydrate(snapshot.entries));
+    void ledger.list().then((snapshot) => hydrate(snapshot.entries, snapshot.closedAsks));
 
     return stop;
   }, [hydrate, append]);

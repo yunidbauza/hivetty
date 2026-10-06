@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { parseAgent } from '../../../electron/main/agents/definition';
-import { AGENT_ICON_NAMES } from '@features/settings/components/agent-form';
+import { AGENT_ICON_NAMES } from '@features/shared/components/agent-form';
 import { matches } from '../../../electron/shared/permission-rules';
 import { createScheduler } from '../../../electron/main/agents/scheduler';
 import { createAgentState } from '../../../electron/main/agents/state';

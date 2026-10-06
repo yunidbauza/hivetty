@@ -219,6 +219,74 @@ describe('in-flight dedup', () => {
     first.unmount();
     second.unmount();
   });
+
+  /**
+   * HIVE-206: the Checks tab's action names the shown push, so a click swaps
+   * it. A read still out was asked for the old push; the new one must not wait
+   * a whole interval for its own.
+   */
+  it('reads a swapped-in action once the read still out for the old one answers', async () => {
+    let release: (() => void) | undefined;
+    const old = vi.fn<() => Promise<void>>().mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const next = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const usePoller = createPoller({ intervalMs: INTERVAL });
+
+    const view = renderHook(({ action }) => usePoller(action), { initialProps: { action: old } });
+    await settle();
+    view.rerender({ action: next });
+    await settle();
+    expect(next).not.toHaveBeenCalled();
+
+    release?.();
+    await settle();
+    await settle();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(old).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+  });
+
+  it('does not catch up when the same action remounts mid-sweep', async () => {
+    let release: (() => void) | undefined;
+    const action = vi.fn<() => Promise<void>>().mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const usePoller = createPoller({ intervalMs: INTERVAL });
+
+    renderHook(() => usePoller(stable(action))).unmount();
+    const again = renderHook(() => usePoller(stable(action)));
+    release?.();
+    await settle();
+    await settle();
+    expect(action).toHaveBeenCalledTimes(1);
+
+    again.unmount();
+  });
+
+  it('forgets a pending catch-up once the last consumer has gone', async () => {
+    let release: (() => void) | undefined;
+    const old = vi.fn<() => Promise<void>>().mockReturnValue(
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const next = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    const usePoller = createPoller({ intervalMs: INTERVAL });
+
+    const view = renderHook(({ action }) => usePoller(action), { initialProps: { action: old } });
+    view.rerender({ action: next });
+    view.unmount();
+    release?.();
+    await settle();
+    await settle();
+    expect(next).not.toHaveBeenCalled();
+  });
 });
 
 describe('hidden-window deferral', () => {

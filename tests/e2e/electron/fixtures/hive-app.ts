@@ -10,6 +10,8 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { goToOvermind, overmindNewSession } from '../../fixtures/places';
+
 /**
  * The Electron fixture — the ONLY place this suite touches Electron-specific
  * Playwright API (story 085).
@@ -215,7 +217,40 @@ export function splashWindow(app: ElectronApplication): Page | undefined {
   return app.windows().find(isSplash);
 }
 
+/**
+ * Size the app's own window's content area (HIVE-213, the guide shots).
+ *
+ * The real window, not `page.setViewportSize`: emulating a viewport leaves the
+ * BrowserWindow at its own size, and a terminal measured before the emulation
+ * keeps the old grid.
+ */
+export async function setContentSize(
+  app: ElectronApplication,
+  width: number,
+  height: number,
+): Promise<void> {
+  await app.evaluate(
+    ({ BrowserWindow }, [w, h]) => {
+      const win = BrowserWindow.getAllWindows().find(
+        (candidate) => !candidate.webContents.getURL().includes('splash.html'),
+      );
+      win?.setContentSize(w!, h!);
+    },
+    [width, height],
+  );
+}
+
 export { expect };
+
+/** The window's outer width, and wait until the page has followed it (HIVE-211, shared since HIVE-223). */
+export async function resizeTo(app: ElectronApplication, page: Page, width: number): Promise<void> {
+  await app.evaluate(
+    ({ BrowserWindow }, w: number) =>
+      BrowserWindow.getAllWindows()[0]!.setBounds({ x: 0, y: 0, width: w, height: 800 }),
+    width,
+  );
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBeLessThanOrEqual(width);
+}
 
 /**
  * What the dock icon is currently badged with.
@@ -339,16 +374,13 @@ export async function startSession(
   page: Page,
   projectQuery: string,
 ): Promise<string> {
-  /**
-   * `exact` is load-bearing.
-   *
-   * Playwright's `name` matches a **substring**, case-insensitively, unless
-   * told otherwise. The projects tree now renders a per-project start link
-   * named `New session in <project>`, so the loose form matches the header
-   * button *and* one link per mapped project — a strict-mode violation in every
-   * spec that has a config. The header button is what this helper means.
-   */
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  /*
+    The Overmind's New session, scoped to the stage (HIVE-213). Round two has
+    no header; the Sessions panel head draws a "+" of the same name, and a
+    per-project link matches the loose form.
+  */
+  await goToOvermind(page);
+  await overmindNewSession(page).click();
 
   const search = page.getByRole('textbox', { name: 'Search all projects' });
   await expect(search).toBeFocused();

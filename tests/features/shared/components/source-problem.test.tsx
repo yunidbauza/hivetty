@@ -15,7 +15,7 @@ describe('SourceProblem', () => {
     const onRetry = vi.fn();
     render(<SourceProblem message="Could not reach GitHub." onRetry={onRetry} />);
 
-    expect(screen.getByText('Could not reach GitHub.')).toHaveClass('text-amber');
+    expect(screen.getByText('Could not reach GitHub.')).toHaveClass('text-amber-text');
 
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
 

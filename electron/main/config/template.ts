@@ -19,7 +19,7 @@ import {
  */
 export const CONFIG_TEMPLATE = `${JSON.stringify(
   {
-    '//': 'The Hive — workspace config. Declares the repositories you can open a session in.',
+    '//': 'Hive TTY — workspace config. Declares the repositories you can open a session in.',
     '//docs': 'You do not have to edit this by hand: Settings → Projects adds and removes entries, and preserves these comments when it writes.',
     version: CONFIG_VERSION,
     '//shell': 'Optional. The login shell every session runs. Defaults to your account login shell.',

@@ -25,7 +25,12 @@ describe('the downloaded template', () => {
 
   it('is fully populated, not a skeleton', () => {
     const parsed = JSON.parse(themeTemplateJson());
-    expect(Object.keys(parsed.modes.dark.ui)).toHaveLength(28);
+    // Thirty-five in light since HIVE-221: the 28 required ui colours plus the
+    // optional creature pair (HIVE-199) and the Brood's five-key tissue ramp.
+    // Dark offers 32: like the built-in it leaves the three tissue keys out, so
+    // a dark theme started here derives them from its own bg, chitin and ink.
+    expect(Object.keys(parsed.modes.light.ui)).toHaveLength(35);
+    expect(Object.keys(parsed.modes.dark.ui)).toHaveLength(32);
     /*
       Thirteen since HIVE-82: the eleven required terminal colours plus the two
       surfaces. The template offers them even though the format does not require

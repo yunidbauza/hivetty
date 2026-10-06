@@ -14,6 +14,7 @@ import type {
   AgentWriteRequest,
   AgentWriteResult,
 } from '@shared/agent-contract';
+import type { ChangedFilesEvent, ChangedFilesSnapshot } from '@shared/changed-files-contract';
 import type {
   AddProjectRequest,
   BrowseDirRequest,
@@ -72,7 +73,22 @@ import type {
   WriteFileRequest,
   WriteFileResult,
 } from '@shared/fs-contract';
-import type { GhResult, PrRecord, PrsSnapshot } from '@shared/github-contract';
+import type {
+  GhResult,
+  JobLog,
+  PrCommentRequest,
+  PrDetail,
+  PrRecord,
+  PrRef,
+  PrRuns,
+  PrRunsRequest,
+  PrsSnapshot,
+  PrThreadRequest,
+  PrTimeline,
+  PrViewedRequest,
+  RunJob,
+  RunRef,
+} from '@shared/github-contract';
 import {
   CH,
   type AckRequest,
@@ -99,13 +115,17 @@ import {
 } from '@shared/ipc-contract';
 import type {
   JiraComment,
+  JiraCommentPage,
   JiraIdentity,
   JiraIssue,
+  JiraIssueDetail,
   JiraLink,
   JiraResult,
   JiraSearchResult,
   JiraStatus,
   JiraTransition,
+  JiraUser,
+  JiraUsersRequest,
 } from '@shared/jira-contract';
 import type {
   LedgerAnswerRequest,
@@ -381,6 +401,8 @@ const bridge: HiveBridge = {
     ): Promise<{ paired: true } | { error: string }> =>
       ipcRenderer.invoke(CH.remotePair, request),
     forget: (): Promise<void> => ipcRenderer.invoke(CH.remoteForget),
+    /** Try now (HIVE-211): dial the dropped server at once. */
+    dialNow: (): Promise<void> => ipcRenderer.invoke(CH.remoteDialNow),
     /**
      * What this window's attachment is doing (HIVE-150).
      *
@@ -618,8 +640,7 @@ const bridge: HiveBridge = {
     loginEnv: (): Promise<LoginEnvStatus> =>
       ipcRenderer.invoke(CH.integrationsLoginEnv),
   },
-  // One verb, no argument. Like `integrations.status`, the absent parameter
-  // list is what makes a handler that executes a binary safe to expose.
+  // `prs` takes no argument; `searchPrs`, `prDetail` and `prComment` take payloads main validates and scopes to the configured repositories before anything reaches `gh`.
   github: {
     prs: (): Promise<GhResult<PrsSnapshot>> => ipcRenderer.invoke(CH.githubPrs),
     /** PRs matching a term, whoever wrote them. See `CH.githubSearchPrs`. */
@@ -627,6 +648,33 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.githubSearchPrs, { term, projectId }) as Promise<
         GhResult<PrRecord[]>
       >,
+    /** One PR's page. See `CH.githubPrDetail`. */
+    prDetail: (request: PrRef): Promise<GhResult<PrDetail>> =>
+      ipcRenderer.invoke(CH.githubPrDetail, request) as Promise<GhResult<PrDetail>>,
+    /** A PR-level comment. See `CH.githubPrComment`. */
+    prComment: (request: PrCommentRequest): Promise<GhResult<true>> =>
+      ipcRenderer.invoke(CH.githubPrComment, request) as Promise<GhResult<true>>,
+    /** One PR's diff. See `CH.githubPrDiff`. */
+    prDiff: (request: PrRef): Promise<GhResult<string>> =>
+      ipcRenderer.invoke(CH.githubPrDiff, request) as Promise<GhResult<string>>,
+    /** One PR's history. See `CH.githubPrTimeline`. */
+    prTimeline: (request: PrRef): Promise<GhResult<PrTimeline>> =>
+      ipcRenderer.invoke(CH.githubPrTimeline, request) as Promise<GhResult<PrTimeline>>,
+    /** A thread write. See `CH.githubPrThread`. */
+    prThread: (request: PrThreadRequest): Promise<GhResult<true>> =>
+      ipcRenderer.invoke(CH.githubPrThread, request) as Promise<GhResult<true>>,
+    /** A viewed write. See `CH.githubPrViewed`. */
+    prViewed: (request: PrViewedRequest): Promise<GhResult<true>> =>
+      ipcRenderer.invoke(CH.githubPrViewed, request) as Promise<GhResult<true>>,
+    /** The Checks tab's reads and re-run failed (HIVE-206). See `CH.githubPrRuns`. */
+    prRuns: (request: PrRunsRequest): Promise<GhResult<PrRuns>> =>
+      ipcRenderer.invoke(CH.githubPrRuns, request) as Promise<GhResult<PrRuns>>,
+    runJobs: (request: RunRef): Promise<GhResult<RunJob[]>> =>
+      ipcRenderer.invoke(CH.githubRunJobs, request) as Promise<GhResult<RunJob[]>>,
+    jobLog: (request: RunRef): Promise<GhResult<JobLog>> =>
+      ipcRenderer.invoke(CH.githubJobLog, request) as Promise<GhResult<JobLog>>,
+    rerunFailed: (request: RunRef): Promise<GhResult<true>> =>
+      ipcRenderer.invoke(CH.githubRerunFailed, request) as Promise<GhResult<true>>,
   },
   /*
     HIVE-67. Four verbs, and none of them returns a token — see the contract for
@@ -649,6 +697,9 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.jiraSearch, request),
     issue: (request: JiraIssueRequest): Promise<JiraResult<JiraIssue>> =>
       ipcRenderer.invoke(CH.jiraIssue, request),
+    // HIVE-203. The description and the parent, for the ticket page.
+    detail: (request: JiraIssueRequest): Promise<JiraResult<JiraIssueDetail>> =>
+      ipcRenderer.invoke(CH.jiraDetail, request),
     // HIVE-70. The read, and the epic's one write.
     transitions: (
       request: JiraTransitionsRequest,
@@ -661,7 +712,7 @@ const bridge: HiveBridge = {
     // HIVE-71. Two reads, and the one verb that sends free text.
     comments: (
       request: JiraConversationRequest,
-    ): Promise<JiraResult<JiraComment[]>> =>
+    ): Promise<JiraResult<JiraCommentPage>> =>
       ipcRenderer.invoke(CH.jiraComments, request),
     links: (
       request: JiraConversationRequest,
@@ -671,6 +722,9 @@ const bridge: HiveBridge = {
       request: AddJiraCommentRequest,
     ): Promise<JiraResult<JiraComment>> =>
       ipcRenderer.invoke(CH.jiraAddComment, request),
+    // HIVE-216: the @ picker's search.
+    users: (request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>> =>
+      ipcRenderer.invoke(CH.jiraUsers, request),
   },
   /*
     HIVE-123. Four verbs, none of them returning a credential — see the
@@ -761,6 +815,14 @@ const bridge: HiveBridge = {
     /** One session's plan changed, or went (`plan: null`). */
     onChanged: (callback: (event: PlanChangedEvent) => void) =>
       subscribe<PlanChangedEvent>(CH.planChanged, callback),
+  },
+  changedFiles: {
+    /** Every session's changed files. Boot and reattach hydration (HIVE-201). */
+    list: (): Promise<ChangedFilesSnapshot> =>
+      ipcRenderer.invoke(CH.changedFilesList) as Promise<ChangedFilesSnapshot>,
+    /** One session's list changed. */
+    onChanged: (callback: (event: ChangedFilesEvent) => void) =>
+      subscribe<ChangedFilesEvent>(CH.changedFilesChanged, callback),
   },
   updates: {
     status: (): Promise<UpdateStatus> =>

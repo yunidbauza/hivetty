@@ -1,12 +1,15 @@
-import { writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 
-import { selectRailTab } from '../fixtures/rail-tabs';
+import { goToOvermind, goToPlace, openConsole } from '../fixtures/places';
+
 import {
   expectAgentSource,
   fillAgentSource,
 } from './fixtures/agent-source';
+import { expectSavedAs, newAgentPage, showSource } from './fixtures/agent-page';
 import { launchHive, SHIPPED_AGENTS } from './fixtures/hive-app';
 
 /**
@@ -31,9 +34,11 @@ const watcherRow = (page: Page) =>
  * - does the two-column split actually lay out, and does it collapse when the
  *   stage is narrow rather than when the window is?
  *
- * No run is started here. Waking an agent spawns a real `claude`, which is
- * `pnpm test:agent`'s job (`tests/live/agent-conformance.test.ts`) and costs
- * money; this spec is about what the renderer draws around it.
+ * No real run is started here. Waking an agent spawns a real `claude`, which
+ * is `pnpm test:agent`'s job (`tests/live/agent-conformance.test.ts`) and
+ * costs money; this spec is about what the renderer draws around it. The one
+ * run it does start (HIVE-204, the run table's selection) is against a stub
+ * executable, as `agent-task-runs.spec.ts` does.
  */
 
 const EMPTY_CONFIG = JSON.stringify({ version: 2, projects: [] }, null, 2);
@@ -67,25 +72,26 @@ async function launchWithConfig(outputPath: (name: string) => string): Promise<{
   const page = await app.firstWindow();
 
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   return { app, page };
 }
 
-/** Author one agent through Settings › Agents, then come back out. */
-async function authorAgent(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await page.getByRole('button', { name: 'Agents' }).click();
-
-  await page.getByRole('button', { name: '+ New agent' }).click();
-  await page.getByRole('tab', { name: 'Source' }).click();
+/**
+ * Author one agent on its page, from Settings › Agents' New agent (HIVE-204),
+ * then go back to the Overmind.
+ */
+async function authorAgent(page: Page, { stay = false }: { stay?: boolean } = {}): Promise<void> {
+  await newAgentPage(page);
+  await showSource(page);
   await fillAgentSource(page, DEFINITION);
   await page.getByRole('button', { name: 'Save' }).click();
+  await expectSavedAs(page, 'slack-watcher');
 
-  await expect(page.getByRole('button', { name: /slack-watcher/ })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Close settings' }).click();
+  // Back to the Overmind, where the specs below start. Round two's agent page
+  // has no back button, and the bar is the way out.
+  if (stay) return;
+  await goToOvermind(page);
 }
 
 /**
@@ -107,10 +113,7 @@ async function authorAgent(page: Page): Promise<void> {
 test('accepts spaces typed into the agent form fields', async ({}, testInfo) => {
   const { app, page } = await launchWithConfig((name) => testInfo.outputPath(name));
 
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await page.getByRole('button', { name: 'Agents' }).click();
-  await page.getByRole('button', { name: '+ New agent' }).click();
+  await newAgentPage(page);
 
   const description = page.getByRole('textbox', { name: 'description' });
 
@@ -134,7 +137,7 @@ test('accepts spaces typed into the agent form fields', async ({}, testInfo) => 
     does at the ends, which is the behaviour the draft exists to hide from the
     typist rather than to defeat.
   */
-  await page.getByRole('tab', { name: 'Source' }).click();
+  await showSource(page);
 
   await expectAgentSource(page, /description: watches my open PRs/);
   await expectAgentSource(page, /tools: \[Bash\(gh \*\), Read\]/);
@@ -143,7 +146,7 @@ test('accepts spaces typed into the agent form fields', async ({}, testInfo) => 
 });
 
 /**
- * The Source tab says what the body is for.
+ * The source pane says what the body is for.
  *
  * Every frontmatter field has a `FIELD_HELP` sentence under its control; the
  * body had none anywhere, and it is the field users read as a description of
@@ -152,45 +155,42 @@ test('accepts spaces typed into the agent form fields', async ({}, testInfo) => 
 test('tells the author what the body below the frontmatter does', async ({}, testInfo) => {
   const { app, page } = await launchWithConfig((name) => testInfo.outputPath(name));
 
-  await page.getByRole('button', { name: 'Settings' }).click();
-  await page.getByRole('button', { name: 'Agents' }).click();
-  await page.getByRole('button', { name: '+ New agent' }).click();
-
-  await expect(page.getByText(/carried out on every wake/)).toHaveCount(0);
-
-  await page.getByRole('tab', { name: 'Source' }).click();
+  await newAgentPage(page);
+  await showSource(page);
 
   await expect(page.getByText(/carried out on every wake/)).toBeVisible();
 
   await app.close();
 });
 
-test('lists an authored agent in the rail, grouped by state', async ({}, testInfo) => {
+test('lists an authored agent in its lane, and folds the lane', async ({}, testInfo) => {
   const { app, page } = await launchWithConfig((name) => testInfo.outputPath(name));
 
   try {
     await authorAgent(page);
 
-    await selectRailTab(page.getByRole('tab', { name: /Agents/ }));
+    await goToPlace(page, 'Agents');
 
     const panel = page.locator('[data-panel="agents"]');
 
     /*
-      A definition that has never run rests, so it files under Sleeping — and
-      the group header carries the count.
-
-      `exact` on both: `getByText` matches case-insensitively by substring, so
-      the header's `Sleeping` and the row meta's `sleeping` are each other's
-      false positives.
+      A definition that has never run rests, so it files under Burrowed
+      (HIVE-204), and its row says the state in words in its name — the tile's
+      colour is never the only carrier.
     */
-    await expect(panel.getByText('Sleeping', { exact: true })).toBeVisible();
-    await expect(panel.getByRole('button', { name: /slack-watcher/ })).toBeVisible();
-    // The status is a word on screen, never colour alone.
-    await expect(
-      panel
-        .getByRole('button', { name: /slack-watcher/ })
-        .getByText('sleeping', { exact: true }),
-    ).toBeVisible();
+    const lane = panel.getByRole('region', { name: 'Burrowed' });
+
+    await expect(lane.getByRole('button', { name: /^slack-watcher, sleeping/ })).toBeVisible();
+
+    // The lane folds from its header, and unfolds again.
+    const header = lane.getByRole('button', { expanded: true });
+
+    await header.click();
+    await expect(lane.getByRole('button', { expanded: false })).toBeVisible();
+    await expect(lane.getByRole('button', { name: /^slack-watcher, / })).toBeHidden();
+
+    await lane.getByRole('button', { expanded: false }).click();
+    await expect(lane.getByRole('button', { name: /^slack-watcher, sleeping/ })).toBeVisible();
   } finally {
     await app.close();
   }
@@ -201,10 +201,10 @@ test('opens the agent view — and no terminal — when the row is clicked', asy
 
   try {
     await authorAgent(page);
-    await selectRailTab(page.getByRole('tab', { name: /Agents/ }));
+    await goToPlace(page, 'Agents');
     await page
       .locator('[data-panel="agents"]')
-      .getByRole('button', { name: /slack-watcher/ })
+      .getByRole('button', { name: /^slack-watcher, / })
       .click();
 
     const view = page.locator('[data-view="agent"]');
@@ -226,7 +226,7 @@ test('opens the agent view — and no terminal — when the row is clicked', asy
       absent from a tree; only the built app can show that the surface a person
       actually sees is the agent view and nothing else.
     */
-    await expect(page.getByTestId('session-meta-bar')).toHaveCount(0);
+    await expect(page.getByTestId('session-header')).toHaveCount(0);
     await expect(
       page.locator('[data-testid="terminal-surface"]:visible'),
     ).toHaveCount(0);
@@ -264,10 +264,10 @@ test('lays the run log and the ledger side by side, and stacks them when the sta
 
   try {
     await authorAgent(page);
-    await selectRailTab(page.getByRole('tab', { name: /Agents/ }));
+    await goToPlace(page, 'Agents');
     await page
       .locator('[data-panel="agents"]')
-      .getByRole('button', { name: /slack-watcher/ })
+      .getByRole('button', { name: /^slack-watcher, / })
       .click();
 
     const log = page.locator('[data-region="run-log"]');
@@ -296,11 +296,11 @@ test('lays the run log and the ledger side by side, and stacks them when the sta
     /*
       Now narrow the *window* until the stage crosses 720px. A media query would
       also pass this; what makes the container query the right tool is that the
-      rails are draggable, so the stage can be narrow inside a wide window. This
+      bar and the list panel take width, so the stage can be narrow inside a wide window. This
       asserts the collapse happens at all — `resolve-view` and the component
       tests carry the rest.
     */
-    await page.setViewportSize({ width: 1100, height: 800 });
+    await page.setViewportSize({ width: 760, height: 800 });
 
     const after = await wide();
 
@@ -402,6 +402,7 @@ test('prints the agents table in the console', async ({}, testInfo) => {
 
   try {
     await authorAgent(page);
+    await openConsole(page);
 
     const input = page.getByRole('textbox', { name: 'Overmind command' });
 
@@ -434,6 +435,7 @@ test('pauses and resumes from the console, and the table agrees', async ({}, tes
 
   try {
     await authorAgent(page);
+    await openConsole(page);
 
     const status = watcherRow(page).locator('[data-col="status"]');
     const input = page.getByRole('textbox', { name: 'Overmind command' });
@@ -497,32 +499,156 @@ test('pauses and resumes from the console, and the table agrees', async ({}, tes
  * navigation back to the table from here, and none is needed. What matters is
  * that the click reached main and a second surface redrew from the push.
  */
-test('pauses from the agent view, and the rail agrees', async ({}, testInfo) => {
+test('pauses from the row’s slot, and the row agrees', async ({}, testInfo) => {
   const { app, page } = await launchWithConfig((name) => testInfo.outputPath(name));
 
   try {
     await authorAgent(page);
-    await selectRailTab(page.getByRole('tab', { name: /Agents/ }));
+    await goToPlace(page, 'Agents');
 
     const panel = page.locator('[data-panel="agents"]');
+    const row = panel.getByRole('button', { name: /^slack-watcher, / });
 
-    await expect(
-      panel
-        .getByRole('button', { name: /slack-watcher/ })
-        .getByText('sleeping', { exact: true }),
-    ).toBeVisible();
+    await expect(row).toHaveAccessibleName(/^slack-watcher, sleeping/);
 
-    await panel.getByRole('button', { name: /slack-watcher/ }).click();
-    await expect(page.locator('[data-view="agent"]')).toBeVisible();
-    await page.getByRole('button', { name: /Pause/ }).click();
+    // The slot's actions show on hover (HIVE-204); the page header has none.
+    await row.hover();
+    await panel.getByRole('button', { name: 'Pause slack-watcher' }).click();
 
-    await expect(
-      panel
-        .getByRole('button', { name: /slack-watcher/ })
-        .getByText('paused', { exact: true }),
-    ).toBeVisible();
+    await expect(row).toHaveAccessibleName(/^slack-watcher, paused/);
     // The control names the move, not the state — one button, not two.
-    await expect(page.getByRole('button', { name: /Resume/ })).toBeVisible();
+    await row.hover();
+    await expect(panel.getByRole('button', { name: 'Resume slack-watcher' })).toBeVisible();
+    // One play icon (#74): a paused agent refuses a run, so its row offers Resume and no Run now.
+    await expect(panel.getByRole('button', { name: 'Run slack-watcher now' })).toHaveCount(0);
+
+    await row.click();
+    const view = page.locator('[data-view="agent"]');
+    await expect(view).toBeVisible();
+    /*
+      The page header has no Pause. A paused agent's prompt row is the pause bar
+      (HIVE-211), and its Resume is the one such control on the page.
+    */
+    await expect(view.getByRole('button', { name: /Pause/ })).toHaveCount(0);
+    const pauseBar = view.getByRole('status').filter({ hasText: 'slack-watcher is paused.' });
+    await expect(pauseBar.getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+    await expect(view.getByRole('button', { name: /Resume/ })).toHaveCount(1);
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * A run, start to finish, against a stub `claude` (HIVE-204): the run table
+ * selects the newest run and the output heading names it.
+ *
+ * The stub is `agent-task-runs.spec.ts`'s idea — an executable that writes the
+ * `stream-json` lines the fold reads and exits — so the run costs nothing and
+ * everything between the row and the process is the real thing. The definition
+ * has no `wake:` so the scheduler starts nothing of its own.
+ */
+const STUB = `#!/bin/sh
+printf '%s\\n' '{"type":"system","subtype":"init","session_id":"stub","mcp_servers":[]}'
+printf '%s\\n' '{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"swept the channel"}]}}'
+sleep 3
+printf '%s\\n' '{"type":"result","subtype":"success","num_turns":1,"total_cost_usd":0.001,"session_id":"stub"}'
+`;
+
+const STUB_DEFINITION = `---
+name: sweeper
+description: Sweeps once when asked
+icon: Ghost
+---
+Sweep the channel.
+`;
+
+test('runs from the row, and the run table selects the newest run', async ({}, testInfo) => {
+  test.setTimeout(90_000);
+
+  const configPath = testInfo.outputPath('hive-config.json');
+  const stub = testInfo.outputPath('stub-claude');
+  const folder = join(dirname(configPath), 'agents', 'sweeper');
+
+  writeFileSync(stub, STUB);
+  chmodSync(stub, 0o755);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'AGENT.md'), STUB_DEFINITION);
+  writeFileSync(configPath, JSON.stringify({ version: 2, projects: [], claudeCommand: stub }));
+
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+    env: { CLAUDE_CONFIG_DIR: testInfo.outputPath('claude-config') },
+  });
+  const page = await app.firstWindow();
+
+  try {
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('nav[aria-label="Places"]');
+    await goToPlace(page, 'Agents');
+
+    const panel = page.locator('[data-panel="agents"]');
+    const row = panel.getByRole('button', { name: /^sweeper, / });
+
+    await row.hover();
+    await panel.getByRole('button', { name: 'Run sweeper now' }).click();
+    await expect(panel.getByRole('region', { name: 'Morphing' })).toBeVisible();
+
+    /*
+      A second press while it works is answered in line 2 — queued behind the
+      run in flight — for five seconds.
+    */
+    await row.hover();
+    await panel.getByRole('button', { name: 'Run sweeper now' }).click();
+
+    const notice = panel.getByRole('status');
+
+    await expect(notice).toContainText('sweeper');
+    await expect(notice).toBeHidden({ timeout: 7_000 });
+
+    await row.click();
+
+    const receipts = page.getByTestId('run-receipts');
+
+    // Every run finishes (the queued one too); the table follows the newest,
+    // and the heading names it.
+    await expect(receipts.locator('[data-live-run]')).toHaveCount(0, { timeout: 30_000 });
+    await expect(receipts.locator('[role="button"]').first()).toBeVisible();
+    await expect(receipts.locator('[aria-current="true"]')).toHaveCount(1);
+    await expect(receipts.locator('[role="button"]').first()).toHaveAttribute('aria-current', 'true');
+    await expect(page.getByTestId('run-output-heading')).toContainText(/^Output#/);
+    await expect(page.getByTestId('run-output-heading')).toContainText('done');
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * Drafts are kept, not guarded (HIVE-204): an edit survives a trip to Activity
+ * and back, and Save is what makes it saved.
+ */
+test('keeps an unsaved definition across Activity and back, until Save', async ({}, testInfo) => {
+  const { app, page } = await launchWithConfig((name) => testInfo.outputPath(name));
+
+  try {
+    await authorAgent(page, { stay: true });
+
+    const description = page.getByRole('textbox', { name: 'description' });
+
+    await description.click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' closely');
+    await expect(page.getByText('unsaved', { exact: true })).toBeVisible();
+
+    await page.getByRole('radio', { name: 'Activity' }).click();
+    await expect(page.getByText('Status', { exact: true })).toBeVisible();
+    await page.getByRole('radio', { name: 'Definition' }).click();
+
+    await expect(page.getByText('unsaved', { exact: true })).toBeVisible();
+    await expect(description).toHaveValue('Watches the channel closely');
+
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByText('saved', { exact: true })).toBeVisible();
   } finally {
     await app.close();
   }

@@ -326,7 +326,7 @@ test('Cmd+Delete kills the whole line at a real Claude prompt', async ({}, testI
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
     await collect(page);
     await startSession(page, PROJECT);
 

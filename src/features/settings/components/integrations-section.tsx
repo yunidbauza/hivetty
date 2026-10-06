@@ -7,10 +7,11 @@ import { JiraConnectionGroup } from '@features/settings/components/jira-connecti
 import { JiraCredentialGroup } from '@features/settings/components/jira-credential-group';
 import { JiraQueryGroup } from '@features/settings/components/jira-query-group';
 import { PathProbes } from '@features/settings/components/path-probes';
-import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsProviderGroup } from '@features/settings/components/settings-provider-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
 import { SlackGroup } from '@features/settings/components/slack-group';
+import { TicketWorkflowGroup } from '@features/settings/components/ticket-workflow-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { useAgents } from '@hooks/use-agents';
 import { useProjectConfig } from '@hooks/use-project-config';
 import { readJiraStatus } from '@lib/jira';
@@ -72,7 +73,7 @@ import { SLACK_SERVER_KEY } from '@shared/slack-contract';
 function TokenSourceLine({ gh }: { gh: GhStatus }) {
   if (gh.tokenSource === 'env' && gh.envVar !== null) {
     return (
-      <p className="text-[12.5px] text-ink">
+      <p className="text-control text-ink">
         <code className="font-mono">{gh.envVar}</code> is set in this app&rsquo;s
         environment, so that is the token that would be used.
       </p>
@@ -81,7 +82,7 @@ function TokenSourceLine({ gh }: { gh: GhStatus }) {
 
   if (gh.tokenSource === 'keyring') {
     return (
-      <p className="text-[12.5px] text-ink">
+      <p className="text-control text-ink">
         <code className="font-mono">gh</code> holds the credential itself, in your
         system keychain. Nothing needs to be configured here.
       </p>
@@ -94,7 +95,7 @@ function TokenSourceLine({ gh }: { gh: GhStatus }) {
   // check — so this only has to say what the remaining option is.
   if (!gh.installed) {
     return (
-      <p className="text-[12.5px] text-amber">
+      <p className="text-control text-amber-text">
         No token source. Without <code className="font-mono">gh</code>, the only
         one left is <code className="font-mono">GH_TOKEN</code> in this
         app&rsquo;s environment.
@@ -103,7 +104,7 @@ function TokenSourceLine({ gh }: { gh: GhStatus }) {
   }
 
   return (
-    <p className="text-[12.5px] text-amber">
+    <p className="text-control text-amber-text">
       No token source. Run <code className="font-mono">gh auth login</code>, or set{' '}
       <code className="font-mono">GH_TOKEN</code> in this app&rsquo;s environment.
     </p>
@@ -121,7 +122,7 @@ function TokenSourceLine({ gh }: { gh: GhStatus }) {
 function NotFoundReason({ loginEnv }: { loginEnv: LoginEnvStatus }) {
   if (loginEnv.error !== null) {
     return (
-      <p className="text-[11.5px] text-subtle">
+      <p className="text-ui-sm text-subtle">
         This app searched the <code className="font-mono">PATH</code> it was
         launched with, not your shell&rsquo;s — the import did not run.{' '}
         <strong className="font-normal text-muted">
@@ -134,7 +135,7 @@ function NotFoundReason({ loginEnv }: { loginEnv: LoginEnvStatus }) {
 
   if (!loginEnv.enabled) {
     return (
-      <p className="text-[11.5px] text-subtle">
+      <p className="text-ui-sm text-subtle">
         This app searched the <code className="font-mono">PATH</code> it was
         launched with — for a desktop app opened from Finder, launchd&rsquo;s
         four entries rather than your shell&rsquo;s. Switch the login-shell
@@ -148,7 +149,7 @@ function NotFoundReason({ loginEnv }: { loginEnv: LoginEnvStatus }) {
 
   // Enabled, and the probe succeeded — whether or not it had anything to add.
   return (
-    <p className="text-[11.5px] text-subtle">
+    <p className="text-ui-sm text-subtle">
       This app searched your login shell&rsquo;s own{' '}
       <code className="font-mono">PATH</code>
       {loginEnv.imported ? ', imported at startup' : ''} — the same one a
@@ -169,9 +170,9 @@ function GhSummary({
   if (!gh.installed) {
     return (
       <>
-        <p className="flex items-start gap-2 text-[12.5px]">
-          <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
-          <span className="text-amber">
+        <p className="flex items-start gap-2 text-control">
+          <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
+          <span className="text-amber-text">
             <code className="font-mono">gh</code> was not found.
           </span>
         </p>
@@ -183,7 +184,7 @@ function GhSummary({
 
   return (
     <>
-      <p className="flex items-start gap-2 text-[12.5px]">
+      <p className="flex items-start gap-2 text-control">
         <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         <span className="text-ink">
           <code className="font-mono text-muted">{gh.resolved}</code>
@@ -194,18 +195,18 @@ function GhSummary({
       </p>
 
       {gh.error === null ? null : (
-        <p className="text-[11.5px] text-amber">
+        <p className="text-ui-sm text-amber-text">
           Asking <code className="font-mono">gh</code> about its auth status failed:{' '}
           {gh.error}
         </p>
       )}
 
       {gh.authenticated ? (
-        <p className="text-[12.5px] text-ink">
+        <p className="text-control text-ink">
           Signed in as <span className="text-muted">{gh.account ?? 'unknown'}</span>.
         </p>
       ) : gh.error === null ? (
-        <p className="text-[12.5px] text-amber">
+        <p className="text-control text-amber-text">
           Installed, but not signed in. Run{' '}
           <code className="font-mono">gh auth login</code> in any terminal.
         </p>
@@ -295,7 +296,7 @@ export function IntegrationsSection() {
       {snapshot.errors.map((error) => (
         <p
           key={error}
-          className="rounded-[5px] border border-red px-2.5 py-1.5 text-[11.5px] text-red"
+          className="rounded-md border border-red px-2.5 py-1.5 text-ui-sm text-red"
         >
           {error}
         </p>
@@ -306,13 +307,13 @@ export function IntegrationsSection() {
           title="Token source"
           description="Which credential a GitHub request would use."
         >
-          <div className="flex flex-col gap-2 rounded-[7px] border border-border-soft p-3">
+          <div className="flex flex-col gap-2 rounded-lg border border-border-soft p-3">
             {status === null ? (
-              <p data-probing className="text-[12.5px] text-subtle">{probing}</p>
+              <p data-probing className="text-control text-subtle">{probing}</p>
             ) : (
               <TokenSourceLine gh={status.gh} />
             )}
-            <p className="text-[11.5px] text-subtle">
+            <p className="text-ui-sm text-subtle">
               The pull-request list is still sample data — nothing in the app calls
               GitHub yet. This reports which source would be used when it does. The
               Hive <strong className="font-normal text-muted">does not store a token</strong>;
@@ -325,9 +326,9 @@ export function IntegrationsSection() {
           title="Command line"
           description="Where gh is, and whether it is signed in."
         >
-          <div className="flex flex-col gap-2 rounded-[7px] border border-border-soft p-3">
+          <div className="flex flex-col gap-2 rounded-lg border border-border-soft p-3">
             {status === null ? (
-              <p data-probing className="text-[12.5px] text-subtle">{probing}</p>
+              <p data-probing className="text-control text-subtle">{probing}</p>
             ) : (
               <GhSummary gh={status.gh} loginEnv={status.loginEnv} />
             )}
@@ -341,7 +342,7 @@ export function IntegrationsSection() {
             title="Connection"
             description="Real tickets in the WORK tab."
           >
-            <p data-probing className="text-[12.5px] text-subtle">{probing}</p>
+            <p data-probing className="text-control text-subtle">{probing}</p>
           </SettingsGroup>
         ) : (
           <>
@@ -361,6 +362,7 @@ export function IntegrationsSection() {
                   jira.credential.kind === 'env')
               }
             />
+            <TicketWorkflowGroup workflow={snapshot.jira.workflow} />
           </>
         )}
       </SettingsProviderGroup>

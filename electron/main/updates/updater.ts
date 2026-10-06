@@ -1,3 +1,4 @@
+import { APP_DISPLAY_NAME } from '@shared/app-name';
 import {
   RELEASES_URL,
   releaseUrlFor,
@@ -210,7 +211,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       kind: 'app.update_ready',
       id: `app.update_ready:${version}`,
       title: `Update ready — ${version}`,
-      body: 'Click to restart The Hive on the new version.',
+      body: `Click to restart ${APP_DISPLAY_NAME} on the new version.`,
       action: { type: 'update.install' },
     });
   };
@@ -264,7 +265,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       setTimer(installWhenIdle, UNATTENDED_INSTALL_RETRY_MS);
       return;
     }
-    log(`[hive] nothing is live; installing The Hive ${String(availableVersion)}`);
+    log(`[hive] nothing is live; installing ${APP_DISPLAY_NAME} ${String(availableVersion)}`);
     void install();
   };
 
@@ -321,7 +322,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
             ? `${
                 availableVersion === null
                   ? 'It'
-                  : `The Hive ${availableVersion}`
+                  : `${APP_DISPLAY_NAME} ${availableVersion}`
               } is on its way. You'll be told when it is ready to install.`
             : 'A check is in progress. Give it a moment and try again.',
         });
@@ -344,7 +345,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     if (state === 'ready' && availableVersion !== null) {
       if (origin === 'menu') {
         inform({
-          message: `The Hive ${availableVersion} is ready to install.`,
+          message: `${APP_DISPLAY_NAME} ${availableVersion} is ready to install.`,
           detail: 'Restart the app to finish updating.',
         });
       }
@@ -365,7 +366,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
         if (origin === 'menu') {
           inform({
             message: "You're up to date.",
-            detail: `The Hive ${currentVersion} is the latest version.`,
+            detail: `${APP_DISPLAY_NAME} ${currentVersion} is the latest version.`,
           });
         }
         return;
@@ -392,8 +393,8 @@ export function createUpdater(deps: UpdaterDeps): Updater {
        * the app telling them twice and leaving one of the two unread.
        */
       const wanted = await confirm({
-        title: 'Update The Hive',
-        message: `The Hive ${found.version} is available.`,
+        title: `Update ${APP_DISPLAY_NAME}`,
+        message: `${APP_DISPLAY_NAME} ${found.version} is available.`,
         detail:
           capability.mode === 'self-install'
             ? `You're running ${currentVersion}. The update downloads in the background; the app restarts when you're ready.`

@@ -1,8 +1,13 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { EditorTabStrip } from '@features/editor/components/editor-tab-strip';
+import {
+  EDITOR_FILE_PANEL,
+  EDITOR_TERMINAL_PANEL,
+  EditorTabStrip,
+  editorTabId,
+} from '@features/editor/components/editor-tab-strip';
 import { fileKey, useEditorStore } from '@stores/editor-store';
 
 /**
@@ -102,7 +107,7 @@ describe('EditorTabStrip', () => {
     await openTwoFiles();
     render(<EditorTabStrip showTerminalTab />);
 
-    await userEvent.click(screen.getByRole('button', { name: /Close a\.ts/ }));
+    await userEvent.click(screen.getByTitle('Close a.ts'));
 
     expect(store().openFiles.map((f) => f.name)).toEqual(['b.ts']);
   });
@@ -123,8 +128,37 @@ describe('EditorTabStrip', () => {
     expect(
       screen.getByRole('tab', { name: /a\.ts.*unsaved changes/ }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: /Close a\.ts/ }),
-    ).toBeInTheDocument();
+    expect(screen.getByTitle('Close a.ts')).toBeInTheDocument();
+  });
+
+  it('is a WAI-ARIA tablist: only tabs inside, roving tabIndex, arrows wrap, panels named (HIVE-225)', async () => {
+    const user = userEvent.setup();
+    await openTwoFiles();
+    render(<EditorTabStrip showTerminalTab />);
+    const list = screen.getByRole('tablist', { name: 'Open files' });
+    expect(within(list).queryAllByRole('button')).toEqual([]);
+
+    const tabs = within(list).getAllByRole('tab');
+    expect(tabs.map((t) => t.getAttribute('tabindex'))).toEqual(['-1', '-1', '0']);
+    expect(tabs[0]).toHaveAttribute('id', editorTabId(null));
+    expect(tabs[0]).toHaveAttribute('aria-controls', EDITOR_TERMINAL_PANEL);
+    expect(tabs[2]).toHaveAttribute('aria-controls', EDITOR_FILE_PANEL);
+
+    tabs[2]!.focus();
+    await user.keyboard('{ArrowRight}');
+    expect(store().activeKey).toBeNull();
+    expect(screen.getByRole('tab', { name: /Terminal/ })).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(store().activeKey).toBe(fileKey('demo', 'src/b.ts'));
+  });
+
+  it('closes the focused file tab on Delete and focuses the tab that takes its place (HIVE-225)', async () => {
+    const user = userEvent.setup();
+    await openTwoFiles();
+    render(<EditorTabStrip showTerminalTab />);
+    screen.getByRole('tab', { name: /b\.ts/ }).focus();
+    await user.keyboard('{Delete}');
+    expect(screen.queryByRole('tab', { name: /b\.ts/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /a\.ts/ })).toHaveFocus();
   });
 });

@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { TERM } from '@lib/terminal/ansi';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
+import { mixColour, parseColour } from '@lib/theme/colour';
+import { contrastRatio } from '@lib/theme/validate';
 
 /**
  * Story 015 requires `.claude/DESIGN-SYSTEM.md` to reproduce the token sets and
@@ -42,7 +45,7 @@ describe('DESIGN-SYSTEM.md — colour tokens', () => {
   it('parses a complete dark token set from tokens.css', () => {
     // Guards the parser itself: a regex that silently matched nothing would
     // make every assertion below vacuously true.
-    expect(Object.keys(darkTokens)).toHaveLength(39);
+    expect(Object.keys(darkTokens)).toHaveLength(46);
   });
 
   it('documents every dark token with the value tokens.css defines', () => {
@@ -202,5 +205,243 @@ describe('AGENTS.md', () => {
     expect(agents).toContain('TerminalTransport');
     expect(agents).toContain('selector hook');
     expect(agents).toContain('80%');
+  });
+});
+
+describe('the amber text colour (HIVE-210, HIVE-223)', () => {
+  const declared = (selector: RegExp) =>
+    /--cc-amber-text:\s*([^;]+);/.exec(block(tokensCss, selector))?.[1]?.trim();
+  const toHex = (colour: string) =>
+    `#${parseColour(colour)!
+      .slice(0, 3)
+      .map((channel) => Math.round(channel).toString(16).padStart(2, '0'))
+      .join('')}`;
+
+  it('binds the creature colours as Tailwind utilities (HIVE-210)', () => {
+    expect(tokensCss).toContain('--color-creep: var(--cc-creep);');
+    expect(tokensCss).toContain('--color-chitin: var(--cc-chitin);');
+  });
+
+  it('is a utility, and the count-only name is gone', () => {
+    expect(tokensCss).toContain('--color-amber-text: var(--cc-amber-text);');
+    expect(tokensCss).not.toContain('amber-count');
+  });
+
+  it('is the drawn amber in dark', () => {
+    expect(declared(/:root\s*\{/)).toBe('var(--cc-amber)');
+  });
+
+  it('clears AA on every light ground, in every built-in theme', () => {
+    const value = declared(/body\[data-theme='light'\]\s*\{/);
+    const match = /^color-mix\(in srgb, var\(--cc-amber\) (\d+)%, var\(--cc-ink\)\)$/.exec(value ?? '');
+    expect(match, `unexpected light --cc-amber-text: ${String(value)}`).not.toBeNull();
+    const amberShare = Number(match![1]) / 100;
+    for (const theme of Object.values(BUILT_IN_THEMES)) {
+      const { ui } = theme.modes.light;
+      const text = toHex(mixColour(ui.amber, ui.ink, 1 - amberShare));
+      for (const ground of ['bg', 'panel', 'panel2', 'chip', 'hover', 'active', 'termBg', 'termRowHover', 'termRowActive'] as const) {
+        expect(contrastRatio(text, ui[ground]), `${theme.name} on ${ground}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+});
+
+/**
+ * HIVE-225: the vendored shadcn primitives used colour names this app never
+ * binds (`bg-popover`, `ring-ring`, …), so Tailwind generated nothing and a bare
+ * `border` fell back to `currentColor`. None may come back.
+ */
+const SHADCN_NAME =
+  /(?:^|[\s"'`:])(?:bg|text|ring|ring-offset|border|outline)-(?:background|foreground|popover(?:-foreground)?|accent(?:-foreground)?|destructive|ring|muted-foreground|primary(?:-foreground)?|secondary(?:-foreground)?|card(?:-foreground)?|input)\b/;
+const UI_DIR = resolve(process.cwd(), 'src/components/ui');
+const uiFiles = readdirSync(UI_DIR).filter((f) => f.endsWith('.tsx'));
+
+describe('src/components/ui — no shadcn colour names', () => {
+  it('scans the primitives', () => {
+    expect(uiFiles).toEqual(expect.arrayContaining(['dialog.tsx', 'dropdown-menu.tsx']));
+  });
+
+  it.each(uiFiles)('%s uses only the app’s own colour names', (file) => {
+    const source = readFileSync(join(UI_DIR, file), 'utf8');
+    expect(source.match(SHADCN_NAME)?.[0]).toBeUndefined();
+  });
+});
+
+/** Every `src/**` file, for the scans below. */
+function sourceFiles(dir = resolve(process.cwd(), 'src')): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return /\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+const relative = (path: string) => path.slice(process.cwd().length + 1);
+
+describe('menus — one surface, one item recipe (HIVE-225)', () => {
+  const files = sourceFiles().filter((f) => !f.endsWith('components/ui/dropdown-menu.tsx'));
+
+  it('no consumer re-states the menu surface', () => {
+    const offenders = files.filter((f) =>
+      readFileSync(f, 'utf8').includes('rounded-lg border border-border bg-panel p-1'),
+    );
+    expect(offenders.map(relative)).toEqual([]);
+  });
+
+  it('no consumer highlights a menu item with hover', () => {
+    const offenders = files.filter((f) => {
+      const source = readFileSync(f, 'utf8');
+      return source.includes('DropdownMenuItem') && /focus:bg-hover|data-\[highlighted\]:bg-hover/.test(source);
+    });
+    expect(offenders.map(relative)).toEqual([]);
+  });
+});
+
+describe('overlays — one scrim (HIVE-225)', () => {
+  it('binds the scrim to the theme background', () => {
+    expect(tokensCss).toContain('--color-scrim: color-mix(in srgb, var(--cc-bg) 70%, transparent);');
+  });
+
+  it('no overlay picks its own veil', () => {
+    const offenders = sourceFiles().filter((f) => /\bbg-(?:black|bg)\/\d+/.test(readFileSync(f, 'utf8')));
+    expect(offenders.map(relative)).toEqual([]);
+  });
+});
+
+describe('native controls follow the mode (HIVE-225)', () => {
+  const globalCss = read('src/styles/global.css');
+
+  it('declares dark on :root and light under the light theme', () => {
+    expect(globalCss).toMatch(/:root\s*\{[^}]*color-scheme:\s*dark;/);
+    expect(globalCss).toMatch(/body\[data-theme='light'\]\s*\{[^}]*color-scheme:\s*light;/);
+  });
+});
+
+describe('primary buttons — one atom (HIVE-225)', () => {
+  /** A quoted class string carrying the brand fill and a horizontal padding is a hand-rolled button. */
+  const HAND_ROLLED = /['"`][^'"`]*\bbg-brand-fill[^'"`]*['"`]/g;
+  const files = sourceFiles().filter((f) => !f.endsWith('components/ui/button.tsx'));
+
+  it('no file outside button.tsx hand-rolls a primary button', () => {
+    const offenders = files.flatMap((f) =>
+      [...readFileSync(f, 'utf8').matchAll(HAND_ROLLED)]
+        .filter((m) => /\bpx-/.test(m[0]))
+        .map(() => relative(f)),
+    );
+    expect([...new Set(offenders)]).toEqual([]);
+  });
+});
+
+describe('type scale (HIVE-225)', () => {
+  const SRC = resolve(process.cwd(), 'src');
+  const files = readdirSync(SRC, { recursive: true, encoding: 'utf8' }).filter((f) => /\.tsx?$/.test(f));
+  const PX = /text-\[(\d+(?:\.\d+)?)px\]/g;
+  const EXEMPT = 'type-floor-exempt:';
+  /** Display headings sit above the scale; `em` sizes are not matched at all. */
+  const DISPLAY_MIN = 18;
+
+  it('scans the source tree', () => {
+    // Guards the walk: an empty list would pass the next test vacuously.
+    expect(files.length).toBeGreaterThan(100);
+  });
+
+  it('leaves no arbitrary pixel size below the display headings', () => {
+    const offenders: string[] = [];
+    for (const file of files) {
+      const lines = readFileSync(join(SRC, file), 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        for (const [, px] of line.matchAll(PX)) {
+          const n = Number(px);
+          if (n >= DISPLAY_MIN) continue;
+          const marked = line.includes(EXEMPT) || (lines[i - 1] ?? '').includes(EXEMPT);
+          if (marked && n < 11) continue;
+          offenders.push(`src/${file}:${String(i + 1)} text-[${px}px]`);
+        }
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('documents every step of the scale with its size', () => {
+    const steps = [...tokensCss.matchAll(/--text-([a-z-]+):\s*([\d.]+px)/g)];
+    expect(steps.map(([, name]) => name)).toEqual(['ui-lg', 'ui', 'control', 'ui-sm', 'micro']);
+    for (const [, name, size] of steps) {
+      expect(designSystem, `DESIGN-SYSTEM.md is missing text-${name} (${size})`).toMatch(
+        new RegExp(`\`text-${name}\`\\s*\\|\\s*${size.replace('.', '\\.')}`),
+      );
+    }
+  });
+});
+
+describe('radius — Tailwind’s scale, nothing arbitrary (HIVE-224)', () => {
+  it('no rounded-[Npx] anywhere in src', () => {
+    const offenders = sourceFiles().flatMap((f) =>
+      readFileSync(f, 'utf8')
+        .split('\n')
+        .flatMap((line, i) => (/\brounded(?:-[a-z]{1,2})?-\[/.test(line) ? [`${relative(f)}:${String(i + 1)}`] : [])),
+    );
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe('tints — one map, in srgb (HIVE-224)', () => {
+  it.each(['green', 'amber', 'red', 'brand'])('binds %s’s three steps to the live token', (hue) => {
+    expect(tokensCss).toContain(`--color-${hue}-soft: color-mix(in srgb, var(--cc-${hue}) 10%, transparent);`);
+    expect(tokensCss).toContain(`--color-${hue}-strong: color-mix(in srgb, var(--cc-${hue}) 16%, transparent);`);
+    expect(tokensCss).toContain(`--color-${hue}-edge: color-mix(in srgb, var(--cc-${hue}) 50%, var(--cc-border));`);
+  });
+});
+
+/** Lines matching `pattern`, unless the line or the one above carries `marker`; comment lines skipped. */
+function unmarked(pattern: RegExp, marker: string): string[] {
+  return sourceFiles()
+    .filter((f) => f.endsWith('.tsx'))
+    .flatMap((f) => {
+      const lines = readFileSync(f, 'utf8').split('\n');
+      return lines.flatMap((line, i) => {
+        if (/^\s*(\/\/|\*|\/\*)/.test(line)) return [];
+        if (!pattern.test(line)) return [];
+        if (line.includes(marker) || (lines[i - 1] ?? '').includes(marker)) return [];
+        return [`${relative(f)}:${String(i + 1)}`];
+      });
+    });
+}
+
+describe('tints — status fills come from the map (HIVE-224)', () => {
+  it('no bg/ring tint of green, amber, red or brand mixed by hand', () => {
+    expect(
+      unmarked(/\b(?:bg|ring)-(?:\[color-mix\(in_srgb,var\(--cc-(?:green|amber|red|brand)\)|(?:green|amber|red|brand)\/\d)/, 'tint-exempt:'),
+    ).toEqual([]);
+  });
+});
+
+describe('tints — tinted borders and strokes come from the map (HIVE-224)', () => {
+  it('no border/stroke/outline tint of green, amber, red or brand mixed by hand', () => {
+    expect(
+      unmarked(/\b(?:border|stroke|outline)-(?:\[color-mix\(in_srgb,var\(--cc-(?:green|amber|red|brand)\)|(?:green|amber|red|brand)\/\d)/, 'tint-exempt:'),
+    ).toEqual([]);
+  });
+});
+
+describe('colour literals — none unannotated in components (HIVE-224)', () => {
+  it('no rgb()/rgba(), no white/black utility or mix, no arbitrary accent var', () => {
+    expect(
+      unmarked(
+        /rgba?\(|\b(?:bg|text|border|ring|fill|stroke|from|via|to|shadow|accent|outline|decoration|divide|caret)-(?:white|black)\b|(?:color-mix|-gradient)\([^'"`]*\b(?:white|black)\b|accent-\[var\(/,
+        'colour-literal-exempt:',
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe('DESIGN-SYSTEM.md records the scales (HIVE-224)', () => {
+  const doc = readFileSync(resolve(process.cwd(), '.claude/DESIGN-SYSTEM.md'), 'utf8');
+  it('has a radius scale and the tint map, with their exemption markers', () => {
+    expect(doc).toMatch(/^## Radius$/m);
+    for (const name of ['rounded-xs', 'rounded-md', 'rounded-lg', 'rounded-xl', 'green-soft', 'green-strong', 'green-edge', 'tint-exempt:', 'colour-literal-exempt:']) {
+      expect(doc).toContain(name);
+    }
+  });
+  it('names no utility that does not exist', () => {
+    expect(doc).not.toMatch(/`border-soft`/);
   });
 });

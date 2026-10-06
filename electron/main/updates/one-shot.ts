@@ -1,3 +1,4 @@
+import { APP_DISPLAY_NAME } from '@shared/app-name';
 import type { UpdateCapability } from '@shared/update-contract';
 
 import type { ServerLockClaim } from '../server/server-lock';
@@ -52,7 +53,7 @@ export async function runUpdateOneShot(deps: UpdateOneShotDeps): Promise<number 
   try {
     const lock = acquireLock();
     if (lock.kind === 'active') {
-      print('Cannot update The Hive while the local server is running. Stop the server, then retry.');
+      print(`Cannot update ${APP_DISPLAY_NAME} while the local server is running. Stop the server, then retry.`);
       return UPDATE_EXIT.serving;
     }
     release = lock.release;
@@ -64,32 +65,32 @@ export async function runUpdateOneShot(deps: UpdateOneShotDeps): Promise<number 
 
     const found = await engine.check();
     if (found === null) {
-      print(`The Hive ${currentVersion} is already current.`);
+      print(`${APP_DISPLAY_NAME} ${currentVersion} is already current.`);
       return UPDATE_EXIT.current;
     }
 
     if (capability.mode === 'manual') {
-      print(`The Hive ${found.version} is available: ${releaseUrlFor(found.version)}`);
+      print(`${APP_DISPLAY_NAME} ${found.version} is available: ${releaseUrlFor(found.version)}`);
       return UPDATE_EXIT.manual;
     }
 
-    print(`Downloading The Hive ${found.version}...`);
+    print(`Downloading ${APP_DISPLAY_NAME} ${found.version}...`);
     await engine.download((percent) => {
-      print(`Downloading The Hive ${found.version}: ${percent.toFixed(0)}%`);
+      print(`Downloading ${APP_DISPLAY_NAME} ${found.version}: ${percent.toFixed(0)}%`);
     });
     print(
       relaunch
-        ? `Installing The Hive ${found.version}; the app will relaunch.`
-        : `Installing The Hive ${found.version}; start the server again to run it.`,
+        ? `Installing ${APP_DISPLAY_NAME} ${found.version}; the app will relaunch.`
+        : `Installing ${APP_DISPLAY_NAME} ${found.version}; start the server again to run it.`,
     );
     void engine.install().catch((cause: unknown) => {
-      print(`Could not update The Hive: ${errorMessage(cause)}`);
+      print(`Could not update ${APP_DISPLAY_NAME}: ${errorMessage(cause)}`);
       onInstallFailure(cause);
     });
     release = undefined;
     return null;
   } catch (cause) {
-    print(`Could not update The Hive: ${errorMessage(cause)}`);
+    print(`Could not update ${APP_DISPLAY_NAME}: ${errorMessage(cause)}`);
     return UPDATE_EXIT.failed;
   } finally {
     release?.();

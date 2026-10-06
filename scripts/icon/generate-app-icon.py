@@ -41,8 +41,9 @@ Outputs:
     resources/icons/<n>x<n>.png the Linux ladder
     public/favicon.png, apple-touch-icon.png   the browser tab
     resources/tray/trayTemplate.png, @2x       the server-mode menu-bar template
+    public/app-mark.png                         the activity bar's brand: the plates, no tile
 
-`--tray` writes only the last pair, leaving the committed app icons alone.
+`--tray` and `--mark` write only their own files, leaving the committed app icons alone.
 
 Requires Pillow (`pip install pillow`) and, for the `.icns`, macOS `iconutil`.
 It is a one-off asset step, not part of `pnpm build` — run it only when the icon
@@ -61,7 +62,7 @@ import tempfile
 from pathlib import Path
 
 try:
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageChops, ImageDraw
 except ImportError:  # pragma: no cover - operator feedback, not app code
     sys.exit("Pillow is required: pip install pillow")
 
@@ -335,6 +336,35 @@ def render_tray(px: int) -> Image.Image:
     return out
 
 
+MARK_PX = 112  # the bar draws it at 28pt; 4x holds on any Retina screen
+
+
+def render_mark(px: int) -> Image.Image:
+    """The plates in colour on nothing: the icon without its tile, for the bar.
+
+    `render_tray`'s shape in colour. Each plate's seam is cut out of what is
+    under it rather than painted in ink, so the gap shows whatever the mark
+    sits on — the bar's ground in either theme, never a dark square.
+    """
+    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    for points, fill in PLATES:
+        img.putalpha(ImageChops.subtract(img.getchannel("A"), polygon_mask(points, SEAM)))
+        img.alpha_composite(painted(S, polygon_mask(points), fill))
+    img.alpha_composite(stroke(CHEVRON_PATH, CHEVRON_WEIGHT, CHEVRON))
+    img.alpha_composite(painted(S, rounded(S, CARET, (CARET[3] - CARET[1]) / 2), WHITE))
+
+    shape = img.crop(img.getbbox())
+    side = max(shape.size)
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.alpha_composite(shape, ((side - shape.width) // 2, (side - shape.height) // 2))
+    return square.resize((px, px), Image.LANCZOS)
+
+
+def write_mark() -> None:
+    render_mark(MARK_PX).save(PUBLIC / "app-mark.png")
+    print(f"wrote {PUBLIC.relative_to(ROOT)}/app-mark.png")
+
+
 def write_tray() -> None:
     TRAY.mkdir(parents=True, exist_ok=True)
     render_tray(TRAY_PT).save(TRAY / "trayTemplate.png")
@@ -348,7 +378,11 @@ def main() -> None:
     if "--tray" in sys.argv:
         write_tray()
         return
+    if "--mark" in sys.argv:
+        write_mark()
+        return
     write_tray()
+    write_mark()
     master = render()
     macos = padded_for_macos(master)
     (RESOURCES / "icons").mkdir(parents=True, exist_ok=True)

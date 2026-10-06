@@ -206,6 +206,15 @@ describe('clearSession', () => {
     expect(useUiStore.getState().activeTab).toBe(successorId);
   });
 
+  it('keeps the place when the successor takes the stage (HIVE-195 D7)', () => {
+    useUiStore.getState().openTab('hero-refresh');
+    useUiStore.setState({ place: 'home' });
+
+    state().clearSession('hero-refresh');
+
+    expect(useUiStore.getState().place).toBe('home');
+  });
+
   it('leaves the view alone when the user was looking elsewhere', () => {
     useUiStore.getState().openTab('lead-form');
 

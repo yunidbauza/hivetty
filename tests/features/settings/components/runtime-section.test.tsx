@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -625,13 +625,34 @@ describe('RuntimeSection — environment diagnostic', () => {
     const button = screen.getByRole('button', { name: 'Check the default environment' });
     await user.click(button);
 
-    expect(await screen.findByRole('button', { name: 'Checking…' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: 'Checking…' })).toHaveAttribute('aria-disabled', 'true');
 
     resolve(kept);
 
     expect(
       await screen.findByRole('button', { name: 'Check the default environment' }),
-    ).not.toBeDisabled();
+    ).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('keeps focus on the action while its call runs, and announces the result (HIVE-225)', async () => {
+    const user = userEvent.setup();
+    let settle!: (value: EnvDiagnostic) => void;
+    diagnoseSessionEnv.mockReturnValueOnce(
+      new Promise<EnvDiagnostic>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    install();
+    render(<RuntimeSection />);
+    const button = screen.getByRole('button', { name: 'Check the default environment' });
+    await user.click(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    await act(async () => {
+      settle(kept);
+    });
+    expect(button).toHaveFocus();
+    expect(screen.getByRole('status')).not.toBeEmptyDOMElement();
   });
 
   it('drops a stale env verdict when the project changes', async () => {

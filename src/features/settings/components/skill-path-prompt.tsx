@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { Button } from '@components/ui/button';
 import { TextField } from '@components/ui/text-field';
 
 /**
@@ -78,7 +79,7 @@ export function SkillPathPrompt({
       // Escape cancels this question rather than closing the whole overlay
       // behind it. Same contract as `inline-confirm.tsx`.
       data-escape-scope="skill-path-prompt"
-      className="flex flex-col gap-1.5 rounded-[7px] border border-border bg-panel px-2.5 py-2"
+      className="flex flex-col gap-1.5 rounded-lg border border-border bg-panel px-2.5 py-2"
     >
       <TextField
         label={question}
@@ -92,18 +93,18 @@ export function SkillPathPrompt({
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover"
+            className="rounded-full border border-edge px-3 py-1 text-control font-semibold text-ink hover:bg-hover"
           >
             Cancel
           </button>
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
             onClick={submit}
             disabled={trimmed === ''}
-            className="rounded-md bg-brand-fill px-2.5 py-1 text-[12px] text-on-brand hover:bg-brand-fill-hover disabled:opacity-60"
           >
             {confirmLabel}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

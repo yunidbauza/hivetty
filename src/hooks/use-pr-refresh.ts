@@ -6,8 +6,8 @@ import { useRefreshPrs } from '@stores/hive-store';
  *
  * ## Why one poller and not one per panel
  *
- * Two surfaces read this data: the PRS panel in the activity rail, and the WORK
- * panel's ticket cards in the left rail. **Both can be mounted at once**, so the
+ * Two surfaces read this data: the PRS panel, and the WORK panel's ticket
+ * rows. **Both can be mounted at once**, so the
  * obvious `useEffect(() => setInterval(refresh, 60_000))` inside each panel
  * would mean two concurrent sweeps a minute, two `gh` processes, and two writes
  * racing into the same store slice. This is one module-level timer with a

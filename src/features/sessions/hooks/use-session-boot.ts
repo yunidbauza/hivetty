@@ -38,7 +38,7 @@ export const BOOT_COVER_TIMEOUT_MS = 60_000;
  *
  * **The escapes deliberately do not use it.** A key or a click means *show me
  * now*, usually because something is wrong underneath, and a second of extra
- * hydralisk in answer to that is the opposite of what was asked. This delay
+ * mutalisk in answer to that is the opposite of what was asked. This delay
  * applies only where the app decided on the user's behalf.
  */
 export const READY_SETTLE_MS = 1_000;
@@ -145,7 +145,7 @@ export function useSessionBoot(
       And a pointer press, on the same terms. The cover takes no pointer events,
       so a click already reaches the terminal underneath and focuses it — this
       is what makes it *visible* at the same moment, rather than leaving the
-      user looking at a hydralisk they have just successfully clicked through.
+      user looking at a mutalisk they have just successfully clicked through.
 
       `pointerdown` rather than `click`: it fires first, so the cover is on its
       way out before the press completes.

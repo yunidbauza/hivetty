@@ -14,28 +14,29 @@ import {
   recencyOf,
 } from '@/types/entity';
 
-import { Badge } from '@components/ui/badge';
 import { statusLabel, statusText } from '@components/ui/status-dot';
 import { SwarmCreature } from '@components/ui/swarm-creature';
 import { effectiveSelId } from '@features/orchestrator/utils/selection';
 import { prStateText } from '@features/shared/pr-presentation';
 import {
-  useActiveSessions,
   useAgentAskRef,
   useAgentLiveCount,
   useAskingAgentCount,
   useAgentPr,
-  useEndedSessions,
+  useEndedMore,
+  useDelegateTitle,
+  useDelegateWord,
   useEntity,
-  useFleetAgents,
+  useFleetGroup,
   useHasResumable,
-  useNavOrder,
+  useFleetNavOrder,
   useOpenEntity,
+  useOvermindHeadCounts,
   usePlanProgress,
   useResumeSession,
   useSessionPr,
 } from '@stores/hive-store';
-import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
+import { useActiveTab, useExpandEnded, useSelId, useSessionsProject, useSetSelId } from '@stores/ui-store';
 
 /**
  * One definition per column, shared by the header row and every data row.
@@ -106,12 +107,28 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  *
  * Not "at no width at all" — that would be the same over-claim the budget made,
  * one threshold lower. Once the flexible three are at zero, what is left is the
- * `shrink-0` cells, and **they** overflow: 12 caret + 176 `STATUS` + 80
- * `LAST USED` + 34 `PR` + 52 Resume + 56 gaps (seven of `gap-2`) + 16 `px-2` =
- * **426px**. Below a 426px flex line the fixed cells overflow their wrapper —
+ * `shrink-0` cells, and **they** overflow: 12 caret + 132 `STATUS` + 96 `PLAN`
+ * + 80 `LAST USED` + 34 `PR` + 52 Resume + 64 gaps (eight of `gap-2`) + 16
+ * `px-2` = **486px**. Below a 486px flex line the fixed cells overflow their wrapper —
  * the header's and a row's alike, since the header mirrors the row's box — and
  * `LAST USED` paints under `PR`. `PR` and Resume still share an x with the
  * header; before the mirror they did not, and diverged by the overflow.
+ *
+ * **The Plan column raised it by 60px**, from 426 (HIVE-197). The count left
+ * `STATUS` for a column of its own (a 44px bar and `done/total`, 96px plus its
+ * gap), and `STATUS` went back to the 132px its label needs, which returned 44
+ * of the 104. That puts the threshold 58px past the 428px line of the 1100px
+ * window with a Resume column: there the fixed cells overflow and `LAST USED`
+ * paints under `PR`, while `PR` and Resume keep the header's x. Without a
+ * Resume column the sum is 426px (no slot, one gap fewer) and the table still
+ * fits that window, by 2px.
+ *
+ * **Round two below 1,200px gives the column back (HIVE-211, D8).** The 58px
+ * was measured with round two's list panel taking its column beside the
+ * stage. Under 1,200px that panel overlays the stage instead and starts closed,
+ * so the 1100px window hands the table `--cc-list-w` more and the 486px floor
+ * fits. `table-alignment.spec.ts` holds the 1100px window with a Resume
+ * column.
  *
  * **The plan count raised it by 44px**, from 396 (HIVE-182): `STATUS` carries a
  * session's `done/total` beside its label now, and that cell may not truncate.
@@ -130,15 +147,13 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  * the threshold, instead of to every row at every width.
  *
  * The basis moved that threshold from ~518px to 396px (426px since HIVE-182
- * and retro D), which puts every default layout inside it — including the
- * 1100px window with a Resume column, the case this file was rewritten for,
- * though that one is now a 428px line and **2px** inside, not comfortably. A
- * fixed column added here spends that margin first. What remains outside is
- * a user's own doing: HIVE-105 made the rails draggable, and
- * `STAGE_MIN_FRACTION` (`lib/rail-width.ts`) promises the stage only 20% of the
- * window, so 1100px can be squeezed to a 220px stage and a ~168px line. No
- * arrangement of these columns survives that; the honest claim is that the
- * table holds together at every width the app *chooses*, and gives way
+ * and retro D, 486px since HIVE-197). Until HIVE-197 that put every default
+ * layout inside it, the 1100px window with a Resume column by 2px; the Plan
+ * column spent that margin and 58px more (above). What remains outside is
+ * a user's own doing: the stage keeps its own width and the table never forces
+ * it, so a user who gives the panels most of a 1100px window can squeeze the
+ * stage to a ~168px line. No arrangement of these columns survives that; the
+ * honest claim is that the table holds together at every width the app *chooses*, and gives way
  * gracefully — truncating, in order — for a long way past it.
  *
  * ## What `STATUS` still costs, and why it is fixed
@@ -147,20 +162,20 @@ import { useActiveTab, useSelId, useSetSelId } from '@stores/ui-store';
  * hold while a quiet session with subagents running was called `idle (agents)`
  * and was allowed to clip. Renaming that to `working (agents)` and
  * `working (scripts)` made the longest value 17 characters, which the browser
- * measures at 127.9px in this face at 12.5px. A clipped status is worse than a
- * clipped branch: a branch truncates to a prefix that is still recognisably
+ * measured at 127.9px in the old mono face at 12.5px; the sans face at 13px
+ * is narrower, so the width now carries more margin. A clipped status is worse
+ * than a clipped branch: a branch truncates to a prefix that is still recognisably
  * itself, while `working (scr…` is a word the table has stopped saying. So it
  * is `w-[132px] shrink-0` and stays that width — four pixels of margin over a
  * measurement taken on one machine's font stack, because the fallback chain
- * ends in a generic `monospace` whose metrics are the operating system's
+ * ends in a generic `sans-serif` whose metrics are the operating system's
  * business.
  *
- * Since HIVE-182 it is `w-[176px]`: the same cell carries a session's plan
- * progress after its label, a green `Badge` reading `done/total`. Sized for
- * the longest label plus the longest plausible count — 127.9px + a 6px gap +
- * a 38px `10/12` badge (five 10px bold characters and the badge's `px-1`) —
- * with the same four pixels of margin, because the count may not truncate for
- * the label's reason: `2/…` has stopped saying anything.
+ * HIVE-182 widened it to `w-[176px]` so the cell could carry a session's plan
+ * progress after its label, a green `Badge` reading `done/total`. HIVE-197
+ * moved the count to its own `PLAN` column, so the cell is back to the label's
+ * 132px. The count still may not truncate, for the label's reason — `2/…` has
+ * stopped saying anything — which is why `PLAN` is fixed and `whitespace-nowrap`.
  *
  * It and the two other fixed columns are what the flexible three shrink
  * *against*. `table-alignment.spec.ts` measures the result at 1100px, both with
@@ -221,10 +236,12 @@ const COL = {
     `whitespace-nowrap` keeps the one declaration that matters. A value too wide
     for the column overflows it — visibly, on one line, without disturbing the
     row — which is the honest failure and the one an e2e can measure. That
-    matters because the 176px is measured against *one* machine's font stack and
-    the fallback chain ends in a generic `monospace`.
+    matters because the 132px is measured against *one* machine's font stack and
+    the fallback chain ends in a generic `sans-serif`.
   */
-  status: 'w-[176px] shrink-0 whitespace-nowrap',
+  status: 'w-[132px] shrink-0 whitespace-nowrap',
+  /** Plan progress (HIVE-197): a 44px bar and `done/total` — `17/17` is the widest. */
+  plan: 'w-[96px] shrink-0 whitespace-nowrap',
   project: 'flex-[1_1_64px] truncate',
   branch: 'flex-[2_1_76px] truncate',
   /*
@@ -240,10 +257,11 @@ const COL = {
     would double the row's height and take every other row's alignment with it.
 
     80px is the longest value `formatLastUsed` can produce — `59 min ago` and
-    `6 days ago`, ten characters, 75.2px in this face at 12.5px — plus the same
+    `6 days ago`, ten characters, 75.2px in the old mono face at 12.5px and
+    narrower in today's sans at 13px — plus the same
     few pixels of margin `STATUS` carries, and for the same reason: that
     measurement is one machine's font stack, and the fallback chain ends in a
-    generic `monospace`.
+    generic `sans-serif`.
 
     That a longest value *exists* is the formatter's doing, not this column's.
     Plain day-counting has no ceiling — a session-history row from last spring
@@ -286,7 +304,7 @@ const COL = {
  * This table used to open showing ten seeded sessions, so the orchestrator
  * always looked busy on a machine where nothing was running. With the seed gone
  * a fresh launch has no sessions at all, and the table says so in its own
- * register — monospace, `text-term-head`, inside the terminal surface — rather
+ * register — `text-term-head`, inside the terminal surface — rather
  * than borrowing the rail's empty-state styling, which would read as a panel
  * dropped into a console.
  *
@@ -296,15 +314,17 @@ const COL = {
  */
 export function SessionTable() {
   /**
-   * Both newest-first, and both partitions of one list.
-   *
-   * The table paints them in exactly this order and `useNavOrder` flattens them
-   * in exactly this order, which is what keeps the caret and the rows agreeing
-   * about where "here" is.
+   * The three groups under the Overmind's filters (HIVE-197), from one
+   * `fleetGroupsOf` — the function `useFleetNavOrder` flattens, which is what
+   * keeps the caret and the rows agreeing about where "here" is.
    */
-  const active = useActiveSessions();
-  const ended = useEndedSessions();
-  const agents = useFleetAgents();
+  const active = useFleetGroup('live');
+  const agents = useFleetGroup('agents');
+  const ended = useFleetGroup('ended');
+  const endedMore = useEndedMore();
+  const expandEnded = useExpandEnded();
+  const project = useSessionsProject();
+  const counts = useOvermindHeadCounts(project);
   const askingAgents = useAskingAgentCount();
   /*
     Agents are deliberately **not** part of `empty` (HIVE-117).
@@ -313,8 +333,11 @@ export function SessionTable() {
     a fleet of nothing but agents is exactly the state that sentence is for: the
     tenants are listed below it, and the advice is still the right advice. Folding
     them in would replace it with a bare table and no next step.
+
+    And it is about the fleet, not the filter (HIVE-197): a project with nothing
+    in it is an empty group, not a fleet with nothing running.
   */
-  const empty = active.length === 0 && ended.length === 0;
+  const empty = counts.live === 0 && counts.ended === 0;
   /**
    * Drawn unconditionally, though only rendered when the table is empty: a hook
    * cannot sit behind the `empty` branch. The cost is one array index on a
@@ -359,9 +382,10 @@ export function SessionTable() {
   return (
     <div
       data-testid="session-table"
-      className="min-h-0 overflow-y-auto bg-term-bg px-[18px] pt-4 font-mono text-[12.5px]"
+      /* Empty, it fills the pane so its notice can centre in the space below the header. */
+      className={`${empty ? 'flex flex-1 flex-col ' : ''}min-h-0 overflow-y-auto bg-term-bg px-[18px] pt-4 font-sans text-ui`}
     >
-      <div className="flex items-center gap-2 px-2 pb-1.5 text-[11px] tracking-[0.06em] text-term-head">
+      <div className="flex items-center gap-2 px-2 pb-1.5 text-micro tracking-[0.06em] text-term-head">
         {/*
           The same box a row's button is (retro D): the six cells a row opens a
           terminal with sit in one `flex-1` wrapper, and `PR` and Resume sit
@@ -380,6 +404,12 @@ export function SessionTable() {
         <span className={COL.session} title="SESSION">
           SESSION
         </span>
+        <span className={COL.project} title="PROJECT">
+          PROJECT
+        </span>
+        <span className={COL.branch} title="BRANCH">
+          BRANCH
+        </span>
         {/*
           A second measurement handle, for `COL`'s width note. The status column
           is the only one that must never truncate — a branch cut to a prefix is
@@ -391,15 +421,13 @@ export function SessionTable() {
         <span className={COL.status} data-col="status">
           STATUS
         </span>
-        <span className={COL.project} title="PROJECT">
-          PROJECT
-        </span>
-        <span className={COL.branch} title="BRANCH">
-          BRANCH
+        {/* Plan progress, its own column since HIVE-197; a handle like the rest. */}
+        <span className={COL.plan} data-col="plan">
+          PLAN
         </span>
         {/*
           A third measurement handle. `LAST USED` is a `shrink-0` cell, so it is
-          a term in the 426px threshold above rather than something that gives
+          a term in the 486px threshold above rather than something that gives
           way — which makes it exactly the kind of column that takes the ones to
           its right with it when it is re-sized by someone who has not read the
           arithmetic.
@@ -444,9 +472,9 @@ export function SessionTable() {
         */
         <div
           data-testid="session-table-empty"
-          className="flex flex-col items-center gap-2 px-2 py-4"
+          className="flex flex-1 flex-col items-center justify-center gap-2 px-2 py-4"
         >
-          <SwarmCreature creature="hive" size={96} />
+          <SwarmCreature creature="overlord" size={120} />
           <p className="text-muted">{phrase}</p>
           <p className="text-term-head">
             No sessions running — start one with New session.
@@ -454,6 +482,13 @@ export function SessionTable() {
         </div>
       ) : null}
 
+      {active.length > 0 ? (
+        <GroupHead
+          label={`LIVE · ${String(active.length)}`}
+          extra={counts.needs > 0 ? `· ${String(counts.needs)} NEEDS YOU` : null}
+          tone="text-amber-text"
+        />
+      ) : null}
       {active.map((id) => (
         <SessionTableRow key={id} id={id} reserveAction={reserveAction} />
       ))}
@@ -488,44 +523,64 @@ export function SessionTable() {
         `asking` wants exactly as much as a session that is `waiting`. Below
         `ENDED` would file the live half of the app under the finished half.
 
-        The heading carries a count where `ACTIVE` and `ENDED` do not, and that
-        asymmetry is deliberate rather than an oversight: those two are lists
-        the user is already reading row by row, while the agents are a
-        *standing* population — mostly asleep, mostly not worth reading — and
-        the only number that earns attention is how many of them are waiting.
+        Every head carries a count since HIVE-197, and each adds the one number
+        that earns attention: how many need you, how many agents are asking,
+        how many ended today. Filtered to a project, the agents head names the
+        ones working there instead.
       */}
       {agents.length > 0 ? (
         <>
-          <div className="flex items-center gap-2 px-2 pt-3.5 pb-1.5">
-            <span className="shrink-0 text-[11px] tracking-[0.06em] text-term-head">
-              AGENTS · {agents.length}
-            </span>
-            {askingAgents > 0 ? (
-              <span className="shrink-0 text-[11px] tracking-[0.06em] text-amber">
-                {askingAgents} asking
-              </span>
-            ) : null}
-            <span className="flex-1 border-t border-border" />
-          </div>
+          {project === null ? (
+            <GroupHead
+              label={`AGENTS · ${String(agents.length)}`}
+              extra={askingAgents > 0 ? `· ${String(askingAgents)} ASKING` : null}
+              tone="text-amber-text"
+            />
+          ) : (
+            <GroupHead label={`AGENTS WORKING HERE · ${String(agents.length)}`} />
+          )}
           {agents.map((id) => (
             <AgentTableRow key={id} id={id} reserveAction={reserveAction} />
           ))}
         </>
       ) : null}
 
-      {ended.length > 0 ? (
+      {/*
+        Unfiltered, ENDED holds today's endings and folds the rest behind
+        "N more ›" (HIVE-197); a project filter or the Ended filter shows them
+        whole. `fleetGroupsOf` decides which, so the caret walks the same rows.
+      */}
+      {ended.length + endedMore > 0 ? (
         <>
-          <div className="flex items-center gap-2 px-2 pt-3.5 pb-1.5">
-            <span className="shrink-0 text-[11px] tracking-[0.06em] text-term-head">
-              ENDED
-            </span>
-            <span className="flex-1 border-t border-border" />
-          </div>
+          <GroupHead
+            label={`ENDED · ${String(ended.length + endedMore)}`}
+            extra={project === null && endedMore > 0 ? `· TODAY ${String(ended.length)}` : null}
+          />
           {ended.map((id) => (
             <SessionTableRow key={id} id={id} reserveAction={reserveAction} />
           ))}
+          {endedMore > 0 ? (
+            <button
+              type="button"
+              onClick={expandEnded}
+              className="px-2 py-[3px] text-left text-brand hover:underline"
+            >
+              {`${String(endedMore)} more ›`}
+            </button>
+          ) : null}
         </>
       ) : null}
+    </div>
+  );
+}
+
+/** A group's heading: its label and count, one extra clause, and a rule (HIVE-197). */
+function GroupHead({ label, extra, tone }: { label: string; extra?: string | null; tone?: string }) {
+  return (
+    <div className="flex items-center gap-2 px-2 pt-3.5 pb-1.5 text-micro tracking-[0.06em]">
+      <span className="shrink-0 text-term-head">{label}</span>
+      {extra ? <span className={cn('shrink-0', tone ?? 'text-term-head')}>{extra}</span> : null}
+      <span className="flex-1 border-t border-border" />
     </div>
   );
 }
@@ -545,12 +600,15 @@ function SessionTableRow({
   reserveAction: boolean;
 }) {
   const entity = useEntity(id);
-  const navOrder = useNavOrder();
+  const navOrder = useFleetNavOrder();
   const selId = useSelId();
   const setSelId = useSetSelId();
   const openEntity = useOpenEntity();
   const resumeSession = useResumeSession();
   const activeTab = useActiveTab();
+  // The agents on a quiet session's work, `idle (shipper)`; before the guard, as every hook here.
+  const delegate = useDelegateWord(entity !== undefined && isSession(entity) ? entity : undefined);
+  const delegateTitle = useDelegateTitle(entity !== undefined && isSession(entity) ? entity : undefined);
   /**
    * The row's pull request, resolved from the live GitHub list (HIVE-100).
    *
@@ -575,7 +633,7 @@ function SessionTableRow({
   const progress = usePlanProgress(id);
 
   /*
-    Compared by id, not by position. `useNavOrder` is sorted by recency, so a
+    Compared by id, not by position. `useFleetNavOrder` is sorted by recency, so a
     row's index changes whenever any session spawns or ends — the caret used to
     stay on the *slot* while the rows moved underneath it, which meant a
     background spawn could leave Enter pointed at a session the user had never
@@ -687,7 +745,6 @@ function SessionTableRow({
       aria-current={activeTab === id ? 'true' : undefined}
       className={cn(
         'flex min-w-0 flex-1 items-center gap-2 py-[3px] text-left',
-        ended && 'opacity-60',
       )}
     >
       <span
@@ -701,37 +758,50 @@ function SessionTableRow({
         still readable on hover. Without it the ellipsis is a dead end — the
         agent picks these names and they can be longer than any column.
       */}
-      <span className={cn(COL.session, 'text-ink')} title={entityLabel(entity)}>
+      <span className={cn(COL.session, ended ? 'text-subtle' : 'text-ink')} title={entityLabel(entity)}>
         {entityLabel(entity)}
-      </span>
-      <span
-        className={cn(
-          COL.status,
-          'flex items-center gap-1.5',
-          statusText(entity.status, entity.idleDetail),
-        )}
-        data-col="status"
-      >
-        {statusLabel(entity.status, entity.idleDetail)}
-        {/* Plan progress after the label, which keeps priority (HIVE-182). */}
-        {progress === undefined ? null : (
-          <Badge
-            count={progress.total}
-            text={`${String(progress.done)}/${String(progress.total)}`}
-            tone="green"
-            label="tasks done"
-            className="shrink-0"
-          />
-        )}
       </span>
       <span className={cn(COL.project, 'text-subtle')} title={entity.project}>
         {entity.project}
       </span>
       <span
-        className={cn(COL.branch, 'text-subtle')}
+        className={cn(COL.branch, 'text-ui-sm text-subtle')}
         title={branchLabel(entity)}
       >
         {branchLabel(entity)}
+      </span>
+      <span
+        className={cn(COL.status, statusText(entity.status, entity.idleDetail))}
+        data-col="status"
+        title={delegateTitle ?? undefined}
+      >
+        {statusLabel(entity.status, entity.idleDetail, delegate)}
+      </span>
+      {/*
+        The session's plan progress (HIVE-182), a bar and `done/total` in its own
+        column since HIVE-197 — it used to ride in the status cell after the label.
+      */}
+      <span className={cn(COL.plan, 'flex items-center gap-2 text-subtle')} data-col="plan">
+        {progress === undefined ? null : (
+          <>
+            <span
+              role="progressbar"
+              aria-label="tasks done"
+              aria-valuemin={0}
+              aria-valuemax={progress.total}
+              aria-valuenow={progress.done}
+              className={cn('h-1 w-11 shrink-0 overflow-hidden rounded-full bg-chip', ended && 'opacity-60')}
+            >
+              <span
+                className="block h-full rounded-full bg-green"
+                style={{
+                  width: `${String(progress.total > 0 ? (progress.done / progress.total) * 100 : 0)}%`,
+                }}
+              />
+            </span>
+            {`${String(progress.done)}/${String(progress.total)}`}
+          </>
+        )}
       </span>
       {/*
         Inside the button, unlike `PR` and Resume: it is text and not a control,
@@ -767,18 +837,19 @@ function SessionTableRow({
       a hue is no signal to a colour-blind user, and none at all to a screen
       reader — so the state rides along as a title and an sr-only word.
 
-      `opacity-60` is repeated from the button rather than lifted to the row,
-      because Resume is the one thing on an ended row that is *not* spent:
-      dimming it would say the opposite of what it does.
+      An ended row is dimmed by text token, not opacity (HIVE-225): the session
+      label and the PR number step down to `text-subtle`, and only the plan bar,
+      which is not text, takes `opacity-60`. Resume keeps full strength, because
+      it is the one thing on an ended row that is *not* spent.
     */}
-    <span className={cn(COL.pr, ended && 'opacity-60')} data-col="pr">
+    <span className={COL.pr} data-col="pr">
       {pr ? (
         <a
           href={pr.url}
           target="_blank"
           rel="noreferrer"
           /*
-            Underlined at rest, not on hover. In a monospace table `#123` is
+            Underlined at rest, not on hover. In a plain table `#123` is
             otherwise just the cell's value — the same weight and shape as the
             branch beside it — and nothing would suggest it leaves the app.
             `pr-card` can afford `hover:underline` because its `#123` sits next
@@ -797,6 +868,7 @@ function SessionTableRow({
             */
             pr.state === undefined ? 'text-subtle' : prStateText(pr.state),
             'hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand',
+            ended && 'text-subtle',
           )}
           title={
             pr.state === undefined
@@ -853,7 +925,7 @@ function SessionTableRow({
               resumeSession(id);
             }}
             className={cn(
-              'rounded px-1.5 py-[1px] text-[11px] text-subtle',
+              'rounded-full px-2 py-[1px] text-micro text-subtle',
               'hover:bg-term-row-hover hover:text-ink',
             )}
           >
@@ -887,7 +959,7 @@ function AgentTableRow({
   reserveAction: boolean;
 }) {
   const entity = useEntity(id);
-  const navOrder = useNavOrder();
+  const navOrder = useFleetNavOrder();
   const selId = useSelId();
   const setSelId = useSetSelId();
   const openEntity = useOpenEntity();
@@ -979,17 +1051,11 @@ function AgentTableRow({
           Deliberate, and the reason is the column rather than the vocabulary: a
           9px dot and its gap would push the status word ~14px right on agent
           rows only, so `STATUS` would stop lining up between this group and the
-          two around it. In a monospace table that misalignment is the first
+          two around it. In a column of words that misalignment is the first
           thing the eye finds. The colour comes from the same `STATUS_TEXT` the
           dot is filled from, so the two surfaces still agree about what the
           state *means*; only the glyph is spent differently.
         */}
-        <span
-          className={cn(COL.status, statusText(entity.status))}
-          data-col="status"
-        >
-          {word}
-        </span>
         {/*
           `PROJECT` and `BRANCH`, spent on the wake — see `COL.wake`. `title`
           for the reason every truncating cell carries one: `describeWake` has
@@ -1002,6 +1068,14 @@ function AgentTableRow({
         >
           {describeWake(entity.wake)}
         </span>
+        <span
+          className={cn(COL.status, statusText(entity.status))}
+          data-col="status"
+        >
+          {word}
+        </span>
+        {/* An agent has no plan; the cell holds the column's width. */}
+        <span className={COL.plan} data-col="plan" />
         <span
           className={cn(COL.lastUsed, 'text-subtle')}
           data-col="last-used"

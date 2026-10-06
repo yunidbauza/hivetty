@@ -152,7 +152,8 @@ describe('StatusDot', () => {
         c.startsWith('bg-'),
       );
 
-      expect(STATUS_TEXT[status]).toBe(fill?.replace('bg-', 'text-'));
+      // Amber drawn as text is its own token (HIVE-223); every other tone is the dot's colour.
+      expect(STATUS_TEXT[status]).toBe(fill === 'bg-amber' ? 'text-amber-text' : fill?.replace('bg-', 'text-'));
     }
   });
 
@@ -176,7 +177,7 @@ describe('StatusDot', () => {
    */
   it('pairs every agent state’s text colour with its fill', () => {
     expect(STATUS_TEXT.sleeping).toBe('text-subtle');
-    expect(STATUS_TEXT.asking).toBe('text-amber');
+    expect(STATUS_TEXT.asking).toBe('text-amber-text');
     expect(STATUS_TEXT.paused).toBe('text-muted');
     expect(STATUS_TEXT.failed).toBe('text-red');
   });
@@ -271,5 +272,17 @@ describe('terminal statuses', () => {
     expect(STATUS_LABEL.prompt).toBe('at prompt');
     expect(STATUS_LABEL.running).toBe('running');
     expect(statusLabel('prompt')).toBe('at prompt');
+  });
+});
+
+describe('an idle session with an agent on its work', () => {
+  it('reads idle (shipper), in a grey ring, and its own running work wins', () => {
+    expect(statusLabel('idle', undefined, 'shipper')).toBe('idle (shipper)');
+    expect(statusLabel('idle', 'script', 'shipper')).toBe('working (scripts)');
+
+    const { container } = render(<StatusDot status="idle" delegate="shipper" label="hero status" />);
+    const dot = container.firstElementChild;
+    expect(dot).toHaveClass('border-[1.5px]', 'border-subtle');
+    expect(screen.getByText('hero status: idle (shipper)')).toBeInTheDocument();
   });
 });

@@ -66,7 +66,7 @@ test('reports a gh state without throwing, installed or not', async ({}, testInf
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openIntegrations(page);
 
@@ -108,7 +108,7 @@ test('groups the pane into three provider bands, and draws one line each', async
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openIntegrations(page);
   await expect(page.locator('[data-probing]').first()).toBeHidden({
@@ -225,7 +225,7 @@ test('a chosen delivery lands in the file, comments intact', async ({}, testInfo
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openNotifications(page);
 
@@ -256,7 +256,7 @@ test('a second choice does not restate the first', async ({}, testInfo) => {
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openNotifications(page);
 
@@ -291,7 +291,7 @@ test('offers the waiting-on-you kind, and saves it', async ({}, testInfo) => {
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openNotifications(page);
 
@@ -318,7 +318,7 @@ test('offers the yours-again kind, and saves every delivery', async ({}, testInf
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openNotifications(page);
 
@@ -373,7 +373,7 @@ test('a hand-written block survives a save made through the UI', async ({}, test
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openNotifications(page);
 

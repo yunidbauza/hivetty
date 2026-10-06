@@ -22,6 +22,7 @@ import {
   parseAddJiraCommentRequest,
   parseJiraIssueRequest,
   parseJiraTransitionByName,
+  parseJiraUsersRequest,
   parseLedgerPostBody,
   parseLedgerReadQuery,
   parsePrLookup,
@@ -52,11 +53,13 @@ import {
   JIRA_GET_PATH,
   JIRA_TOOL_MAX_BYTES,
   JIRA_TRANSITION_PATH,
+  JIRA_USERS_PATH,
   type JiraComment,
   type JiraResult,
   type JiraToolHandlers,
   type JiraToolIssue,
   type JiraToolTransitionReply,
+  type JiraUser,
 } from '@shared/jira-contract';
 import {
   LEDGER_POST_PATH,
@@ -186,6 +189,12 @@ export interface ReceiverOptions {
    * `onTicketIntent` is one: a plan is not a status.
    */
   onPlanTool: (call: PlanToolCall) => void;
+  /**
+   * A main-agent PostToolUse of a file-editing tool (HIVE-201), whole or
+   * truncated: `tool_name` survives the cut, and main re-reads the transcript
+   * itself. Optional, so a host without changed files ignores edits.
+   */
+  onFileTool?: (entityId: string) => void;
   /**
    * A session reported its context and rate-limit usage (HIVE-79).
    *
@@ -579,7 +588,7 @@ const JIRA_NOT_WIRED: JiraToolHandlers = (() => {
       ok: false,
       error: { kind: 'bad-query', message: 'the Jira integration is not wired to this receiver' },
     });
-  return { get: refused, transition: refused, comment: refused };
+  return { get: refused, transition: refused, comment: refused, users: refused };
 })();
 
 interface Route {
@@ -630,6 +639,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     onPromptName,
     onCleared,
     onPlanTool,
+    onFileTool,
     onMetrics,
     onDone,
     onReady,
@@ -813,6 +823,14 @@ export function createReceiver(options: ReceiverOptions): Receiver {
    * Claude would have shown, which is unbounded prose.
    */
   const NOTIFICATION_TYPE_IN_PREFIX = /"notification_type"\s*:\s*"([a-z_]+)"/;
+
+  /** The tools whose edits the changed-files reader counts (HIVE-201). */
+  const FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
+    'Edit',
+    'Write',
+    'MultiEdit',
+    'NotebookEdit',
+  ]);
 
   /**
    * And once more for `tool_name`, which HIVE-83 needs to keep a blocked
@@ -1156,10 +1174,24 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     handleJira(headers, body, truncated, parseJiraTransitionByName, (request) =>
       onJira.transition(request),
     );
-  const handleJiraComment: Route['handle'] = (headers, body, truncated) =>
-    handleJira(headers, body, truncated, parseAddJiraCommentRequest, (request) =>
-      onJira.comment(request),
+  /**
+   * `/jira/comment` (HIVE-174), marked for an agent (HIVE-216).
+   *
+   * The caller is the authenticated header, never the body: an id the app
+   * knows as an agent and not as a session — the test `/hook` routes by — is
+   * an agent, and its comment carries `via`. A session caller, the person's
+   * own terminal, posts as itself.
+   */
+  const handleJiraComment: Route['handle'] = (headers, body, truncated) => {
+    const caller = headers[HOOK_HEADER_SESSION];
+    const agent =
+      typeof caller === 'string' && knowsAgent(caller) && !knowsSession(caller) ? caller : undefined;
+    return handleJira(headers, body, truncated, parseAddJiraCommentRequest, (request) =>
+      agent === undefined ? onJira.comment(request) : onJira.comment(request, { agent }),
     );
+  };
+  const handleJiraUsers: Route['handle'] = (headers, body, truncated) =>
+    handleJira(headers, body, truncated, parseJiraUsersRequest, (request) => onJira.users(request));
 
   /** `/projects` (HIVE-173): the caller is the header, the body is unread. */
   function handleProjects(headers: Record<string, string | string[] | undefined>): Reply {
@@ -1570,6 +1602,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         unwrap<JiraResult<JiraComment>>(
           await handleJiraComment(headers, JSON.stringify(request), false),
         ),
+      jiraUsers: async (request) =>
+        unwrap<JiraResult<JiraUser[]>>(await handleJiraUsers(headers, JSON.stringify(request), false)),
     };
   }
 
@@ -1924,6 +1958,13 @@ export function createReceiver(options: ReceiverOptions): Receiver {
           console.error('[hive] onPlanTool threw; the plan missed one call:', cause);
         }
       }
+      if (callerAgent === undefined && FILE_TOOL_NAMES.has(toolName)) {
+        try {
+          onFileTool?.(entityId);
+        } catch (cause) {
+          console.error('[hive] onFileTool threw; changed files missed one edit:', cause);
+        }
+      }
     }
 
     /**
@@ -2105,6 +2146,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
           { path: JIRA_GET_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraGet },
           { path: JIRA_TRANSITION_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraTransition },
           { path: JIRA_COMMENT_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraComment },
+          { path: JIRA_USERS_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraUsers },
           { path: MCP_PATH, cap: MCP_MAX_BODY_BYTES, handle: handleMcp },
         ];
 

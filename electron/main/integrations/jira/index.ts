@@ -16,19 +16,24 @@ import {
   JIRA_PAGE_SIZE,
   JIRA_SITE_ENV,
   JIRA_TOKEN_ENV,
+  JIRA_VIA_PROPERTY,
   type JiraIdentity,
   type JiraIssue,
   type JiraIssueDetail,
   type JiraResult,
   type JiraSearchResult,
   type JiraComment,
+  type JiraCommentPage,
   type JiraLink,
   type JiraStatus,
   type JiraTransition,
+  type JiraUser,
+  type JiraUsersRequest,
 } from '../../../shared/jira-contract';
 
 import { validateAdf } from './adf/adf-validate';
 import { convertMarkdown } from './adf/markdown-to-adf';
+import { withMentions } from './adf/with-mentions';
 import {
   createJiraAuth,
   type JiraAuth,
@@ -42,6 +47,7 @@ import {
   toIssue,
   toIssueDetail,
   toIssueLink,
+  toJiraUser,
   toRemoteLink,
   toTransition,
 } from './mapping';
@@ -63,6 +69,7 @@ import {
 const MYSELF = '/rest/api/3/myself';
 const SEARCH = '/rest/api/3/search/jql';
 const ISSUE = '/rest/api/3/issue';
+const USER_SEARCH = '/rest/api/3/user/search';
 
 export interface Jira {
   status(): JiraStatus;
@@ -93,12 +100,18 @@ export interface Jira {
   applyTransition(
     request: ApplyJiraTransitionRequest,
   ): Promise<JiraResult<JiraIssue>>;
-  /** An issue's conversation, oldest first (HIVE-71). */
-  comments(request: JiraConversationRequest): Promise<JiraResult<JiraComment[]>>;
+  /** A page of an issue's conversation, oldest first, with the thread's total (HIVE-71, HIVE-203). */
+  comments(request: JiraConversationRequest): Promise<JiraResult<JiraCommentPage>>;
   /** Remote links and Jira-to-Jira links, in one list (HIVE-71). */
   links(request: JiraConversationRequest): Promise<JiraResult<JiraLink[]>>;
-  /** Post a comment written as markdown (HIVE-71). */
-  addComment(request: AddJiraCommentRequest): Promise<JiraResult<JiraComment>>;
+  /**
+   * Post a comment written as markdown (HIVE-71). `via` marks it as posted
+   * for an agent (HIVE-216): main-only, set by the receiver from its caller
+   * header, never from a payload — `AddJiraCommentRequest` has no such field.
+   */
+  addComment(request: AddJiraCommentRequest, via?: { agent: string }): Promise<JiraResult<JiraComment>>;
+  /** People on the site matching a query, for the `@` picker and `jira_users` (HIVE-216). Active people only. */
+  searchUsers(request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>>;
   /**
    * Assign the issue to whoever owns the token, then re-read it. The identity
    * comes from `/myself`, never from the caller: a parameter naming who to
@@ -546,14 +559,19 @@ export function createJira(deps: {
      * argument backwards is how you misunderstand it. Jira's default for this
      * endpoint is already ascending; asking explicitly means a change to that
      * default does not silently reverse the panel.
+     *
+     * `newest` reads the latest page instead (descending, then reversed), so a
+     * long thread shows its end rather than its first fifty; still oldest
+     * first (HIVE-203). `total` is Jira's count of the whole thread, which is
+     * how a caller knows the page is not all of it.
      */
     async comments(request) {
       const connection = connect();
       if (!connection.ok) return connection.error;
 
-      const result = await connection.client.get<{ comments?: unknown }>(
+      const result = await connection.client.get<{ comments?: unknown; total?: unknown }>(
         `${ISSUE}/${request.key}/comment`,
-        { orderBy: 'created', maxResults: String(JIRA_MAX_COMMENTS) },
+        { orderBy: request.newest ? '-created' : 'created', maxResults: String(JIRA_MAX_COMMENTS), expand: 'properties' },
       );
       if (!result.ok) return result;
 
@@ -566,7 +584,9 @@ export function createJira(deps: {
         const one = toComment(entry);
         if (one !== null) mapped.push(one);
       }
-      return { ok: true, value: mapped };
+      if (request.newest) mapped.reverse();
+      const total = typeof result.value.total === 'number' ? result.value.total : mapped.length;
+      return { ok: true, value: { comments: mapped, total } };
     },
 
     /**
@@ -634,11 +654,11 @@ export function createJira(deps: {
      * string, but "is this a valid ADF tree" is exactly the question this
      * validator exists to answer, in main, where the answer is enforceable.
      */
-    async addComment(request) {
+    async addComment(request, via) {
       const connection = connect();
       if (!connection.ok) return connection.error;
 
-      const body = convertMarkdown(request.markdown);
+      const body = withMentions(convertMarkdown(request.markdown), request.mentions ?? []);
       const validation = validateAdf(body);
       /**
        * Defensive, and deliberately so.
@@ -668,7 +688,7 @@ export function createJira(deps: {
 
       const posted = await connection.client.post<unknown>(
         `${ISSUE}/${request.key}/comment`,
-        { body },
+        via === undefined ? { body } : { body, properties: [{ key: JIRA_VIA_PROPERTY, value: { agent: via.agent } }] },
       );
       if (!posted.ok) return posted;
 
@@ -682,7 +702,24 @@ export function createJira(deps: {
           },
         };
       }
-      return { ok: true, value: mapped };
+      // Jira's answer to the POST need not echo the property it was sent; the
+      // caller appends this to the page without a re-read, so say who it was for.
+      return { ok: true, value: via === undefined ? mapped : { ...mapped, via: { agent: via.agent } } };
+    },
+
+    async searchUsers(request) {
+      const connection = connect();
+      if (!connection.ok) return connection.error;
+
+      const result = await connection.client.get<unknown>(USER_SEARCH, { query: request.query, maxResults: '8' });
+      if (!result.ok) return result;
+
+      const users: JiraUser[] = [];
+      for (const entry of Array.isArray(result.value) ? result.value : []) {
+        const one = toJiraUser(entry);
+        if (one !== null) users.push(one);
+      }
+      return { ok: true, value: users };
     },
 
     async assignToMe(request) {

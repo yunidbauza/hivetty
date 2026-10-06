@@ -457,3 +457,28 @@ describe('AdvancedSection — the Containers group (HIVE-131)', () => {
     );
   });
 });
+
+/** What's new (1.0): turned back on, or opened, from here. */
+describe('AdvancedSection — What’s new', () => {
+  it('shows the switch on by default and turns future screens off and on', async () => {
+    const { useAppearanceStore } = await import('@stores/appearance-store');
+    useAppearanceStore.getState().reset();
+    const user = userEvent.setup();
+    render(<AdvancedSection />);
+
+    const toggle = screen.getByRole('switch', { name: 'Show What’s new after an update' });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    expect(useAppearanceStore.getState().whatsNewOff).toBe(true);
+    await user.click(toggle);
+    expect(useAppearanceStore.getState().whatsNewOff).toBe(false);
+  });
+
+  it('opens the card from Settings', async () => {
+    const { useUiStore } = await import('@stores/ui-store');
+    const user = userEvent.setup();
+    render(<AdvancedSection />);
+    await user.click(screen.getByRole('button', { name: 'Open What’s new' }));
+    expect(useUiStore.getState().whatsNewOpen).toBe(true);
+  });
+});

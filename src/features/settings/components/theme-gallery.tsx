@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import { Button } from '@components/ui/button';
 import { ThemeCard } from '@features/settings/components/theme-card';
 import { ThemeImportResult } from '@features/settings/components/theme-import-result';
 import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
@@ -186,8 +187,8 @@ export function ThemeGallery() {
     <section className="flex flex-col gap-3 border-b border-border-soft pb-5 last:border-b-0 last:pb-0">
       <div className="flex items-start justify-between gap-3">
         <div className="flex flex-col gap-0.5">
-          <h3 className="text-[13px] font-semibold text-ink">Themes</h3>
-          <p className="text-[11.5px] text-subtle">
+          <h3 className="text-ui font-semibold text-ink">Themes</h3>
+          <p className="text-ui-sm text-subtle">
             Every theme carries a light and a dark mode. The switch below picks
             which one you see.
           </p>
@@ -197,18 +198,18 @@ export function ThemeGallery() {
           <button
             type="button"
             onClick={onDownloadTemplate}
-            className="flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:opacity-60"
+            className="flex w-fit items-center gap-1.5 rounded-full border border-edge px-4 py-1.5 text-control font-semibold text-ink hover:bg-hover disabled:opacity-60"
           >
             Download template
           </button>
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => void onImport()}
-            disabled={importing}
-            className="flex w-fit items-center gap-1.5 rounded-md bg-brand-fill px-3 py-1.5 text-[12.5px] text-on-brand hover:bg-brand-fill-hover disabled:opacity-60"
+            pending={importing}
+            className="flex w-fit items-center gap-1.5"
           >
             Import theme…
-          </button>
+          </Button>
         </div>
       </div>
 

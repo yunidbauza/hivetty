@@ -109,7 +109,7 @@ export function WorkSearchRow() {
       {term === '' ? null : (
         <div className="flex items-center justify-between gap-2 px-0.5">
           <label
-            className="flex cursor-pointer items-center gap-1.5 text-[10.5px] text-muted"
+            className="flex cursor-pointer items-center gap-1.5 text-micro text-muted"
             title="Search only the tickets assigned to you."
           >
             <input
@@ -118,7 +118,7 @@ export function WorkSearchRow() {
               onChange={(event) => {
                 setMineOnly(event.target.checked);
               }}
-              className="size-3 accent-[var(--cc-brand-fill)]"
+              className="size-3 accent-brand-fill"
             />
             Mine only
           </label>
@@ -138,7 +138,7 @@ export function WorkSearchRow() {
             results — nothing was asked — and saying "0 issues" would be the row
             answering a question it never put.
           */}
-          <span className="tabular-nums text-[10.5px] text-subtle">
+          <span className="tabular-nums text-micro text-subtle">
             {search.tooShort
               ? 'Keep typing…'
               : search.searching

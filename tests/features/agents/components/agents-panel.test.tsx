@@ -1,34 +1,36 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { AgentsPanel } from '@features/agents/components/agents-panel';
 import type { AgentSummary } from '@shared/agent-contract';
 import { useHiveStore } from '@stores/hive-store';
-import { useUiStore } from '@stores/ui-store';
+import { type AgentGroupKey, useUiStore } from '@stores/ui-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
 
-/** The three fixture agents, in `agentOrder`, with their subtitles. */
-const FIXTURE_AGENTS = [
-  ['slack-agent', '#eng-alerts · #deploys · #ask-eng'],
-  ['pr-reviewer', 'Auto-reviews open PRs'],
-  ['standup-agent', 'Daily summary at 9:05'],
-] as const;
+/** The three fixture agents, in `agentOrder`. */
+const FIXTURE_AGENTS = [['slack-agent'], ['pr-reviewer'], ['standup-agent']] as const;
 
 const agentRow = (id: string) =>
   screen.getByRole('button', { name: new RegExp(`^${id}`) });
 
 /**
- * Every row, and never the `+ New agent…` footer (HIVE-116).
+ * Every row, and never the header's +, a lane
+ * header or a row's slot actions (HIVE-116, HIVE-204).
  *
- * The footer is a button in the same panel, so a bare `getAllByRole('button')`
- * counts it as a tenant. Filtering by name here keeps these assertions exact
- * rather than loosening them to "one more than the rows".
+ * Those are buttons in the same panel, so a bare `getAllByRole('button')`
+ * counts them as tenants. Filtering here keeps these assertions exact rather
+ * than loosening them to "a few more than the rows".
  */
 const agentRows = () =>
   screen
     .getAllByRole('button')
-    .filter((button) => !button.textContent?.startsWith('+ New agent'));
+    .filter(
+      (button) =>
+        button.getAttribute('aria-label') !== 'New agent' &&
+        !/^(Run .* now|Pause .*|Resume .*)$/.test(button.getAttribute('aria-label') ?? '') &&
+        !button.hasAttribute('aria-expanded'),
+    );
 
 describe('AgentsPanel', () => {
   beforeEach(() => {
@@ -45,15 +47,15 @@ describe('AgentsPanel', () => {
    * Nothing creates a background agent yet, so the panel says that instead of
    * listing three that do not exist.
    */
-  it('points at the pane that creates one when empty', () => {
+  it('offers New agent when empty', () => {
     useHiveStore.getState().reset();
 
     render(<AgentsPanel />);
 
-    expect(
-      screen.getByText(/No agents yet — create one in Settings › Agents/i),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText(/No agents yet\./)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New agent' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '+ New agent…' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region')).not.toBeInTheDocument();
   });
 
   it('renders every seeded agent, in agentOrder', () => {
@@ -66,17 +68,18 @@ describe('AgentsPanel', () => {
     expect(ids).toEqual(FIXTURE_AGENTS.map(([id]) => id));
   });
 
-  it.each(FIXTURE_AGENTS)('shows %s with its subtitle', (id, sub) => {
+  it.each(FIXTURE_AGENTS)('shows %s by name', (id) => {
     render(<AgentsPanel />);
 
     expect(agentRow(id)).toBeInTheDocument();
-    expect(screen.getByText(sub)).toBeInTheDocument();
+    expect(screen.getByText(id)).toBeInTheDocument();
   });
 
   it('gives each agent its own icon', () => {
     render(<AgentsPanel />);
 
-    const glyphs = agentRows().map((row) => row.querySelector('svg')?.innerHTML);
+    // The first svg is the hexagon every tile shares; the glyph sits inside it.
+    const glyphs = agentRows().map((row) => row.querySelectorAll('svg')[1]?.innerHTML);
 
     expect(new Set(glyphs).size).toBe(3);
     expect(glyphs.every(Boolean)).toBe(true);
@@ -90,8 +93,8 @@ describe('AgentsPanel', () => {
     expect(useUiStore.getState().activeTab).toBe('pr-reviewer');
   });
 
-  it('highlights the agent whose tab is open', () => {
-    useUiStore.getState().openTab('standup-agent');
+  it('highlights the agent whose page is open', () => {
+    useUiStore.getState().openAgentPage('standup-agent', 'activity');
     render(<AgentsPanel />);
 
     expect(agentRow('standup-agent')).toHaveClass('bg-active');
@@ -99,7 +102,7 @@ describe('AgentsPanel', () => {
     expect(agentRow('slack-agent')).not.toHaveClass('bg-active');
   });
 
-  it('moves the highlight when another tab opens', async () => {
+  it('moves the highlight when another agent opens', async () => {
     render(<AgentsPanel />);
 
     await userEvent.click(agentRow('slack-agent'));
@@ -115,15 +118,17 @@ describe('AgentsPanel', () => {
     render(<AgentsPanel />);
 
     for (const [id] of FIXTURE_AGENTS) {
-      expect(agentRow(id)).not.toHaveClass('bg-active');
+      expect(agentRow(id)).not.toHaveClass('bg-panel-2');
     }
   });
 
-  /** State is never carried by the dot's colour alone (HIVE-114). */
+  /** State is never carried by the tile's colour alone (HIVE-114, HIVE-204). */
   it('names each state in words as well as colour', () => {
     render(<AgentsPanel />);
 
-    expect(screen.getAllByText('sleeping')).toHaveLength(3);
+    for (const [id] of FIXTURE_AGENTS) {
+      expect(agentRow(id)).toHaveAccessibleName(new RegExp(`^${id}, sleeping`));
+    }
   });
 
   /**
@@ -222,61 +227,121 @@ describe('AgentsPanel', () => {
       runs: [],
     });
 
-    it('draws a header and a count for every non-empty group', () => {
+    const seed = (...agents: ReturnType<typeof summary>[]) => {
       act(() => {
-        useHiveStore
-          .getState()
-          .hydrateAgents([
-            summary('asker', 'asking'),
-            summary('busy', 'working'),
-            summary('held', 'paused'),
-          ]);
+        useHiveStore.getState().hydrateAgents(agents);
       });
+    };
+
+    const laneHeader = (label: string) =>
+      within(screen.getByRole('region', { name: label })).getByRole('button', {
+        expanded: !useUiStore.getState().agentsFolded[
+          label.toLowerCase() as AgentGroupKey
+        ],
+      });
+
+    it('draws the lanes in order, each with its count (HIVE-204)', () => {
+      seed(
+        summary('asker', 'asking'),
+        summary('broke', 'failed'),
+        summary('busy', 'working'),
+        summary('held', 'paused'),
+      );
 
       render(<AgentsPanel />);
 
-      expect(screen.getByText('Awake')).toBeInTheDocument();
-      expect(screen.getByText('Paused')).toBeInTheDocument();
-      // Two awake, one paused — the counts sit beside their headers.
-      expect(screen.getByText('2')).toBeInTheDocument();
+      expect(
+        screen.getAllByRole('region').map((region) => region.getAttribute('aria-label')),
+      ).toEqual(['Summons', 'Morphing', 'Burrowed']);
+      expect(laneHeader('Summons')).toHaveTextContent('Summons2');
+      expect(laneHeader('Morphing')).toHaveTextContent('Morphing1');
+      expect(laneHeader('Burrowed')).toHaveTextContent('Burrowed1');
     });
 
-    it('omits a group with nothing in it, rather than a header reading zero', () => {
-      act(() => {
-        useHiveStore.getState().hydrateAgents([summary('sleeper', 'sleeping')]);
-      });
+    it('omits a lane with nothing in it, rather than a header reading zero', () => {
+      seed(summary('sleeper', 'sleeping'));
 
       render(<AgentsPanel />);
 
-      expect(screen.getByText('Sleeping')).toBeInTheDocument();
-      expect(screen.queryByText('Awake')).not.toBeInTheDocument();
-      expect(screen.queryByText('Paused')).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Burrowed' })).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Summons' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Morphing' })).not.toBeInTheDocument();
+    });
+
+    it('counts summons in amber and morphing in green in the header', () => {
+      seed(
+        summary('asker', 'asking'),
+        summary('broke', 'failed'),
+        summary('busy', 'working'),
+        summary('builder', 'working'),
+      );
+
+      render(<AgentsPanel />);
+
+      const heading = screen.getByRole('heading', { name: 'Agents' });
+      const counts = heading.nextElementSibling as HTMLElement;
+
+      expect(counts).toHaveTextContent('2 summons · 2 morphing');
+      expect(screen.getByText('2 summons')).toHaveClass('text-amber-text');
+      expect(screen.getByText('2 morphing')).toHaveClass('text-green');
+    });
+
+    it('drops a count at zero, and its separator', () => {
+      seed(summary('busy', 'working'), summary('sleeper', 'sleeping'));
+
+      render(<AgentsPanel />);
+
+      const counts = screen.getByRole('heading', { name: 'Agents' })
+        .nextElementSibling as HTMLElement;
+
+      expect(counts).toHaveTextContent(/^1 morphing$/);
+    });
+
+    it('folds a lane from its header, and unfolds it again', async () => {
+      seed(summary('busy', 'working'), summary('sleeper', 'sleeping'));
+
+      render(<AgentsPanel />);
+
+      const header = laneHeader('Burrowed');
+      expect(header).toHaveAttribute('aria-expanded', 'true');
+
+      await userEvent.click(header);
+
+      expect(header).toHaveAttribute('aria-expanded', 'false');
+      expect(agentRows()).toHaveLength(1);
+      expect(agentRow('busy')).toBeInTheDocument();
+
+      await userEvent.click(header);
+
+      expect(header).toHaveAttribute('aria-expanded', 'true');
+      expect(agentRows()).toHaveLength(2);
     });
   });
 
   describe('the way to make another one', () => {
-    it('opens Settings › Agents, because that is where authoring lives', async () => {
+    it('the head’s + opens a never-saved agent page on Definition (HIVE-204)', async () => {
       render(<AgentsPanel />);
 
-      await userEvent.click(
-        screen.getByRole('button', { name: /New agent/i }),
-      );
+      await userEvent.click(screen.getByRole('button', { name: 'New agent' }));
 
-      expect(useUiStore.getState().settings).toBe(true);
-      expect(useUiStore.getState().settingsSection).toBe('agents');
+      expect(useUiStore.getState().agentPage).toEqual({ name: null, view: 'definition' });
+      expect(useUiStore.getState().settings).toBe(false);
     });
 
-    it('is absent while the empty state is up, which names the pane itself', () => {
+    it('draws no footer line beside it', () => {
+      render(<AgentsPanel />);
+
+      expect(screen.queryByRole('button', { name: '+ New agent…' })).not.toBeInTheDocument();
+    });
+
+    it('does the same from the empty state', async () => {
       useHiveStore.getState().reset();
 
       render(<AgentsPanel />);
 
-      expect(
-        screen.queryByRole('button', { name: /New agent/i }),
-      ).not.toBeInTheDocument();
-      expect(
-        screen.getByText(/create one in Settings › Agents/i),
-      ).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'New agent' }));
+
+      expect(useUiStore.getState().agentPage).toEqual({ name: null, view: 'definition' });
     });
   });
 });

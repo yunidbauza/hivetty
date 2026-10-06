@@ -1,8 +1,8 @@
-import { drawCreature } from '@/splash/chamber';
-import hiveGif from '@/splash/hive.gif';
-import hiveVideo from '@/splash/hive.mp4?inline';
+import { GLOBE_STILL_T } from '@/splash/globe';
+import { paletteFrom, startGlobe } from '@/splash/stage';
 
 import { pickPhrase } from '@lib/swarm/phrases';
+import { applyPersistedAppearance } from '@lib/theme/persisted';
 import { checkForUpdates, readUpdateStatus } from '@lib/updates';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -14,21 +14,23 @@ import {
   versionLine,
 } from './panel';
 
+import '@/styles/fonts';
+
 import './about.css';
 
 /**
- * The About panel's entry point: assets, the document, the video, the bridge.
+ * The About panel's entry point: the document, the globe, the bridge.
  *
  * It replaces Electron's default about panel, which named the *framework* and
  * its version — true of the runtime, and not what anybody opens About to learn.
  *
  * ## What it shares with the splash, and why that is an import rather than a copy
  *
- * The creature is the same creature: the same mp4, the same GIF fallback, and
- * the same `drawCreature` from `@/splash/chamber.ts` — the playback loop as
- * well as the keying, since duplicating either would mean two copies to fix the
- * day the asset changes, and the second would be wrong within a release. Only
- * the grace below differs, which is why it is a parameter.
+ * The hero is the splash's brood world, drawn by the same
+ * `startGlobe` and `drawGlobe` from `src/splash/`: a second copy would be wrong
+ * within a release. About opens long after the splash's story has played, so
+ * its clock starts at the formed globe (`GLOBE_STILL_T`) rather than at the
+ * document's load — no forming, just the globe turning and the swarm circling.
  *
  * ## What it does NOT share
  *
@@ -39,17 +41,6 @@ import './about.css';
  * take its one line of copy from the app's own phrase pools rather than
  * carrying a second, drifting copy of the voice.
  */
-
-/**
- * How long to wait for a first video frame before showing the GIF instead.
- *
- * The splash's grace, halved. That number is measured against a *cold* start,
- * where the first launch after a build can miss 600ms for reasons that have
- * nothing to do with the video. Nothing is cold by the time this window opens —
- * the app has been running — so a long grace only means a longer stare at an
- * empty frame on the machines where the video will not play at all.
- */
-const DECODE_GRACE_MS = 600;
 
 /**
  * How often to re-read a status that is still moving. Milliseconds.
@@ -121,16 +112,29 @@ function renderUpdate(
   void refresh();
 }
 
-const canvas = document.querySelector<HTMLCanvasElement>('#sprite');
-const fallback = document.querySelector<HTMLImageElement>('#sprite-fallback');
+/**
+ * The person's own theme (HIVE-224). The splash stays on its built-in dark
+ * tokens because it opens before preferences exist; About opens on demand,
+ * long after, on the same origin, so it reads them. Before the palette read
+ * below, which is what the globe paints with.
+ */
+applyPersistedAppearance(localStorage, matchMedia('(prefers-color-scheme: dark)').matches);
+
+const canvas = document.querySelector<HTMLCanvasElement>('#globe');
 
 scheduleWordmark(document);
 
-if (canvas && fallback) {
-  // Loaded up front, shown only if the video never paints — the splash's
-  // reasoning, and the reason the swap is instant rather than merely eventual.
-  fallback.src = hiveGif;
-  drawCreature(canvas, fallback, hiveVideo, DECODE_GRACE_MS);
+if (canvas) {
+  const tokens = getComputedStyle(document.documentElement);
+  // The hero is 420×268 (`about.css`); the globe sits where the creature stood, at 0.6 of the splash's size.
+  startGlobe(canvas, paletteFrom((token) => tokens.getPropertyValue(token)), {
+    width: 420,
+    height: 268,
+    cx: 210,
+    cy: 128,
+    scale: 0.6,
+    from: GLOBE_STILL_T,
+  });
 }
 
 const phrase = document.querySelector<HTMLElement>('#phrase');

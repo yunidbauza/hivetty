@@ -1,6 +1,8 @@
+import { swarmPaletteOf } from '@lib/theme/colour';
 import {
   SYNTAX_KEYS,
   UI_KEYS,
+  UI_OPTIONAL_KEYS,
   syntaxTokenName,
   uiTokenName,
   type HiveTheme,
@@ -11,8 +13,12 @@ export const THEME_STYLE_ID = 'hive-theme';
 
 function declarations(theme: HiveTheme, mode: ThemeModeName): string {
   const colors = theme.modes[mode];
+  // Written even when the theme omits them, so `--cc-creep` never keeps the
+  // built-in's violet under an imported theme.
+  const creature = swarmPaletteOf(colors.ui);
   const lines = [
     ...UI_KEYS.map((k) => `  ${uiTokenName(k)}: ${colors.ui[k]};`),
+    ...UI_OPTIONAL_KEYS.map((k) => `  ${uiTokenName(k)}: ${creature[k]};`),
     ...SYNTAX_KEYS.map((k) => `  ${syntaxTokenName(k)}: ${colors.syntax[k]};`),
   ];
   return lines.join('\n');

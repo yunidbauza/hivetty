@@ -1,6 +1,6 @@
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/types/entity';
 import type { AgentSummary } from '@shared/agent-contract';
@@ -46,6 +46,8 @@ describe('SessionTable', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+    // Every ending drawn: these tests are about the rows, not HIVE-197's fold.
+    useUiStore.setState({ endedExpanded: true });
   });
 
   /**
@@ -68,6 +70,21 @@ describe('SessionTable', () => {
       );
     });
 
+    it('holds the overlord at 120px over the empty fleet', () => {
+      render(<SessionTable />);
+
+      const creature = screen.getByTestId('session-table-empty').querySelector('[data-creature]');
+      expect(creature).toHaveAttribute('data-creature', 'overlord');
+      expect(creature).toHaveStyle({ height: '120px' });
+    });
+
+    it('centres the empty notice in the space below the header', () => {
+      render(<SessionTable />);
+
+      expect(screen.getByTestId('session-table')).toHaveClass('flex', 'flex-1', 'flex-col');
+      expect(screen.getByTestId('session-table-empty')).toHaveClass('flex-1', 'justify-center');
+    });
+
     it('keeps the column header, so the empty area reads as a table', () => {
       render(<SessionTable />);
 
@@ -83,7 +100,7 @@ describe('SessionTable', () => {
     it('shows no ENDED group', () => {
       render(<SessionTable />);
 
-      expect(screen.queryByText('ENDED')).not.toBeInTheDocument();
+      expect(screen.queryByText(/^ENDED/)).not.toBeInTheDocument();
     });
   });
 
@@ -98,7 +115,7 @@ describe('SessionTable', () => {
 
     // The exact split the story's acceptance criteria name.
     expect(rows()).toHaveLength(10);
-    expect(screen.getByText('ENDED')).toBeInTheDocument();
+    expect(screen.getByText(/^ENDED · \d+$/)).toBeInTheDocument();
   });
 
   it('lists active sessions before the divider and done ones after', () => {
@@ -109,6 +126,14 @@ describe('SessionTable', () => {
     expect(labels.slice(0, 8).join(' ')).not.toContain('tz-fix');
     expect(labels.slice(8).join(' ')).toContain('tz-fix');
     expect(labels.slice(8).join(' ')).toContain('ecs-scaling');
+  });
+
+  it('dims an ended row by text token, not opacity (HIVE-225)', () => {
+    render(<SessionTable />);
+    const ended = rows().find((row) => row.textContent?.includes('tz-fix'))!;
+    const name = within(ended).getByText(/tz-fix/);
+    expect(name).toHaveClass('text-subtle');
+    expect(name.closest('.opacity-60')).toBeNull();
   });
 
   it('shows id, status, project, branch, and PR for a row', () => {
@@ -450,13 +475,13 @@ describe('SessionTable', () => {
       restore();
       render(<SessionTable />);
 
-      expect(screen.getByText('ENDED')).toBeInTheDocument();
+      expect(screen.getByText(/^ENDED · \d+$/)).toBeInTheDocument();
       expect(screen.queryByText('PREVIOUS RUN')).not.toBeInTheDocument();
       // `closed` folded into `done` (HIVE-93) — the word the user sees for
       // every deliberate ending, with the *how* carried by `endedBy`.
       expect(screen.getAllByText('done').length).toBeGreaterThan(0);
 
-      const ended = screen.getByText('ENDED');
+      const ended = screen.getByText(/^ENDED · \d+$/);
       const row = screen
         .getAllByRole('button')
         .find((button) => within(button).queryByText(/old-01/) !== null)!;
@@ -485,7 +510,7 @@ describe('SessionTable', () => {
       });
       render(<SessionTable />);
 
-      const ended = screen.getByText('ENDED');
+      const ended = screen.getByText(/^ENDED · \d+$/);
       const row = screen
         .getAllByRole('button')
         .find((button) => within(button).queryByText(/old-term/) !== null)!;
@@ -563,7 +588,7 @@ describe('SessionTable', () => {
       expect(row).toBeDisabled();
       expect(row).toHaveAttribute(
         'title',
-        'old-01 was open when The Hive last closed — resume to pick it back up',
+        'old-01 was open when Hive TTY last closed — resume to pick it back up',
       );
 
       const resume = screen.getByRole('button', { name: /^resume old-01/ });
@@ -674,7 +699,7 @@ describe('SessionTable', () => {
       expect(screen.queryByText('PREVIOUS RUN')).not.toBeInTheDocument();
       // The active group has no divider of its own: it is everything above
       // ENDED. Being above that divider is being in ACTIVE.
-      const ended = screen.getByText('ENDED');
+      const ended = screen.getByText(/^ENDED · \d+$/);
       expect(rows[0]!.compareDocumentPosition(ended)).toBe(
         Node.DOCUMENT_POSITION_FOLLOWING,
       );
@@ -859,13 +884,13 @@ describe('SessionTable', () => {
       useHiveStore.getState().hydrateAgents([agent()]);
       const { unmount } = render(<SessionTable />);
 
-      expect(screen.queryByText(/asking/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/ASKING/)).not.toBeInTheDocument();
       unmount();
 
       useHiveStore.getState().hydrateAgents([agent({ status: 'asking' })]);
       render(<SessionTable />);
 
-      expect(screen.getByText('1 asking')).toBeInTheDocument();
+      expect(screen.getByText('· 1 ASKING')).toHaveClass('text-amber-text');
     });
 
     /**
@@ -1111,9 +1136,9 @@ describe('SessionTable', () => {
 });
 
 /**
- * Plan progress in the fleet table (HIVE-182): the same green `done/total` as
- * the projects-tree row, inside the row's status cell after its label — the
- * one cell that must never truncate, so the column is sized for both.
+ * Plan progress in the fleet table (HIVE-182): `done/total`, in its own Plan
+ * column beside a progress bar since HIVE-197 (it used to ride in the status
+ * cell after the label).
  */
 describe('SessionTable — plan progress', () => {
   const plan = (entityId: string, statuses: PlanTaskStatus[]): SessionPlan => ({
@@ -1135,21 +1160,28 @@ describe('SessionTable — plan progress', () => {
     useUiStore.getState().reset();
   });
 
-  it('shows done/total inside the status cell, after the label', () => {
+  it('draws plan progress as a bar and done/total in its own column (HIVE-197)', () => {
     act(() =>
       useHiveStore
         .getState()
-        .setPlan('hero-refresh', plan('hero-refresh', ['completed', 'completed', 'in_progress', 'pending', 'pending'])),
+        .setPlan('hero-refresh', plan('hero-refresh', ['completed', 'completed', 'pending'])),
     );
     render(<SessionTable />);
 
-    const row = rowFor('hero-refresh');
-    const count = within(row).getByText('2/5');
-    const cell = count.closest('[data-col="status"]');
-    expect(cell).not.toBeNull();
-    const label = within(cell as HTMLElement).getByText('working');
-    expect(label.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(row).getByText('2/5 tasks done')).toHaveClass('sr-only');
+    const shell = shellOf(rowFor('hero-refresh'));
+    const cell = shell.querySelector('[data-col="plan"]') as HTMLElement;
+    expect(cell).toHaveTextContent('2/3');
+    expect(within(cell).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2');
+    expect(shell.querySelector('[data-col="status"]')).not.toHaveTextContent('2/3');
+  });
+
+  it('draws an empty bar, not NaN, for a plan with no tasks yet', () => {
+    act(() => useHiveStore.getState().setPlan('hero-refresh', plan('hero-refresh', [])));
+    render(<SessionTable />);
+
+    const cell = shellOf(rowFor('hero-refresh')).querySelector('[data-col="plan"]') as HTMLElement;
+    const fill = within(cell).getByRole('progressbar').firstElementChild as HTMLElement;
+    expect(fill.style.width).toBe('0%');
   });
 
   it('shows nothing on a row without a plan', () => {
@@ -1167,5 +1199,96 @@ describe('SessionTable — plan progress', () => {
     act(() => useHiveStore.getState().setPlan('hero-refresh', plan('hero-refresh', ['completed', 'pending'])));
 
     expect(within(rowFor('hero-refresh')).getByText('1/2')).toBeInTheDocument();
+  });
+});
+
+describe('SessionTable — columns (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+  });
+
+  it('orders the header Session, Status after Branch, Plan, Last used, PR', () => {
+    render(<SessionTable />);
+    const header = screen.getByText('SESSION').parentElement as HTMLElement;
+    expect(within(header).getAllByText(/^[A-Z ]+$/).map((cell) => cell.textContent)).toEqual([
+      'SESSION',
+      'PROJECT',
+      'BRANCH',
+      'STATUS',
+      'PLAN',
+      'LAST USED',
+    ]);
+  });
+
+  it('agent rows hold the Plan column open, empty', () => {
+    useHiveStore.getState().hydrateAgents([
+      {
+        name: 'builder', description: 'Builds.', icon: 'Robot', status: 'sleeping', wake: { on: [] },
+        mcp: [], tools: [], rotateAfter: 50, runs: [], live: [],
+      } as unknown as AgentSummary,
+    ]);
+    render(<SessionTable />);
+    const cell = screen.getByTestId('agent-row').querySelector('[data-col="plan"]');
+    expect(cell).not.toBeNull();
+    expect(cell).toBeEmptyDOMElement();
+  });
+});
+
+describe('SessionTable — groups (HIVE-197)', () => {
+  const NOW = new Date(2026, 9, 2, 15, 0).getTime();
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useUiStore.getState().reset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const endAll = (endedAt: (index: number) => number) =>
+    act(() => {
+      useHiveStore.setState((state) => {
+        const entities = { ...state.entities };
+        Object.values(entities).forEach((entity, index) => {
+          if (entity.kind === 'session' && (entity.status === 'done' || entity.status === 'terminated')) {
+            entities[entity.id] = { ...entity, endedAt: endedAt(index) };
+          }
+        });
+        return { entities };
+      });
+    });
+
+  it('heads the live rows with LIVE · N and the needs-you count', () => {
+    render(<SessionTable />);
+    expect(screen.getByText(/^LIVE · \d+$/)).toBeInTheDocument();
+    expect(screen.getByText(/^· \d+ NEEDS YOU$/)).toHaveClass('text-amber-text');
+  });
+
+  it('folds yesterday’s endings behind "N more", which reveals them', async () => {
+    endAll((index) => (index % 2 === 0 ? NOW - 1000 : NOW - 2 * 86_400_000));
+    render(<SessionTable />);
+    expect(screen.getByText(/^ENDED · \d+$/)).toBeInTheDocument();
+    expect(screen.getByText(/^· TODAY \d+$/)).toBeInTheDocument();
+    const more = screen.getByRole('button', { name: /^\d+ more ›$/ });
+    const before = rows().length;
+    await userEvent.click(more);
+    expect(rows().length).toBeGreaterThan(before);
+    expect(screen.queryByRole('button', { name: /more ›$/ })).not.toBeInTheDocument();
+  });
+
+  it('a project filter narrows every group and names the agents head', () => {
+    useUiStore.getState().setSessionsProject('nova-web');
+    render(<SessionTable />);
+    for (const row of rows()) expect(shellOf(row)).toHaveTextContent('nova-web');
+    expect(screen.queryByRole('button', { name: /more ›$/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/^AGENTS · /)).not.toBeInTheDocument();
+  });
+
+  it('the Ended filter hides the live rows', () => {
+    useUiStore.getState().setSessionsFilter('ended');
+    render(<SessionTable />);
+    expect(screen.queryByText(/^LIVE · /)).not.toBeInTheDocument();
   });
 });

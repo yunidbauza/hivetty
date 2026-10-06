@@ -23,6 +23,7 @@ import {
   JIRA_GET_PATH,
   JIRA_TOOL_MAX_BYTES,
   JIRA_TRANSITION_PATH,
+  JIRA_USERS_PATH,
   type JiraToolHandlers,
 } from '../../../../electron/shared/jira-contract';
 import {
@@ -192,6 +193,13 @@ const ROUTES: {
     name: '/jira/comment',
     url: (r) => `${r.origin as string}${JIRA_COMMENT_PATH}`,
     body: { key: 'HIVE-1', markdown: 'hi' },
+    ok: 200,
+    refused: 403,
+  },
+  {
+    name: '/jira/users',
+    url: (r) => `${r.origin as string}${JIRA_USERS_PATH}`,
+    body: { query: 'da' },
     ok: 200,
     refused: 403,
   },
@@ -2990,6 +2998,8 @@ describe('the projects and pr routes (HIVE-173)', () => {
     findings: 2,
     checks: 'passing' as const,
     updatedAt: '2026-09-11T10:00:00Z',
+    mergedAt: null,
+    mine: true,
   };
 
   let receiver: Receiver;
@@ -3113,6 +3123,7 @@ describe('the projects and pr routes (HIVE-173)', () => {
 
 describe('the Jira routes (HIVE-174)', () => {
   const CALLER = 'builder';
+  const AGENT = 'shipper';
   const ISSUE = {
     key: 'HIVE-7',
     summary: 'Ship the thing',
@@ -3127,13 +3138,14 @@ describe('the Jira routes (HIVE-174)', () => {
 
   let receiver: Receiver;
   let url: string;
-  let calls: { tool: string; request: unknown }[];
+  let calls: { tool: string; request: unknown; via?: unknown }[];
   let failNext: boolean;
+  let onJira: JiraToolHandlers;
 
   beforeEach(async () => {
     calls = [];
     failNext = false;
-    const onJira: JiraToolHandlers = {
+    onJira = {
       get: (request) => {
         calls.push({ tool: 'get', request });
         if (failNext) return Promise.reject(new Error('ECONNREFUSED /Users/someone/.hive'));
@@ -3143,9 +3155,13 @@ describe('the Jira routes (HIVE-174)', () => {
         calls.push({ tool: 'transition', request });
         return Promise.resolve({ ok: false, error: { kind: 'not-found', message: `${request.key} does not exist.` } });
       },
-      comment: (request) => {
-        calls.push({ tool: 'comment', request });
+      comment: (request, via) => {
+        calls.push({ tool: 'comment', request, ...(via === undefined ? {} : { via }) });
         return Promise.resolve({ ok: true, value: { id: '3', author: 'me', created: 'now', body: [] } });
+      },
+      users: (request) => {
+        calls.push({ tool: 'users', request });
+        return Promise.resolve({ ok: true, value: [{ accountId: 'a1', displayName: 'Dana' }] });
       },
     };
     receiver = createReceiver({
@@ -3160,6 +3176,7 @@ describe('the Jira routes (HIVE-174)', () => {
       onMetrics: () => {},
       ...noLedger,
       ...noAgents,
+      knowsAgent: (entityId: string) => entityId === AGENT,
       onJira,
     });
     const started = await receiver.start();
@@ -3197,11 +3214,67 @@ describe('the Jira routes (HIVE-174)', () => {
     expect(said.status).toBe(200);
     expect(await said.json()).toEqual({ ok: true, value: { id: '3', author: 'me', created: 'now', body: [] } });
 
+    const found = await post(JIRA_USERS_PATH, JSON.stringify({ query: 'da' }), { [HOOK_HEADER_SESSION]: CALLER });
+    expect(await found.json()).toEqual({ ok: true, value: [{ accountId: 'a1', displayName: 'Dana' }] });
+
     expect(calls).toEqual([
       { tool: 'get', request: { key: 'HIVE-7' } },
       { tool: 'transition', request: { key: 'HIVE-9', status: 'Done' } },
       { tool: 'comment', request: { key: 'HIVE-7', markdown: 'hi' } },
+      { tool: 'users', request: { query: 'da' } },
     ]);
+  });
+
+  it('marks a comment from an agent caller with via, and never one from a session or a body field (HIVE-216)', async () => {
+    await post(JIRA_COMMENT_PATH, JSON.stringify({ key: 'HIVE-7', markdown: 'from the agent' }), { [HOOK_HEADER_SESSION]: AGENT });
+    await post(JIRA_COMMENT_PATH, JSON.stringify({ key: 'HIVE-7', markdown: 'from the session' }), { [HOOK_HEADER_SESSION]: CALLER });
+    const forged = await post(
+      JIRA_COMMENT_PATH,
+      JSON.stringify({ key: 'HIVE-7', markdown: 'forged', via: { agent: 'shipper' } }),
+      { [HOOK_HEADER_SESSION]: CALLER },
+    );
+
+    expect(forged.status).toBe(400);
+    expect(calls).toEqual([
+      { tool: 'comment', request: { key: 'HIVE-7', markdown: 'from the agent' }, via: { agent: AGENT } },
+      { tool: 'comment', request: { key: 'HIVE-7', markdown: 'from the session' } },
+    ]);
+  });
+
+  it('reads an id that is both a session and an agent as a session: no via (HIVE-216)', async () => {
+    const both = createReceiver({
+      knowsSession: (entityId) => entityId === CALLER || entityId === AGENT,
+      onEvent: () => {},
+      onPlanTool: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onCleared: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      onMetrics: () => {},
+      ...noLedger,
+      ...noAgents,
+      knowsAgent: (entityId: string) => entityId === AGENT,
+      onJira,
+    });
+    try {
+      const started = await both.start();
+      expect(started).not.toBeNull();
+      const response = await fetch(`${new URL(started as string).origin}${JIRA_COMMENT_PATH}`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          [HOOK_HEADER_SESSION]: AGENT,
+          [HOOK_HEADER_TOKEN]: both.tokenFor(AGENT),
+        },
+        body: JSON.stringify({ key: 'HIVE-7', markdown: 'from a session named like an agent' }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(calls).toEqual([{ tool: 'comment', request: { key: 'HIVE-7', markdown: 'from a session named like an agent' } }]);
+    } finally {
+      await both.stop();
+    }
   });
 
   it('refuses a malformed body with 400 and the guard\'s sentence, calling nothing', async () => {
@@ -3209,6 +3282,7 @@ describe('the Jira routes (HIVE-174)', () => {
       [JIRA_GET_PATH, { key: 'nope' }, /jiraIssue\.key/],
       [JIRA_TRANSITION_PATH, { key: 'HIVE-7', status: '' }, /jiraTransition\.status/],
       [JIRA_COMMENT_PATH, { key: 'HIVE-7', markdown: '' }, /addJiraComment\.markdown/],
+      [JIRA_USERS_PATH, { query: '' }, /jiraUsers\.query/],
     ];
     for (const [path, body, reason] of cases) {
       const response = await post(path, JSON.stringify(body), { [HOOK_HEADER_SESSION]: CALLER });
@@ -3274,7 +3348,7 @@ describe('the Jira routes (HIVE-174)', () => {
   });
 
   it('refuses an unknown id and a foreign token on every Jira route', async () => {
-    for (const path of [JIRA_GET_PATH, JIRA_TRANSITION_PATH, JIRA_COMMENT_PATH]) {
+    for (const path of [JIRA_GET_PATH, JIRA_TRANSITION_PATH, JIRA_COMMENT_PATH, JIRA_USERS_PATH]) {
       const unknown = await post(path, '{}', { [HOOK_HEADER_SESSION]: 'nobody-at-all' });
       expect(unknown.status).toBe(404);
       const foreign = await fetch(`${origin()}${path}`, {
@@ -3498,6 +3572,7 @@ describe('the MCP route', () => {
         transition: () => Promise.reject(new Error('not exercised')),
         comment: () =>
           Promise.resolve({ ok: true, value: { id: '4', author: 'me', created: 'now', body: [] } }),
+        users: () => Promise.resolve({ ok: true, value: [{ accountId: 'a1', displayName: 'Dana' }] }),
       },
       onLedgerRead: (_caller, query) => ledger.read(query),
       onLedgerPost: (caller, request) => {
@@ -4923,5 +4998,124 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
     await post(toolBody('ExitPlanMode', { plan: '### One' }, SUBAGENT));
 
     expect(planCalls).toEqual([]);
+  });
+});
+
+describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
+  const SUBAGENT = { agent_id: 'ad74678b565585bbf', agent_type: 'general-purpose' };
+
+  let receiver: Receiver;
+  let url: string;
+  let fileCalls: string[];
+  let planCalls: PlanToolCall[];
+
+  beforeEach(async () => {
+    fileCalls = [];
+    planCalls = [];
+    receiver = createReceiver({
+      onEvent: () => {},
+      onCleared: () => {},
+      onTicketIntent: () => {},
+      onPlanTool: (call) => planCalls.push(call),
+      onFileTool: (entityId) => fileCalls.push(entityId),
+      onPromptName: () => {},
+      onMetrics: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: (entityId) => entityId === 'sess-01',
+      ...noLedger,
+      ...noAgents,
+    });
+    const started = await receiver.start();
+    expect(started).not.toBeNull();
+    url = started as string;
+  });
+
+  afterEach(async () => {
+    await receiver.stop();
+  });
+
+  const toolBody = (
+    toolName: string,
+    toolInput: unknown,
+    extra: Record<string, unknown> = {},
+    event = 'PostToolUse',
+  ) => ({
+    session_id: '43fa9e8a-46e9-4c16-9b5c-549db8c85ef8',
+    cwd: '/repo',
+    ...extra,
+    hook_event_name: event,
+    tool_name: toolName,
+    tool_input: toolInput,
+    tool_response: { ok: true },
+  });
+
+  const post = (body: unknown) =>
+    fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: receiver.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: JSON.stringify(body),
+    });
+
+  it('a main-agent Edit, Write, MultiEdit or NotebookEdit triggers a read', async () => {
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit']) {
+      await post(toolBody(tool, { file_path: '/repo/a.ts' }));
+    }
+    expect(fileCalls).toEqual(['sess-01', 'sess-01', 'sess-01', 'sess-01']);
+  });
+
+  it('a truncated Edit still triggers a read, by tool_name in the prefix', async () => {
+    const body = toolBody('Edit', {
+      file_path: '/repo/a.ts',
+      old_string: 'x'.repeat(70 * 1024),
+      new_string: 'y',
+    });
+    expect(JSON.stringify(body).length).toBeGreaterThan(HOOK_MAX_BODY_BYTES);
+    await post(body);
+    expect(fileCalls).toEqual(['sess-01']);
+  });
+
+  it("a subagent's edit, whole or truncated, and any PreToolUse or Read, do not", async () => {
+    await post(toolBody('Edit', { file_path: '/repo/a.ts' }, SUBAGENT));
+    await post(toolBody('Write', { file_path: '/repo/a.ts', content: 'x'.repeat(70 * 1024) }, SUBAGENT));
+    await post(toolBody('Edit', { file_path: '/repo/a.ts' }, {}, 'PreToolUse'));
+    await post(toolBody('Read', { file_path: '/repo/a.ts' }));
+    expect(fileCalls).toEqual([]);
+  });
+
+  it('a plan-file write triggers both onPlanTool and onFileTool', async () => {
+    await post(toolBody('Write', { file_path: '/repo/.hive/plans/x.md', content: '## Task 1: A' }));
+    expect(fileCalls).toEqual(['sess-01']);
+    expect(planCalls).toHaveLength(1);
+  });
+
+  it('answers and keeps going when onFileTool throws', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await receiver.stop();
+    receiver = createReceiver({
+      onEvent: () => {},
+      onCleared: () => {},
+      onTicketIntent: () => {},
+      onPlanTool: () => {},
+      onFileTool: () => {
+        throw new Error('boom');
+      },
+      onPromptName: () => {},
+      onMetrics: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: (entityId) => entityId === 'sess-01',
+      ...noLedger,
+      ...noAgents,
+    });
+    url = (await receiver.start()) as string;
+    const response = await post(toolBody('Edit', { file_path: '/repo/a.ts' }));
+    expect(response.status).toBe(204);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('onFileTool threw'), expect.any(Error));
+    error.mockRestore();
   });
 });

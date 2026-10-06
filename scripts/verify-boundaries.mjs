@@ -152,6 +152,29 @@ const CASES = [
     },
   },
   /**
+   * The other half of the splash fence (HIVE-212): `lib/` is banned except the
+   * four pure modules the globe draws with. One planted import of another
+   * `lib/` module proves the ban still fires; the ALLOWED case below proves the
+   * exception is not a typo that silently matches nothing (a relative `except`
+   * would, see `eslint.config.mjs`).
+   */
+  {
+    name: 'zone: splash/ may not import other lib/ modules',
+    rule: 'import/no-restricted-paths',
+    files: {
+      'src/splash/probe-lib.ts':
+        "import { pickPhrase } from '@lib/swarm/phrases';\nexport const probe = pickPhrase;\n",
+    },
+  },
+  {
+    name: 'ALLOWED: splash/ may import the creature, the comb and the colour helpers',
+    rule: null,
+    files: {
+      'src/splash/probe-allowed.ts':
+        "import { MUTA_SCALE } from '@lib/swarm/comb';\nimport { drawMuta } from '@lib/swarm/muta';\nimport { toneOf } from '@lib/swarm/tone';\nimport { mixColour } from '@lib/theme/colour';\n\nexport const probe = [MUTA_SCALE, drawMuta, toneOf, mixColour];\n",
+    },
+  },
+  /**
    * The About panel: the splash's rule with its reason removed.
    *
    * It is a standalone document too, but it opens on demand rather than before

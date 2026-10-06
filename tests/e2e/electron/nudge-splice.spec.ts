@@ -183,7 +183,7 @@ test('a nudge is held while a draft is in the box, and lands once it is cleared'
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
     await collect(page);
     await startSession(page, PROJECT);
 

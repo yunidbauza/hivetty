@@ -5,7 +5,17 @@ import {
   buildPrQuery,
   buildPrVariables,
   buildSearchVariables,
+  FILE_UNVIEWED_MUTATION,
+  FILE_VIEWED_MUTATION,
+  PR_COMMENT_MUTATION,
+  PR_DETAIL_QUERY,
+  PR_ID_QUERY,
+  PR_THREAD_OWNER_QUERY,
+  PR_TIMELINE_QUERY,
   repoQualifiers,
+  THREAD_REPLY_MUTATION,
+  THREAD_RESOLVE_MUTATION,
+  THREAD_UNRESOLVE_MUTATION,
   safeSearchTerm,
   type RepoRef,
 } from '../../../../../electron/main/integrations/github/query';
@@ -291,5 +301,72 @@ describe('buildSearchVariables', () => {
     expect(variables.open.indexOf('repo:behiques/the-hive')).toBeLessThan(
       variables.open.indexOf('a OR b'),
     );
+  });
+});
+
+describe('the PR page documents (HIVE-205)', () => {
+  it.each([
+    ['detail', PR_DETAIL_QUERY],
+    ['id', PR_ID_QUERY],
+  ])('the %s query binds owner, name and number as variables', (_name, doc) => {
+    expect(doc).toContain('query($owner: String!, $name: String!, $number: Int!)');
+    expect(doc).toContain('repository(owner: $owner, name: $name)');
+    expect(doc).toContain('pullRequest(number: $number)');
+  });
+
+  it('adds a comment through bound variables only', () => {
+    expect(PR_COMMENT_MUTATION).toContain('mutation($subjectId: ID!, $body: String!)');
+    expect(PR_COMMENT_MUTATION).toContain('addComment(input: { subjectId: $subjectId, body: $body })');
+  });
+
+  it('reads the newest page of comments, reviews and threads, not the oldest', () => {
+    // A PR past one page would otherwise lose exactly the entries the page is for.
+    expect(PR_DETAIL_QUERY).toContain('comments(last: 100) { nodes { author { login } body createdAt url } }');
+    expect(PR_DETAIL_QUERY).toContain('reviews(last: 100)');
+    expect(PR_DETAIL_QUERY).toContain('reviewThreads(last: 100)');
+  });
+
+  it('selects each check run’s job id and app (HIVE-206)', () => {
+    expect(PR_DETAIL_QUERY).toContain('... on CheckRun { name status conclusion startedAt completedAt detailsUrl databaseId checkSuite { app { slug } } }');
+  });
+
+  it('reads every field the page draws', () => {
+    for (const field of [
+      'body', 'createdAt', 'mergedAt', 'baseRefName', 'headRefName', 'headRefOid',
+      'additions', 'deletions', 'changedFiles', 'author { login }', 'reviewDecision',
+      'mergeStateStatus', 'reviewRequests', 'reviewThreads', 'isOutdated', 'originalLine',
+      'diffSide', 'diffHunk', 'statusCheckRollup', '... on CheckRun', '... on StatusContext',
+    ]) {
+      expect(PR_DETAIL_QUERY).toContain(field);
+    }
+  });
+});
+
+describe('HIVE-207 documents', () => {
+  it('reads the changed files with their viewed state', () => {
+    expect(PR_DETAIL_QUERY).toContain('files(first: 100) { nodes { path additions deletions changeType viewerViewedState } }');
+  });
+
+  it.each([
+    ['PR_THREAD_OWNER_QUERY', PR_THREAD_OWNER_QUERY, ['$id: ID!']],
+    ['THREAD_REPLY_MUTATION', THREAD_REPLY_MUTATION, ['$threadId: ID!', '$body: String!', 'addPullRequestReviewThreadReply']],
+    ['THREAD_RESOLVE_MUTATION', THREAD_RESOLVE_MUTATION, ['$threadId: ID!', 'resolveReviewThread']],
+    ['THREAD_UNRESOLVE_MUTATION', THREAD_UNRESOLVE_MUTATION, ['$threadId: ID!', 'unresolveReviewThread']],
+    ['FILE_VIEWED_MUTATION', FILE_VIEWED_MUTATION, ['$pullRequestId: ID!', '$path: String!', 'markFileAsViewed']],
+    ['FILE_UNVIEWED_MUTATION', FILE_UNVIEWED_MUTATION, ['$pullRequestId: ID!', '$path: String!', 'unmarkFileAsViewed']],
+  ])('%s declares its variables and binds nothing else', (_name, doc, parts) => {
+    for (const part of parts) expect(doc).toContain(part);
+    expect(doc).not.toMatch(/\$\{/);
+  });
+});
+
+describe('PR_TIMELINE_QUERY (HIVE-208)', () => {
+  it('binds owner, name and number and reads the timeline item types the tab draws', () => {
+    expect(PR_TIMELINE_QUERY).toContain('query($owner: String!, $name: String!, $number: Int!)');
+    expect(PR_TIMELINE_QUERY).toContain('timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, PULL_REQUEST_REVIEW, ISSUE_COMMENT, REVIEW_REQUESTED_EVENT, MERGED_EVENT])');
+    expect(PR_TIMELINE_QUERY).toContain('checkSuites(first: 20)');
+    expect(PR_TIMELINE_QUERY).toContain('workflowRun { runNumber url databaseId workflow { name } }');
+    expect(PR_TIMELINE_QUERY).toContain('checkRuns(first: 10, filterBy: { conclusions: [FAILURE, TIMED_OUT] })');
+    expect(PR_TIMELINE_QUERY).not.toMatch(/\$\{/);
   });
 });

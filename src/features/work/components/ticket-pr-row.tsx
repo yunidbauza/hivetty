@@ -48,15 +48,15 @@ export function TicketPrRow({ pr }: TicketPrRowProps) {
         className={cn('shrink-0', stateText)}
       />
 
-      <span className="shrink-0 font-mono text-[11px] text-brand">#{pr.n}</span>
+      <span className="shrink-0 tabular-nums text-micro text-brand">#{pr.n}</span>
 
-      <span className="flex-1 truncate text-left font-mono text-[11px] text-subtle">
+      <span className="flex-1 truncate text-left tabular-nums text-micro text-subtle">
         {pr.repo}
       </span>
 
       <span
         className={cn(
-          'shrink-0 text-[10px] font-bold uppercase tracking-[0.05em]',
+          'shrink-0 text-micro font-bold uppercase tracking-[0.05em]',
           stateText,
         )}
       >
@@ -64,7 +64,7 @@ export function TicketPrRow({ pr }: TicketPrRowProps) {
       </span>
 
       {findings ? (
-        <span className="shrink-0 text-[10px] font-bold text-amber">
+        <span className="shrink-0 text-micro font-bold text-amber-text">
           <span aria-hidden="true">{findings}</span>
           <span className="sr-only">{findingsFor}</span>
         </span>

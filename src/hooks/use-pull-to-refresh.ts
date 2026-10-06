@@ -17,9 +17,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  *
  * ## Why the scroll parent is found rather than owned
  *
- * The element that scrolls is the rail's `role="tabpanel"` wrapper, and that
- * wrapper is shared by every panel in the rail. A panel cannot be handed a ref
- * to it without the rail knowing which panels refresh — pushing a feature
+ * The element that scrolls is the list panel's scrolling wrapper, and that
+ * wrapper is shared by every panel. A panel cannot be handed a ref to it
+ * without the list panel knowing which panels refresh — pushing a feature
  * concern into the composition root. So the panel attaches this to its own
  * root and the hook walks up to the nearest scrollable ancestor. Scoping falls
  * out for free: the listener only exists while a panel that asked for it is
@@ -40,7 +40,7 @@ export const PULL_THRESHOLD = 64;
 /**
  * The furthest the indicator travels. Beyond this the gesture keeps being
  * accepted but stops growing, so leaning on the trackpad cannot push the list
- * off the bottom of the rail.
+ * off the bottom of the panel.
  */
 export const PULL_MAX = 96;
 

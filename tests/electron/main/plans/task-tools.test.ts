@@ -52,7 +52,7 @@ describe('reduceTaskTool', () => {
     expect(plan?.source).toBe('task-tools');
     expect(plan?.entityId).toBe('sess-01');
     expect(plan?.tasks).toEqual([
-      { id: '1', title: 'Alpha', status: 'completed' },
+      { id: '1', title: 'Alpha', status: 'completed', startedAt: 0, endedAt: 0 },
       { id: '2', title: 'Beta', status: 'pending' },
       { id: '3', title: 'Gamma', status: 'pending' },
     ]);
@@ -128,9 +128,9 @@ describe('reduceTaskTool', () => {
     });
 
     expect(plan?.tasks).toEqual([
-      { id: '1', title: 'One', status: 'pending' },
-      { id: '2', title: 'Two', status: 'completed' },
-      { id: '4', title: 'Three', status: 'pending' },
+      { id: '1', title: 'One', status: 'pending', activeForm: 'x' },
+      { id: '2', title: 'Two', status: 'completed', activeForm: 'y', endedAt: 0 },
+      { id: '4', title: 'Three', status: 'pending', activeForm: 'w' },
     ]);
   });
 
@@ -187,5 +187,98 @@ describe('reduceTaskTool', () => {
 
     expect(plan?.source).toBe('task-tools');
     expect(plan?.tasks).toEqual([{ id: '1', title: 'A', status: 'pending' }]);
+  });
+});
+
+describe('reduceTaskTool: activeForm and times (HIVE-201)', () => {
+  const create = (id: string, subject: string, activeForm?: string): PlanToolCall => ({
+    entityId: 'sess-01',
+    toolName: 'TaskCreate',
+    toolInput: { subject, ...(activeForm === undefined ? {} : { activeForm }) },
+    toolResponse: { task: { id } },
+  });
+
+  it('reads activeForm from TaskCreate and lets TaskUpdate replace it', () => {
+    let plan = reduceTaskTool(undefined, create('1', 'Push', 'Pushing'), 1_000);
+    expect(plan?.tasks[0]).toEqual({ id: '1', title: 'Push', status: 'pending', activeForm: 'Pushing' });
+    plan = reduceTaskTool(plan, update({ taskId: '1', activeForm: 'Pushing the branch' }), 2_000);
+    expect(plan?.tasks[0]?.activeForm).toBe('Pushing the branch');
+  });
+
+  it('stamps startedAt on the first in_progress only, endedAt on completed', () => {
+    let plan = reduceTaskTool(undefined, create('1', 'A'), 0);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'in_progress' }), 1_000);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'pending' }), 2_000);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'in_progress' }), 3_000);
+    expect(plan?.tasks[0]?.startedAt).toBe(1_000);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'completed' }), 9_000);
+    expect(plan?.tasks[0]).toMatchObject({ startedAt: 1_000, endedAt: 9_000 });
+  });
+
+  it('a rename keeps activeForm and both times', () => {
+    let plan = reduceTaskTool(undefined, create('1', 'A', 'Doing A'), 0);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'in_progress' }), 1_000);
+    plan = reduceTaskTool(plan, update({ taskId: '1', status: 'completed' }), 2_000);
+    plan = reduceTaskTool(plan, update({ taskId: '1', subject: 'B' }), 3_000);
+    expect(plan?.tasks[0]).toEqual({
+      id: '1',
+      title: 'B',
+      status: 'completed',
+      activeForm: 'Doing A',
+      startedAt: 1_000,
+      endedAt: 2_000,
+    });
+  });
+
+  it('an update that changes nothing returns the same plan', () => {
+    const plan = reduceTaskTool(undefined, create('1', 'A', 'Doing A'), 0);
+    expect(reduceTaskTool(plan, update({ taskId: '1', activeForm: 'Doing A' }), 5)).toBe(plan);
+  });
+});
+
+describe('reduceTaskTool: TodoWrite times (HIVE-201)', () => {
+  const todo = (todos: { content: string; status: string; activeForm?: string }[]): PlanToolCall => ({
+    entityId: 'sess-01',
+    toolName: 'TodoWrite',
+    toolInput: { todos },
+    toolResponse: {},
+  });
+
+  it('reads activeForm and stamps a todo that starts', () => {
+    const plan = reduceTaskTool(
+      undefined,
+      todo([{ content: 'A', status: 'in_progress', activeForm: 'Doing A' }]),
+      1_000,
+    );
+    expect(plan?.tasks[0]).toEqual({
+      id: '1',
+      title: 'A',
+      status: 'in_progress',
+      activeForm: 'Doing A',
+      startedAt: 1_000,
+    });
+  });
+
+  it('carries startedAt from the previous write by title, and stamps endedAt on completion', () => {
+    let plan = reduceTaskTool(
+      undefined,
+      todo([
+        { content: 'A', status: 'in_progress' },
+        { content: 'B', status: 'pending' },
+      ]),
+      1_000,
+    );
+    plan = reduceTaskTool(
+      plan,
+      todo([
+        { content: 'A', status: 'completed' },
+        { content: 'B', status: 'in_progress' },
+      ]),
+      4_000,
+    );
+    expect(plan?.tasks).toEqual([
+      { id: '1', title: 'A', status: 'completed', startedAt: 1_000, endedAt: 4_000 },
+      { id: '2', title: 'B', status: 'in_progress', startedAt: 4_000 },
+    ]);
   });
 });

@@ -28,10 +28,10 @@ export function EnvDiagnosticView({ diagnostic }: EnvDiagnosticViewProps) {
   const { shell, error, vars } = diagnostic;
 
   return (
-    <div className="flex flex-col gap-2 rounded-[7px] border border-border-soft p-3">
+    <div className="flex flex-col gap-2 rounded-lg border border-border-soft p-3">
       <div className="flex flex-col gap-1">
-        <span className="text-[11.5px] text-muted">Ran</span>
-        <code className="rounded-[5px] bg-chip px-2 py-1.5 font-mono text-[11px] break-all text-muted">
+        <span className="text-ui-sm text-muted">Ran</span>
+        <code className="rounded-md bg-chip px-2 py-1.5 font-mono text-micro break-all text-muted">
           {shell} {ENV_PROBE_ARGS.join(' ')}
         </code>
         {/*
@@ -41,7 +41,7 @@ export function EnvDiagnosticView({ diagnostic }: EnvDiagnosticViewProps) {
          * so an rc file gated on `[[ -t 0 ]]` can still behave differently
          * here than it would for the user.
          */}
-        <p className="text-[11px] text-subtle">
+        <p className="text-micro text-subtle">
           Interactive, so rc files are sourced the same way a real session's
           would be — but this probe has no terminal, so a check like{' '}
           <code className="font-mono">[[ -t 0 ]]</code> in your rc file can
@@ -50,25 +50,25 @@ export function EnvDiagnosticView({ diagnostic }: EnvDiagnosticViewProps) {
       </div>
 
       {error !== null ? (
-        <p className="flex items-start gap-2 text-[12.5px]">
-          <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
-          <span className="text-amber">Could not probe this shell: {error}</span>
+        <p className="flex items-start gap-2 text-control">
+          <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
+          <span className="text-amber-text">Could not probe this shell: {error}</span>
         </p>
       ) : vars.length === 0 ? (
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           No environment variables are configured for this shell.
         </p>
       ) : (
         <ul className="flex flex-col gap-1.5">
           {vars.map((verdict) => (
-            <li key={verdict.key} className="flex flex-col gap-1 text-[12.5px]">
+            <li key={verdict.key} className="flex flex-col gap-1 text-control">
               <p className="flex items-start gap-2">
                 {verdict.overridden ? (
-                  <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
+                  <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
                 ) : (
                   <CheckCircle size={14} className="mt-px shrink-0 text-green" />
                 )}
-                <span className={verdict.overridden ? 'text-amber' : 'text-ink'}>
+                <span className={verdict.overridden ? 'text-amber-text' : 'text-ink'}>
                   <code className="font-mono">{verdict.key}</code>
                   {' = '}
                   <code className="font-mono text-muted">{verdict.configured}</code>
@@ -76,7 +76,7 @@ export function EnvDiagnosticView({ diagnostic }: EnvDiagnosticViewProps) {
               </p>
               {verdict.overridden ? (
                 <div className="flex flex-col gap-1 pl-[22px]">
-                  <p className="text-[11.5px] text-subtle">
+                  <p className="text-ui-sm text-subtle">
                     {verdict.actual === null ? (
                       <>
                         dropped by your rc file — the shell reported no such
@@ -94,7 +94,7 @@ export function EnvDiagnosticView({ diagnostic }: EnvDiagnosticViewProps) {
                    * tone: name the likely cause and what to do about it,
                    * rather than stating the fact and stopping.
                    */}
-                  <p className="text-[11.5px] text-subtle">
+                  <p className="text-ui-sm text-subtle">
                     This is usually your shell&rsquo;s rc file —{' '}
                     <code className="font-mono">.zshrc</code>,{' '}
                     <code className="font-mono">.bash_profile</code>, or

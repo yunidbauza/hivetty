@@ -2,7 +2,19 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createGithubClient } from '../../../../../electron/main/integrations/github/client';
-import type { RepoRef } from '../../../../../electron/main/integrations/github/query';
+import {
+  FILE_UNVIEWED_MUTATION,
+  FILE_VIEWED_MUTATION,
+  PR_COMMENT_MUTATION,
+  PR_DETAIL_QUERY,
+  PR_ID_QUERY,
+  PR_THREAD_OWNER_QUERY,
+  PR_TIMELINE_QUERY,
+  type RepoRef,
+  THREAD_REPLY_MUTATION,
+  THREAD_RESOLVE_MUTATION,
+  THREAD_UNRESOLVE_MUTATION,
+} from '../../../../../electron/main/integrations/github/query';
 import type { RunAsync } from '../../../../../electron/main/integrations/github/run';
 
 /**
@@ -265,5 +277,247 @@ describe('createGithubClient', () => {
     ).sweep(REPOS, NOW);
 
     expect(JSON.stringify(result)).not.toContain('ghp_secret');
+  });
+});
+
+describe('detail and comment (HIVE-205)', () => {
+  const REF: RepoRef = { owner: 'acme', name: 'nova-web' };
+  const DETAIL = JSON.stringify({ data: { repository: { pullRequest: {
+    id: 'PR_1', number: 482, title: 'Hero', url: 'https://github.com/acme/nova-web/pull/482',
+    state: 'OPEN', isDraft: false, body: '', createdAt: '2026-08-09T10:00:00Z',
+  } } } });
+  const recording = (answer: (args: readonly string[]) => string, calls: string[][]): RunAsync =>
+    (_file, args) => {
+      calls.push([...args]);
+      return Promise.resolve({ code: 0, stdout: answer(args), stderr: '', timedOut: false });
+    };
+
+  it('reads one PR with owner and name as -f strings and the number as -F', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', recording(() => DETAIL, calls));
+
+    await expect(client.detail(REF, 482)).resolves.toMatchObject({ ok: true, value: { id: 'PR_1', owner: 'acme', repo: 'nova-web', number: 482 } });
+    expect(calls).toEqual([[
+      'api', 'graphql', '-f', `query=${PR_DETAIL_QUERY}`,
+      '-f', 'owner=acme', '-f', 'name=nova-web', '-F', 'number=482',
+    ]]);
+  });
+
+  it('classifies a read with no pull request, and a gh that will not run', async () => {
+    const missing = createGithubClient('/usr/bin/gh', () =>
+      Promise.resolve({ code: 1, stdout: JSON.stringify({ data: { repository: { pullRequest: null } } }), stderr: 'HTTP 401: Bad credentials', timedOut: false }));
+    await expect(missing.detail(REF, 482)).resolves.toMatchObject({ ok: false, error: { kind: 'unauthenticated' } });
+
+    const broken = createGithubClient('/usr/bin/gh', () => Promise.reject(new Error('ENOENT')));
+    await expect(broken.detail(REF, 482)).resolves.toMatchObject({ ok: false, error: { kind: 'not-installed' } });
+  });
+
+  it('reads the PR id, then adds the comment with the body as a -f string', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', recording((args) =>
+      args[3]?.includes('addComment') === true
+        ? JSON.stringify({ data: { addComment: { subject: { id: 'PR_1' } } } })
+        : JSON.stringify({ data: { repository: { pullRequest: { id: 'PR_1' } } } }), calls));
+
+    await expect(client.comment(REF, 482, '@/etc/passwd\nsecond line')).resolves.toEqual({ ok: true, value: true });
+    expect(calls).toEqual([
+      ['api', 'graphql', '-f', `query=${PR_ID_QUERY}`, '-f', 'owner=acme', '-f', 'name=nova-web', '-F', 'number=482'],
+      ['api', 'graphql', '-f', `query=${PR_COMMENT_MUTATION}`, '-f', 'subjectId=PR_1', '-f', 'body=@/etc/passwd\nsecond line'],
+    ]);
+  });
+
+  it('never sends the mutation without an id read from GitHub', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', recording(() => JSON.stringify({ data: { repository: { pullRequest: null } } }), calls));
+
+    await expect(client.comment(REF, 482, 'hello')).resolves.toMatchObject({ ok: false, error: { kind: 'unknown' } });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports a mutation GitHub refused', async () => {
+    const client = createGithubClient('/usr/bin/gh', (_file, args) => Promise.resolve({
+      code: 1,
+      stdout: args[3]?.includes('addComment') === true ? JSON.stringify({ data: { addComment: null } }) : JSON.stringify({ data: { repository: { pullRequest: { id: 'PR_1' } } } }),
+      stderr: 'API rate limit exceeded',
+      timedOut: false,
+    }));
+    await expect(client.comment(REF, 482, 'hello')).resolves.toMatchObject({ ok: false, error: { kind: 'rate-limited' } });
+  });
+});
+
+describe('timeline (HIVE-208)', () => {
+  const REF: RepoRef = { owner: 'acme', name: 'server' };
+  const TIMELINE = JSON.stringify({ data: { repository: { pullRequest: {
+    createdAt: '2026-10-03T11:00:00Z', mergedAt: null, isDraft: false, timelineItems: { nodes: [] } } } } });
+  const recording = (answer: () => string, calls: string[][]): RunAsync => (_file, args) => {
+    calls.push([...args]);
+    return Promise.resolve({ code: 0, stdout: answer(), stderr: '', timedOut: false });
+  };
+
+  it('reads one PR with owner and name as -f and the number as -F', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', recording(() => TIMELINE, calls));
+    await expect(client.timeline(REF, 1182)).resolves.toMatchObject({ ok: true, value: { createdAt: '2026-10-03T11:00:00Z', runs: [] } });
+    expect(calls).toEqual([['api', 'graphql', '-f', `query=${PR_TIMELINE_QUERY}`, '-f', 'owner=acme', '-f', 'name=server', '-F', 'number=1182']]);
+  });
+
+  it('classifies an unreadable answer, and says when gh could not run', async () => {
+    const failing = createGithubClient('/usr/bin/gh', answering({ code: 1, stderr: 'Could not resolve to a Repository' }));
+    await expect(failing.timeline(REF, 1182)).resolves.toMatchObject({ ok: false });
+    const absent = createGithubClient('/usr/bin/gh', () => Promise.reject(new Error('ENOENT')));
+    await expect(absent.timeline(REF, 1182)).resolves.toMatchObject({ ok: false, error: { kind: 'not-installed' } });
+  });
+});
+
+describe('diff (HIVE-207)', () => {
+  const REF: RepoRef = { owner: 'acme', name: 'nova-web' };
+  const DIFF = 'diff --git a/src/a.ts b/src/a.ts\nindex 1..2 100644\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+
+  it('runs gh pr diff with the resolver’s repository, no colour, and answers the text', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', (_file, args) => {
+      calls.push([...args]);
+      return Promise.resolve({ code: 0, stdout: DIFF, stderr: '', timedOut: false });
+    });
+    await expect(client.diff(REF, 482)).resolves.toEqual({ ok: true, value: DIFF });
+    expect(calls).toEqual([['pr', 'diff', '482', '--repo', 'acme/nova-web', '--color', 'never']]);
+  });
+
+  it('classifies a refusal without leaking its output', async () => {
+    const client = createGithubClient('/usr/bin/gh', () =>
+      Promise.resolve({ code: 1, stdout: 'diff --git secret', stderr: 'HTTP 406: Sorry, the diff exceeded the maximum number of lines (20000) ghp_secret', timedOut: false }));
+    const result = await client.diff(REF, 482);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain('ghp_secret');
+    expect(JSON.stringify(result)).not.toContain('diff --git');
+  });
+
+  it('answers not-installed when gh will not run, and a timeout as one', async () => {
+    await expect(createGithubClient('/usr/bin/gh', () => Promise.reject(new Error('ENOENT'))).diff(REF, 1))
+      .resolves.toMatchObject({ ok: false, error: { kind: 'not-installed' } });
+    await expect(createGithubClient('/usr/bin/gh', () => Promise.resolve({ code: -1, stdout: '', stderr: '', timedOut: true })).diff(REF, 1))
+      .resolves.toMatchObject({ ok: false, error: { kind: 'timeout' } });
+  });
+});
+
+describe('thread writes (HIVE-207)', () => {
+  const REF: RepoRef = { owner: 'acme', name: 'nova-web' };
+  const ON = (number = 482, owner = 'ACME', name = 'Nova-Web') =>
+    JSON.stringify({ data: { node: { pullRequest: { number, repository: { owner: { login: owner }, name } } } } });
+  const answering = (owner: string, mutation: string, calls: string[][]): RunAsync => (_file, args) => {
+    calls.push([...args]);
+    return Promise.resolve({ code: 0, stdout: args[3]?.includes('node(id:') === true ? owner : mutation, stderr: '', timedOut: false });
+  };
+
+  it('proves the thread is on the PR, then replies with the body as a -f string', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', answering(ON(), JSON.stringify({ data: { addPullRequestReviewThreadReply: { comment: { id: 'C' } } } }), calls));
+    await expect(client.threadReply(REF, 482, 'PRRT_1', '@/etc/passwd')).resolves.toEqual({ ok: true, value: true });
+    expect(calls).toEqual([
+      ['api', 'graphql', '-f', `query=${PR_THREAD_OWNER_QUERY}`, '-f', 'id=PRRT_1'],
+      ['api', 'graphql', '-f', `query=${THREAD_REPLY_MUTATION}`, '-f', 'threadId=PRRT_1', '-f', 'body=@/etc/passwd'],
+    ]);
+  });
+
+  it.each([
+    [true, THREAD_RESOLVE_MUTATION, 'resolveReviewThread'],
+    [false, THREAD_UNRESOLVE_MUTATION, 'unresolveReviewThread'],
+  ])('resolved=%s sends its own mutation', async (resolved, doc, field) => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', answering(ON(), JSON.stringify({ data: { [field]: { thread: { id: 'PRRT_1', isResolved: resolved } } } }), calls));
+    await expect(client.threadResolved(REF, 482, 'PRRT_1', resolved)).resolves.toEqual({ ok: true, value: true });
+    expect(calls[1]).toEqual(['api', 'graphql', '-f', `query=${doc}`, '-f', 'threadId=PRRT_1']);
+  });
+
+  it.each([
+    ['another number', ON(483)],
+    ['another owner', ON(482, 'evil')],
+    ['another repository', ON(482, 'acme', 'other')],
+    ['no such thread', JSON.stringify({ data: { node: null } })],
+  ])('refuses a thread on %s and never writes', async (_name, owner) => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', answering(owner, '{}', calls));
+    await expect(client.threadReply(REF, 482, 'PRRT_1', 'hi')).resolves.toMatchObject({ ok: false });
+    await expect(client.threadResolved(REF, 482, 'PRRT_1', true)).resolves.toMatchObject({ ok: false });
+    expect(calls.filter((args) => args[3]?.startsWith('query=mutation') === true)).toEqual([]);
+  });
+
+  it('names the mismatch', async () => {
+    const client = createGithubClient('/usr/bin/gh', answering(ON(9), '{}', []));
+    await expect(client.threadReply(REF, 482, 'PRRT_1', 'hi')).resolves.toEqual({
+      ok: false, error: { kind: 'unknown', message: 'That thread is not on this pull request.' },
+    });
+  });
+
+  it('reports a mutation GitHub refused, classified', async () => {
+    const client = createGithubClient('/usr/bin/gh', (_file, args) => Promise.resolve({
+      code: 1,
+      stdout: args[3]?.includes('node(id:') === true ? ON() : JSON.stringify({ data: { resolveReviewThread: null } }),
+      stderr: 'API rate limit exceeded',
+      timedOut: false,
+    }));
+    await expect(client.threadResolved(REF, 482, 'PRRT_1', true)).resolves.toMatchObject({ ok: false, error: { kind: 'rate-limited' } });
+  });
+
+  it.each([
+    ['a reply with no comment', (c: ReturnType<typeof createGithubClient>) => c.threadReply(REF, 482, 'PRRT_1', 'hi'), { addPullRequestReviewThreadReply: { comment: null } }],
+    ['a resolve still unresolved', (c: ReturnType<typeof createGithubClient>) => c.threadResolved(REF, 482, 'PRRT_1', true), { resolveReviewThread: { thread: { id: 'PRRT_1', isResolved: false } } }],
+    ['an unresolve still resolved', (c: ReturnType<typeof createGithubClient>) => c.threadResolved(REF, 482, 'PRRT_1', false), { unresolveReviewThread: { thread: { id: 'PRRT_1', isResolved: true } } }],
+    ['no data at all', (c: ReturnType<typeof createGithubClient>) => c.threadResolved(REF, 482, 'PRRT_1', true), null],
+  ])('refuses a hollow echo: %s', async (_name, act, data) => {
+    const client = createGithubClient('/usr/bin/gh', answering(ON(), JSON.stringify({ data }), []));
+    await expect(act(client)).resolves.toMatchObject({ ok: false });
+  });
+
+  it('answers not-installed when gh will not run', async () => {
+    await expect(createGithubClient('/usr/bin/gh', () => Promise.reject(new Error('ENOENT'))).threadReply(REF, 1, 'T', 'x'))
+      .resolves.toMatchObject({ ok: false, error: { kind: 'not-installed' } });
+  });
+});
+
+describe('fileViewed (HIVE-207)', () => {
+  const REF: RepoRef = { owner: 'acme', name: 'nova-web' };
+  const recording = (mutation: string, calls: string[][]): RunAsync => (_file, args) => {
+    calls.push([...args]);
+    const stdout = args[3]?.startsWith('query=mutation') === true ? mutation : JSON.stringify({ data: { repository: { pullRequest: { id: 'PR_1' } } } });
+    return Promise.resolve({ code: 0, stdout, stderr: '', timedOut: false });
+  };
+
+  it.each([
+    [true, FILE_VIEWED_MUTATION, 'markFileAsViewed'],
+    [false, FILE_UNVIEWED_MUTATION, 'unmarkFileAsViewed'],
+  ])('viewed=%s reads the PR id from GitHub, then writes with the path as a -f string', async (viewed, doc, field) => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', recording(JSON.stringify({ data: { [field]: { pullRequest: { id: 'PR_1' } } } }), calls));
+    await expect(client.fileViewed(REF, 482, 'src/a b.ts', viewed)).resolves.toEqual({ ok: true, value: true });
+    expect(calls).toEqual([
+      ['api', 'graphql', '-f', `query=${PR_ID_QUERY}`, '-f', 'owner=acme', '-f', 'name=nova-web', '-F', 'number=482'],
+      ['api', 'graphql', '-f', `query=${doc}`, '-f', 'pullRequestId=PR_1', '-f', 'path=src/a b.ts'],
+    ]);
+  });
+
+  it('never writes without an id read from GitHub', async () => {
+    const calls: string[][] = [];
+    const client = createGithubClient('/usr/bin/gh', (_file, args) => {
+      calls.push([...args]);
+      return Promise.resolve({ code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: null } } }), stderr: '', timedOut: false });
+    });
+    await expect(client.fileViewed(REF, 482, 'src/a.ts', true)).resolves.toMatchObject({ ok: false, error: { kind: 'unknown' } });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reports a refused write', async () => {
+    const client = createGithubClient('/usr/bin/gh', recording(JSON.stringify({ data: { markFileAsViewed: null } }), []));
+    await expect(client.fileViewed(REF, 482, 'src/a.ts', true)).resolves.toMatchObject({ ok: false });
+  });
+
+  it('refuses a write that echoes no pull request', async () => {
+    const client = createGithubClient('/usr/bin/gh', recording(JSON.stringify({ data: { unmarkFileAsViewed: { pullRequest: null } } }), []));
+    await expect(client.fileViewed(REF, 482, 'src/a.ts', false)).resolves.toMatchObject({ ok: false });
+  });
+
+  it('answers not-installed when gh will not run', async () => {
+    await expect(createGithubClient('/usr/bin/gh', () => Promise.reject(new Error('ENOENT'))).fileViewed(REF, 1, 'a', true))
+      .resolves.toMatchObject({ ok: false, error: { kind: 'not-installed' } });
   });
 });

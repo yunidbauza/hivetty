@@ -211,4 +211,9 @@ describe('PrSearchRow', () => {
 
     expect(useUiStore.getState().prSearchTerm).toBe('');
   });
+
+  it('focuses the box when asked to', () => {
+    render(<PrSearchRow projectId={null} focusOnMount />);
+    expect(screen.getByRole('searchbox', { name: 'Search pull requests' })).toHaveFocus();
+  });
 });

@@ -18,8 +18,8 @@ import type { UpdateCapability, UpdateStatus } from '@shared/update-contract';
  *
  * Everything here is a pure function over a status or an `AppInfo`, which is
  * the whole reason `panel.ts` is split from `about.ts` — the entry point has to
- * import a `data:` URI of an mp4 and talk to a bridge that only exists inside
- * Electron, and neither is reachable from a unit test.
+ * draw on a canvas and talk to a bridge that only exists inside Electron, and
+ * neither is reachable from a unit test.
  *
  * The update copy gets the most attention because it is the one place this
  * window can state something untrue about the app.
@@ -113,7 +113,7 @@ describe('updateCopy', () => {
   it('says it is up to date only once a check has completed', () => {
     const copy = updateCopy(status({ state: 'idle', checked: true }));
 
-    expect(copy.note).toBe('The Hive is up to date.');
+    expect(copy.note).toBe('Hive TTY is up to date.');
     expect(copy.label).toBeNull();
   });
 
@@ -240,6 +240,25 @@ describe('scheduleWordmark', () => {
       `${WORDMARK_START + WORDMARK_STEP}s`,
       `${WORDMARK_START + WORDMARK_STEP * 2}s`,
     ]);
+  });
+
+  it('types tty after HIVE, a key at a time, with the cursor there first', () => {
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<h1 class="wordmark"><span>H</span><span>I</span><span>V</span><span>E</span><em class="tty"><i>t</i><i>t</i><i>y</i><b class="cursor"></b></em></h1>';
+    scheduleWordmark(root);
+
+    const lastGlyph = WORDMARK_START + WORDMARK_STEP * 3;
+    const keys = [...root.querySelectorAll<HTMLElement>('.tty i')].map((key) => parseFloat(key.style.animationDelay));
+    expect(keys).toHaveLength(3);
+    expect(keys[0]!).toBeGreaterThan(lastGlyph);
+    expect(keys[1]! - keys[0]!).toBeCloseTo(keys[2]! - keys[1]!, 9);
+    const cursor = root.querySelector<HTMLElement>('.cursor')!.style.animationDelay.split(',').map((d) => parseFloat(d));
+    expect(cursor).toHaveLength(2);
+    for (const at of cursor) {
+      expect(at).toBeGreaterThan(lastGlyph);
+      expect(at).toBeLessThan(keys[0]!);
+    }
   });
 
   it('does nothing to a document with no wordmark', () => {

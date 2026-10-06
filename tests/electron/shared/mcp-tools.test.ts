@@ -20,6 +20,7 @@ const stub = (overrides: Partial<ReceiverClient> = {}): ReceiverClient => ({
   jiraGet: vi.fn(async () => NOT_WIRED),
   jiraTransition: vi.fn(async () => NOT_WIRED),
   jiraComment: vi.fn(async () => NOT_WIRED),
+  jiraUsers: vi.fn(async () => NOT_WIRED),
   // Retro B: a receiver with nothing composed refuses, and says so.
   projectAutoMerge: vi.fn(async () => {
     throw new ReceiverError(409, 'auto-merge switching is not wired to this receiver; nothing was changed');
@@ -41,7 +42,7 @@ describe('createToolHandlers — listing', () => {
     `agents` (HIVE-127), then `approve` last — the tools a model is meant to
     call ahead of the one only the CLI ever reaches, on its behalf.
   */
-  it('lists the seventeen shared definitions unchanged', () => {
+  it('lists the eighteen shared definitions unchanged', () => {
     const handlers = createToolHandlers(stub());
     expect(handlers.listTools().map((tool) => tool.name)).toEqual([
       'ledger_read',
@@ -59,6 +60,7 @@ describe('createToolHandlers — listing', () => {
       'jira_get',
       'jira_transition',
       'jira_comment',
+      'jira_users',
       'project_auto_merge',
       'approve',
     ]);
@@ -721,6 +723,8 @@ describe('createToolHandlers — projects and pr (HIVE-173)', () => {
     findings: 2,
     checks: 'passing' as const,
     updatedAt: '2026-09-11T10:00:00Z',
+    mergedAt: null,
+    mine: true,
   };
 
   it('lists projects with their path, consent and container mount', async () => {
@@ -887,9 +891,33 @@ describe('createToolHandlers — the Jira tools (HIVE-174)', () => {
     expect(textOf(result)).toBe('Commented on HIVE-7: comment 12 by Yunid at 2026-09-11T10:00:00Z.');
   });
 
+  it('forwards mentions, and allows a comment that is mentions alone (HIVE-216)', async () => {
+    const jiraComment = vi.fn(async () => ({ ok: true as const, value: { id: '12', author: 'Yunid', created: 'now', body: [] } }));
+    const handlers = createToolHandlers(stub({ jiraComment }));
+    const mentions = [{ accountId: '712020:dana', name: 'Dana Kim' }];
+
+    await handlers.callTool('jira_comment', { key: 'HIVE-7', markdown: 'look', mentions });
+    expect(jiraComment).toHaveBeenLastCalledWith({ key: 'HIVE-7', markdown: 'look', mentions });
+
+    await handlers.callTool('jira_comment', { key: 'HIVE-7', markdown: '', mentions });
+    expect(jiraComment).toHaveBeenLastCalledWith({ key: 'HIVE-7', markdown: '', mentions });
+
+    expect(textOf(await handlers.callTool('jira_comment', { key: 'HIVE-7', markdown: '' }))).toMatch(/needs key and markdown/);
+  });
+
+  it('lists the people jira_users found, one per line, with their ids (HIVE-216)', async () => {
+    const jiraUsers = vi.fn(async () => ({ ok: true as const, value: [{ accountId: '712020:dana', displayName: 'Dana Kim' }] }));
+    const result = await createToolHandlers(stub({ jiraUsers })).callTool('jira_users', { query: 'dana' });
+
+    expect(jiraUsers).toHaveBeenCalledWith({ query: 'dana' });
+    expect(textOf(result)).toBe('Dana Kim — 712020:dana');
+    expect(textOf(await createToolHandlers(stub()).callTool('jira_users', {}))).toMatch(/jira_users needs query/);
+    expect(textOf(await createToolHandlers(stub({ jiraUsers: async () => ({ ok: true as const, value: [] }) })).callTool('jira_users', { query: 'zz' }))).toBe('Nobody on the Jira site matches "zz".');
+  });
+
   it('turns a Jira refusal into a tool error with its kind, and refuses missing arguments before calling', async () => {
     const handlers = createToolHandlers(stub());
-    for (const [name, args] of [['jira_get', { key: 'HIVE-7' }], ['jira_transition', { key: 'HIVE-7', status: 'Done' }], ['jira_comment', { key: 'HIVE-7', markdown: 'x' }]] as const) {
+    for (const [name, args] of [['jira_get', { key: 'HIVE-7' }], ['jira_transition', { key: 'HIVE-7', status: 'Done' }], ['jira_comment', { key: 'HIVE-7', markdown: 'x' }], ['jira_users', { query: 'da' }]] as const) {
       const result = await handlers.callTool(name, args);
       expect(result.isError).toBe(true);
       expect(textOf(result)).toBe(`${name}: the Jira integration is not wired to this receiver (bad-query)`);

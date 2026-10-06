@@ -8,7 +8,7 @@ import type { HiveBridge } from '../../electron/shared/ipc-contract';
  */
 
 export const BRIDGE_KEYS = [
-  'agents', 'appInfo', 'config', 'fs', 'github', 'integrations', 'jira', 'ledger',
+  'agents', 'appInfo', 'changedFiles', 'config', 'fs', 'github', 'integrations', 'jira', 'ledger',
   'notifications', 'plans', 'pty', 'remote', 'server', 'session', 'shipped', 'skills', 'slack', 'ui',
   'updates',
 ] as const satisfies readonly (keyof HiveBridge)[];
@@ -42,12 +42,13 @@ export const BRIDGE_FS_KEYS = [
 ] as const satisfies readonly (keyof HiveBridge['fs'])[];
 
 export const BRIDGE_GITHUB_KEYS = [
-  'prs', 'searchPrs',
+  'prs', 'searchPrs', 'prDetail', 'prComment', 'prRuns', 'runJobs', 'jobLog', 'rerunFailed', 'prDiff', 'prThread', 'prViewed',
+  'prTimeline',
 ] as const satisfies readonly (keyof HiveBridge['github'])[];
 
 export const BRIDGE_JIRA_KEYS = [
-  'status', 'setToken', 'clearToken', 'test', 'search', 'issue', 'transitions',
-  'applyTransition', 'comments', 'links', 'addComment',
+  'status', 'setToken', 'clearToken', 'test', 'search', 'issue', 'detail', 'transitions',
+  'applyTransition', 'comments', 'links', 'addComment', 'users',
 ] as const satisfies readonly (keyof HiveBridge['jira'])[];
 
 export const BRIDGE_SLACK_KEYS = [
@@ -90,7 +91,7 @@ export const BRIDGE_SERVER_KEYS = [
 ] as const satisfies readonly (keyof HiveBridge['server'])[];
 
 export const BRIDGE_REMOTE_KEYS = [
-  'pair', 'forget', 'onLinkStatus',
+  'pair', 'forget', 'dialNow', 'onLinkStatus',
 ] as const satisfies readonly (keyof HiveBridge['remote'])[];
 
 export const BRIDGE_PTY_KEYS = [

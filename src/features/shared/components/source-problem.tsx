@@ -6,7 +6,7 @@ export function RetryButton({ onRetry }: { onRetry: () => void }) {
     <button
       type="button"
       onClick={onRetry}
-      className="flex items-center gap-1 rounded-[5px] border border-border px-1.5 py-0.5 text-[11px] text-muted hover:bg-hover hover:text-ink"
+      className="flex items-center gap-1 rounded-full border border-edge px-2 py-0.5 text-micro text-ink hover:bg-hover hover:text-ink"
     >
       <ArrowClockwise size={11} />
       Try again
@@ -31,7 +31,7 @@ export function SourceProblem({
 }) {
   return (
     <div className="flex flex-col items-start gap-1 px-1 pb-1">
-      <p className="text-[11.5px] leading-[1.45] text-amber">{message}</p>
+      <p className="text-ui-sm leading-[1.45] text-amber-text">{message}</p>
       <RetryButton onRetry={onRetry} />
     </div>
   );

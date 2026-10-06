@@ -149,7 +149,7 @@ test('adopts the login shell PATH when launched with launchd’s', async ({}, te
     env: { PATH: LAUNCHD_PATH },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await expect(page.locator('[data-probing]').first()).toBeHidden({
@@ -188,7 +188,7 @@ test('names an imported token but never renders its value', async ({}, testInfo)
     env: { PATH: LAUNCHD_PATH },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await expect(page.locator('[data-probing]').first()).toBeHidden({
@@ -215,7 +215,7 @@ test('honours importLoginEnv: false, and says the PATH is the inherited one', as
     env: { PATH: LAUNCHD_PATH },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await expect(page.locator('[data-probing]').first()).toBeHidden({
@@ -246,7 +246,7 @@ test('reports a broken login shell without breaking the pane', async ({}, testIn
     env: { PATH: LAUNCHD_PATH },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await expect(page.locator('[data-probing]').first()).toBeHidden({
@@ -276,7 +276,7 @@ test('the Runtime switch writes the key without disturbing the file', async ({},
     env: { PATH: LAUNCHD_PATH },
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await page.getByRole('button', { name: 'Settings' }).click();
   await page

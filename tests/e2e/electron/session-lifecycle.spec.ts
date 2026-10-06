@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
+
+import { openProject } from '../fixtures/places';
 
 import { launchHive, startSession } from './fixtures/hive-app';
 
@@ -141,7 +143,7 @@ async function expectArgs(path: string, contents: string): Promise<void> {
 
 async function openSession(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
   await startSession(page, PROJECT);
   await expect(page.locator(`[data-terminal-id="${SESSION}"]`)).toBeVisible();
 }
@@ -315,7 +317,10 @@ test('opening a session twice attaches to the same process', async ({}, testInfo
      * would sail straight through.
      */
     await startSession(page, PROJECT);
-    await page.getByRole('button', { name: new RegExp(SESSION) }).first().click();
+    // The config names no project, so the list labels it by its directory.
+    await (await openProject(page, basename(REAL_DIRECTORY)))
+      .getByRole('button', { name: new RegExp(`^${SESSION}\\b`) })
+      .click();
     await expect(page.locator(`[data-terminal-id="${SESSION}"]`)).toBeVisible();
 
     const second = testInfo.outputPath('pid-2.txt');
@@ -563,7 +568,7 @@ test('a session starts as the model and effort it was spawned with', async ({}, 
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await page.evaluate(
       ([sessionId, projectId]) =>
@@ -614,7 +619,7 @@ test('a session spawned without a model gets the bare command', async ({}, testI
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await page.evaluate(
       ([sessionId, projectId]) =>
@@ -645,7 +650,7 @@ test('an unmapped project is refused by name, with the file to edit', async ({},
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     const message = await page.evaluate(
       ([sessionId, projectId]) =>

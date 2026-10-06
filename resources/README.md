@@ -41,7 +41,10 @@ generator too; the icon has no palette of its own.
 | `icons/<n>x<n>.png` | The Linux ladder, 16 → 1024. |
 
 Two more come off the same master and land in `public/`, because the renderer
-serves them: `favicon.png` and `apple-touch-icon.png` for the browser tab.
+serves them: `favicon.png` and `apple-touch-icon.png` for the browser tab. A
+third, `app-mark.png`, is the activity bar's brand: the plates without the tile,
+each seam a transparent gap so the bar's ground shows through in either theme
+(`--mark` writes only it).
 Browser tab and dock are one design at two sizes; neither can drift, because one
 script writes both.
 

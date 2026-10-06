@@ -2,7 +2,16 @@ import {
   GH_MERGED_WINDOW_MS,
   type GhPrChecks,
   type GhPrState,
+  type PrCheck,
+  type PrCheckStatus,
+  type PrComment,
+  type PrDetail,
+  type PrFile,
   type PrRecord,
+  type PrReview,
+  type PrThread,
+  type PrTimeline,
+  type PrTimelineRun,
 } from '../../../shared/github-contract';
 import { isRecord } from '../../../shared/guards';
 
@@ -136,7 +145,7 @@ function repoOf(raw: Record<string, unknown>): { name: string; owner: string } |
  * routine outcome here rather than a corruption — those arrive as `{}` and leave
  * as `null`, costing themselves and nothing else.
  */
-export function toPrRecord(raw: unknown): PrRecord | null {
+export function toPrRecord(raw: unknown, mine = false): PrRecord | null {
   if (!isRecord(raw)) return null;
 
   const number = raw.number;
@@ -168,6 +177,8 @@ export function toPrRecord(raw: unknown): PrRecord | null {
     findings: countFindings(raw),
     checks: toChecks(raw),
     updatedAt,
+    mergedAt: text(raw.mergedAt),
+    mine,
   };
 }
 
@@ -245,7 +256,7 @@ export function collectPrs(
 
   for (const node of nodesOf(payload, 'open')) {
     if (!isAuthoredBy(node, login)) continue;
-    const record = toPrRecord(node);
+    const record = toPrRecord(node, true);
     if (record !== null) records.push(record);
   }
 
@@ -255,7 +266,7 @@ export function collectPrs(
     const merged = mergedAtMs(node);
     if (merged === null || now - merged > GH_MERGED_WINDOW_MS) continue;
 
-    const record = toPrRecord(node);
+    const record = toPrRecord(node, true);
     if (record !== null) records.push(record);
   }
 
@@ -284,15 +295,19 @@ export function collectPrs(
  *
  * The sort is shared: open above merged, newest first within each. A search
  * result set reads like the list it replaces, so it is ordered like it.
+ *
+ * `mine` is the viewer's own authorship, read from the same payload's
+ * `viewer { login }` (HIVE-215); a payload without one marks nothing mine.
  */
 export function collectSearchPrs(payload: unknown): PrRecord[] {
   if (!isRecord(payload)) return [];
 
+  const login = readViewerLogin(payload);
   const records: PrRecord[] = [];
 
   for (const key of ['open', 'merged'] as const) {
     for (const node of nodesOf(payload, key)) {
-      const record = toPrRecord(node);
+      const record = toPrRecord(node, login !== null && isAuthoredBy(node, login));
       if (record !== null) records.push(record);
     }
   }
@@ -302,4 +317,299 @@ export function collectSearchPrs(payload: unknown): PrRecord[] {
     if (landed !== 0) return landed;
     return right.updatedAt.localeCompare(left.updatedAt);
   });
+}
+
+/** A whole number, or `null`. */
+function whole(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) ? value : null;
+}
+
+/** `author { login }`, or `null` for a ghost. */
+function loginOf(value: unknown): string | null {
+  return isRecord(value) ? text(value.login) : null;
+}
+
+/** A connection's `nodes`, or nothing. */
+function nodesIn(value: unknown): unknown[] {
+  return isRecord(value) && Array.isArray(value.nodes) ? value.nodes : [];
+}
+
+/** Each node through `read`, the unreadable ones dropped. */
+function each<T>(value: unknown, read: (raw: unknown) => T | null): T[] {
+  return nodesIn(value).map(read).filter((item): item is T => item !== null);
+}
+
+function toComment(raw: unknown): PrComment | null {
+  if (!isRecord(raw)) return null;
+  const createdAt = text(raw.createdAt);
+  const url = text(raw.url);
+  if (createdAt === null || url === null) return null;
+  return { author: loginOf(raw.author), body: typeof raw.body === 'string' ? raw.body : '', createdAt, url };
+}
+
+/** A submitted review; a `PENDING` one is the viewer's unsent draft and is left out. */
+function toReview(raw: unknown): PrReview | null {
+  if (!isRecord(raw)) return null;
+  const state = text(raw.state);
+  const url = text(raw.url);
+  if (state === null || state === 'PENDING' || url === null) return null;
+  return {
+    author: loginOf(raw.author),
+    state,
+    body: typeof raw.body === 'string' ? raw.body : '',
+    submittedAt: text(raw.submittedAt),
+    url,
+  };
+}
+
+function toThread(raw: unknown): PrThread | null {
+  if (!isRecord(raw)) return null;
+  const id = text(raw.id);
+  const path = text(raw.path);
+  if (id === null || path === null) return null;
+  return {
+    id,
+    isResolved: raw.isResolved === true,
+    isOutdated: raw.isOutdated === true,
+    path,
+    line: whole(raw.line),
+    originalLine: whole(raw.originalLine),
+    diffSide: text(raw.diffSide),
+    comments: each(raw.comments, (node) => {
+      const comment = toComment(node);
+      if (comment === null || !isRecord(node)) return null;
+      return { ...comment, diffHunk: typeof node.diffHunk === 'string' ? node.diffHunk : '' };
+    }),
+  };
+}
+
+/** One changed file (HIVE-207). `DISMISSED` is GitHub's "pushed to since you viewed it". */
+function toFile(raw: unknown): PrFile | null {
+  if (!isRecord(raw)) return null;
+  const path = text(raw.path);
+  if (path === null) return null;
+  const state = text(raw.viewerViewedState);
+  return {
+    path,
+    additions: whole(raw.additions) ?? 0,
+    deletions: whole(raw.deletions) ?? 0,
+    changeType: (text(raw.changeType) ?? 'modified').toLowerCase(),
+    viewed: state === 'VIEWED' ? 'viewed' : state === 'DISMISSED' ? 'dismissed' : 'unviewed',
+  };
+}
+
+/** A check run's status and conclusion, or a commit status's state, as one word. */
+function checkStatus(raw: Record<string, unknown>): PrCheckStatus {
+  if (raw.__typename === 'StatusContext') {
+    const state = text(raw.state);
+    if (state === 'SUCCESS') return 'success';
+    if (state === 'FAILURE' || state === 'ERROR') return 'failure';
+    return 'running';
+  }
+  const status = text(raw.status);
+  if (status === 'IN_PROGRESS') return 'running';
+  if (status !== 'COMPLETED') return 'queued';
+  const conclusion = text(raw.conclusion);
+  if (conclusion === 'SUCCESS') return 'success';
+  if (conclusion === 'NEUTRAL' || conclusion === 'SKIPPED' || conclusion === 'STALE') return 'neutral';
+  return 'failure';
+}
+
+function toCheck(raw: unknown): PrCheck | null {
+  if (!isRecord(raw)) return null;
+  const status = raw.__typename === 'StatusContext';
+  const name = text(status ? raw.context : raw.name);
+  if (name === null) return null;
+  const suite = !status && isRecord(raw.checkSuite) && isRecord(raw.checkSuite.app) ? raw.checkSuite.app : null;
+  const app = suite === null ? null : text(suite.slug);
+  const id = raw.databaseId;
+  return {
+    name,
+    status: checkStatus(raw),
+    startedAt: text(status ? raw.createdAt : raw.startedAt),
+    completedAt: status ? null : text(raw.completedAt),
+    url: text(status ? raw.targetUrl : raw.detailsUrl),
+    app,
+    jobId: app === 'github-actions' && typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? id : null,
+  };
+}
+
+/** The head commit's rollup contexts, or nothing. */
+function contextsOf(raw: Record<string, unknown>): unknown {
+  const head = nodesIn(raw.commits)[0];
+  const commit = isRecord(head) ? head.commit : null;
+  const rollup = isRecord(commit) ? commit.statusCheckRollup : null;
+  return isRecord(rollup) ? rollup.contexts : null;
+}
+
+function toReviewer(raw: unknown): string | null {
+  const reviewer = isRecord(raw) ? raw.requestedReviewer : null;
+  return isRecord(reviewer) ? (text(reviewer.login) ?? text(reviewer.name)) : null;
+}
+
+/** The pull request under `repository`, or `null`. */
+function pullRequestOf(payload: unknown): Record<string, unknown> | null {
+  const repository = isRecord(payload) ? payload.repository : null;
+  const raw = isRecord(repository) ? repository.pullRequest : null;
+  return isRecord(raw) ? raw : null;
+}
+
+/**
+ * One PR's page from `PR_DETAIL_QUERY`'s data (HIVE-205), or `null` when the
+ * PR is missing or lacks a field the page cannot do without. Defensive like
+ * {@link toPrRecord}: a malformed comment, review, thread or check costs
+ * itself, a missing scalar is `null` (a count `0`), and nothing throws.
+ */
+export function toPrDetail(payload: unknown, owner: string, repo: string): PrDetail | null {
+  const raw = pullRequestOf(payload);
+  if (raw === null) return null;
+
+  const id = text(raw.id);
+  const number = whole(raw.number);
+  const title = text(raw.title);
+  const url = text(raw.url);
+  const createdAt = text(raw.createdAt);
+  if (id === null || number === null || title === null || url === null || createdAt === null) return null;
+
+  const state = text(raw.state);
+  return {
+    id,
+    owner,
+    repo,
+    number,
+    title,
+    url,
+    state: state === 'MERGED' ? 'merged' : state === 'CLOSED' ? 'closed' : 'open',
+    isDraft: raw.isDraft === true,
+    body: typeof raw.body === 'string' ? raw.body : '',
+    createdAt,
+    mergedAt: text(raw.mergedAt),
+    baseRef: text(raw.baseRefName),
+    headRef: text(raw.headRefName),
+    headSha: text(raw.headRefOid),
+    additions: whole(raw.additions) ?? 0,
+    deletions: whole(raw.deletions) ?? 0,
+    changedFiles: whole(raw.changedFiles) ?? 0,
+    author: loginOf(raw.author),
+    reviewDecision: text(raw.reviewDecision),
+    mergeStateStatus: text(raw.mergeStateStatus),
+    comments: each(raw.comments, toComment),
+    reviews: each(raw.reviews, toReview),
+    reviewRequests: each(raw.reviewRequests, toReviewer),
+    threads: each(raw.reviewThreads, toThread),
+    checks: each(contextsOf(raw), toCheck),
+    files: each(raw.files, toFile),
+  };
+}
+
+const RUN_STATE = (status: string | null, conclusion: string | null): PrTimelineRun['state'] =>
+  status !== 'COMPLETED' ? 'running' : conclusion === 'SUCCESS' ? 'passed' : conclusion === 'FAILURE' || conclusion === 'TIMED_OUT' || conclusion === 'STARTUP_FAILURE' ? 'failed' : 'other';
+
+/** A commit's workflow suites as runs (HIVE-208). A suite with no workflow run is another app's, and is dropped. */
+function runsOf(sha: string, suites: unknown): PrTimelineRun[] {
+  return nodesIn(suites).flatMap((raw): PrTimelineRun[] => {
+    if (!isRecord(raw) || !isRecord(raw.workflowRun)) return [];
+    const run = raw.workflowRun;
+    const id = whole(run.databaseId);
+    const number = whole(run.runNumber);
+    const startedAt = text(raw.createdAt);
+    if (id === null || number === null || startedAt === null) return [];
+    const state = RUN_STATE(text(raw.status), text(raw.conclusion));
+    return [{
+      id, number, url: text(run.url) ?? '', sha,
+      workflow: isRecord(run.workflow) ? (text(run.workflow.name) ?? '') : '',
+      startedAt,
+      endedAt: state === 'running' ? null : text(raw.updatedAt),
+      state,
+      failedJobs: nodesIn(raw.checkRuns).flatMap((r) => (isRecord(r) && text(r.name) !== null ? [text(r.name)!] : [])),
+    }];
+  });
+}
+
+const EVENT_KIND: Record<string, PrTimeline['events'][number]['kind']> = {
+  ReadyForReviewEvent: 'ready', ConvertToDraftEvent: 'draft', ReviewRequestedEvent: 'review-requested', MergedEvent: 'merged',
+};
+
+/**
+ * One PR's history from `PR_TIMELINE_QUERY`'s data (HIVE-208), or `null` when
+ * the PR or its `createdAt` is missing. An item it cannot read costs itself.
+ */
+export function toPrTimeline(payload: unknown): PrTimeline | null {
+  const raw = pullRequestOf(payload);
+  const createdAt = raw === null ? null : text(raw.createdAt);
+  if (raw === null || createdAt === null) return null;
+
+  const timeline: PrTimeline = { createdAt, mergedAt: text(raw.mergedAt), isDraft: raw.isDraft === true, commits: [], runs: [], reviews: [], comments: [], events: [] };
+  for (const item of nodesIn(raw.timelineItems)) {
+    if (!isRecord(item)) continue;
+    const type = text(item.__typename) ?? '';
+    if (type === 'PullRequestCommit' && isRecord(item.commit)) {
+      const oid = text(item.commit.oid);
+      const at = text(item.commit.committedDate);
+      if (oid === null || at === null) continue;
+      timeline.commits.push({ oid, at, url: text(item.url) ?? '' });
+      timeline.runs.push(...runsOf(oid, item.commit.checkSuites));
+    } else if (type === 'PullRequestReview') {
+      const at = text(item.submittedAt);
+      const url = text(item.url);
+      if (at !== null && url !== null) timeline.reviews.push({ at, author: loginOf(item.author), state: text(item.state) ?? '', url });
+    } else if (type === 'IssueComment') {
+      const at = text(item.createdAt);
+      const url = text(item.url);
+      if (at !== null && url !== null) timeline.comments.push({ at, author: loginOf(item.author), url });
+    } else if (EVENT_KIND[type] !== undefined) {
+      const at = text(item.createdAt);
+      if (at !== null) timeline.events.push({ kind: EVENT_KIND[type], at, actor: loginOf(item.actor) });
+    }
+  }
+  return timeline;
+}
+
+/** The PR's node id from `PR_ID_QUERY`'s data, or `null`. */
+export function readPrId(payload: unknown): string | null {
+  const raw = pullRequestOf(payload);
+  return raw === null ? null : text(raw.id);
+}
+
+/** The PR a review thread is on, from `PR_THREAD_OWNER_QUERY`'s data (HIVE-207), or `null`. */
+export function readThreadPr(payload: unknown): { owner: string; name: string; number: number } | null {
+  const node = isRecord(payload) ? payload.node : null;
+  const pr = isRecord(node) ? node.pullRequest : null;
+  const repository = isRecord(pr) ? pr.repository : null;
+  if (!isRecord(pr) || !isRecord(repository)) return null;
+  const number = whole(pr.number);
+  const owner = loginOf(repository.owner);
+  const name = text(repository.name);
+  return number === null || owner === null || name === null ? null : { owner, name, number };
+}
+
+/**
+ * Whether a mutation answered with its own field (HIVE-207), and that field
+ * echoes what the write was for (`echoed`); an empty `errors` proves nothing.
+ */
+export function mutated(
+  payload: unknown,
+  field: string,
+  echoed: (answer: Record<string, unknown>) => boolean = () => true,
+): boolean {
+  if (!isRecord(payload)) return false;
+  const answer = payload[field];
+  return isRecord(answer) && echoed(answer);
+}
+
+/** A mutation's answer echoes `{ [key]: { id } }`: the comment posted, the PR marked (HIVE-207). */
+export function echoedId(answer: Record<string, unknown>, key: string): boolean {
+  const inner = answer[key];
+  return isRecord(inner) && text(inner.id) !== null;
+}
+
+/** A resolve or unresolve echoes the thread at the state it was asked for (HIVE-207). */
+export function echoedResolved(answer: Record<string, unknown>, resolved: boolean): boolean {
+  const thread = answer.thread;
+  return isRecord(thread) && thread.isResolved === resolved;
+}
+
+/** Whether `PR_COMMENT_MUTATION` answered with the comment added. */
+export function commentAdded(payload: unknown): boolean {
+  return isRecord(payload) && isRecord(payload.addComment);
 }

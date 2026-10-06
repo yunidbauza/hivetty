@@ -3,19 +3,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
 import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
+import { swarmPaletteOf } from '@lib/theme/colour';
 import { type HiveTheme } from '@lib/theme/contract';
-import { RAIL_MIN, railMaxWidth } from '@lib/rail-width';
+import { useUiStore } from '@stores/ui-store';
 import {
   APPEARANCE_STORAGE_KEY,
+  DEFAULT_AGENT_SPLIT_RATIO,
   DEFAULT_TEAM_NAME,
+  PANEL_WIDTHS,
+  STAGE_MIN,
+  useListPanelWidth,
+  useSessionPanelWidth,
+  useSetListPanelWidth,
+  useSetSessionPanelWidth,
   activeThemeOf,
   migrateAppearance,
   resolveTheme,
   sanitizeThemeState,
   useAppearanceStore,
-  syncRailWidths,
+  useSwarmPalette,
   useTerminalAppearance,
   watchSystemTheme,
+  useSessionPanelOpen,
+  useSessionPanelTab,
+  useSetSessionPanelOpen,
+  useSetSessionPanelTab,
+  useToggleSessionPanel,
 } from '@stores/appearance-store';
 
 /**
@@ -84,8 +97,6 @@ beforeEach(() => {
   localStorage.clear();
   document.body.removeAttribute('data-theme');
   document.body.removeAttribute('data-density');
-  document.body.style.removeProperty('--cc-rail-w-left');
-  document.body.style.removeProperty('--cc-rail-w-right');
   useAppearanceStore.setState({ systemDark: true });
   useAppearanceStore.getState().reset();
 });
@@ -169,6 +180,21 @@ describe('appearance-store — density', () => {
 
     useAppearanceStore.getState().setDensity('comfortable');
     expect(document.body.hasAttribute('data-density')).toBe(false);
+  });
+});
+
+describe('appearance-store — no Classic state (HIVE-213)', () => {
+  it('has no layout, rail or plan-rail state (HIVE-213)', () => {
+    const state = useAppearanceStore.getState() as unknown as Record<string, unknown>;
+    for (const key of ['layout', 'railWidthLeft', 'railWidthRight', 'railCollapsedLeft', 'railCollapsedRight', 'planPinned', 'showPlanPanel']) {
+      expect(key in state).toBe(false);
+    }
+  });
+
+  it('setDensity writes only the density attribute (HIVE-213)', () => {
+    useAppearanceStore.getState().setDensity('compact');
+    expect(document.body.dataset.density).toBe('compact');
+    expect(document.body.getAttribute('style') ?? '').toBe('');
   });
 });
 
@@ -270,211 +296,6 @@ describe('appearance-store — the terminal palette', () => {
   });
 });
 
-/**
- * Rail widths (HIVE-105).
- *
- * The arithmetic is proved in `tests/lib/rail-width.test.ts`. What is left for
- * the store is everything that arithmetic cannot answer: what is stored versus
- * what is painted, which custom property ends up on `<body>`, and what survives
- * a reload.
- */
-describe('appearance-store — rail widths', () => {
-  const COMFORTABLE = RAIL_MIN.comfortable;
-
-  /** What `use-rail-widths` does, minus React. */
-  const paint = (windowWidth = 1440, showActivityRail = true) =>
-    syncRailWidths({
-      storedLeft: useAppearanceStore.getState().railWidthLeft,
-      storedRight: useAppearanceStore.getState().railWidthRight,
-      min: RAIL_MIN[useAppearanceStore.getState().density],
-      windowWidth,
-      left: 'expanded',
-      right: showActivityRail ? 'expanded' : 'hidden',
-    });
-
-  const inlineLeft = () => document.body.style.getPropertyValue('--cc-rail-w-left');
-  const inlineRight = () => document.body.style.getPropertyValue('--cc-rail-w-right');
-
-  it('starts following the stylesheet rather than at a number', () => {
-    expect(useAppearanceStore.getState().railWidthLeft).toBeNull();
-    expect(useAppearanceStore.getState().railWidthRight).toBeNull();
-  });
-
-  /**
-   * The distinction the whole feature turns on. A rail nobody has dragged gets
-   * *no* inline property, so `tokens.css` — density rules included — keeps
-   * control of it. Writing today's number inline would freeze it there.
-   */
-  it('leaves an untouched rail to the stylesheet', () => {
-    paint();
-
-    expect(inlineLeft()).toBe('');
-    expect(inlineRight()).toBe('');
-  });
-
-  it('writes an override once a rail is dragged', () => {
-    useAppearanceStore.getState().setRailWidth('left', 400);
-    paint();
-
-    expect(inlineLeft()).toBe('400px');
-    expect(inlineRight()).toBe('');
-  });
-
-  it('hands the rail back to the stylesheet on reset', () => {
-    useAppearanceStore.getState().setRailWidth('left', 400);
-    paint();
-    expect(inlineLeft()).toBe('400px');
-
-    useAppearanceStore.getState().resetRailWidth('left');
-    paint();
-
-    expect(useAppearanceStore.getState().railWidthLeft).toBeNull();
-    expect(inlineLeft()).toBe('');
-  });
-
-  it('never writes a width for a rail that is not mounted', () => {
-    useAppearanceStore.getState().setRailWidth('right', 400);
-    paint(1440, false);
-
-    expect(inlineRight()).toBe('');
-  });
-
-  describe('what gets stored', () => {
-    it('refuses to store a width below the density minimum', () => {
-      useAppearanceStore.getState().setRailWidth('left', 100);
-      expect(useAppearanceStore.getState().railWidthLeft).toBe(COMFORTABLE.left);
-    });
-
-    it('refuses to store a width above the absolute cap', () => {
-      useAppearanceStore.getState().setRailWidth('left', 9999);
-      expect(useAppearanceStore.getState().railWidthLeft).toBe(520);
-    });
-
-    it('ignores a width that is not a number', () => {
-      useAppearanceStore.getState().setRailWidth('left', Number.NaN);
-      expect(useAppearanceStore.getState().railWidthLeft).toBeNull();
-    });
-
-    it('stores whole pixels', () => {
-      useAppearanceStore.getState().setRailWidth('left', 400.6);
-      expect(useAppearanceStore.getState().railWidthLeft).toBe(401);
-    });
-
-    /**
-     * **Stored intent, not painted pixels.** The window is what squeezes a
-     * width; the store must not learn from the squeeze, or a narrow moment
-     * would permanently cost the user the width they chose.
-     */
-    it('survives a window that is too narrow to honour it', () => {
-      useAppearanceStore.getState().setRailWidth('left', 500);
-
-      const squeezed = paint(1100);
-      expect(squeezed.left).toBe(Math.floor(railMaxWidth(1100)));
-      expect(squeezed.left).toBeLessThan(500);
-      expect(useAppearanceStore.getState().railWidthLeft).toBe(500);
-
-      const restored = paint(1920);
-      expect(restored.left).toBe(500);
-    });
-  });
-
-  describe('density', () => {
-    /** A rail nobody dragged still re-spaces when density changes. */
-    it('leaves an untouched rail free to follow a density change', () => {
-      useAppearanceStore.getState().setDensity('compact');
-      expect(inlineLeft()).toBe('');
-
-      expect(paint().left).toBe(RAIL_MIN.compact.left);
-    });
-
-    it('keeps a hand-set width across a density change', () => {
-      useAppearanceStore.getState().setRailWidth('left', 400);
-      useAppearanceStore.getState().setDensity('compact');
-
-      expect(useAppearanceStore.getState().railWidthLeft).toBe(400);
-      /*
-        Asserted through a paint at a stated width rather than by reading the
-        property `setDensity` just wrote. That write measured happy-dom's own
-        narrow window, so it is legitimately a squeezed number — which is the
-        behaviour under test two cases up, not this one.
-      */
-      expect(paint(1920).left).toBe(400);
-    });
-
-    /**
-     * A width that was legal at compact is below the comfortable minimum.
-     * Painting must lift it; the stored intent stays where the user put it.
-     */
-    it('lifts a width stored under a narrower density', () => {
-      useAppearanceStore.getState().setDensity('compact');
-      useAppearanceStore.getState().setRailWidth('left', RAIL_MIN.compact.left);
-      useAppearanceStore.getState().setDensity('comfortable');
-
-      expect(paint().left).toBe(COMFORTABLE.left);
-    });
-  });
-
-  describe('persistence', () => {
-    it('writes both widths to localStorage', () => {
-      useAppearanceStore.getState().setRailWidth('left', 400);
-      useAppearanceStore.getState().setRailWidth('right', 380);
-
-      const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
-      expect(JSON.parse(raw ?? '{}').state).toMatchObject({
-        railWidthLeft: 400,
-        railWidthRight: 380,
-      });
-    });
-
-    it('persists the null that means "follow the stylesheet"', () => {
-      useAppearanceStore.getState().setRailWidth('left', 400);
-      useAppearanceStore.getState().resetRailWidth('left');
-
-      const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
-      expect(JSON.parse(raw ?? '{}').state.railWidthLeft).toBeNull();
-    });
-
-    it('returns to following the stylesheet on reset()', () => {
-      useAppearanceStore.getState().setRailWidth('left', 400);
-      useAppearanceStore.getState().reset();
-
-      expect(useAppearanceStore.getState().railWidthLeft).toBeNull();
-      expect(inlineLeft()).toBe('');
-    });
-  });
-});
-
-/** The plan drawer's pin (HIVE-181): a layout choice, persisted like the rails. */
-describe('appearance-store — planPinned', () => {
-  it('defaults to unpinned', () => {
-    expect(useAppearanceStore.getState().planPinned).toBe(false);
-  });
-
-  it('pins and unpins, and persists the choice', () => {
-    useAppearanceStore.getState().setPlanPinned(true);
-
-    expect(useAppearanceStore.getState().planPinned).toBe(true);
-    const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
-    expect((JSON.parse(raw as string) as { state: { planPinned: unknown } }).state.planPinned).toBe(true);
-
-    useAppearanceStore.getState().setPlanPinned(false);
-
-    expect(useAppearanceStore.getState().planPinned).toBe(false);
-  });
-
-  it('hydrates a stored state from before the field existed to unpinned', async () => {
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify({ version: 3, state: { theme: 'light', railCollapsedRight: true } }),
-    );
-
-    await useAppearanceStore.persist.rehydrate();
-
-    expect(useAppearanceStore.getState().planPinned).toBe(false);
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(true);
-  });
-});
-
 describe('appearance-store — persistence', () => {
   it('writes only the whitelisted preferences to localStorage', () => {
     useAppearanceStore.getState().setTheme('light');
@@ -491,18 +312,17 @@ describe('appearance-store — persistence', () => {
       terminalFontSize: 12.5,
       terminalScrollback: 5000,
       density: 'compact',
-      railWidthLeft: null,
-      railWidthRight: null,
-      railCollapsedLeft: false,
-      railCollapsedRight: false,
-      planPinned: false,
-      showPlanPanel: true,
+      sessionPanelOpen: true,
+      sessionPanelTab: 'plan',
+      listPanelWidth: 300,
+      sessionPanelWidth: 320,
       teamName: 'Swarm Command',
       editorPlacement: 'full',
       editorSplitAxis: 'vertical',
       editorSplitRatio: 0.5,
       consoleSplitRatio: 0.5,
       runLogSplitRatio: 0.4,
+      agentSplitRatio: 0.45,
       editorNav: 'tabs',
       editorEditable: true,
       editorFont: 'system',
@@ -512,6 +332,8 @@ describe('appearance-store — persistence', () => {
       editorTabWidth: 2,
       themes: {},
       activeThemeId: 'hive',
+      whatsNewSeen: null,
+      whatsNewOff: false,
     });
     // The environment is not a preference: persisting it would restore a stale
     // answer on a machine whose OS theme has since changed.
@@ -708,6 +530,15 @@ describe('appearance-store — the editor', () => {
     store.setRunLogSplitRatio(0.6);
     expect(useAppearanceStore.getState().runLogSplitRatio).toBe(0.6);
     expect(useAppearanceStore.getState().consoleSplitRatio).toBe(0.5);
+  });
+
+  it('keeps the agent editor split, clamped, persisted', () => {
+    const store = useAppearanceStore.getState();
+    expect(store.agentSplitRatio).toBe(DEFAULT_AGENT_SPLIT_RATIO);
+    store.setAgentSplitRatio(0.01);
+    expect(useAppearanceStore.getState().agentSplitRatio).toBe(0.2);
+    store.setAgentSplitRatio(0.6);
+    expect(useAppearanceStore.getState().agentSplitRatio).toBe(0.6);
   });
 
   it('puts every editor preference back on reset', () => {
@@ -988,6 +819,82 @@ describe('the v2 → v3 migration', () => {
   });
 });
 
+const CLASSIC_PAYLOAD = {
+  layout: 'classic',
+  railWidthLeft: 360,
+  railWidthRight: 300,
+  railCollapsedLeft: true,
+  railCollapsedRight: false,
+  planPinned: true,
+  showPlanPanel: false,
+};
+
+describe('the v3 → v4 migration (HIVE-213)', () => {
+  it('drops layout and the rail keys and keeps every other key', () => {
+    const kept = {
+      theme: 'light',
+      terminalFont: 'menlo',
+      terminalFontSize: 14,
+      density: 'compact',
+      teamName: 'Swarm',
+      editorEditable: false,
+      editorTabWidth: 4,
+      sessionPanelOpen: false,
+      sessionPanelTab: 'files',
+      themes: {},
+      activeThemeId: 'hive',
+    };
+    const migrated = migrateAppearance({ ...kept, ...CLASSIC_PAYLOAD }, 3);
+
+    for (const key of Object.keys(CLASSIC_PAYLOAD)) expect(migrated).not.toHaveProperty(key);
+    expect(migrated).toEqual(kept);
+  });
+
+  it('still migrates a v1 payload as before, and drops the Classic keys on the way', () => {
+    const migrated = migrateAppearance({ theme: 'dark', editorEditable: false, ...CLASSIC_PAYLOAD }, 1);
+    expect(migrated.themes).toEqual({});
+    expect(migrated.activeThemeId).toBe('hive');
+    expect(migrated).not.toHaveProperty('editorEditable');
+    expect(migrated).not.toHaveProperty('layout');
+  });
+
+  it('still migrates a v2 payload as before', () => {
+    const migrated = migrateAppearance({ theme: 'light', editorEditable: false, railWidthLeft: 400 }, 2);
+    expect(migrated).not.toHaveProperty('editorEditable');
+    expect(migrated).not.toHaveProperty('railWidthLeft');
+    expect(migrated.theme).toBe('light');
+  });
+
+  it('leaves a v4 payload alone apart from the library check', () => {
+    expect(migrateAppearance({ theme: 'light', editorEditable: false }, 4)).toEqual({
+      theme: 'light',
+      editorEditable: false,
+      themes: {},
+      activeThemeId: 'hive',
+    });
+  });
+
+  it('the store is at version 4', () => {
+    expect(useAppearanceStore.persist.getOptions().version).toBe(4);
+  });
+
+  it('a stored v3 payload with Classic keys rehydrates without them, everything else intact', async () => {
+    localStorage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({
+        version: 3,
+        state: { theme: 'light', density: 'compact', teamName: 'Swarm', ...CLASSIC_PAYLOAD },
+      }),
+    );
+    await useAppearanceStore.persist.rehydrate();
+    const state = useAppearanceStore.getState() as unknown as Record<string, unknown>;
+    for (const key of Object.keys(CLASSIC_PAYLOAD)) expect(key in state).toBe(false);
+    expect(state.theme).toBe('light');
+    expect(state.density).toBe('compact');
+    expect(state.teamName).toBe('Swarm');
+  });
+});
+
 describe('sanitizeThemeState', () => {
   it('keeps a whole theme and the id pointing at it', () => {
     expect(
@@ -1078,128 +985,199 @@ describe('sanitizeThemeState', () => {
   });
 });
 
-describe('rail collapse', () => {
-  it('starts expanded on both sides', () => {
-    const state = useAppearanceStore.getState();
-    expect(state.railCollapsedLeft).toBe(false);
-    expect(state.railCollapsedRight).toBe(false);
+describe('appearance-store — the swarm palette (HIVE-199)', () => {
+  it('is the built-in palette for the resolved mode', () => {
+    const { result, rerender } = renderHook(() => useSwarmPalette());
+    act(() => useAppearanceStore.getState().setTheme('light'));
+    rerender();
+    expect(result.current).toEqual(swarmPaletteOf(BUILT_IN_THEME.modes.light.ui));
+    act(() => useAppearanceStore.getState().setTheme('dark'));
+    rerender();
+    expect(result.current.creep).toBe('#5b3d8f');
   });
 
-  it('toggles one side and leaves the other alone', () => {
-    useAppearanceStore.getState().toggleRailCollapsed('left');
-
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(true);
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(false);
+  it("uses an imported theme's creep and chitin", () => {
+    const theme = structuredClone(nordFixture);
+    theme.modes.dark.ui.creep = '#123456';
+    act(() => {
+      useAppearanceStore.getState().setTheme('dark');
+      useAppearanceStore.getState().addTheme('nord', theme);
+      useAppearanceStore.getState().activateTheme('nord');
+    });
+    const { result } = renderHook(() => useSwarmPalette());
+    expect(result.current.creep).toBe('#123456');
+    expect(result.current).toEqual(swarmPaletteOf(theme.modes.dark.ui));
   });
 
-  it('sets a side explicitly', () => {
-    useAppearanceStore.getState().setRailCollapsed('right', true);
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(true);
-
-    useAppearanceStore.getState().setRailCollapsed('right', false);
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(false);
+  it("derives them for an imported theme that lacks them", () => {
+    const theme = structuredClone(nordFixture);
+    delete theme.modes.dark.ui.creep;
+    delete theme.modes.dark.ui.chitin;
+    act(() => {
+      useAppearanceStore.getState().setTheme('dark');
+      useAppearanceStore.getState().addTheme('nord', theme);
+      useAppearanceStore.getState().activateTheme('nord');
+    });
+    const { result } = renderHook(() => useSwarmPalette());
+    expect(result.current.creep).toBe(swarmPaletteOf(theme.modes.dark.ui).creep);
+    expect(result.current.creep).not.toBe('#5b3d8f');
   });
 
-  it('clears the flag when a width is written to the same side', () => {
-    // Drag-to-expand calls only `setRailWidth`. Clearing here is what
-    // makes that one call enough, and what stops the width and the flag
-    // from ever disagreeing.
-    useAppearanceStore.getState().setRailCollapsed('left', true);
-    useAppearanceStore.getState().setRailWidth('left', 360);
-
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(false);
-    expect(useAppearanceStore.getState().railWidthLeft).toBe(360);
-  });
-
-  it('does not clear the flag on the other side', () => {
-    useAppearanceStore.getState().setRailCollapsed('right', true);
-    useAppearanceStore.getState().setRailWidth('left', 360);
-
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(true);
-  });
-
-  it('leaves the flag alone when the width is reset', () => {
-    // "Go back to the default width" is a statement about width. A
-    // collapsed rail has no width opinion to reset.
-    useAppearanceStore.getState().setRailCollapsed('left', true);
-    useAppearanceStore.getState().resetRailWidth('left');
-
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(true);
-  });
-
-  it('restores both to expanded on reset', () => {
-    useAppearanceStore.getState().toggleRailCollapsed('left');
-    useAppearanceStore.getState().toggleRailCollapsed('right');
-    useAppearanceStore.getState().reset();
-
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(false);
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(false);
+  it('is the same object across unrelated writes', () => {
+    const { result, rerender } = renderHook(() => useSwarmPalette());
+    const first = result.current;
+    act(() => useAppearanceStore.getState().setTerminalFontSize(16));
+    rerender();
+    expect(result.current).toBe(first);
   });
 });
 
-describe('rail collapse migration', () => {
-  it('migrateAppearance passes unknown-key-absence through untouched', () => {
-    // Documents the input to the real pipeline exercised below: a v3 payload
-    // written before collapse existed simply has no opinion on the flag.
-    const migrated = migrateAppearance({ density: 'comfortable' }, 3);
-    expect(migrated.railCollapsedLeft).toBeUndefined();
-  });
-
-  it('reads a v3 payload written before collapse existed as expanded', async () => {
-    // The regression this guards: the persist `merge` option spreads
-    // `currentState` before the persisted payload, so a payload that lacks
-    // `railCollapsedLeft`/`railCollapsedRight` (as every payload written
-    // before this feature existed does) must fall back to `initialAppearanceState`'s
-    // `false` — not to `undefined`, which would render a strip on first
-    // launch for every existing user. This goes through the actual `persist`
-    // rehydration path (matching the store's current `version: 3`, so no
-    // `migrate` branch runs — only `merge`) rather than reimplementing it.
-    localStorage.setItem(
-      APPEARANCE_STORAGE_KEY,
-      JSON.stringify({
-        version: 3,
-        state: {
-          density: 'compact',
-        },
-      }),
-    );
-
-    vi.resetModules();
-    const { useAppearanceStore: store } = await import('@stores/appearance-store');
-
-    expect(store.getState().railCollapsedLeft).toBe(false);
-    expect(store.getState().railCollapsedRight).toBe(false);
-  });
-});
-
-/** The Show plan panel setting (HIVE-182): on by default, hides the rail only. */
-describe('appearance-store — showPlanPanel', () => {
+describe('appearance-store — session panel (HIVE-201)', () => {
   beforeEach(() => {
     localStorage.clear();
     useAppearanceStore.getState().reset();
   });
 
-  it('defaults to showing the panel', () => {
-    expect(useAppearanceStore.getState().showPlanPanel).toBe(true);
+  it('defaults open on plan, and the setters and toggle work', () => {
+    const s = useAppearanceStore.getState();
+    expect([s.sessionPanelOpen, s.sessionPanelTab]).toEqual([true, 'plan']);
+    s.toggleSessionPanel();
+    s.setSessionPanelTab('files');
+    expect([
+      useAppearanceStore.getState().sessionPanelOpen,
+      useAppearanceStore.getState().sessionPanelTab,
+    ]).toEqual([false, 'files']);
+    useAppearanceStore.getState().setSessionPanelOpen(true);
+    expect(useAppearanceStore.getState().sessionPanelOpen).toBe(true);
   });
 
-  it('hides and shows it, and persists the choice', () => {
-    useAppearanceStore.getState().setShowPlanPanel(false);
-
-    expect(useAppearanceStore.getState().showPlanPanel).toBe(false);
-    const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
-    expect((JSON.parse(raw as string) as { state: { showPlanPanel: unknown } }).state.showPlanPanel).toBe(false);
-
-    useAppearanceStore.getState().setShowPlanPanel(true);
-
-    expect(useAppearanceStore.getState().showPlanPanel).toBe(true);
-  });
-
-  it('hydrates a stored state from before the field existed to shown', async () => {
-    localStorage.setItem(APPEARANCE_STORAGE_KEY, JSON.stringify({ version: 3, state: { theme: 'light' } }));
-
+  it('persists both, and an old payload or a bad value loads the defaults', async () => {
+    useAppearanceStore.getState().setSessionPanelOpen(false);
+    localStorage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ state: { theme: 'dark' }, version: 3 }),
+    );
     await useAppearanceStore.persist.rehydrate();
+    expect(useAppearanceStore.getState()).toMatchObject({ sessionPanelOpen: true, sessionPanelTab: 'plan' });
 
-    expect(useAppearanceStore.getState().showPlanPanel).toBe(true);
+    localStorage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ state: { sessionPanelOpen: 'yes', sessionPanelTab: 'nope' }, version: 3 }),
+    );
+    await useAppearanceStore.persist.rehydrate();
+    expect(useAppearanceStore.getState()).toMatchObject({ sessionPanelOpen: true, sessionPanelTab: 'plan' });
+
+    localStorage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ state: { sessionPanelOpen: false, sessionPanelTab: 'files' }, version: 3 }),
+    );
+    await useAppearanceStore.persist.rehydrate();
+    expect(useAppearanceStore.getState()).toMatchObject({ sessionPanelOpen: false, sessionPanelTab: 'files' });
+
+    useAppearanceStore.getState().setSessionPanelTab('pr');
+    const { state } = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) ?? '{}') as {
+      state: Record<string, unknown>;
+    };
+    expect(state).toMatchObject({ sessionPanelOpen: false, sessionPanelTab: 'pr' });
+  });
+
+  it('the hooks read and write it', () => {
+    const { result } = renderHook(() => ({
+      open: useSessionPanelOpen(),
+      tab: useSessionPanelTab(),
+      setOpen: useSetSessionPanelOpen(),
+      toggle: useToggleSessionPanel(),
+      setTab: useSetSessionPanelTab(),
+    }));
+    act(() => result.current.toggle());
+    expect(result.current.open).toBe(false);
+    act(() => result.current.setOpen(true));
+    expect(result.current.open).toBe(true);
+    act(() => result.current.setTab('files'));
+    expect(result.current.tab).toBe('files');
+  });
+});
+
+describe('appearance-store — rail widths', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    useAppearanceStore.getState().reset();
+  });
+
+  it('leaves a 1,200px window room for both rails at their minimums and the stage floor (HIVE-223)', () => {
+    const BAR = 64;
+    const GRIPS = 24;
+    expect(PANEL_WIDTHS.list.min + PANEL_WIDTHS.session.min + GRIPS + STAGE_MIN).toBeLessThanOrEqual(1200 - BAR);
+  });
+
+  it('clamps a drag to the rail bounds, in whole pixels', () => {
+    const s = useAppearanceStore.getState();
+    expect([s.listPanelWidth, s.sessionPanelWidth]).toEqual([300, 320]);
+    s.setListPanelWidth(10);
+    s.setSessionPanelWidth(9000);
+    expect([useAppearanceStore.getState().listPanelWidth, useAppearanceStore.getState().sessionPanelWidth]).toEqual([
+      PANEL_WIDTHS.list.min,
+      PANEL_WIDTHS.session.max,
+    ]);
+    s.setListPanelWidth(333.6);
+    s.setSessionPanelWidth(Number.NaN);
+    expect([useAppearanceStore.getState().listPanelWidth, useAppearanceStore.getState().sessionPanelWidth]).toEqual([
+      334, 320,
+    ]);
+  });
+
+  it('rehydrates a stored width held to its bounds, and a bad one as the initial', async () => {
+    localStorage.setItem(
+      APPEARANCE_STORAGE_KEY,
+      JSON.stringify({ state: { listPanelWidth: 9000, sessionPanelWidth: 'wide' }, version: 4 }),
+    );
+    await useAppearanceStore.persist.rehydrate();
+    expect(useAppearanceStore.getState()).toMatchObject({ listPanelWidth: 400, sessionPanelWidth: 320 });
+  });
+
+  it('the hooks read and write them', () => {
+    const { result } = renderHook(() => ({
+      list: useListPanelWidth(),
+      session: useSessionPanelWidth(),
+      setList: useSetListPanelWidth(),
+      setSession: useSetSessionPanelWidth(),
+    }));
+    act(() => result.current.setList(250));
+    act(() => result.current.setSession(400));
+    expect([result.current.list, result.current.session]).toEqual([250, 400]);
+  });
+});
+
+describe('a narrow spell (HIVE-211)', () => {
+  afterEach(() => useUiStore.getState().reset());
+
+  it('never writes the session panel preference', () => {
+    useAppearanceStore.getState().setSessionPanelOpen(true);
+    useUiStore.getState().setNarrow(true);
+    useUiStore.getState().setNarrow(false);
+    expect(useAppearanceStore.getState().sessionPanelOpen).toBe(true);
+  });
+});
+
+/** What's new (1.0): the version last shown and the opt-out, persisted with the rest. */
+describe('appearance-store — What’s new', () => {
+  it('starts with nothing seen and the screen on', () => {
+    expect(useAppearanceStore.getState().whatsNewSeen).toBeNull();
+    expect(useAppearanceStore.getState().whatsNewOff).toBe(false);
+  });
+
+  it('records the version shown and the opt-out', () => {
+    useAppearanceStore.getState().setWhatsNewSeen('1.0');
+    useAppearanceStore.getState().setWhatsNewOff(true);
+    expect(useAppearanceStore.getState()).toMatchObject({ whatsNewSeen: '1.0', whatsNewOff: true });
+    useAppearanceStore.getState().setWhatsNewOff(false);
+    expect(useAppearanceStore.getState().whatsNewOff).toBe(false);
+  });
+
+  it('persists both', () => {
+    useAppearanceStore.getState().setWhatsNewSeen('1.0');
+    useAppearanceStore.getState().setWhatsNewOff(true);
+    const stored = JSON.parse(localStorage.getItem(APPEARANCE_STORAGE_KEY) ?? '{}') as { state?: Record<string, unknown> };
+    expect(stored.state).toMatchObject({ whatsNewSeen: '1.0', whatsNewOff: true });
   });
 });

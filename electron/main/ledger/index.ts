@@ -13,6 +13,7 @@ import {
 import {
   CLOSING_KINDS,
   claims,
+  closedAskThreads,
   keepNewest,
   laneOfRun,
   matches,
@@ -97,6 +98,7 @@ export function createLedger(options: LedgerOptions): Ledger {
         entries: keepNewest(filtered, query.limit),
         openAsks: openAsks(all, now()),
         claims: claims(all),
+        closedAsks: [...closedAskThreads(all)],
       };
     },
 

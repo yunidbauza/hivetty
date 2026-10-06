@@ -7,7 +7,7 @@ import { Button } from '@components/ui/button';
 import { SecretField } from '@components/ui/secret-field';
 import { Switch } from '@components/ui/switch';
 import { TextField } from '@components/ui/text-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { useProjectConfig } from '@hooks/use-project-config';
 import { installProjectConfig } from '@lib/project-config';
 import {
@@ -127,7 +127,7 @@ const PILL_LABEL: Record<PillKind, string> = {
 const PILL_TONE: Record<PillKind, string> = {
   off: 'text-subtle border-border',
   ok: 'text-green border-green',
-  wait: 'text-amber border-amber',
+  wait: 'text-amber-text border-amber',
   err: 'text-red border-red',
 };
 
@@ -151,7 +151,7 @@ function StatePill({ kind, label }: { kind: PillKind; label?: string }) {
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10.5px] font-semibold uppercase tracking-wide',
+        'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 tabular-nums text-micro font-semibold uppercase tracking-wide',
         PILL_TONE[kind],
       )}
     >
@@ -203,10 +203,10 @@ function socketPill(
  * own credential store. This caption and the one below it are the only place
  * the product says so.
  */
-const SIGN_IN_PROMISE = 'Opens your browser once. The Hive never sees the token.';
+const SIGN_IN_PROMISE = 'Opens your browser once. Hive TTY never sees the token.';
 
 /** The same claim, restated where it matters most: while you are signed in. */
-const TOKEN_HOLDER = ' · token held by Claude Code, not the Hive';
+const TOKEN_HOLDER = ' · token held by Claude Code, not Hive TTY';
 
 /** Who is using it — the fallback slot when there is no error and no approval to report. */
 function usedBySummary(agents: SlackGroupAgent[]): ReactNode {
@@ -220,12 +220,12 @@ function usedBySummary(agents: SlackGroupAgent[]): ReactNode {
     <>
       Used by{' '}
       {agents.map((agent, index) => (
-        <span key={agent.name} className="font-mono text-ink">
+        <span key={agent.name} className="tabular-nums text-ink">
           {agent.name}
           {index < agents.length - 1 ? ', ' : ''}
         </span>
       ))}
-      {missingGrant && <span className="text-amber"> · no slack tools granted</span>}
+      {missingGrant && <span className="text-amber-text"> · no slack tools granted</span>}
     </>
   );
 }
@@ -246,19 +246,19 @@ function Caption({
 }) {
   if (testError !== null) {
     return (
-      <p className="text-[11.5px] text-red">
+      <p className="text-ui-sm text-red">
         <span className="font-semibold text-ink">Test failed.</span> {testError}
       </p>
     );
   }
 
   if (status.kind === 'error') {
-    return <p className="text-[11.5px] text-red">{status.message}</p>;
+    return <p className="text-ui-sm text-red">{status.message}</p>;
   }
 
   if (status.kind === 'pending-approval') {
     return (
-      <p className="text-[11.5px] text-amber">
+      <p className="text-ui-sm text-amber-text">
         <span className="font-semibold text-ink">
           A workspace admin must approve Slack&rsquo;s MCP server.
         </span>{' '}
@@ -268,11 +268,11 @@ function Caption({
   }
 
   if (status.kind === 'not-added' || status.kind === 'needs-auth') {
-    return <p className="text-[11.5px] text-subtle">{SIGN_IN_PROMISE}</p>;
+    return <p className="text-ui-sm text-subtle">{SIGN_IN_PROMISE}</p>;
   }
 
   return (
-    <p className="text-[11.5px] text-subtle">
+    <p className="text-ui-sm text-subtle">
       {usedBySummary(agents)}
       {TOKEN_HOLDER}
     </p>
@@ -319,14 +319,14 @@ function Actions({
     case 'not-added':
     case 'needs-auth':
       return (
-        <Button variant="primary" onClick={onSignIn} disabled={signingIn}>
+        <Button variant="primary" onClick={onSignIn} pending={signingIn}>
           {signInLabel(signingIn, false)}
         </Button>
       );
     case 'connected':
       return (
         <>
-          <Button onClick={onTest} disabled={testing}>
+          <Button onClick={onTest} pending={testing}>
             {testLabel(testing, testFailed)}
           </Button>
           <Button variant="danger" onClick={onSignOut}>
@@ -336,13 +336,13 @@ function Actions({
       );
     case 'pending-approval':
       return (
-        <Button onClick={onTest} disabled={testing}>
+        <Button onClick={onTest} pending={testing}>
           {testLabel(testing, true)}
         </Button>
       );
     case 'error':
       return (
-        <Button variant="primary" onClick={onSignIn} disabled={signingIn}>
+        <Button variant="primary" onClick={onSignIn} pending={signingIn}>
           {signInLabel(signingIn, true)}
         </Button>
       );
@@ -436,14 +436,14 @@ function commanderSummary(commanders: string[]): string {
 function SocketTestVerdict({ result }: { result: SlackSocketTestResult }) {
   if (result.kind === 'ok') {
     return (
-      <p className="text-[11.5px] text-green">
-        Reached <span className="font-mono text-ink">{result.workspace}</span>{' '}
-        as <span className="font-mono text-ink">{result.bot}</span>.
+      <p className="text-ui-sm text-green">
+        Reached <span className="tabular-nums text-ink">{result.workspace}</span>{' '}
+        as <span className="tabular-nums text-ink">{result.bot}</span>.
       </p>
     );
   }
 
-  return <p className="text-[11.5px] text-red">{result.message}</p>;
+  return <p className="text-ui-sm text-red">{result.message}</p>;
 }
 
 /**
@@ -457,7 +457,7 @@ function SocketTestVerdict({ result }: { result: SlackSocketTestResult }) {
  * the rejection, and the pane reported a broken IPC bridge.
  */
 const NO_KEYRING =
-  'This system has no keyring, so the Hive will not store a Slack token — it ' +
+  'This system has no keyring, so Hive TTY will not store a Slack token — it ' +
   'will not write one in plaintext instead. Real-time events stay off until ' +
   'the operating system offers one.';
 
@@ -567,18 +567,18 @@ function RealTimeFields({
       <div className="flex flex-wrap items-center gap-2">
         <StatePill kind={pill.kind} label={pill.label} />
         {socket.kind === 'connected' && (
-          <span className="font-mono text-[11.5px] text-subtle">
+          <span className="tabular-nums text-ui-sm text-subtle">
             {socket.workspace ?? '—'} · {socket.bot ?? '—'}
           </span>
         )}
         {socket.kind === 'failed' && (
-          <span className="text-[11.5px] text-red">{socket.message}</span>
+          <span className="text-ui-sm text-red">{socket.message}</span>
         )}
       </div>
 
-      <p className="text-[11.5px] text-subtle">{CUSTODY_NOTE}</p>
+      <p className="text-ui-sm text-subtle">{CUSTODY_NOTE}</p>
       {storedNote !== null && (
-        <p className="text-[11.5px] text-subtle">{storedNote}</p>
+        <p className="text-ui-sm text-subtle">{storedNote}</p>
       )}
 
       {/* A control that cannot work is absent rather than disabled — the rule
@@ -618,7 +618,7 @@ function RealTimeFields({
           )}
         </>
       ) : (
-        <p className="text-[11.5px] text-subtle">{NO_KEYRING}</p>
+        <p className="text-ui-sm text-subtle">{NO_KEYRING}</p>
       )}
 
       <TextField
@@ -631,18 +631,18 @@ function RealTimeFields({
       />
 
       <div className="flex flex-col gap-1">
-        <h5 className="font-mono text-[10.5px] font-semibold uppercase tracking-wide text-subtle">
+        <h5 className="tabular-nums text-micro font-semibold uppercase tracking-wide text-subtle">
           Wakes on
         </h5>
         <div className="flex flex-wrap gap-1.5">
-          <span className="rounded-[4px] bg-chip px-1.5 py-0.5 font-mono text-[11px] text-muted">
+          <span className="rounded bg-chip px-1.5 py-0.5 tabular-nums text-micro text-muted">
             {commanderSummary(slack.commanders)}
           </span>
           {socket.kind === 'connected' &&
             socket.unresolved.map((name) => (
               <span
                 key={name}
-                className="rounded-[4px] bg-chip px-1.5 py-0.5 font-mono text-[11px] text-amber"
+                className="rounded bg-chip px-1.5 py-0.5 tabular-nums text-micro text-amber-text"
                 title="Named in wake.on, but Slack could not resolve it to a channel."
               >
                 {name} → unresolved
@@ -652,12 +652,15 @@ function RealTimeFields({
       </div>
 
       <div>
-        <Button onClick={onTest} disabled={testing}>
+        <Button onClick={onTest} pending={testing}>
           {testing ? 'Testing…' : 'Test'}
         </Button>
       </div>
 
-      {testResult !== null && <SocketTestVerdict result={testResult} />}
+      {/* Always mounted, as the caption's region above (HIVE-225). */}
+      <div role="status" className="empty:-mt-2">
+        {testResult !== null && <SocketTestVerdict result={testResult} />}
+      </div>
     </>
   );
 }
@@ -712,24 +715,24 @@ function AdvancedFields({
   return (
     <div className="flex flex-col gap-4 pt-1" data-testid="advanced-drawer">
       <div className="flex flex-col gap-2">
-        <h5 className="font-mono text-[11px] font-semibold uppercase tracking-wide text-subtle">
+        <h5 className="tabular-nums text-micro font-semibold uppercase tracking-wide text-subtle">
           Slack app
         </h5>
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           Only if your org runs its own. Changing either signs you out.
         </p>
-        <div className="flex items-center justify-between gap-2 rounded-[6px] border border-border bg-bg px-2.5 py-1.5 font-mono text-[12px] text-subtle">
+        <div className="flex items-center justify-between gap-2 rounded-full border border-border bg-bg px-3 py-1.5 tabular-nums text-control text-subtle">
           <span>{SLACK_MCP_URL}</span>
           <span className="text-subtle">server</span>
         </div>
-        <div className="flex items-center justify-between gap-2 rounded-[6px] border border-border bg-bg px-2.5 py-1.5 font-mono text-[12px] text-muted">
+        <div className="flex items-center justify-between gap-2 rounded-full border border-border bg-bg px-3 py-1.5 tabular-nums text-control text-muted">
           <span>{SLACK_CLIENT_ID}</span>
           <span className="text-subtle">client ID</span>
         </div>
       </div>
 
       <div className="flex flex-col gap-2">
-        <h5 className="font-mono text-[11px] font-semibold uppercase tracking-wide text-subtle">
+        <h5 className="tabular-nums text-micro font-semibold uppercase tracking-wide text-subtle">
           Real-time events
         </h5>
 
@@ -740,14 +743,14 @@ function AdvancedFields({
         />
 
         {configError !== null && (
-          <p className="text-[11.5px] text-red">{configError}</p>
+          <p className="text-ui-sm text-red">{configError}</p>
         )}
 
         {!slack.socketMode ? (
-          <p className="text-[11.5px] text-subtle">
+          <p className="text-ui-sm text-subtle">
             Off, agents reach Slack on their own schedule. On, they wake within
-            seconds and <span className="font-mono">@hive</span> can command one.
-            Needs a Slack app of your own, and two tokens the Hive stores.
+            seconds and <span className="tabular-nums">@hive</span> can command one.
+            Needs a Slack app of your own, and two tokens Hive TTY stores.
           </p>
         ) : (
           <RealTimeFields
@@ -1009,11 +1012,11 @@ export function SlackGroup({ agents }: SlackGroupProps) {
       title="Connection"
       description="Agents reach Slack as you, through Slack's own MCP server."
     >
-      <div className="flex flex-col gap-3 rounded-[7px] border border-border-soft p-3">
+      <div className="flex flex-col gap-3 rounded-lg border border-border-soft p-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             {status === null ? (
-              <span className="text-[11.5px] text-subtle">…</span>
+              <span className="text-ui-sm text-subtle">…</span>
             ) : (
               <StatePill kind={pillKindOf(status)} />
             )}
@@ -1037,17 +1040,20 @@ export function SlackGroup({ agents }: SlackGroupProps) {
         <div className="h-px bg-border-soft" />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {status === null ? (
-            <p className="text-[11.5px] text-subtle">…</p>
-          ) : (
-            <Caption status={status} agents={agents} testError={testError} />
-          )}
+          {/* Always mounted: the Test's verdict lands in the caption, and a live region that mounts with its text is not reliably announced (HIVE-225). */}
+          <div role="status">
+            {status === null ? (
+              <p className="text-ui-sm text-subtle">…</p>
+            ) : (
+              <Caption status={status} agents={agents} testError={testError} />
+            )}
+          </div>
 
           <button
             type="button"
             onClick={() => setOpen((value) => !value)}
             aria-expanded={open}
-            className="flex shrink-0 items-center gap-1 text-[12px] text-brand hover:text-ink"
+            className="flex shrink-0 items-center gap-1 text-control text-brand hover:text-ink"
           >
             <CaretRight
               size={11}

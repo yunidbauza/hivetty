@@ -52,7 +52,7 @@ export function SecretField({
 
   return (
     <div className={cn('flex flex-col gap-1', className)}>
-      <label htmlFor={id} className="text-[12.5px] text-muted">
+      <label htmlFor={id} className="text-control text-muted">
         {label}
       </label>
 
@@ -84,8 +84,8 @@ export function SecretField({
              */
           }}
           className={cn(
-            'min-w-0 flex-1 rounded-[6px] border border-border bg-panel-2 px-2.5 py-1.5',
-            'text-[12.5px] text-ink outline-none placeholder:text-subtle',
+            'min-w-0 flex-1 rounded-full border border-border bg-panel-2 px-3 py-1.5',
+            'text-control text-ink outline-none placeholder:text-subtle',
             'focus-visible:ring-1 focus-visible:ring-brand',
           )}
         />
@@ -95,7 +95,7 @@ export function SecretField({
           aria-label={revealed ? 'Hide the token' : 'Show the token'}
           onClick={() => setRevealed((current) => !current)}
           className={cn(
-            'rounded-[6px] border border-transparent p-1.5 text-subtle',
+            'rounded-full border border-transparent p-1.5 text-subtle',
             'hover:bg-hover hover:text-ink',
             'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand',
           )}
@@ -105,7 +105,7 @@ export function SecretField({
       </div>
 
       {hint ? (
-        <span id={hintId} className="text-[11.5px] text-subtle">
+        <span id={hintId} className="text-ui-sm text-subtle">
           {hint}
         </span>
       ) : null}

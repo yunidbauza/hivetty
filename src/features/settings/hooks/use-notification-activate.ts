@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 
 import { currentRowFor, isAgentId, useOpenEntity } from '@stores/hive-store';
-import { useRevealRailTab } from '@stores/ui-store';
+import { useInboxActions } from '@stores/ui-store';
 
 /**
  * Open the session a clicked notification was about (story 106).
@@ -19,7 +19,7 @@ import { useRevealRailTab } from '@stores/ui-store';
  */
 export function useNotificationActivate(): void {
   const openEntity = useOpenEntity();
-  const revealRailTab = useRevealRailTab();
+  const { openInboxDrawer } = useInboxActions();
 
   useEffect(() => {
     // No bridge is the browser demo, where there is no OS to notify.
@@ -55,21 +55,12 @@ export function useNotificationActivate(): void {
      */
     return bridge.notifications.onActivate((event) => {
       /**
-       * An ask is answered where it is, so the destination is the card
-       * (HIVE-118).
-       *
-       * `revealRailTab`, never `setRailTab`: the rail has three tabs and can
-       * be collapsed outright, and a click that raises the window onto a
-       * hidden rail — or onto the explorer — has delivered the user to a
-       * screen with no card and no signal on it. That is the whole promise an
-       * ask toast makes by *not* dismissing its own row: the click is what
-       * takes you to the row.
-       *
-       * Idempotent, so an ask clicked while the inbox is already up leaves it
-       * exactly as it was rather than flipping the rail shut.
+       * An ask is answered where it is, so the destination is its card in the
+       * drawer (HIVE-118, HIVE-198). Opening is idempotent, so a click while
+       * the drawer is up leaves it as it was.
        */
       if (event.type === 'ask') {
-        revealRailTab('inbox');
+        openInboxDrawer(event.thread);
         return;
       }
 
@@ -77,5 +68,5 @@ export function useNotificationActivate(): void {
         isAgentId(event.entityId) ? event.entityId : currentRowFor(event.entityId),
       );
     });
-  }, [openEntity, revealRailTab]);
+  }, [openEntity, openInboxDrawer]);
 }

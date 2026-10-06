@@ -1,4 +1,4 @@
-import { InlineConfirm } from '@features/settings/components/inline-confirm';
+import { InlineConfirm } from '@features/shared/components/inline-confirm';
 
 interface ProjectRemoveConfirmProps {
   projectName: string;

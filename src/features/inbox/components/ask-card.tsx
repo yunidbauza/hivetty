@@ -1,18 +1,24 @@
+import { X } from '@phosphor-icons/react';
 import { useState, type KeyboardEvent, type ReactNode } from 'react';
 
 import { cn } from '@/lib/utils';
+import { isAgent } from '@/types/entity';
 import type { HiveNotification } from '@/types/notification';
 
 import { Button } from '@components/ui/button';
+import { AgentTile } from '@features/shared/components/agent-tile';
 import { useRelativeTime } from '@hooks/use-relative-time';
 import { asInbound } from '@shared/ledger-derive';
 import type { Rung, RungId } from '@shared/permission-rules';
 import {
   useAnswerAsk,
   useDisplayName,
+  useEntity,
   useIsAgentId,
+  useOpenEntity,
   useThread,
 } from '@stores/hive-store';
+import { useMarkAnsweredHere } from '@stores/ui-store';
 
 import { PermissionControls } from './permission-controls';
 
@@ -20,7 +26,14 @@ interface AskCardProps {
   notif: HiveNotification;
   /** Narrowed by the dispatcher, so this component never re-checks the union. */
   thread: string;
+  /** A ✕ that folds the card into the pill. */
+  onClose?: () => void;
+  /** "Open <asker> ›" under the controls. */
+  openLink?: boolean;
 }
+
+/** Under a minute, the wait reads "now" in amber: the ask has just arrived. */
+const FRESH_MS = 60_000;
 
 /** An option that closes the ask badly, and should not look like the safe one. */
 const NEGATIVE = /^(reject|deny|no)$/i;
@@ -94,9 +107,10 @@ const rungsOf = (value: unknown): Rung[] =>
  * showing options that post into a thread this process cannot see would be a
  * control that lies.
  */
-export function AskCard({ notif, thread }: AskCardProps) {
+export function AskCard({ notif, thread, onClose, openLink = false }: AskCardProps) {
   const entries = useThread(thread);
   const answerAsk = useAnswerAsk();
+  const markAnsweredHere = useMarkAnsweredHere();
 
   const ask = entries.find((entry) => entry.id === thread);
   const answer = entries.find((entry) => entry.kind === 'answer');
@@ -139,6 +153,8 @@ export function AskCard({ notif, thread }: AskCardProps) {
   const sessionName = useDisplayName(fromIsAgent ? '' : from);
   const asker = fromIsAgent ? from : sessionName;
   const age = useRelativeTime(ask?.ts ?? notif.createdAt);
+  const askerEntity = useEntity(fromIsAgent ? from : '');
+  const openEntity = useOpenEntity();
 
   const [draft, setDraft] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -285,6 +301,8 @@ export function AskCard({ notif, thread }: AskCardProps) {
         from `{ ok: false }` and must not be rendered as one.
       */
       if (result !== undefined && !result.ok) setRefusal(result.reason);
+      // So the line this card leaves says "answered", never "answered on" this machine (HIVE-218).
+      else markAnsweredHere(thread);
     } catch (cause) {
       /*
         A rejected bridge call, not a refusal — the IPC channel itself threw
@@ -332,31 +350,52 @@ export function AskCard({ notif, thread }: AskCardProps) {
       submit();
     };
 
-  const shell = (tone: string, children: ReactNode) => (
+  const shell = (children: ReactNode) => (
     <article
       data-notification={notif.id}
       aria-label={`Ask from ${asker}: ${notif.title}`}
-      className={cn(
-        'mb-[var(--cc-list-gap-sm)] flex flex-col gap-1 rounded-r-xl rounded-l border border-l-2 px-3 py-[var(--cc-card-py)] text-left last:mb-0',
-        'border-border',
-        tone,
-      )}
+      className="flex flex-col gap-[9px] rounded-xl border border-border bg-panel-2 px-3.5 py-3 text-left text-control"
     >
       {children}
     </article>
   );
 
-  const meta = (trailing?: ReactNode) => (
-    <div className="flex items-center gap-1.5 text-[10px] text-subtle">
-      <span className="font-medium text-muted">{asker}</span>
+  /*
+    `Date.now()` in render is the same clock `useRelativeTime` reads; the card
+    re-renders with it, so "now" turns into the age within the minute.
+  */
+  const fresh = Date.now() - (ask?.ts ?? notif.createdAt) < FRESH_MS;
+  const verb = isPermission ? 'wants to run a command' : quote !== undefined ? 'drafted a reply' : 'asks';
+
+  // The head row: the asker's glyph, its name, what it did, the wait, and the fold.
+  const meta = () => (
+    <div className="flex items-center gap-[7px] text-control text-muted">
+      {askerEntity !== undefined && isAgent(askerEntity) ? (
+        <AgentTile icon={askerEntity.icon} tone="asking" live={0} size="sm" />
+      ) : (
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-amber" />
+      )}
+      <b className="font-semibold text-ink">{asker}</b>
+      <span>{verb}</span>
       {redirectedFrom !== undefined ? (
         <span data-redirected-from={redirectedFrom}>meant for {redirectedFrom}, which ended</span>
       ) : null}
-      <span className="opacity-50">·</span>
-      <span>{age}</span>
-      {trailing}
+      <span className="flex-1" />
+      <span className={cn('tabular-nums', fresh ? 'text-amber-text' : 'text-subtle')}>{fresh ? 'now' : age}</span>
+      {onClose === undefined ? null : (
+        <button
+          type="button"
+          aria-label="Fold into the pill"
+          onClick={onClose}
+          className="grid size-7 place-items-center rounded-full text-muted hover:bg-hover"
+        >
+          <X size={14} />
+        </button>
+      )}
     </div>
   );
+
+  const titleClass = 'text-ui-lg font-semibold text-ink';
 
   /**
    * Answered, and checked **before** the missing-entry fallback below.
@@ -377,8 +416,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
    */
   if (answer !== undefined) {
     return shell(
-      'border-l-border',
-      <div data-answered={answer.body} className="text-[11px] text-subtle">
+      <div data-answered={answer.body} className="text-micro text-subtle">
         <span className="font-medium text-muted">{asker}</span>
         {' · answered '}
         <span className="text-green">{answer.body}</span>
@@ -391,12 +429,11 @@ export function AskCard({ notif, thread }: AskCardProps) {
   // The entry has aged out of the capped ledger. Say what main said, and stop.
   if (ask === undefined) {
     return shell(
-      'border-l-border',
       <>
         {meta()}
-        <span className="text-[12.5px] font-semibold text-ink">{notif.title}</span>
+        <span className={titleClass}>{notif.title}</span>
         {notif.body === '' ? null : (
-          <span className="text-[11.5px] leading-[1.4] text-muted">{notif.body}</span>
+          <span className="text-ui-sm leading-[1.4] text-muted">{notif.body}</span>
         )}
       </>,
     );
@@ -421,15 +458,9 @@ export function AskCard({ notif, thread }: AskCardProps) {
   const detail = rest.join('\n').trim();
 
   return shell(
-    'border-l-amber',
     <>
-      {meta(
-        <>
-          <span className="opacity-50">·</span>
-          <span>ask {ask.id.slice(-4)}</span>
-        </>,
-      )}
-      <span className="text-[12.5px] font-semibold text-ink">{title}</span>
+      {meta()}
+      <span className={titleClass}>{title}</span>
       {detail === '' ? null : isPermission ? (
         /*
           The command, as a mono block (spec §3.6). It is the actual risk
@@ -441,11 +472,11 @@ export function AskCard({ notif, thread }: AskCardProps) {
           rail, and `overflow-x-auto` is the last resort for a token that
           cannot break at all.
         */
-        <pre className="mt-1 max-w-full overflow-x-auto rounded-md border border-border bg-panel-2 px-2 py-1.5 font-mono text-[11px] leading-[1.45] break-all whitespace-pre-wrap text-muted">
+        <pre className="mt-1 max-w-full overflow-x-auto rounded-md border border-border bg-panel-2 px-2 py-1.5 font-mono text-micro leading-[1.45] break-all whitespace-pre-wrap text-muted">
           {detail}
         </pre>
       ) : (
-        <span className="text-[11.5px] leading-[1.4] text-muted">{detail}</span>
+        <span className="text-ui-sm leading-[1.4] text-muted">{detail}</span>
       )}
 
       {/*
@@ -475,11 +506,11 @@ export function AskCard({ notif, thread }: AskCardProps) {
       */}
       {inbound === undefined ? null : (
         <div className="mt-1 max-h-40 overflow-y-auto rounded-md bg-panel-2 px-2 py-1.5">
-          <span className="block truncate text-[10px] text-subtle">
+          <span className="block truncate text-micro text-subtle">
             {inbound.at === undefined ? inbound.author : `${inbound.author} · ${inbound.at}`}
             {` · via ${asker}`}
           </span>
-          <span className="block text-[11px] leading-[1.45] break-words whitespace-pre-wrap text-muted">
+          <span className="block text-micro leading-[1.45] break-words whitespace-pre-wrap text-muted">
             {inbound.text}
           </span>
         </div>
@@ -487,7 +518,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
 
       {draft === null ? (
         quote === undefined ? null : (
-          <p className="mt-1 rounded-r-md border-l-2 border-border bg-panel-2 px-2 py-1.5 text-[11px] leading-[1.45] text-muted">
+          <p className="mt-1 rounded-r-md border-l-2 border-border bg-panel-2 px-2 py-1.5 text-micro leading-[1.45] text-muted">
             {quote}
           </p>
         )
@@ -498,7 +529,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onEnter(sendDraft, true)}
           rows={3}
-          className="mt-1 w-full resize-y rounded-md border border-brand-fill bg-term-input px-2 py-1.5 text-[11px] leading-[1.45] text-ink"
+          className="mt-1 w-full resize-y rounded-md border border-brand-fill bg-term-input px-2 py-1.5 text-micro leading-[1.45] text-ink"
         />
       )}
 
@@ -508,12 +539,12 @@ export function AskCard({ notif, thread }: AskCardProps) {
             <Button
               size="sm"
               variant="primary"
-              disabled={sending}
+              pending={sending}
               onClick={sendDraft}
             >
               Send
             </Button>
-            <Button size="sm" disabled={sending} onClick={() => setDraft(null)}>
+            <Button size="sm" pending={sending} onClick={() => setDraft(null)}>
               Cancel
             </Button>
           </>
@@ -540,7 +571,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
                       ? 'primary'
                       : 'secondary'
                 }
-                disabled={sending}
+                pending={sending}
                 onClick={() =>
                   EDIT.test(option) && quote !== undefined
                     ? setDraft(quote)
@@ -557,7 +588,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
               grant nobody can match.
             */}
             {isPermission ? null : (
-              <Button size="sm" disabled={sending} onClick={() => setOther(true)}>
+              <Button size="sm" pending={sending} onClick={() => setOther(true)}>
                 Other…
               </Button>
             )}
@@ -569,13 +600,14 @@ export function AskCard({ notif, thread }: AskCardProps) {
               value={reply}
               onChange={(event) => setReply(event.target.value)}
               onKeyDown={onEnter(sendReply)}
-              className="min-w-0 flex-1 rounded-md border border-border bg-term-input px-2 py-1 text-[11px] text-ink placeholder:text-subtle"
+              className="min-w-0 flex-1 rounded-full border border-border bg-term-input px-2.5 py-1 text-micro text-ink placeholder:text-subtle"
               placeholder="Answer…"
             />
             <Button
               size="sm"
               variant="primary"
-              disabled={sending || reply.trim() === ''}
+              disabled={reply.trim() === ''}
+              pending={sending}
               onClick={sendReply}
             >
               Send
@@ -583,6 +615,16 @@ export function AskCard({ notif, thread }: AskCardProps) {
           </>
         )}
       </div>
+
+      {openLink ? (
+        <button
+          type="button"
+          onClick={() => openEntity(from)}
+          className="self-end text-control text-brand hover:underline"
+        >
+          {`Open ${asker} ›`}
+        </button>
+      ) : null}
 
       {refusal === null ? null : (
         /*
@@ -592,7 +634,7 @@ export function AskCard({ notif, thread }: AskCardProps) {
           looks like: not a frozen card, not a silent no-op, but the reason
           and another chance.
         */
-        <p role="alert" className="text-[11px] text-red">
+        <p role="alert" className="text-micro text-red">
           {refusal}
         </p>
       )}

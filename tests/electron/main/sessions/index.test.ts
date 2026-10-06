@@ -1,6 +1,6 @@
 // @vitest-environment node
 import type { PlanToolCall } from '../../../../electron/main/plans';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -215,7 +215,7 @@ const BOOT = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --session-id 
  * The task is a positional argument on `BOOT`, not a second thing written into
  * the pty after it — which is why there is a constant for it at all.
  */
-const BOOT_WITH_TASK = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --session-id ${TEST_UUID} 'fix the hero' && exit`;
+const BOOT_WITH_TASK = `unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; claude --session-id ${TEST_UUID} -- 'fix the hero' && exit`;
 
 /** How long after a stage's text its submitting `\r` follows (HIVE-63). */
 const SUBMIT = 300;
@@ -2194,6 +2194,8 @@ describe('/done', () => {
     planTool: (call: PlanToolCall) => void;
     /** Every `CH.planChanged` payload for the entity, in order. */
     planPushes: (entityId: string) => Record<string, unknown>[];
+    /** Every `CH.sessionTerminalEnded` payload this harness sent. */
+    terminalEnded: () => Record<string, unknown>[];
     sessions: Sessions;
   } {
     const written: Written[] = [];
@@ -2323,6 +2325,8 @@ describe('/done', () => {
             (entry) => entry.channel === CH.planChanged && entry.payload.entityId === entityId,
           )
           .map((entry) => entry.payload),
+      terminalEnded: () =>
+        local.filter((entry) => entry.channel === CH.sessionTerminalEnded).map((entry) => entry.payload),
       sessions: instance,
     };
   }
@@ -2369,6 +2373,35 @@ describe('/done', () => {
 
       expect(h.planPushes('hero-refresh').at(-1)).toEqual({ entityId: 'hero-refresh', plan: null });
       expect(h.sessions.plans()).toEqual({ plans: [] });
+    });
+
+    it('forgets the plan file the retired conversation read on /clear (HIVE-201)', async () => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), 'hive-clear-plan-')));
+      try {
+        mkdirSync(join(root, '.hive', 'plans'), { recursive: true });
+        const file = join(root, '.hive', 'plans', 'p.md');
+        writeFileSync(file, '## Task 1: A\n- [ ] one\n');
+        const h = finished();
+        h.open();
+        await h.planTool({
+          entityId: 'hero-refresh',
+          toolName: 'Write',
+          toolInput: { file_path: file },
+          toolResponse: undefined,
+          cwd: root,
+        });
+        expect(h.sessions.plans().plans[0]).toMatchObject({ source: 'plan-file', file });
+
+        h.cleared('hero-refresh');
+        h.planTool(createAlpha('hero-refresh'));
+
+        const plan = h.sessions.plans().plans[0];
+        expect(plan).toMatchObject({ source: 'task-tools' });
+        expect(plan?.file).toBeUndefined();
+        expect(plan?.fileAt).toBeUndefined();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('drops the plan when the session finishes', () => {
@@ -2440,6 +2473,28 @@ describe('/done', () => {
 
   /** Every chunk written into the pty since the session opened. */
   const writes = () => vi.mocked(supervisor.write).mock.calls.map((call) => call[1]);
+
+  it('reports no lost ending for a /done whose wedged /exit was force-killed', () => {
+    const h = finished();
+    const sessionId = h.open();
+    h.done('hero-refresh');
+    h.hook('hero-refresh', 'Stop');
+
+    emitExit({ sessionId, exitCode: 129, signal: 9 });
+
+    expect(h.terminalEnded()).toEqual([]);
+  });
+
+  it('reports lost for the same kill when no /done was declared', () => {
+    const h = finished();
+    const sessionId = h.open();
+
+    emitExit({ sessionId, exitCode: 129, signal: 9 });
+
+    expect(h.terminalEnded()).toEqual([
+      { entityId: 'hero-refresh', ending: { kind: 'lost', reason: 'its process was killed by signal 9' } },
+    ]);
+  });
 
   it('closes the terminal with /exit rather than a signal', () => {
     const h = finished();
@@ -3540,6 +3595,78 @@ describe('terminals', () => {
       ending: { kind: 'lost', reason: 'the pty host crashed' },
     });
   });
+
+  /**
+   * A session that dies unasked says why before it says `terminated`, so the
+   * stage keeps the ended card over it rather than leaving as `/exit` does.
+   */
+  it('reports a session killed by signal as lost, before its terminated status', () => {
+    sessions.open(OPEN);
+    emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 129, signal: 15 });
+
+    const lost = on(CH.sessionTerminalEnded).at(-1)!;
+    expect(lost.payload).toEqual({
+      entityId: 'hero-refresh',
+      ending: { kind: 'lost', reason: 'its process was killed by signal 15' },
+    });
+    const terminated = sent.findIndex((m) => m.channel === CH.sessionStatus && (m.payload as { status: string }).status === 'terminated');
+    expect(sent.indexOf(lost)).toBeLessThan(terminated);
+  });
+
+  it('reports nothing lost for a session the app killed itself (SIGHUP)', () => {
+    sessions.open(OPEN);
+    const sessionId = mintedFor('hero-refresh');
+
+    sessions.kill('hero-refresh');
+    emitExit({ sessionId, exitCode: 129, signal: 1 });
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
+  it('reports nothing lost while a restart kills the old generation', async () => {
+    sessions.open(OPEN);
+    const first = mintedFor('hero-refresh');
+
+    const restarted = sessions.restart(OPEN);
+    await Promise.resolve();
+    emitExit({ sessionId: first, exitCode: 129, signal: 1 });
+    vi.advanceTimersByTime(8);
+    await restarted;
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
+  it('still reports lost for an unasked kill after an earlier app kill', async () => {
+    sessions.open(OPEN);
+    const first = mintedFor('hero-refresh');
+    const restarted = sessions.restart(OPEN);
+    await Promise.resolve();
+    emitExit({ sessionId: first, exitCode: 129, signal: 1 });
+    vi.advanceTimersByTime(8);
+    await restarted;
+
+    emitExit({ sessionId: spawned[1]!.sessionId, exitCode: 137, signal: 9 });
+
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'hero-refresh',
+      ending: { kind: 'lost', reason: 'its process was killed by signal 9' },
+    });
+  });
+
+  it('says nothing for a session that exits cleanly, as /exit does', () => {
+    sessions.open(OPEN);
+    emitExit({ sessionId: mintedFor('hero-refresh'), exitCode: 0, signal: 0 });
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
+  it('reports a session whose host went away as lost', () => {
+    sessions.open(OPEN);
+    emitLost({ sessionId: mintedFor('hero-refresh') });
+    expect(on(CH.sessionTerminalEnded).at(-1)!.payload).toEqual({
+      entityId: 'hero-refresh',
+      ending: { kind: 'lost', reason: 'the pty host crashed' },
+    });
+  });
 });
 
 /**
@@ -3589,6 +3716,7 @@ describe('createSessions forwards the Jira tools (HIVE-174)', () => {
       get: () => Promise.reject(new Error('not exercised')),
       transition: () => Promise.reject(new Error('not exercised')),
       comment: () => Promise.reject(new Error('not exercised')),
+      users: () => Promise.reject(new Error('not exercised')),
     };
     let started: Record<string, unknown> | undefined;
 

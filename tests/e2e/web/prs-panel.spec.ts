@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 
+import { goToPlace } from '../fixtures/places';
+
 /**
- * The PRS tab with nothing behind it, in a real browser.
+ * The PRs place with nothing behind it, in a real browser.
  *
  * ## What this spec exists to catch
  *
@@ -19,19 +21,14 @@ import { expect, test } from '@playwright/test';
 
 const APP_URL = '/?sim=0';
 
-const prsTab = (page: import('@playwright/test').Page) =>
-  page
-    .getByRole('tablist', { name: 'Activity sections' })
-    .getByRole('tab', { name: /^PRs/i });
-
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
-  await page.waitForSelector('header');
-  await prsTab(page).click();
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await goToPlace(page, 'PRs');
 });
 
 test('explains that pull requests need the desktop app', async ({ page }) => {
-  const prs = page.locator('[data-panel="prs"]');
+  const prs = page.getByRole('main');
   await expect(prs).toBeVisible();
 
   // A browser has no bridge, therefore no `gh`. A configuration answer, which
@@ -40,9 +37,9 @@ test('explains that pull requests need the desktop app', async ({ page }) => {
 });
 
 test('paints no pull request at all', async ({ page }) => {
-  const prs = page.locator('[data-panel="prs"]');
+  const prs = page.getByRole('main');
 
-  await expect(prs.getByRole('button')).toHaveCount(0);
+  // Links only: the stage's own `Check again` is a button.
   await expect(prs.getByRole('link')).toHaveCount(0);
 });
 
@@ -66,7 +63,7 @@ test('settles rather than leaving a skeleton on screen', async ({ page }) => {
  * where they would name a failure that did not happen.
  */
 test('claims neither staleness nor a failed sweep', async ({ page }) => {
-  const prs = page.locator('[data-panel="prs"]');
+  const prs = page.getByRole('main');
 
   await expect(prs.getByText(/may be out of date/i)).toHaveCount(0);
   await expect(prs.getByText(/No open pull requests/i)).toHaveCount(0);

@@ -7,6 +7,8 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { openProject } from '../fixtures/places';
+
 import {
   launchHive,
   startSession,
@@ -72,7 +74,7 @@ async function withProject(
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   return { app, page };
 }
@@ -108,7 +110,7 @@ test('a starting session is covered, and the terminal keeps its box underneath',
   }
 });
 
-test('the meta bar stays readable while a session starts', async ({}, testInfo) => {
+test('the session header stays readable while a session starts', async ({}, testInfo) => {
   const { app, page } = await withProject((name) => testInfo.outputPath(name));
   try {
   /*
@@ -119,7 +121,7 @@ test('the meta bar stays readable while a session starts', async ({}, testInfo) 
   await startSession(page, PROJECT);
 
   await expect(page.getByTestId('session-boot-cover')).toBeVisible();
-  await expect(page.getByTestId('session-meta-bar')).toBeVisible();
+  await expect(page.getByTestId('session-header')).toBeVisible();
   } finally {
     await app.close();
   }
@@ -161,13 +163,12 @@ test('going back to the overmind and returning finds the session still covered',
   await expect(page.getByTestId('session-boot-cover')).toHaveCount(0);
 
   /*
-    From the projects rail, not the fleet table: both draw a row for this
-    session and an unanchored role query matches each of them. The rail is the
+    From the Sessions list, not the fleet table: both draw a row for this
+    session and an unanchored role query matches each of them. The list is the
     honest choice of the two — it is where somebody who navigated away would
     actually click to come back.
   */
-  await page
-    .getByRole('navigation', { name: /^Projects/ })
+  await (await openProject(page, PROJECT))
     .getByRole('button', { name: new RegExp(`^${id}\\b`) })
     .click();
 
@@ -205,7 +206,7 @@ test('a boot that goes quiet uncovers itself, with nobody touching it', async ({
   await expect(cover).toHaveCount(0, { timeout: 15_000 });
 
   // And the terminal it was hiding is the thing now on screen.
-  await expect(page.getByTestId('session-meta-bar')).toBeVisible();
+  await expect(page.getByTestId('session-header')).toBeVisible();
   } finally {
     await app.close();
   }

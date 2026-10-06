@@ -1,15 +1,30 @@
 import type { ConfigSnapshot } from '../../../shared/config-contract';
 import type {
+  GhError,
   GhResult,
+  JobLog,
+  PrCommentRequest,
+  PrDetail,
   PrRecord,
+  PrRef,
+  PrRuns,
+  PrRunsRequest,
   PrsSnapshot,
+  PrThreadRequest,
+  PrTimeline,
+  PrViewedRequest,
+  RunJob,
+  RunRef,
 } from '../../../shared/github-contract';
 import { probeCommand } from '../../config/probe';
 
+import { createActionsClient } from './actions';
+import { ghError } from './classify';
 import { createGithubClient, type GithubClient } from './client';
 import type { RepoRef } from './query';
 import { createRepoResolver, type RepoResolver } from './repos';
 import type { RunAsync } from './run';
+import { readWorkflows } from './workflows';
 
 /**
  * The verbs main exposes for GitHub.
@@ -62,6 +77,33 @@ export interface Github {
    * project it cannot place.
    */
   resolveProjects(): Promise<Map<string, RepoRef>>;
+  /**
+   * One PR's page (HIVE-205). Refused, before any GraphQL call, when no
+   * configured project maps `owner/repo`; what reaches `gh` is the resolver's
+   * spelling of the repository, never the renderer's.
+   */
+  prDetail(request: PrRef): Promise<GhResult<PrDetail>>;
+  /** One PR's history for the Timeline tab (HIVE-208), under the same scope check as {@link Github.prDetail}. */
+  prTimeline(request: PrRef): Promise<GhResult<PrTimeline>>;
+  /** A PR-level comment, under the same scope check as {@link Github.prDetail}. */
+  prComment(request: PrCommentRequest): Promise<GhResult<true>>;
+  /** One PR's unified diff (HIVE-207), under the same scope check. */
+  prDiff(request: PrRef): Promise<GhResult<string>>;
+  /** Reply to, resolve or unresolve one review thread (HIVE-207), under the same scope check. */
+  prThread(request: PrThreadRequest): Promise<GhResult<true>>;
+  /** Mark or unmark one file viewed (HIVE-207), under the same scope check. */
+  prViewed(request: PrViewedRequest): Promise<GhResult<true>>;
+  /**
+   * The head branch's runs and the checkout's workflow graph (HIVE-206).
+   * Refused, before any `gh run`, when no configured project maps `owner/repo` (HIVE-206).
+   */
+  prRuns(request: PrRunsRequest): Promise<GhResult<PrRuns>>;
+  /** One run's jobs and steps. Refused, before any `gh run`, when no configured project maps `owner/repo` (HIVE-206). */
+  runJobs(request: RunRef): Promise<GhResult<RunJob[]>>;
+  /** One job's failed log, cut. Refused, before any `gh run`, when no configured project maps `owner/repo` (HIVE-206). */
+  jobLog(request: RunRef): Promise<GhResult<JobLog>>;
+  /** Re-run a run's failed jobs. Refused, before any `gh run`, when no configured project maps `owner/repo` (HIVE-206). */
+  rerunFailed(request: RunRef): Promise<GhResult<true>>;
 }
 
 interface GithubDeps {
@@ -154,6 +196,55 @@ export function createGithub(deps: GithubDeps): Github {
     return { ok: true, value };
   };
 
+  /**
+   * The configured repository a request names, and the client to ask it with
+   * (HIVE-205). Case-insensitive, as GitHub's names are. Nothing mapped is a
+   * refusal, never a widening: the renderer names a repository here, and this
+   * is what keeps that name to the user's own projects.
+   */
+  const scoped = async (
+    owner: string,
+    repo: string,
+  ): Promise<{ ok: true; client: GithubClient; ref: RepoRef; gh: string } | { ok: false; error: GhError }> => {
+    const { resolved } = probeCommand('gh', deps.env().PATH ?? '');
+    if (resolved === null) {
+      return { ok: false, error: ghError('not-installed', 'GitHub CLI (`gh`) was not found on this machine.') };
+    }
+
+    if (cachedFor !== resolved || resolver === null || client === null) {
+      cachedFor = resolved;
+      resolver = createRepoResolver(resolved, deps.run);
+      client = createGithubClient(resolved, deps.run);
+    }
+
+    const { repos, failure } = await resolver.resolve(deps.config().projects);
+    const ref = repos.find(
+      (candidate) =>
+        candidate.owner.toLowerCase() === owner.toLowerCase() &&
+        candidate.name.toLowerCase() === repo.toLowerCase(),
+    );
+    if (ref !== undefined) return { ok: true, client, ref, gh: resolved };
+
+    // Same precedence as `prs()`: `gh auth login` is not reported as `no-repos`.
+    if (repos.length === 0 && failure !== null) return { ok: false, error: failure };
+    return { ok: false, error: ghError('no-repos', `${owner}/${repo} is not a configured project's repository.`) };
+  };
+
+  /**
+   * The checkout of the project whose repository is `ref` (HIVE-206), for its
+   * workflow files. Through the resolver's cache, so it spawns nothing new.
+   */
+  const checkoutOf = async (ref: RepoRef): Promise<string | null> => {
+    if (resolver === null) return null;
+    const projects = deps.config().projects;
+    for (const [id, mapped] of await resolver.resolveEach(projects)) {
+      if (mapped.owner.toLowerCase() === ref.owner.toLowerCase() && mapped.name.toLowerCase() === ref.name.toLowerCase()) {
+        return projects.find((project) => project.id === id)?.path ?? null;
+      }
+    }
+    return null;
+  };
+
   return {
     prs() {
       inflight ??= sweep().finally(() => {
@@ -222,6 +313,74 @@ export function createGithub(deps: GithubDeps): Github {
       }
 
       return client.search(term, repos);
+    },
+
+    async prDetail({ owner, repo, n }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return scope.client.detail(scope.ref, n);
+    },
+
+    async prTimeline({ owner, repo, n }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return scope.client.timeline(scope.ref, n);
+    },
+
+    async prComment({ owner, repo, n, body }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return scope.client.comment(scope.ref, n, body);
+    },
+
+    async prDiff({ owner, repo, n }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return scope.client.diff(scope.ref, n);
+    },
+
+    async prThread(request) {
+      const scope = await scoped(request.owner, request.repo);
+      if (!scope.ok) return scope;
+      return request.op === 'reply'
+        ? scope.client.threadReply(scope.ref, request.n, request.threadId, request.body)
+        : scope.client.threadResolved(scope.ref, request.n, request.threadId, request.op === 'resolve');
+    },
+
+    async prViewed({ owner, repo, n, path, viewed }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return scope.client.fileViewed(scope.ref, n, path, viewed);
+    },
+
+    async prRuns({ owner, repo, branch }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      const [runs, checkout] = await Promise.all([
+        createActionsClient(scope.gh, deps.run).runs(scope.ref, branch),
+        checkoutOf(scope.ref),
+      ]);
+      if (!runs.ok) return runs;
+      const workflows = checkout === null ? [] : await readWorkflows(checkout);
+      return { ok: true, value: { runs: runs.value, workflows } };
+    },
+
+    async runJobs({ owner, repo, id }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return createActionsClient(scope.gh, deps.run).jobs(scope.ref, id);
+    },
+
+    async jobLog({ owner, repo, id }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return createActionsClient(scope.gh, deps.run).log(scope.ref, id);
+    },
+
+    async rerunFailed({ owner, repo, id }) {
+      const scope = await scoped(owner, repo);
+      if (!scope.ok) return scope;
+      return createActionsClient(scope.gh, deps.run).rerunFailed(scope.ref, id);
     },
   };
 }

@@ -30,7 +30,7 @@ export function SwarmLine({ phraseKey }: { phraseKey: PhraseKey }) {
   const phrase = useSwarmPhrase(phraseKey);
 
   return (
-    <p data-swarm-line className="px-1 text-[11.5px] leading-[1.45] text-muted">
+    <p data-swarm-line className="px-1 text-ui-sm leading-[1.45] text-muted">
       {phrase}
     </p>
   );

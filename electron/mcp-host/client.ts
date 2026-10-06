@@ -14,10 +14,12 @@ import {
   JIRA_COMMENT_PATH,
   JIRA_GET_PATH,
   JIRA_TRANSITION_PATH,
+  JIRA_USERS_PATH,
   type JiraComment,
   type JiraResult,
   type JiraToolIssue,
   type JiraToolTransitionReply,
+  type JiraUser,
 } from '@shared/jira-contract';
 import {
   LEDGER_POST_PATH,
@@ -166,6 +168,7 @@ export function createReceiverClient({
     jiraGet: (request) => call<JiraResult<JiraToolIssue>>(JIRA_GET_PATH, request),
     jiraTransition: (request) => call<JiraResult<JiraToolTransitionReply>>(JIRA_TRANSITION_PATH, request),
     jiraComment: (request) => call<JiraResult<JiraComment>>(JIRA_COMMENT_PATH, request),
+    jiraUsers: (request) => call<JiraResult<JiraUser[]>>(JIRA_USERS_PATH, request),
     // Retro B: a small body; a refusal arrives as a 409 and its reason.
     projectAutoMerge: (request) => call<ProjectsDirectory>(PROJECT_AUTO_MERGE_PATH, request),
   };

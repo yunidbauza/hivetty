@@ -3,11 +3,14 @@ import { Profiler } from 'react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import type { Session } from '@/types/entity';
+
 import { SessionRow } from '@features/projects/components/session-row';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 import type { PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
+import { notif } from '@tests/support/notifications';
 
 const row = () => screen.getByRole('button');
 
@@ -16,6 +19,17 @@ describe('SessionRow', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+  });
+
+  it('pills the id after a session that has a name of its own', () => {
+    const { rerender } = render(<SessionRow id="hero-refresh" />);
+    // Unnamed, the label already is the id: one of it, not two.
+    expect(screen.getAllByText('hero-refresh')).toHaveLength(1);
+
+    act(() => useHiveStore.getState().renameSession('hero-refresh', 'hero-tokens'));
+    rerender(<SessionRow id="hero-refresh" />);
+    expect(screen.getByText('hero-tokens')).toBeInTheDocument();
+    expect(screen.getByText('hero-refresh')).toHaveClass('rounded-full');
   });
 
   it('shows the session id, its status label, and its branch', () => {
@@ -64,7 +78,7 @@ describe('SessionRow', () => {
   it('colours the status label to match its dot', () => {
     render(<SessionRow id="lead-form" />);
 
-    expect(screen.getByText('needs input')).toHaveClass('text-amber');
+    expect(screen.getByText('needs input')).toHaveClass('text-amber-text');
   });
 
   it('opens the session’s tab when clicked', async () => {
@@ -112,17 +126,34 @@ describe('SessionRow', () => {
    * HIVE-83: a quiet session is not necessarily an empty one — the label says
    * what is still running, and the dot goes hollow to match.
    */
-  it('names what a quiet session is still running, and hollows the dot', () => {
+  it('names what a quiet session is still running, and hollows the comb', () => {
     act(() => {
       useHiveStore.getState().setSessionStatus('rails-upgrade', 'idle', 'agents');
     });
 
-    render(<SessionRow id="rails-upgrade" />);
+    render(
+      <>
+        <SessionRow id="rails-upgrade" />
+        <SessionRow id="hero-refresh" />
+      </>,
+    );
 
     expect(screen.getByText('working (agents)')).toBeInTheDocument();
-    const dot = row().querySelector('span[aria-hidden]');
-    expect(dot?.className).toContain('border-green');
-    expect(dot?.className).not.toContain('bg-subtle');
+    const [quiet, busy] = screen.getAllByRole('button').map((b) => b.querySelector('svg'));
+    // Both green — the label says working — and only the shape tells them apart.
+    expect(quiet).toHaveClass('text-green');
+    expect(busy).toHaveClass('text-green', 'animate-ccpulse');
+    expect(quiet).not.toHaveClass('animate-ccpulse');
+    expect(quiet?.innerHTML).not.toBe(busy?.innerHTML);
+  });
+
+  it('draws a plain idle session as a hollow grey comb', () => {
+    act(() => {
+      useHiveStore.getState().setSessionStatus('rails-upgrade', 'idle');
+    });
+    render(<SessionRow id="rails-upgrade" />);
+
+    expect(row().querySelector('svg')).toHaveClass('text-subtle');
   });
 
   it('follows the store when the session’s status changes', () => {
@@ -202,5 +233,56 @@ describe('SessionRow — plan progress', () => {
 
     expect(rendersB).toBeGreaterThan(beforeB);
     expect(rendersA).toBe(beforeA);
+  });
+});
+
+describe('SessionRow — compact (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  it('compact drops the branch line (HIVE-197)', () => {
+    render(<SessionRow id="hero-refresh" compact />);
+    expect(screen.queryByText('feat/hero-refresh')).not.toBeInTheDocument();
+    expect(screen.getByText('hero-refresh')).toBeInTheDocument();
+  });
+});
+
+describe('SessionRow — yours again (HIVE-198)', () => {
+  const T = 'term-ya';
+  const ID = 'sess-ya';
+  const idle: Session = {
+    kind: 'session',
+    id: ID,
+    terminalId: T,
+    project: 'nova-web',
+    status: 'idle',
+    task: 'refresh the hero',
+    cost: '$0.00',
+    lines: [],
+  };
+
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useUiStore.getState().reset();
+    useHiveStore.setState({ entities: { [ID]: idle }, order: [ID] });
+  });
+
+  it('compact: reads "yours again" while an unswept session.idle row names it', () => {
+    useHiveStore.getState().hydrateNotifs([notif({ kind: 'session.idle', action: { type: 'session', entityId: T } })]);
+    render(<SessionRow id={ID} compact />);
+    expect(screen.getByText('yours again')).toBeInTheDocument();
+  });
+
+  it('reads idle with nothing unswept', () => {
+    render(<SessionRow id={ID} compact />);
+    expect(screen.getByText('idle')).toBeInTheDocument();
+  });
+
+  it('never outside the compact row', () => {
+    useHiveStore.getState().hydrateNotifs([notif({ kind: 'session.idle', action: { type: 'session', entityId: T } })]);
+    render(<SessionRow id={ID} />);
+    expect(screen.queryByText('yours again')).toBeNull();
   });
 });

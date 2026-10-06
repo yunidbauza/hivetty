@@ -72,7 +72,7 @@ describe('resetConfig', () => {
     expect(written.version).toBe(CONFIG_VERSION);
     // Still the *commented* template, not a bare `{ projects: [] }` — that is
     // the whole reason the template is written rather than an empty document.
-    expect(written['//']).toContain('The Hive');
+    expect(written['//']).toContain('Hive TTY');
     expect(written.shell).toBeUndefined();
     expect(written.claudeCommand).toBeUndefined();
   });

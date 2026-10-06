@@ -26,6 +26,9 @@ describe('ConsoleInput', () => {
     useHiveStore.getState().reset();
     seedDemoFleet();
     useUiStore.getState().reset();
+    // Every ending on screen, so the caret's order (`useFleetNavOrder`) is the
+    // whole fleet's `useNavOrder` these tests compare against (HIVE-197 folds Ended).
+    useUiStore.setState({ endedExpanded: true });
   });
 
   it('autofocuses so the arrow keys work without a click', async () => {
@@ -314,3 +317,27 @@ function renderNavOrder() {
   render(<Probe />);
   return { result };
 }
+
+describe('ConsoleInput — the filtered caret (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useUiStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  it('↑↓ walks only the rows the filter shows (HIVE-197)', async () => {
+    useUiStore.getState().setSessionsProject('nova-web');
+    render(<ConsoleInput />);
+    const box = screen.getByRole('textbox', { name: 'Overmind command' });
+    const seen = new Set<string>();
+    for (let i = 0; i < 6; i += 1) {
+      await userEvent.type(box, '{ArrowDown}');
+      const id = useUiStore.getState().selId as string;
+      seen.add(id);
+      const entity = useHiveStore.getState().entities[id];
+      expect(entity?.kind).toBe('session');
+      if (entity?.kind === 'session') expect(entity.project).toBe('nova-web');
+    }
+    expect(seen.size).toBeGreaterThan(0);
+  });
+});

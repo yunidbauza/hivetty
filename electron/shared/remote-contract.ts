@@ -56,8 +56,19 @@ import { isThisMachineAction } from './notification-contract';
  * 4 → 5 (HIVE-176): `CH` gained `config:set-session-plugin`.
  * 5 → 6: `CH` gained `shipped:status`, `shipped:reset`, `shipped:take-prompt`
  * and `shipped:keep-mine`.
+ * 6 → 7 (HIVE-201): `CH` gained `changed-files:list` and `changed-files:changed`;
+ * `plan:changed`'s tasks gained `activeForm`, `startedAt`, `endedAt` and the plan `fileAt`.
+ * The same bump covers `jira:detail` (HIVE-203), which landed at 6 without one.
+ * 7 → 8 (HIVE-202): `jira:links`' issue links gained `key`, `summary`, `statusCategory`, `linkType` and `direction`; `jira:detail`'s parent gained `issueType`.
+ * 8 → 9 (HIVE-215): `PrRecord` (on `github:prs` and `github:search-prs`) gained
+ * `mergedAt` and `mine`.
+ * 9 → 10 (HIVE-216): `CH` gained `jira:users`; `jira:comments`' comments gained `authorId` and `via`, and their runs `mention`; `jira:add-comment` takes `mentions`.
+ * 10 → 11 (HIVE-205): `CH` gained `github:pr-detail` and `github:pr-comment`.
+ * 11 → 12 (HIVE-206): `CH` gained `github:pr-runs`, `github:run-jobs`, `github:job-log` and `github:rerun-failed`; `PrCheck` gained `app` and `jobId`.
+ * 12 → 13 (HIVE-207): `CH` gained `github:pr-diff`, `github:pr-thread` and `github:pr-viewed`; `PrDetail` gained `files`.
+ * 13 → 14 (HIVE-208): `CH` gained `github:pr-timeline`.
  */
-export const REMOTE_PROTOCOL_VERSION = 6;
+export const REMOTE_PROTOCOL_VERSION = 14;
 
 /**
  * What a frame is for.
@@ -151,6 +162,7 @@ export const FRAME_KIND = {
   [CH.configGetRemote]: 'call',
   [CH.remotePair]: 'call',
   [CH.remoteForget]: 'call',
+  [CH.remoteDialNow]: 'call',
   /*
     HIVE-150. An `event` so it binds nothing in the proxy — pushes travel
     server-to-client and have no `ipcMain.handle`/`ipcMain.on` of their own,
@@ -167,11 +179,13 @@ export const FRAME_KIND = {
   [CH.jiraTest]: 'call',
   [CH.jiraSearch]: 'call',
   [CH.jiraIssue]: 'call',
+  [CH.jiraDetail]: 'call',
   [CH.jiraTransitions]: 'call',
   [CH.jiraApplyTransition]: 'call',
   [CH.jiraComments]: 'call',
   [CH.jiraLinks]: 'call',
   [CH.jiraAddComment]: 'call',
+  [CH.jiraUsers]: 'call',
   [CH.slackStatus]: 'call',
   [CH.slackSignIn]: 'call',
   [CH.slackSignOut]: 'call',
@@ -183,6 +197,16 @@ export const FRAME_KIND = {
   [CH.slackSocketTest]: 'call',
   [CH.githubPrs]: 'call',
   [CH.githubSearchPrs]: 'call',
+  [CH.githubPrDetail]: 'call',
+  [CH.githubPrComment]: 'call',
+  [CH.githubPrDiff]: 'call',
+  [CH.githubPrTimeline]: 'call',
+  [CH.githubPrThread]: 'call',
+  [CH.githubPrViewed]: 'call',
+  [CH.githubPrRuns]: 'call',
+  [CH.githubRunJobs]: 'call',
+  [CH.githubJobLog]: 'call',
+  [CH.githubRerunFailed]: 'call',
   [CH.notificationsActivate]: 'event',
   [CH.notificationsNew]: 'event',
   /*
@@ -206,6 +230,8 @@ export const FRAME_KIND = {
   [CH.ledgerChanged]: 'event',
   [CH.plansList]: 'call',
   [CH.planChanged]: 'event',
+  [CH.changedFilesList]: 'call',
+  [CH.changedFilesChanged]: 'event',
   [CH.updatesStatus]: 'call',
   [CH.updatesCheck]: 'call',
   [CH.configCloneStart]: 'call',
@@ -337,8 +363,9 @@ export const FRAME_KIND = {
  *   real escalation: `config:add-project` is `mutate` and takes a path, so a
  *   `mutate`-granted device could point a project at a directory it controls and
  *   then call a "read" to get code execution as the user on the server.
- * - `github:prs`, `github:search-prs`, `integrations:status` — spawn `gh`. The
- *   handler comment at `ipc/index.ts:1064` says of the third that it
+ * - `github:prs`, `github:search-prs`, `github:pr-detail`, `github:pr-comment`,
+ *   `integrations:status` — spawn `gh`. The handler comment at
+ *   `ipc/index.ts:1064` says of `integrations:status` that it
  *   "**executes `gh`**", which is as clear a statement as the codebase offers.
  * - `integrations:login-env` — spawns the login shell to snapshot its
  *   environment. It takes no payload, which bounds the injection surface but not
@@ -438,6 +465,7 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.configGetRemote]: 'read',
   [CH.remotePair]: 'mutate',
   [CH.remoteForget]: 'mutate',
+  [CH.remoteDialNow]: 'mutate',
   // A push, and every push is `read`: a client observes an event, it never
   // causes one (HIVE-150).
   [CH.remoteLinkStatus]: 'read',
@@ -447,11 +475,13 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.jiraTest]: 'read',
   [CH.jiraSearch]: 'read',
   [CH.jiraIssue]: 'read',
+  [CH.jiraDetail]: 'read',
   [CH.jiraTransitions]: 'read',
   [CH.jiraApplyTransition]: 'mutate',
   [CH.jiraComments]: 'read',
   [CH.jiraLinks]: 'read',
   [CH.jiraAddComment]: 'mutate',
+  [CH.jiraUsers]: 'read',
   [CH.slackStatus]: 'execute',
   [CH.slackSignIn]: 'execute',
   [CH.slackSignOut]: 'execute',
@@ -463,6 +493,17 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.slackSocketTest]: 'read',
   [CH.githubPrs]: 'execute',
   [CH.githubSearchPrs]: 'execute',
+  [CH.githubPrDetail]: 'execute',
+  [CH.githubPrComment]: 'execute',
+  [CH.githubPrDiff]: 'execute',
+  [CH.githubPrTimeline]: 'execute',
+  [CH.githubPrThread]: 'execute',
+  [CH.githubPrViewed]: 'execute',
+  // Each spawns `gh run` on the server (HIVE-206).
+  [CH.githubPrRuns]: 'execute',
+  [CH.githubRunJobs]: 'execute',
+  [CH.githubJobLog]: 'execute',
+  [CH.githubRerunFailed]: 'execute',
   [CH.notificationsActivate]: 'read',
   [CH.notificationsNew]: 'read',
   [CH.notificationsToast]: 'read',
@@ -481,6 +522,8 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.ledgerChanged]: 'read',
   [CH.plansList]: 'read',
   [CH.planChanged]: 'read',
+  [CH.changedFilesList]: 'read',
+  [CH.changedFilesChanged]: 'read',
   [CH.updatesStatus]: 'read',
   [CH.updatesCheck]: 'execute',
   [CH.configCloneStart]: 'execute',
@@ -625,7 +668,7 @@ export const WINDOW_BOUND = {
   [CH.skillsFileImport]:
     'Adding files to a skill opens a dialog on the server, which has no window — and would copy the server’s files, not yours. Drag them onto the skill instead.',
   [CH.skillsImport]:
-    'Importing a skill opens a dialog on the server, which has no window — and would import the server’s files, not yours. Import it in the Hive running on the machine that holds the zip or folder.',
+    'Importing a skill opens a dialog on the server, which has no window — and would import the server’s files, not yours. Import it in Hive TTY running on the machine that holds the zip or folder.',
   [CH.configReveal]:
     'Revealing the config file opens Finder on the server, which nobody is sitting at — and while attached, Settings is already showing the server’s config, not this machine’s.',
 } as const satisfies Partial<Record<Channel, string>>;
@@ -820,6 +863,13 @@ const PROCESS_LOCAL_REFUSALS = {
   */
   [CH.notificationsBadge]:
     "notifications:badge writes the unread count onto the answering machine's dock. The count belongs on the dock of the machine showing that inbox, so the asking machine badges its own and a server refuses it.",
+  /*
+    The tenth (HIVE-211). Try now on a client whose server dropped: it restarts *this* process's
+    reconnect loop. There is no socket to proxy it over at the moment it matters, and a server has
+    no loop of a peer's to restart.
+  */
+  [CH.remoteDialNow]:
+    "remote:dial-now restarts the answering process's own reconnect loop. A server has no loop of a peer's to restart, so the asking machine dials for itself and a server refuses it.",
 } as const satisfies Partial<Record<Channel, string>>;
 
 /**
@@ -1016,6 +1066,8 @@ export const SNAPSHOT_CHANNELS: readonly Channel[] = [
   CH.configGet,
   // The plans, merged by hydratePlans (hive-store.ts).
   CH.plansList,
+  // Every session's changed files, merged by hydrateChangedFiles (hive-store.ts, HIVE-201).
+  CH.changedFilesList,
 ];
 
 /**

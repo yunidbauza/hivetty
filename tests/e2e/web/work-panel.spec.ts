@@ -1,7 +1,9 @@
 import { expect, test } from '@playwright/test';
 
+import { bar, goToPlace } from '../fixtures/places';
+
 /**
- * The WORK tab with nothing behind it, in a real browser.
+ * The Work place with nothing behind it, in a real browser.
  *
  * ## What this spec used to assert, and why it inverted
  *
@@ -10,10 +12,10 @@ import { expect, test } from '@playwright/test';
  * the browser demo's data rather than a degraded mode.
  *
  * That framing is what produced the bug on the desktop side. The same seed
- * loaded there too, so the WORK tab painted eight sample tickets at boot and a
+ * loaded there too, so the Work place painted eight sample tickets at boot and a
  * real Jira read replaced them a frame later — the user watched somebody else's
  * backlog turn into their own. The seed is gone from both targets, so the
- * browser's WORK tab is now honestly empty and says why.
+ * browser's Work place is now honestly empty and says why.
  *
  * The load-bearing assertion is the negative one: no `GRAC-` key reaches the
  * DOM, in any state. A unit test can assert the store is empty; only this can
@@ -22,31 +24,23 @@ import { expect, test } from '@playwright/test';
 
 const APP_URL = '/?sim=0';
 
-const workTab = (page: import('@playwright/test').Page) =>
-  page
-    .getByRole('navigation', { name: 'Projects, work, and agents' })
-    .getByRole('tab', { name: /^Work/ });
-
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
-  await page.waitForSelector('header');
-  await workTab(page).click();
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await goToPlace(page, 'Work');
 });
 
 test('says there is no Jira connection instead of showing sample tickets', async ({
   page,
 }) => {
-  const work = page.locator('[data-panel="work"]');
-  await expect(work).toBeVisible();
-
   // A browser has no bridge, therefore no Jira. That is a configuration
-  // answer, and the panel gives it rather than sitting blank.
-  await expect(work.getByText(/No Jira connection yet/i)).toBeVisible();
-  await expect(work.getByText('Settings → Integrations')).toBeVisible();
+  // answer, and the stage gives it rather than sitting blank.
+  await expect(page.getByRole('heading', { name: "Jira isn't connected" })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Work list' })).toHaveCount(0);
 });
 
 test('paints no ticket at all', async ({ page }) => {
-  const work = page.locator('[data-panel="work"]');
+  const work = page.getByRole('main');
 
   await expect(work.locator('article')).toHaveCount(0);
 });
@@ -63,8 +57,8 @@ test('never renders a seeded ticket key', async ({ page }) => {
   ).toHaveCount(0);
 });
 
-test('the Work tab badge counts nothing', async ({ page }) => {
-  await expect(workTab(page)).not.toContainText('8');
+test('the Work place shows no count', async ({ page }) => {
+  await expect(bar(page).getByRole('button', { name: 'Work', exact: true })).toBeVisible();
 });
 
 /**
@@ -72,7 +66,7 @@ test('the Work tab badge counts nothing', async ({ page }) => {
  * where they would name a failure that did not happen.
  */
 test('claims neither staleness nor an empty query result', async ({ page }) => {
-  const work = page.locator('[data-panel="work"]');
+  const work = page.getByRole('main');
 
   await expect(work.getByText(/may be out of date/i)).toHaveCount(0);
   await expect(work.getByText(/No issues matched/i)).toHaveCount(0);

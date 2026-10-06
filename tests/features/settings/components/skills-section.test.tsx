@@ -196,6 +196,17 @@ describe('SkillsSection', () => {
     ).toBeInTheDocument();
   });
 
+  it('holds the spire at 120px in the empty state', () => {
+    setSkillsForTest(snapshot());
+
+    render(<SkillsSection />);
+
+    const creature = document.querySelector('[data-creature]');
+    expect(creature).toHaveAttribute('data-creature', 'spire');
+    expect(creature).toHaveStyle({ height: '120px' });
+    expect(creature).toHaveClass('mb-9');
+  });
+
   it('imports a whole skill from the empty state, and shows why it could not', async () => {
     setSkillsForTest(snapshot());
     importNewSkill.mockResolvedValue('"x.zip" has no SKILL.md at its root — nothing was imported.');
@@ -225,6 +236,14 @@ describe('SkillsSection', () => {
 
     expect(screen.getByRole('button', { name: '/ship-it' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '/standup' })).toBeInTheDocument();
+  });
+
+  it('stacks its list above the editor below a 520px section (HIVE-225)', () => {
+    setSkillsForTest(withSkills('ship-it'));
+    render(<SkillsSection />);
+    const grid = screen.getByRole('button', { name: '/ship-it' }).closest('.grid');
+    expect(grid).toHaveClass('@min-[520px]:grid-cols-[190px_minmax(0,1fr)]', 'grid-rows-[minmax(0,10rem)_minmax(0,1fr)]');
+    expect(grid?.parentElement).toHaveClass('@container');
   });
 
   it('never lists the built-in /done', () => {
@@ -1192,8 +1211,9 @@ describe('SkillsSection', () => {
     render(<SkillsSection />);
     const target = await screen.findByRole('button', { name: '/standup' });
 
+    // From a 520px section; below it the list stacks above the editor (HIVE-225).
     expect(target.parentElement?.parentElement).toHaveClass(
-      'grid-cols-[190px_minmax(0,1fr)]',
+      '@min-[520px]:grid-cols-[190px_minmax(0,1fr)]',
     );
   });
 

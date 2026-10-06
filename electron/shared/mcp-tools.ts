@@ -1,11 +1,12 @@
 import type { ProjectsDirectory } from './config-contract';
-import type { AdfBlock, JiraError, JiraToolIssue } from './jira-contract';
+import type { AdfBlock, JiraError, JiraMention, JiraToolIssue } from './jira-contract';
 import type { LedgerKind, LedgerReadQuery } from './ledger-contract';
 import { asInbound } from './ledger-derive';
 import {
   AGENTS_TOOL,
   APPROVE_TOOL,
   JIRA_COMMENT_TOOL,
+  JIRA_USERS_TOOL,
   JIRA_GET_TOOL,
   JIRA_TRANSITION_TOOL,
   LEDGER_TOOLS,
@@ -331,18 +332,36 @@ export function createToolHandlers(
 
   const jiraComment = async (args: Record<string, unknown>): Promise<CallToolResult> => {
     const key = stringArg(args, 'key');
-    const markdown = stringArg(args, 'markdown');
-    if (key === undefined || markdown === undefined) {
+    const markdown = typeof args['markdown'] === 'string' ? args['markdown'] : undefined;
+    const mentions = Array.isArray(args['mentions']) ? (args['mentions'] as JiraMention[]) : undefined;
+    // A mention-only comment is allowed (HIVE-216); the receiver's guard checks each mention.
+    if (key === undefined || markdown === undefined || (markdown === '' && (mentions?.length ?? 0) === 0)) {
       return failed('jira_comment needs key and markdown');
     }
 
-    const result = await client.jiraComment({ key, markdown });
+    const result = await client.jiraComment({ key, markdown, ...(mentions === undefined ? {} : { mentions }) });
     if (!result.ok) return jiraFailed('jira_comment', result.error);
 
     const comment = result.value;
     return ok(`Commented on ${key}: comment ${comment.id} by ${comment.author} at ${comment.created}.`, {
       comment,
     });
+  };
+
+  const jiraUsers = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+    const query = stringArg(args, 'query');
+    if (query === undefined) return failed('jira_users needs query');
+
+    const result = await client.jiraUsers({ query });
+    if (!result.ok) return jiraFailed('jira_users', result.error);
+
+    const users = result.value;
+    return ok(
+      users.length === 0
+        ? `Nobody on the Jira site matches "${query}".`
+        : users.map((user) => `${user.displayName} — ${user.accountId}`).join('\n'),
+      { users },
+    );
   };
 
   /** The directory as prose, one line a project: `projects` and `project_auto_merge` both answer it. */
@@ -632,6 +651,7 @@ export function createToolHandlers(
       JIRA_GET_TOOL,
       JIRA_TRANSITION_TOOL,
       JIRA_COMMENT_TOOL,
+      JIRA_USERS_TOOL,
       PROJECT_AUTO_MERGE_TOOL,
       APPROVE_TOOL,
     ],
@@ -665,6 +685,8 @@ export function createToolHandlers(
             return await jiraTransition(args);
           case 'jira_comment':
             return await jiraComment(args);
+          case 'jira_users':
+            return await jiraUsers(args);
           case 'project_auto_merge':
             return await projectAutoMerge(args);
           case 'ledger_read':

@@ -6,11 +6,13 @@ import { READY_SETTLE_MS } from '@features/sessions/hooks/use-session-boot';
 import {
   useClearSession,
   useFinishSession,
+  useHydrateChangedFiles,
   useHydratePlans,
   useMarkSessionReady,
   useMarkTerminalLost,
   useRemoveTerminal,
   useRenameSession,
+  useSetChangedFiles,
   useSetPlan,
   useSetSessionBranch,
   useSetSessionMetrics,
@@ -76,6 +78,8 @@ export function useSessionStatus(): void {
   const removeTerminal = useRemoveTerminal();
   const setPlan = useSetPlan();
   const hydratePlans = useHydratePlans();
+  const setChangedFiles = useSetChangedFiles();
+  const hydrateChangedFiles = useHydrateChangedFiles();
 
   useEffect(() => {
     // No bridge is the browser demo, where every transcript is a recording and
@@ -215,6 +219,17 @@ export function useSessionStatus(): void {
       })
       .catch(() => undefined);
 
+    /** Changed files (HIVE-201), mirrored the way plans are: armed before the read. */
+    const disposeChangedFiles = bridge.changedFiles.onChanged(({ entityId, files }) => {
+      setChangedFiles(entityId, files);
+    });
+    void bridge.changedFiles
+      .list()
+      .then(({ sessions }) => {
+        if (live) hydrateChangedFiles(sessions);
+      })
+      .catch(() => undefined);
+
     const disposeTicketIntent = bridge.session.onTicketIntent(
       ({ entityId, keys, source }) => {
         void (async () => {
@@ -285,6 +300,7 @@ export function useSessionStatus(): void {
       disposeForeground();
       disposeTerminalEnded();
       disposePlans();
+      disposeChangedFiles();
     };
   }, [
     setSessionStatus,
@@ -300,5 +316,7 @@ export function useSessionStatus(): void {
     removeTerminal,
     setPlan,
     hydratePlans,
+    setChangedFiles,
+    hydrateChangedFiles,
   ]);
 }

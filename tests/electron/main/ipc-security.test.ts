@@ -59,6 +59,11 @@ describe('content security policy', () => {
     expect(PRODUCTION_CSP).toContain("frame-src 'none'");
   });
 
+  it('admits no media directive, now the splash draws on a canvas (HIVE-212)', () => {
+    expect(PRODUCTION_CSP).not.toContain('media-src');
+    expect(DEVELOPMENT_CSP).not.toContain('media-src');
+  });
+
   it('never allows unsafe-eval and never a wildcard host', () => {
     expect(PRODUCTION_CSP).not.toContain('unsafe-eval');
     expect(PRODUCTION_CSP).not.toMatch(/\*/);

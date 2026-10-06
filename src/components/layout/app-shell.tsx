@@ -1,63 +1,43 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type CSSProperties } from 'react';
 
-import { ActivityRail } from '@components/layout/activity-rail';
+import { ActivityBar } from '@components/layout/activity-bar';
 import { CenterStage } from '@components/layout/center-stage';
-import { Header } from '@components/layout/header';
-import { LeftRail } from '@components/layout/left-rail';
-import { RailHandles } from '@components/layout/rail-handles';
+import { ListPanel } from '@components/layout/list-panel';
+import { SessionPanel } from '@components/layout/session-panel';
 import { TitleBar } from '@components/layout/title-bar';
 import { useProjectWatcher } from '@features/explorer/hooks/use-project-watcher';
 import { useSessionStatus } from '@features/sessions/hooks/use-session-status';
 import { useNotificationActivate } from '@features/settings/hooks/use-notification-activate';
 import { useAgentsSync } from '@features/shared/hooks/use-agents-sync';
 import { useLedgerSync } from '@features/shared/hooks/use-ledger-sync';
+import { WhatsNew } from '@features/whats-new/components/whats-new';
 import { useAppChords } from '@hooks/use-app-chords';
+import { useAwayTracker } from '@hooks/use-away-since';
 import { useDockBadge } from '@hooks/use-dock-badge';
 import { useForegroundSession } from '@hooks/use-foreground-session';
+import { useNarrowWindow } from '@hooks/use-narrow-window';
 import { useNotificationStream } from '@hooks/use-notification-stream';
 import { useRemoteLinkStream } from '@hooks/use-remote-link';
 import { useSessionNames } from '@hooks/use-session-names';
-import { watchSystemTheme } from '@stores/appearance-store';
-import { useShowActivityRail } from '@stores/ui-store';
+import { useListPanelWidth, useSessionPanelWidth, watchSystemTheme } from '@stores/appearance-store';
+import { useSetNarrow } from '@stores/ui-store';
 
 /**
- * The fixed three-column command-center chrome.
- *
- * Header on top, then a single row that fills the rest of the viewport:
- * navigation left, terminal center, activity right. Nothing here scrolls — the
- * three regions own their own scrollbars, so the terminal keeps a stable size
- * no matter how much lands in the rails.
+ * The command-center frame (HIVE-195): the activity bar, one list panel, the
+ * stage and the session panel, in a single row under the macOS drag strip.
+ * Nothing here scrolls; each region owns its scrollbar.
  *
  * Two `min-*: 0` overrides carry the whole layout:
  *
  * - `min-h-0` on the row, because a flex item's default `min-height: auto`
- *   refuses to shrink below its content and would push the rails past the
+ *   refuses to shrink below its content and would push the panels past the
  *   viewport instead of scrolling them.
  * - `min-w-0` on the center stage, for the same reason on the inline axis. Skip
  *   it and a long unbroken terminal line widens the column, which xterm's fit
  *   addon then measures and grows into — the classic flexbox overflow trap the
  *   story calls out.
- *
- * The rails size themselves and never flex, so the center column absorbs every
- * width change and the document never gains a horizontal scrollbar. Since
- * HIVE-105 their width is also draggable — but only between bounds that
- * guarantee the stage a fifth of the window, so the sentence above still holds:
- * whatever the rails do, the stage takes the remainder and there is always a
- * remainder. See `@lib/rail-width`.
  */
 export function AppShell() {
-  const showActivityRail = useShowActivityRail();
-
-  /*
-    The ruler the rail handles measure against (HIVE-105).
-
-    Only the ref lives here. The widths themselves are subscribed to inside
-    `RailHandles`, deliberately: they change on every pointermove of a drag, and
-    this component renders three unmemoized regions — one of which, by its own
-    note, costs a render of every mounted surface.
-  */
-  const railRef = useRef<HTMLDivElement>(null);
-
   /**
    * One subscription for every real session's status (story 096).
    *
@@ -80,7 +60,7 @@ export function AppShell() {
    * Keep the fleet's agents in step with `~/.hive/agents` (HIVE-114).
    *
    * One broadcast channel again, and here rather than in the Settings pane
-   * because the rail lists agents whether or not Settings has ever been
+   * because the list panel lists agents whether or not Settings has ever been
    * opened — the same argument `useNotificationStream` makes below.
    */
   useAgentsSync();
@@ -94,9 +74,9 @@ export function AppShell() {
   useNotificationActivate();
   /*
     The inbox's feed (HIVE-75). Mounted here rather than in the panel: the
-    unread badge on the rail's tab has to be right whether or not the Inbox tab
-    has ever been opened, and a subscription that only exists while the panel is
-    mounted would leave the count at zero until someone looked.
+    pill's count has to be right whether or not the drawer has ever been
+    opened, and a subscription that only exists while the panel is mounted
+    would leave the count at zero until someone looked.
   */
   useNotificationStream();
   /*
@@ -107,8 +87,8 @@ export function AppShell() {
 
   /*
     What this window's attachment is doing (HIVE-150). Mounted here for the
-    reason above it: the header chip and the attach pane both read it, and a
-    subscription that only lived while Settings was open would leave the chip
+    reason above it: the connection item and the attach pane both read it, and
+    a subscription that only lived while Settings was open would leave the item
     claiming an attachment for as long as nobody went looking.
   */
   useRemoteLinkStream();
@@ -124,7 +104,7 @@ export function AppShell() {
   /*
     What each session is called (HIVE-110). The mirror of the report above, for
     the same reason: main presents the desktop toasts and the name it used to
-    read — the raw terminal title — was never the one on the rail. Mounted
+    read — the raw terminal title — was never the one in the list. Mounted
     beside it because both are facts about the fleet rather than about any
     component.
   */
@@ -135,20 +115,27 @@ export function AppShell() {
    *
    * Here, not in the explorer panel, because the panel is not the only
    * consumer: an open editor buffer reconciles against the same events and
-   * outlives the rail tab that shows the tree. Same reasoning as the two
+   * outlives the session panel's Files tab. Same reasoning as the two
    * subscriptions above — one broadcast channel, one listener, at the
    * composition root.
    */
   useProjectWatcher();
 
   /**
-   * The rail-collapse chords (this story).
+   * The panel chords (this story).
    *
    * At the composition root for the same reason as the four above: one fact
-   * about the whole shell, one listener. Per-rail would mean two listeners
+   * about the whole shell, one listener. Per-panel would mean two listeners
    * racing to ignore each other's chord.
    */
   useAppChords();
+  // Home's "since" (HIVE-200).
+  useAwayTracker();
+
+  // Under 1,200px the list panel overlays the stage (HIVE-211); the row-pick actions read this.
+  const narrow = useNarrowWindow();
+  const setNarrow = useSetNarrow();
+  useEffect(() => setNarrow(narrow), [narrow, setNarrow]);
 
   /**
    * Follow the OS while the app is open (story 105).
@@ -161,29 +148,30 @@ export function AppShell() {
    */
   useEffect(() => watchSystemTheme(), []);
 
+  // The rails' dragged widths, as the tokens they already size by; the row is what their seams measure against.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const listWidth = useListPanelWidth();
+  const sessionWidth = useSessionPanelWidth();
+  const widths = {
+    '--cc-list-w': `${String(listWidth)}px`,
+    '--cc-session-panel-w': `${String(sessionWidth)}px`,
+  } as CSSProperties;
+
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
-      {/*
-        The window-controls row, above the app's own bar. Renders nothing off
-        macOS and nothing in the browser, so the three-region layout below is
-        unchanged on every target that does not have floating traffic lights.
-      */}
+      {/* The window-controls row; renders nothing off macOS and in the browser. */}
       <TitleBar />
-      <Header />
-
-      {/*
-        `railRef` is what the two drag handles measure against: a rail's width
-        is a distance from one edge of this row, so the row is the ruler
-        (HIVE-105). `relative` for the same reason — it is what the handles
-        below position themselves against.
-      */}
-      <div ref={railRef} className="relative flex min-h-0 flex-1">
-        <LeftRail />
-        <CenterStage />
-        {showActivityRail ? <ActivityRail /> : null}
-
-        <RailHandles containerRef={railRef} />
+      <div className="relative flex min-h-0 flex-1">
+        <ActivityBar />
+        {/* Not `relative`: the narrow list overlay still positions against the row above. */}
+        <div ref={rowRef} className="flex min-w-0 flex-1" style={widths}>
+          <ListPanel rowRef={rowRef} />
+          <CenterStage />
+          <SessionPanel rowRef={rowRef} />
+        </div>
       </div>
+      {/* Portalled; draws nothing until a release's card is due or Settings asks for it (1.0). */}
+      <WhatsNew />
     </div>
   );
 }

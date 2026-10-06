@@ -9,7 +9,7 @@ import { expect, test } from './fixtures/hive-app';
  */
 
 test('the three non-negotiable webPreferences flags hold', async ({ hive, page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const prefs = await hive.evaluate(({ BrowserWindow }) => {
     /**
@@ -39,7 +39,7 @@ test('the three non-negotiable webPreferences flags hold', async ({ hive, page }
 });
 
 test('the renderer cannot reach Node', async ({ page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const reachable = await page.evaluate(() => ({
     require: typeof (globalThis as Record<string, unknown>).require,
@@ -59,7 +59,7 @@ test('the renderer cannot reach Node', async ({ page }) => {
 });
 
 test('window.hive exposes only the documented verbs', async ({ page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const surface = await page.evaluate(() => ({
     top: Object.keys(window.hive!).sort(),
@@ -282,6 +282,8 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
   expect(surface.top).toEqual([
     'agents',
     'appInfo',
+    // HIVE-201: read-only, like `plans`: a session's changed files, listed and pushed.
+    'changedFiles',
     'config',
     'fs',
     'github',
@@ -321,6 +323,14 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      */
     'server',
     'session',
+    /*
+      #298 added `shipped` to the preload but not to this list. What a page can
+      now do: read which shipped agents and skills you have edited, and for one
+      named by `{ kind, name }` restore the shipped copy, take the shipped
+      prompt, or keep yours. No path and no credential crosses, and it acts
+      only on agents and skills the app itself shipped.
+    */
+    'shipped',
     'skills',
     /*
       HIVE-123 added the slack namespace to `BRIDGE_KEYS` and to the preload:
@@ -391,8 +401,13 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * link change state gains nothing it could not already infer from the calls
    * failing, which is why this addition is a widening of *what the window
    * knows* rather than of what it can do.
+   *
+   * `dialNow` (HIVE-211, Try now) touches no credential either: it asks this
+   * machine's own reconnect loop to dial the server it already holds a
+   * credential for, now rather than at the next backoff step. It takes no
+   * payload, so the page cannot point it anywhere, and a server refuses it.
    */
-  expect(surface.remote).toEqual(['forget', 'onLinkStatus', 'pair']);
+  expect(surface.remote).toEqual(['dialNow', 'forget', 'onLinkStatus', 'pair']);
   expect(surface.skills).toEqual([
     'fileDrop',
     'fileImport',
@@ -441,10 +456,31 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * `safeSearchTerm` removing the one character that could turn a term into a
    * qualifier. The widest reach it grants is the user's own mapped projects.
    *
-   * A verb that took a repository *name* is still the one this list exists to
-   * make impossible to add quietly.
+   * HIVE-205 added the two verbs that do take a repository name, `prDetail`
+   * and `prComment`, and adds them here rather than quietly: main refuses any
+   * owner/repo no configured project maps, before `gh` runs, and hands `gh`
+   * the resolver's spelling (`tests/electron/main/integrations/github/index.test.ts`).
+   * The widest reach is still the user's own mapped projects.
+   *
+   * HIVE-206 added `prRuns`, `runJobs`, `jobLog` and `rerunFailed`, and HIVE-207
+   * `prDiff`, `prThread` and `prViewed`: each names a repository and passes the
+   * same scope check before `gh` runs. HIVE-208 adds `prTimeline`, which names
+   * a repository and passes the same scope check before `gh` runs.
    */
-  expect(surface.github).toEqual(['prs', 'searchPrs']);
+  expect(surface.github).toEqual([
+    'jobLog',
+    'prComment',
+    'prDetail',
+    'prDiff',
+    'prRuns',
+    'prThread',
+    'prTimeline',
+    'prViewed',
+    'prs',
+    'rerunFailed',
+    'runJobs',
+    'searchPrs',
+  ]);
   /**
    * `root` is the only verb on this bridge that **answers** with a path.
    *
@@ -598,6 +634,11 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'applyTransition',
     'clearToken',
     'comments',
+    /*
+      HIVE-203's `detail`: one issue's whole read (description, parent, links),
+      by a pattern-matched key, answered with mapped fields. No token, no host.
+    */
+    'detail',
     // HIVE-68's two reads. Both answer with mapped, named fields; neither
     // returns a token and neither takes a host.
     'issue',
@@ -615,6 +656,11 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'status',
     'test',
     'transitions',
+    /*
+      HIVE-216's `users`: the people an @mention may name, looked up in main
+      against the stored site. It reads names and account ids; it writes nothing.
+    */
+    'users',
   ]);
   expect(surface.pty).toEqual([
     // Story 093 added `ack` — the renderer reporting what it has parsed, which
@@ -1067,7 +1113,7 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
 test('ipcRenderer is not reachable through the bridge at any depth', async ({
   page,
 }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const leaked = await page.evaluate(() => {
     const seen = new Set<unknown>();
@@ -1088,7 +1134,7 @@ test('ipcRenderer is not reachable through the bridge at any depth', async ({
 });
 
 test('the bridge round-trips to the main process', async ({ page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const info = await page.evaluate(() => window.hive!.appInfo());
 
@@ -1099,7 +1145,7 @@ test('the bridge round-trips to the main process', async ({ page }) => {
 test('the production CSP is applied, with no unsafe-eval and no wildcard', async ({
   page,
 }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const csp = await page.evaluate(async () => {
     const response = await fetch(location.href);
@@ -1117,7 +1163,7 @@ test('the production CSP is applied, with no unsafe-eval and no wildcard', async
 });
 
 test('window.open is denied', async ({ page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const opened = await page.evaluate(() => window.open('https://example.com'));
 

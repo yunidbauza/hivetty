@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
+import { luminance, parseColour, swarmPaletteOf } from '@lib/theme/colour';
 import {
   SYNTAX_KEYS,
   TERMINAL_KEYS,
   UI_KEYS,
+  UI_OPTIONAL_KEYS,
   syntaxTokenName,
   uiTokenName,
 } from '@lib/theme/contract';
@@ -20,6 +23,9 @@ describe('the format', () => {
     expect(UI_KEYS).toHaveLength(28);
     expect(SYNTAX_KEYS).toHaveLength(11);
     expect(TERMINAL_KEYS).toHaveLength(11);
+    expect(UI_OPTIONAL_KEYS).toEqual([
+      'creep', 'chitin', 'tissueDeep', 'tissue', 'tissueLit', 'glowCore', 'ground',
+    ]);
   });
 });
 
@@ -30,6 +36,21 @@ describe('the built-in theme mirrors tokens.css', () => {
   it('matches the dark ui block', () => {
     for (const key of UI_KEYS) {
       expect(BUILT_IN_THEME.modes.dark.ui[key], key).toBe(dark[uiTokenName(key)]);
+    }
+  });
+
+  /**
+   * The creature colours the app applies: the theme's own where it carries
+   * them, derived where it does not (`apply.ts` writes `swarmPaletteOf`'s).
+   * Hive dark derives its tissue ramp, so the token is compared as a colour.
+   */
+  it.each([
+    ['dark', dark],
+    ['light', light],
+  ] as const)('carries the creature colours in the %s block', (mode, block) => {
+    const applied = swarmPaletteOf(BUILT_IN_THEME.modes[mode].ui);
+    for (const key of UI_OPTIONAL_KEYS) {
+      expect(parseColour(block[uiTokenName(key)] ?? ''), key).toEqual(parseColour(applied[key]));
     }
   });
 
@@ -81,6 +102,7 @@ describe('the built-in theme mirrors tokens.css', () => {
    */
   const THEMEABLE_TOKENS = new Set<string>([
     ...UI_KEYS.map(uiTokenName),
+    ...UI_OPTIONAL_KEYS.map(uiTokenName),
     ...SYNTAX_KEYS.map(syntaxTokenName),
   ]);
 
@@ -102,5 +124,32 @@ describe('the built-in theme mirrors tokens.css', () => {
     expect(BUILT_IN_THEME.modes.light.terminal.bg).toBe(
       BUILT_IN_THEME.modes.light.ui.termBg,
     );
+  });
+});
+
+/**
+ * The Brood on Hive dark (the hard-coded tissue ramp sat almost on the ground):
+ * the creature's body and its lit edges must clear the background at least as
+ * well as the weakest of the other built-in dark themes.
+ */
+describe('the creatures on Hive dark', () => {
+  const contrast = (a: string, b: string): number => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x) as [number, number];
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const of = (ui: (typeof BUILT_IN_THEME)['modes']['dark']['ui']) => {
+    const p = swarmPaletteOf(ui);
+    return { body: contrast(p.tissue, ui.bg), lit: contrast(p.tissueLit, ui.bg) };
+  };
+  const others = Object.values(BUILT_IN_THEMES)
+    .filter((t) => t !== BUILT_IN_THEME && t.name !== BUILT_IN_THEME.name)
+    .map((t) => of(t.modes.dark.ui));
+
+  it('stand off the ground as the other themes do', () => {
+    expect(others.length).toBeGreaterThan(3);
+    const hive = of(BUILT_IN_THEME.modes.dark.ui);
+    // Within 5% of the weakest other theme: the same formula, on Hive's own colours.
+    expect(hive.body).toBeGreaterThanOrEqual(Math.min(...others.map((o) => o.body)) * 0.95);
+    expect(hive.lit).toBeGreaterThanOrEqual(Math.min(...others.map((o) => o.lit)) * 0.95);
   });
 });

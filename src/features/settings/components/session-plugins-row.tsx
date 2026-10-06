@@ -31,7 +31,7 @@ const NAMED_CHARS = 36;
 const CHIP_CHARS = 3;
 
 const DESCRIPTION =
-  "A plugin switched off here does not load in the sessions The Hive starts, so its skills cannot compete with the Hive's own. On means The Hive does not block it; a plugin you disabled in Claude Code stays off. Claude started anywhere else is unchanged. Applies to the next session.";
+  "A plugin switched off here does not load in the sessions Hive TTY starts, so its skills cannot compete with Hive TTY's own. On means Hive TTY does not block it; a plugin you disabled in Claude Code stays off. Claude started anywhere else is unchanged. Applies to the next session.";
 
 /** Whether the off plugins are named one chip each, or counted in one. */
 export function namesFit(off: readonly string[]): boolean {
@@ -65,11 +65,11 @@ export function SessionPluginsRow() {
   const shown = plugins.filter((name) => name.toLowerCase().includes(query));
 
   if (plugins.length === 0) {
-    return <p className="text-[11.5px] text-subtle">No Claude Code plugins are installed.</p>;
+    return <p className="text-ui-sm text-subtle">No Claude Code plugins are installed.</p>;
   }
 
   return (
-    <div className="@container flex items-center gap-2.5 rounded-[6px] border border-border-soft bg-panel px-2.5 py-1.5 text-[11.5px]">
+    <div className="@container flex items-center gap-2.5 rounded-md border border-border-soft bg-panel px-2.5 py-1.5 text-ui-sm">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden whitespace-nowrap">
         <span className="shrink-0 text-subtle">Off in Hive sessions:</span>
         {off.length === 0 ? (
@@ -116,13 +116,13 @@ export function SessionPluginsRow() {
 
         <DialogContent
           showCloseButton={false}
-          className="gap-0 border-border bg-panel p-0 sm:max-w-[560px]"
+          className="gap-0 p-0 sm:max-w-[560px]"
         >
           <DialogHeader className="gap-1 border-b border-border-soft px-3.5 pt-3 pb-2.5">
-            <DialogTitle className="text-[13px] font-semibold text-ink">
+            <DialogTitle className="text-ui font-semibold text-ink">
               Manage Installed Plugins
             </DialogTitle>
-            <DialogDescription className="text-[11.5px] text-subtle">{DESCRIPTION}</DialogDescription>
+            <DialogDescription className="text-ui-sm text-subtle">{DESCRIPTION}</DialogDescription>
           </DialogHeader>
 
           <div className="flex items-end gap-2.5 px-3.5 pt-2.5">
@@ -132,14 +132,14 @@ export function SessionPluginsRow() {
               onChange={setFilter}
               className="w-52"
             />
-            <span className="pb-1.5 text-[11.5px] tabular-nums text-subtle">
+            <span className="pb-1.5 text-ui-sm tabular-nums text-subtle">
               {plugins.length} installed · {off.length} off
             </span>
           </div>
 
           <div className="grid max-h-72 grid-cols-2 gap-x-6 overflow-y-auto px-3.5 py-2">
             {shown.length === 0 ? (
-              <p className="col-span-2 py-1 text-[11.5px] text-subtle">
+              <p className="col-span-2 py-1 text-ui-sm text-subtle">
                 No plugin matches “{filter.trim()}”.
               </p>
             ) : (
@@ -155,7 +155,7 @@ export function SessionPluginsRow() {
           </div>
 
           <DialogFooter className="border-t border-border-soft px-3.5 py-2.5">
-            <DialogClose className="rounded-[3px] border border-border bg-panel-2 px-[11px] py-[5px] text-[12px] text-ink hover:bg-hover">
+            <DialogClose className="rounded border border-border bg-panel-2 px-[11px] py-[5px] text-control text-ink hover:bg-hover">
               Done
             </DialogClose>
           </DialogFooter>

@@ -244,3 +244,17 @@ describe('failing to apply', () => {
     expect(useHiveStore.getState().tickets[0]?.status).toBe('To Do');
   });
 });
+
+describe('tone (HIVE-203)', () => {
+  it('colours the pill by category by default', () => {
+    render(<TicketTransitionMenu issueKey="HIVE-70" status="In Progress" statusCategory="in-progress" />);
+
+    expect(screen.getByRole('button', { name: 'In Progress — move HIVE-70' })).not.toHaveClass('text-amber-text');
+  });
+
+  it('turns amber when the ticket needs you', () => {
+    render(<TicketTransitionMenu issueKey="HIVE-70" status="In Progress" statusCategory="in-progress" tone="amber" />);
+
+    expect(screen.getByRole('button', { name: 'In Progress — move HIVE-70' })).toHaveClass('text-amber-text');
+  });
+});

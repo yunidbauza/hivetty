@@ -344,4 +344,14 @@ describe('toIssueDetail (HIVE-174)', () => {
     expect(toIssueDetail({ key: 'HIVE-7' })).toBeNull();
     expect(toIssueDetail('nope')).toBeNull();
   });
+
+  it("carries the parent's issue type, so only an epic draws a ring label (HIVE-202)", () => {
+    const detail = toIssueDetail({
+      fields: { description: null, parent: { key: 'HIVE-161', fields: { summary: 'Workflow', issuetype: { name: 'Epic' } } } },
+    });
+    expect(detail?.parent).toEqual({ key: 'HIVE-161', summary: 'Workflow', issueType: 'Epic' });
+
+    const bare = toIssueDetail({ fields: { parent: { key: 'HIVE-1', fields: { summary: 'Story' } } } });
+    expect(bare?.parent).toEqual({ key: 'HIVE-1', summary: 'Story' });
+  });
 });

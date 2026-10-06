@@ -238,16 +238,16 @@ export function SkillBundle({
   };
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-[7px] border border-border">
+    <div className="flex flex-col overflow-hidden rounded-lg border border-border">
       <button
         type="button"
         onClick={onBack}
-        className="flex items-center gap-1 border-b border-border-soft px-2.5 py-1.5 text-left text-[12px] text-muted hover:bg-hover hover:text-ink"
+        className="flex items-center gap-1 border-b border-border-soft px-2.5 py-1.5 text-left text-control text-muted hover:bg-hover hover:text-ink"
       >
         <Icon name="ph-caret-left" size={12} />
         <span className="truncate">Skills</span>
         {dirty ? (
-          <span className="ml-auto shrink-0 text-[11px] text-brand">edited</span>
+          <span className="ml-auto shrink-0 text-micro text-brand">edited</span>
         ) : null}
       </button>
 
@@ -314,15 +314,11 @@ export function SkillBundle({
                   : undefined
               }
               style={{ paddingLeft: `${String(10 + depth * 10)}px` }}
-              className={`flex items-center justify-between gap-1.5 border-b border-border-soft py-1.5 pr-2.5 text-left text-[12.5px] last:border-b-0 hover:bg-hover ${
+              className={`flex items-center justify-between gap-1.5 border-b border-border-soft py-1.5 pr-2.5 text-left text-control last:border-b-0 hover:bg-hover ${
                 selected ? 'bg-active text-ink' : 'text-muted'
               } ${over === entry.path ? 'bg-active' : ''}`}
             >
-              <span
-                className={`flex min-w-0 items-center gap-1.5 ${
-                  excluded === null ? '' : 'opacity-55'
-                }`}
-              >
+              <span className="flex min-w-0 items-center gap-1.5">
                 <Icon
                   name={
                     folder
@@ -332,12 +328,12 @@ export function SkillBundle({
                       : 'ph-file'
                   }
                   size={12}
-                  className="shrink-0"
+                  className={excluded === null ? 'shrink-0' : 'shrink-0 opacity-55'}
                 />
-                <span className="truncate font-mono">{name}</span>
+                <span className={excluded === null ? 'truncate tabular-nums' : 'truncate tabular-nums text-subtle'}>{name}</span>
               </span>
               {excluded === null ? null : (
-                <span className="shrink-0 text-[11px] text-subtle">
+                <span className="shrink-0 text-micro text-subtle">
                   {CHIP[excluded.code]}
                 </span>
               )}
@@ -352,7 +348,7 @@ export function SkillBundle({
         an entry's own `excluded`.
       */}
       {skill.manifest.capped === null ? null : (
-        <p className="border-t border-border-soft px-2.5 py-1.5 text-[11px] text-amber">
+        <p className="border-t border-border-soft px-2.5 py-1.5 text-micro text-amber-text">
           {skill.manifest.capped}
         </p>
       )}
@@ -385,7 +381,7 @@ export function SkillBundle({
                 setAdding(false);
                 act();
               }}
-              className="px-2.5 py-1.5 text-left text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
+              className="px-2.5 py-1.5 text-left text-control text-muted hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted"
             >
               {label}
             </button>
@@ -395,7 +391,7 @@ export function SkillBundle({
             onClick={() => {
               setAdding(false);
             }}
-            className="border-t border-border-soft px-2.5 py-1.5 text-left text-[11.5px] text-subtle hover:bg-hover"
+            className="border-t border-border-soft px-2.5 py-1.5 text-left text-ui-sm text-subtle hover:bg-hover"
           >
             Cancel
           </button>
@@ -406,7 +402,7 @@ export function SkillBundle({
           onClick={() => {
             setAdding(true);
           }}
-          className="border-t border-border-soft px-2.5 py-1.5 text-left font-mono text-[12.5px] text-brand hover:bg-hover"
+          className="border-t border-border-soft px-2.5 py-1.5 text-left tabular-nums text-control text-brand hover:bg-hover"
         >
           + Add
         </button>

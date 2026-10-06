@@ -1,6 +1,6 @@
 import { MagnifyingGlass } from '@phosphor-icons/react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 import { cn } from '@/lib/utils';
@@ -11,12 +11,14 @@ import type {
   ProjectRow as ProjectRowData,
 } from '@/types/entity';
 
+import { Button } from '@components/ui/button';
 import { Icon } from '@components/ui/icon';
 import { ProjectKey } from '@components/ui/project-key';
-import { SwarmCreature } from '@components/ui/swarm-creature';
+import { SwarmCreature, type Creature } from '@components/ui/swarm-creature';
 import { can } from '@config/runtime';
 import { OptionStepper } from '@features/sessions/components/option-stepper';
 import { useProjectAccess, useProjectConfig } from '@hooks/use-project-config';
+import { ticketStart, type TicketFacts } from '@shared/ticket-workflow';
 import {
   useProjectLiveCount,
   useProjects,
@@ -24,6 +26,7 @@ import {
   useTicket,
 } from '@stores/hive-store';
 import {
+  useAgentPageActions,
   usePickerActions,
   usePickerState,
   useSettingsActions,
@@ -35,14 +38,17 @@ const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'max'];
 /** The concept pins the first four projects as one-click starts. */
 const PINNED_COUNT = 4;
 
+/** The picker draws one of these at random each time it opens. */
+const PICKER_CREATURES: readonly Creature[] = ['egg', 'spire', 'overlord', 'mutalisk'];
+
 /**
  * The new-session picker (story 044).
  *
  * ## Why the Radix primitive rather than `components/ui/dialog`
  *
  * The vendored `DialogContent` always portals to `document.body` and centres a
- * fixed-position card. This picker fills the **center stage** — the rails and
- * header stay visible, exactly as the concept shows — so it is composed from
+ * fixed-position card. This picker fills the **center stage** — the panels and
+ * session header stay visible, exactly as the concept shows — so it is composed from
  * the primitive directly and rendered in place.
  *
  * What the story actually asks for is Radix's *behaviour*, and what is kept is
@@ -63,8 +69,11 @@ const PINNED_COUNT = 4;
  */
 export function NewSessionPicker() {
   const projects = useProjects();
+  /** No project yet: the first-run block stands alone, with no title above it. */
+  const noProjects = projects.length === 0;
+  /** One creature per opening, drawn at random from the picker's four. */
+  const [creature] = useState(() => PICKER_CREATURES[Math.floor(Math.random() * PICKER_CREATURES.length)]!);
   const spawnSession = useSpawnSession();
-  const config = useProjectConfig();
   const { pickerQuery, pickerTicket, newModel, newEffort } = usePickerState();
   const ticket = useTicket(pickerTicket);
   const { closePicker, setPickerQuery, setNewModel, setNewEffort } =
@@ -80,6 +89,43 @@ export function NewSessionPicker() {
   const noMatchPhrase = useSwarmPhrase('noMatch.picker');
 
   const searchRef = useRef<HTMLInputElement>(null);
+
+  /*
+    Started from a ticket, Settings › Jira › Ticket workflow decides what the
+    session does first: a message to type (a skill, or asking an agent), or
+    waking an agent with no session at all. The message is the setting's until
+    it is edited here, and an edit is for this one start (variant D). The
+    config can arrive after the picker opens, which is why the untouched field
+    follows `start` rather than being copied once.
+  */
+  const workflow = useProjectConfig()?.jira.workflow ?? null;
+  const { openAgentPage } = useAgentPageActions();
+  const facts: TicketFacts | null =
+    pickerTicket === null
+      ? null
+      : {
+          key: pickerTicket,
+          ...(ticket?.title === undefined ? {} : { title: ticket.title }),
+          ...(ticket?.issueType === undefined ? {} : { type: ticket.issueType }),
+          ...(ticket?.url === undefined ? {} : { url: ticket.url }),
+        };
+  const start = facts === null ? null : ticketStart(workflow, facts);
+  const [edited, setEdited] = useState<string | null>(null);
+  const [sessionInstead, setSessionInstead] = useState(false);
+  const [wakeProblem, setWakeProblem] = useState<string | null>(null);
+  const wake = start?.kind === 'wake' && !sessionInstead ? start : null;
+  const firstMessage = edited ?? (start?.kind === 'message' ? start.text : '');
+
+  const wakeAgent = () => {
+    if (wake === null || facts === null) return;
+    setWakeProblem(null);
+    void window.hive?.ledger
+      .post({ to: wake.agent, kind: 'ask', body: wake.body, meta: { ticket: facts.key } })
+      .then((result) => {
+        if (result.ok) openAgentPage(wake.agent, 'activity');
+        else setWakeProblem(result.reason);
+      });
+  };
 
   /*
     Case-insensitive substring match across all three things a project answers
@@ -100,20 +146,23 @@ export function NewSessionPicker() {
 
   // Always a project **id** — the rows carry it, and `spawnSession` stores it
   // on the entity (HIVE-94).
-  const spawn = (projectId: string) => {
+  const spawn = (projectId: string, empty = false) => {
     // Refused rather than trusted: every button that reaches here is already
     // disabled when the project has no real directory, but Enter in the search
     // box reaches here too (story 090).
     if (!can.spawnSessionIn(projectId)) return;
-    // Task is empty on purpose: the picker starts a session, and the first
-    // message gives it its job (story 043). `spawnSession` opens the new tab,
-    // which also dismisses the picker.
+    // Task is empty unless the picker came from a ticket: the picker starts a
+    // session, and the first message gives it its job (story 043).
+    // `spawnSession` opens the new tab, which also dismisses the picker.
     //
     // `pickerTicket ?? undefined` rather than the value itself: the store's
     // "no ticket" is `null`, the session field's is absent, and passing `null`
     // into an optional parameter would put a `ticket: null` on the entity that
     // nothing knows how to read (HIVE-73).
-    spawnSession(projectId, '', newModel, newEffort, pickerTicket ?? undefined);
+    //
+    // From a ticket, the first message is the workflow's (or the edit made
+    // here); ⌥↵ and the wake card's projects start empty.
+    spawnSession(projectId, empty || wake !== null ? '' : firstMessage.trim(), newModel, newEffort, pickerTicket ?? undefined);
   };
 
   return (
@@ -160,62 +209,59 @@ export function NewSessionPicker() {
           picker — it simply has no summary line to add.
         */}
         {/*
-          The spire leads the picker (HIVE-93), and **only when the first-run
-          block below is not showing**.
-
-          That condition is the whole of it: `templateWritten` renders a 120px
-          hive hero a few lines down, and two creatures stacked in one dialog
-          reads as a bug rather than as atmosphere. So this is the ordinary
-          picker's mark and the hive stays the first-run hero — the surface has
-          two states and each gets exactly one sprite.
-
-          96px, not the hero's 120: it sits *above* a title rather than standing
-          in for missing content, so it is the quieter end of the 72–120
-          full-stage register `SwarmCreature` documents.
+          The creature and the title lead the picker (HIVE-93) **only once a
+          project exists**. With none, the first-run block below is the whole
+          top of the surface: a title saying "pick a project" over nothing to
+          pick reads as a broken render, and two creatures stacked reads as a
+          bug. Either way it is the one random creature, at 120px.
         */}
-        {config?.templateWritten ? null : (
-          <SwarmCreature creature="spire" size={96} />
+        {noProjects ? (
+          // Radix names the dialog by its Title; the first-run block is what is seen.
+          <DialogPrimitive.Title className="sr-only">No projects yet</DialogPrimitive.Title>
+        ) : (
+          <>
+            <SwarmCreature creature={creature} size={120} />
+
+            <div className="flex flex-col gap-1.5 text-center">
+              <DialogPrimitive.Title className="font-sans text-[22px] tracking-[-0.02em] text-ink">
+                {pickerTicket === null
+                  ? 'Start a new session'
+                  : `Start a session for ${pickerTicket}`}
+              </DialogPrimitive.Title>
+              <span className="text-ui text-subtle">
+                {ticket?.title ??
+                  'Pick a project — a Claude Code terminal will open for it'}
+              </span>
+            </div>
+          </>
         )}
 
-        <div className="flex flex-col gap-1.5 text-center">
-          <DialogPrimitive.Title className="font-display text-[22px] tracking-[-0.02em] text-ink">
-            {pickerTicket === null
-              ? 'Start a new session'
-              : `Start a session for ${pickerTicket}`}
-          </DialogPrimitive.Title>
-          <span className="text-[13px] text-subtle">
-            {ticket?.title ??
-              'Pick a project — a Claude Code terminal will open for it'}
-          </span>
-        </div>
-
         {/*
-          First run: the config file did not exist and was just written, so
-          there is nothing to be unmapped *from* yet.
+          No project yet: on the first run (the config was just written) and
+          after the last one is removed alike, so there is nothing to pick.
 
           Story 090 printed the file path here, which is the failure story 101
           exists to end: a user who has never seen that file cannot edit it, and
           naming it is not an instruction. The button opens settings, which is
           the place they can actually do something.
         */}
-        {config?.templateWritten ? (
+        {noProjects ? (
           <div className="flex max-w-[560px] flex-col items-center gap-2.5">
-            <SwarmCreature creature="hive" size={120} />
-            <p className="text-center font-mono text-[11.5px] text-muted">
+            <SwarmCreature creature={creature} size={120} className="mb-8" />
+            <p className="text-center tabular-nums text-ui-sm text-muted">
               {firstRunPhrase}
             </p>
-            <p className="text-center font-mono text-[11.5px] text-subtle">
+            <p className="text-center tabular-nums text-ui-sm text-subtle">
               no projects yet — add one of your repositories to open a session in it
             </p>
-            <button
-              type="button"
+            <Button
+              variant="primary"
               // Wrapped: `openSettings` takes an optional pane, and a bare
               // handler would hand it the click event as one (HIVE-116).
               onClick={() => openSettings()}
-              className="rounded-md bg-brand-fill px-3 py-1.5 text-[12.5px] text-on-brand hover:bg-brand-fill-hover"
             >
               Add project
-            </button>
+            </Button>
           </div>
         ) : null}
 
@@ -257,6 +303,55 @@ export function NewSessionPicker() {
           />
         </div>
 
+        {facts === null || noProjects ? null : wake !== null ? (
+          <div
+            role="group"
+            aria-label="Ticket workflow"
+            className="flex w-[560px] max-w-[92%] flex-col gap-2 rounded-lg border border-border-soft px-3.5 py-3"
+          >
+            <p className="text-control text-muted">
+              {`The ticket workflow hands ${facts.key} to `}
+              <b className="font-semibold text-ink">{wake.agent}</b>
+              {' instead of opening a session.'}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" onClick={wakeAgent}>{`Wake ${wake.agent}`}</Button>
+              <Button onClick={() => setSessionInstead(true)}>Open a session instead</Button>
+            </div>
+            {wakeProblem === null ? null : (
+              <p role="alert" className="text-control text-red">
+                {`Could not ask ${wake.agent}: ${wakeProblem}`}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="flex w-[560px] max-w-[92%] flex-col gap-1">
+            <label htmlFor="picker-first-message" className="text-control text-muted">
+              First message
+            </label>
+            <input
+              id="picker-first-message"
+              value={firstMessage}
+              onChange={(event) => setEdited(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                const [first] = matches;
+                if (first) spawn(first.id, event.altKey);
+              }}
+              placeholder="Typed into the session when it opens. Blank opens at an empty prompt."
+              spellCheck={false}
+              aria-describedby="picker-first-message-hint"
+              className="rounded-full border border-border bg-term-input px-3 py-1.5 font-mono text-control text-ink caret-green outline-none placeholder:font-sans placeholder:text-subtle focus-visible:ring-1 focus-visible:ring-brand"
+            />
+            <span id="picker-first-message-hint" className="text-ui-sm text-subtle">
+              {workflow === null
+                ? 'Set one for every ticket in Settings › Jira › Ticket workflow. ⌥↵ starts empty.'
+                : 'From Settings › Jira › Ticket workflow; a change here is for this session only. ⌥↵ starts empty.'}
+            </span>
+          </div>
+        )}
+
         <div className="flex w-[560px] max-w-[92%] flex-col gap-2">
           <div className="flex items-center gap-2 rounded-full border border-border bg-term-input px-3.5 py-2">
             <MagnifyingGlass
@@ -274,20 +369,21 @@ export function NewSessionPicker() {
                 // No-op with zero matches rather than spawning something
                 // arbitrary — Enter means "the one I can see".
                 const [first] = matches;
-                if (first) spawn(first.id);
+                // ⌥↵ starts at an empty prompt, whatever the ticket workflow says.
+                if (first) spawn(first.id, event.altKey);
               }}
               placeholder="search all projects…"
               spellCheck={false}
               aria-label="Search all projects"
-              className="min-w-0 flex-1 border-none bg-transparent font-mono text-[12.5px] text-ink caret-green outline-none placeholder:text-subtle"
+              className="min-w-0 flex-1 border-none bg-transparent tabular-nums text-control text-ink caret-green outline-none placeholder:text-subtle"
             />
           </div>
 
           <div className="max-h-[220px] overflow-y-auto">
             {matches.length === 0 ? (
               <div className="flex flex-col gap-[3px] px-1 py-2">
-                <p className="font-mono text-xs text-muted">{noMatchPhrase}</p>
-                <p className="font-mono text-xs text-subtle">
+                <p className="tabular-nums text-xs text-muted">{noMatchPhrase}</p>
+                <p className="tabular-nums text-xs text-subtle">
                   {`no projects match "${pickerQuery.trim()}"`}
                 </p>
               </div>
@@ -306,7 +402,7 @@ export function NewSessionPicker() {
         <button
           type="button"
           onClick={closePicker}
-          className="font-mono text-xs text-subtle hover:text-ink"
+          className="tabular-nums text-xs text-subtle hover:text-ink"
         >
           esc · cancel
         </button>
@@ -339,7 +435,7 @@ function PinnedProject({
       onClick={() => onSelect(id)}
       disabled={!access.spawnable}
       title={access.reason ?? undefined}
-      className="flex items-center gap-2 rounded-full border border-border bg-chip px-3.5 py-2 font-mono text-[13px] text-ink hover:border-brand hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:border-border disabled:hover:bg-chip"
+      className="flex items-center gap-2 rounded-full border border-border bg-chip px-3.5 py-2 tabular-nums text-ui text-ink hover:border-brand hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:border-border disabled:hover:bg-chip"
     >
       <Icon
         name={icon}
@@ -399,7 +495,7 @@ function ProjectRow({
       */}
       <span
         className={cn(
-          'min-w-0 flex-1 truncate font-mono text-[12.5px]',
+          'min-w-0 flex-1 truncate tabular-nums text-control',
           access.spawnable ? 'text-ink' : 'text-subtle',
         )}
       >
@@ -410,7 +506,7 @@ function ProjectRow({
         that cannot be started has nothing useful to say about how many
         sessions it is running (story 090).
       */}
-      <span className="shrink-0 font-mono text-[11px] text-subtle">
+      <span className="shrink-0 tabular-nums text-micro text-subtle">
         {access.spawnable ? `${live} active` : 'unmapped'}
       </span>
     </button>

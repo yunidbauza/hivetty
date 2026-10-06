@@ -23,7 +23,7 @@ test('no pty host exists at launch — it starts lazily, on the first session', 
   hive,
   page,
 }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   const utilities = await hive.evaluate(({ app }) =>
     app

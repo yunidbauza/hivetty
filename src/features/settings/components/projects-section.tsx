@@ -3,6 +3,7 @@ import { useState } from 'react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
+import { Button } from '@components/ui/button';
 import { SwarmCreature } from '@components/ui/swarm-creature';
 import { CloneRepoView } from '@features/settings/components/clone-repo-view';
 import { ProjectsList } from '@features/settings/components/projects-list';
@@ -68,14 +69,14 @@ export function ProjectsSection() {
     <div className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4">
       <SettingsSectionHeader
         title="Projects"
-        description="Repositories The Hive can open a session in"
+        description="Repositories Hive TTY can open a session in"
       />
 
       {declared.length === 0 ? (
-        <div className="flex flex-col items-center gap-1 rounded-[7px] border border-dashed border-border px-4 py-6 text-center">
-          <SwarmCreature creature="hive" size={72} />
-          <span className="text-[11.5px] text-muted">{phrase}</span>
-          <span className="text-[11.5px] text-subtle">
+        <div className="flex flex-col items-center gap-1 rounded-lg border border-dashed border-border px-4 py-6 text-center">
+          <SwarmCreature creature="overlord" size={120} className="mb-9" />
+          <span className="text-ui-sm text-muted">{phrase}</span>
+          <span className="text-ui-sm text-subtle">
             Add a folder to start a session in it.
           </span>
         </div>
@@ -92,22 +93,22 @@ export function ProjectsSection() {
       {snapshot?.errors.map((error) => (
         <p
           key={error}
-          className="rounded-[5px] border border-red px-2.5 py-1.5 text-[11.5px] text-red"
+          className="rounded-md border border-red px-2.5 py-1.5 text-ui-sm text-red"
         >
           {error}
         </p>
       ))}
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={addProject}
-          disabled={choosing}
-          className="flex w-fit items-center gap-1.5 rounded-md bg-brand-fill px-3 py-1.5 text-[12.5px] text-on-brand hover:bg-brand-fill-hover disabled:opacity-60"
+          pending={choosing}
+          className="flex w-fit items-center gap-1.5"
         >
           <Plus size={12} weight="bold" />
           Add project
-        </button>
+        </Button>
 
         {/*
           Secondary, because adding a folder you already have is the commoner
@@ -116,7 +117,7 @@ export function ProjectsSection() {
         <button
           type="button"
           onClick={() => setView('clone')}
-          className="flex w-fit items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink"
+          className="flex w-fit items-center gap-1.5 rounded-full border border-edge px-4 py-1.5 text-control font-semibold text-ink hover:bg-hover"
         >
           <GitBranch size={12} weight="bold" />
           Clone from URL
@@ -124,7 +125,7 @@ export function ProjectsSection() {
       </div>
 
       {snapshot ? (
-        <p className="mt-auto pt-2 text-[11px] text-subtle">
+        <p className="mt-auto pt-2 text-micro text-subtle">
           Config file: {snapshot.configPath}
         </p>
       ) : null}

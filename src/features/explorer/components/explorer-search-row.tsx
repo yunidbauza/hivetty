@@ -58,7 +58,7 @@ export function ExplorerSearchRow({ status }: ExplorerSearchRowProps) {
           <div
             role="radiogroup"
             aria-label="What to search"
-            className="inline-flex overflow-hidden rounded-[6px] border border-border"
+            className="inline-flex overflow-hidden rounded-full border border-border"
           >
             {MODES.map((option) => (
               <button
@@ -71,7 +71,7 @@ export function ExplorerSearchRow({ status }: ExplorerSearchRowProps) {
                   setMode(option.value);
                 }}
                 className={[
-                  'px-2 py-0.5 text-[10px]',
+                  'px-2 py-0.5 text-micro',
                   mode === option.value
                     ? 'bg-active text-brand'
                     : 'text-muted hover:bg-hover hover:text-ink',
@@ -83,7 +83,7 @@ export function ExplorerSearchRow({ status }: ExplorerSearchRowProps) {
           </div>
 
           {status === undefined || status === '' ? null : (
-            <span className="ml-auto truncate text-[10px] text-subtle tabular-nums">
+            <span className="ml-auto truncate text-micro text-subtle tabular-nums">
               {status}
             </span>
           )}

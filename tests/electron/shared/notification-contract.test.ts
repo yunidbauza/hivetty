@@ -12,6 +12,8 @@ import {
   isNotificationKind,
   kindsForSource,
   resolveNotificationPrefs,
+  type NotificationKind,
+  type NotificationLane,
 } from '@shared/notification-contract';
 
 describe('the kind registry', () => {
@@ -242,5 +244,35 @@ describe('the agent kinds (HIVE-118)', () => {
     const resolved = resolveNotificationPrefs({ 'agent.custom': 'off' });
     expect(resolved).not.toHaveProperty('agent.custom');
     expect(resolved['agent.ask']).toBe('both');
+  });
+});
+
+/**
+ * HIVE-214: every kind sits in exactly one lane. The table is written out here
+ * on purpose, so a kind moved between lanes is a deliberate edit in two places.
+ */
+const LANES: Record<NotificationKind, NotificationLane> = {
+  'agent.ask': 'summons',
+  'agent.permission': 'summons',
+  'session.blocked': 'summons',
+  'pr.review_requested': 'summons',
+  'session.input_needed': 'summons',
+  'session.idle': 'summons',
+  'session.goal': 'echo',
+  'agent.done': 'echo',
+  'agent.failed': 'echo',
+  'pr.checks_failed': 'echo',
+  'pr.approved': 'echo',
+  'pr.merged': 'echo',
+  'clone.done': 'echo',
+  'app.update_available': 'echo',
+  'app.update_ready': 'echo',
+};
+
+describe('lanes (HIVE-214)', () => {
+  it('puts every kind in its lane', () => {
+    for (const kind of NOTIFICATION_KINDS) {
+      expect(NOTIFICATION_KIND_SPECS[kind].lane, kind).toBe(LANES[kind]);
+    }
   });
 });

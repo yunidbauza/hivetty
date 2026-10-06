@@ -56,7 +56,7 @@ export function TerminalHint({
       className={cn(
         'pointer-events-none flex items-center gap-3',
         'border-t border-border-soft bg-panel/90 px-3.5 py-1.5 backdrop-blur-sm',
-        'font-mono text-[11px] text-muted',
+        'font-mono text-micro text-muted',
         className,
       )}
     >

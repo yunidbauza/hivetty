@@ -3,17 +3,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   useActiveTab,
-  useLeftTab,
   useOpenTab,
+  usePanelOpen,
   usePickerActions,
   usePickerState,
-  useProjectCollapsed,
-  useRailState,
+  usePlace,
   useSelId,
-  useSetLeftTab,
+  useSelectPlace,
   useSetSelId,
-  useShowActivityRail,
-  useToggleProject,
+  useTogglePanel,
   useUiStore,
 } from '@stores/ui-store';
 
@@ -40,65 +38,6 @@ describe('ui-store selectors', () => {
     });
 
     expect(result.current.activeTab).toBe('webhooks');
-  });
-
-  it('useLeftTab and useSetLeftTab switch the left rail', () => {
-    const { result } = renderHook(() => ({
-      leftTab: useLeftTab(),
-      setLeftTab: useSetLeftTab(),
-    }));
-
-    expect(result.current.leftTab).toBe('projects');
-
-    act(() => {
-      result.current.setLeftTab('work');
-    });
-
-    expect(result.current.leftTab).toBe('work');
-  });
-
-  it('useRailState reports the activity rail tab and visibility', () => {
-    const { result } = renderHook(() => useRailState());
-    expect(result.current).toEqual({ railTab: 'inbox', showActivityRail: true });
-
-    act(() => {
-      useUiStore.getState().setRailTab('prs');
-      useUiStore.getState().toggleActivityRail();
-    });
-
-    expect(result.current).toEqual({ railTab: 'prs', showActivityRail: false });
-  });
-
-  it('useShowActivityRail narrows to visibility alone', () => {
-    const { result } = renderHook(() => useShowActivityRail());
-    expect(result.current).toBe(true);
-
-    // Switching rail tabs must not disturb the shell's subscription.
-    act(() => {
-      useUiStore.getState().setRailTab('prs');
-    });
-    expect(result.current).toBe(true);
-
-    act(() => {
-      useUiStore.getState().toggleActivityRail();
-    });
-    expect(result.current).toBe(false);
-  });
-
-  it('useProjectCollapsed defaults to expanded and follows the toggle', () => {
-    const { result } = renderHook(() => ({
-      collapsed: useProjectCollapsed('nova-web'),
-      toggleProject: useToggleProject(),
-    }));
-
-    // An untouched project has no entry at all, which must read as expanded.
-    expect(result.current.collapsed).toBe(false);
-
-    act(() => {
-      result.current.toggleProject('nova-web');
-    });
-
-    expect(result.current.collapsed).toBe(true);
   });
 
   it('usePickerState and usePickerActions drive the overlay', () => {
@@ -154,5 +93,28 @@ describe('ui-store selectors', () => {
     });
 
     expect(result.current.selId).toBe('webhooks');
+  });
+
+  it('usePlace and usePanelOpen re-render only their own consumer (HIVE-195)', () => {
+    let placeRenders = 0;
+    let panelRenders = 0;
+    const place = renderHook(() => {
+      placeRenders += 1;
+      return { place: usePlace(), selectPlace: useSelectPlace() };
+    });
+    const panel = renderHook(() => {
+      panelRenders += 1;
+      return { panelOpen: usePanelOpen(), togglePanel: useTogglePanel() };
+    });
+    expect(place.result.current.place).toBe('home');
+
+    act(() => panel.result.current.togglePanel());
+    expect(panel.result.current.panelOpen).toBe(false);
+    expect(placeRenders).toBe(1);
+
+    const before = panelRenders;
+    act(() => useUiStore.setState({ place: 'work' }));
+    expect(place.result.current.place).toBe('work');
+    expect(panelRenders).toBe(before);
   });
 });

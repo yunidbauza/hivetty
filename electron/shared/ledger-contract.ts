@@ -98,6 +98,12 @@ export interface LedgerSnapshot {
   openAsks: OpenAsk[];
   /** task → party holding it. */
   claims: Record<string, string>;
+  /**
+   * Ask threads closed anywhere in the log (HIVE-198). Optional so an older
+   * server or client over the socket still speaks the same shape; missing
+   * means "nothing beyond what `entries` shows".
+   */
+  closedAsks?: string[];
 }
 
 export interface LedgerReadQuery {
@@ -108,6 +114,8 @@ export interface LedgerReadQuery {
   thread?: string;
   /** Exclusive lower bound, an entry id. */
   since?: string;
+  /** Entries whose `meta.ticket` names this key, case-insensitive (HIVE-203). */
+  ticket?: string;
   /** Keep at most this many, newest. */
   limit?: number;
 }

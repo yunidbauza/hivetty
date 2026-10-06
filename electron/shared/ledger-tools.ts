@@ -366,6 +366,7 @@ export const HIVE_STANDING_GRANTS: readonly string[] = [
   'mcp__hive__projects',
   'mcp__hive__pr',
   'mcp__hive__jira_get',
+  'mcp__hive__jira_users',
   'mcp__hive__approve',
 ];
 
@@ -425,14 +426,41 @@ export const JIRA_TRANSITION_TOOL: McpToolDefinition = {
 export const JIRA_COMMENT_TOOL: McpToolDefinition = {
   name: 'jira_comment',
   description:
-    'Add a comment to a Jira issue through The Hive. `markdown` is plain markdown: paragraphs, headings, lists, fenced code and links; it is converted to the document format Jira stores. Answers with the comment as Jira recorded it. This tool writes to the person\'s Jira: it needs a `tools:` entry or their consent on a card.',
+    'Add a comment to a Jira issue through The Hive. `markdown` is plain markdown: paragraphs, headings, lists, fenced code and links; it is converted to the document format Jira stores. Answers with the comment as Jira recorded it. This tool writes to the person\'s Jira: it needs a `tools:` entry or their consent on a card. To mention people, pass `mentions`: each an `accountId` and the `name` to show, at most ten; find account ids with jira_users. A comment may be mentions alone, with `markdown` empty.',
   inputSchema: {
     type: 'object',
     properties: {
       key: { type: 'string', description: 'The issue key, like HIVE-123.' },
       markdown: { type: 'string', description: 'The comment, as markdown.' },
+      mentions: {
+        type: 'array',
+        description: 'Optional. People to mention at the front of the comment; Jira notifies each. Get accountId from jira_users.',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            accountId: { type: 'string', description: 'The Atlassian account id, as jira_users answers it.' },
+            name: { type: 'string', description: 'The name to show after the @.' },
+          },
+          required: ['accountId', 'name'],
+        },
+      },
     },
     required: ['key', 'markdown'],
+  },
+};
+
+/** People to mention (HIVE-216). A read, so it stands, like `jira_get`. */
+export const JIRA_USERS_TOOL: McpToolDefinition = {
+  name: 'jira_users',
+  description:
+    'Find people on the Jira site by name or email, through The Hive: up to eight active people, each an accountId and a displayName. Use it to get the accountId jira_comment needs to mention someone.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Part of a name or an email address.' },
+    },
+    required: ['query'],
   },
 };
 

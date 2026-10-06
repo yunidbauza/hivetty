@@ -8,19 +8,31 @@ import {
 } from '../../../electron/shared/ledger-contract';
 import {
   agentSiteFor,
+  asksMeAbout,
   INBOUND_NAME_MAX,
   INBOUND_TEXT_MAX,
   asInbound,
   buildProgressFor,
   claims,
+  closedAskThreads,
+  delegatesOf,
   expiredAsks,
+  holderPost,
   isShipping,
   keepNewest,
   laneOfRun,
   matches,
+  mergeAsk,
+  mergeWaiting,
   nextRef,
   openAsks,
+  prEvents,
+  prOpener,
   resolveRef,
+  reviewUrls,
+  SHIP_STOPS,
+  shipStage,
+  shipTrack,
   thread,
   ttlOf,
   STAGE_TEXT_MAX,
@@ -115,17 +127,144 @@ describe('isShipping and buildProgressFor (HIVE-171)', () => {
     ];
     expect(isShipping(loose, 'acme/nova', 77)).toBe(true);
     expect(isShipping(loose, 'acme/nova', 7)).toBe(false);
-    expect(buildProgressFor(loose, 'ACME-1')).toEqual({ stage: 'x'.repeat(STAGE_TEXT_MAX), task: 4 });
+    expect(buildProgressFor(loose, 'ACME-1')).toEqual({ from: 'builder', stage: 'x'.repeat(STAGE_TEXT_MAX), task: 4 });
   });
 
-  it('reads the newest builder progress for a ticket, key case-insensitive, task optional', () => {
-    expect(buildProgressFor(posts, 'HIVE-7')).toEqual({ stage: 'build', task: 3 });
-    expect(buildProgressFor(posts, 'HIVE-8')).toEqual({ stage: 'verify' });
+  it('reads the newest agent progress for a ticket, key case-insensitive, task optional; the builder still answers', () => {
+    expect(buildProgressFor(posts, 'HIVE-7')).toEqual({ from: 'builder', stage: 'build', task: 3 });
+    expect(buildProgressFor(posts, 'HIVE-8')).toEqual({ from: 'builder', stage: 'verify' });
     expect(buildProgressFor(posts, 'HIVE-9')).toBeUndefined();
     const claimed = [
       entry({ id: 'c1', from: 'builder', kind: 'claim', body: 'claimed HIVE-9', meta: { ticket: 'HIVE-9', stage: 'build', task: 'HIVE-9' } }),
     ];
     expect(buildProgressFor(claimed, 'HIVE-9')).toBeUndefined();
+  });
+
+  it('reads any agent\'s post, newest wins across agents (HIVE-203)', () => {
+    const mixed = [
+      ...posts,
+      entry({ id: 's1', from: 'shipper', body: 'stage', meta: { ticket: 'HIVE-7', stage: 'ci' } }),
+    ];
+    expect(buildProgressFor(mixed, 'HIVE-7')).toEqual({ from: 'shipper', stage: 'ci' });
+    expect(buildProgressFor(posts, 'HIVE-7')).toEqual({ from: 'builder', stage: 'build', task: 3 });
+  });
+});
+
+describe('shipStage (HIVE-215)', () => {
+  const slug = 'yunidbauza/the-hive';
+  const claim = entry({ id: 'c1', from: 'shipper', kind: 'claim', body: 'claimed', meta: { task: 'yunidbauza/the-hive#214' } });
+  const stage = (id: string, s: string, over: Partial<LedgerEntry> = {}) =>
+    entry({ id, from: 'shipper', body: 'stage', meta: { pr: 214, repo: slug, stage: s }, ...over });
+
+  it('reads intake from the claim before any post', () => {
+    expect(shipStage([claim], slug, 214)).toBe('intake');
+  });
+
+  it('follows the stages forward, newest wins', () => {
+    expect(shipStage([claim, stage('p1', 'self-review'), stage('p2', 'ci'), stage('p3', 'findings')], slug, 214)).toBe('findings');
+  });
+
+  it('follows a step back from approval to findings', () => {
+    expect(shipStage([claim, stage('p1', 'approval'), stage('p2', 'findings')], slug, 214)).toBe('findings');
+  });
+
+  it('is null after the release of the claim', () => {
+    const release = entry({ id: 'r1', from: 'shipper', kind: 'release', body: 'released', meta: { task: 'Yunidbauza/The-Hive#214' } });
+    expect(shipStage([claim, stage('p1', 'merge'), release], slug, 214)).toBeNull();
+  });
+
+  it('is null at closed', () => {
+    expect(shipStage([claim, stage('p1', 'merge'), stage('p2', 'closed', { to: 'sess-a' })], slug, 214)).toBeNull();
+  });
+
+  it('ignores another owner\'s repo with the same name and number', () => {
+    const other = entry({ id: 'o1', from: 'shipper', body: 'stage', meta: { pr: 214, repo: 'acme/the-hive', stage: 'merge' } });
+    expect(shipStage([claim, stage('p1', 'ci'), other], slug, 214)).toBe('ci');
+    expect(shipStage([other], slug, 214)).toBeNull();
+  });
+
+  it('is null for a PR nobody holds, and for an empty slug', () => {
+    expect(shipStage([], slug, 214)).toBeNull();
+    expect(shipStage([claim], '', 214)).toBeNull();
+  });
+});
+
+describe('the two ask readings (HIVE-215)', () => {
+  const slug = 'owner/name';
+  const sessions = new Set(['sess-a']);
+  const toMe = (to: string) => to === OVERMIND || sessions.has(to);
+  const ask = (id: string, over: Partial<LedgerEntry>) =>
+    entry({ id, ts: NOW - 1_000, from: 'shipper', kind: 'ask', body: 'PR #214 waits on a review', ...over });
+  const open = (entries: LedgerEntry[]) => openAsks(entries, NOW);
+
+  describe('asksMeAbout', () => {
+    it('reads an ask to the overmind and to a session naming the PR', () => {
+      expect(asksMeAbout(open([ask('a1', { to: OVERMIND, meta: { pr: 214, repo: 'Owner/Name' } })]), slug, 214, toMe)).toBe(true);
+      expect(asksMeAbout(open([ask('a2', { to: 'sess-a', meta: { pr: '214', repo: slug } })]), slug, 214, toMe)).toBe(true);
+    });
+
+    it('ignores an ask naming another repo, another number, or sent to an agent', () => {
+      expect(asksMeAbout(open([ask('a1', { to: OVERMIND, meta: { pr: 214, repo: 'acme/name' } })]), slug, 214, toMe)).toBe(false);
+      expect(asksMeAbout(open([ask('a2', { to: OVERMIND, meta: { pr: 215, repo: slug } })]), slug, 214, toMe)).toBe(false);
+      expect(asksMeAbout(open([ask('a3', { to: 'fixer', meta: { pr: 214, repo: slug } })]), slug, 214, toMe)).toBe(false);
+    });
+
+    it('ignores an answered ask and one past its ttl', () => {
+      const answered = [
+        ask('a1', { to: OVERMIND, meta: { pr: 214, repo: slug } }),
+        entry({ id: 'x1', kind: 'answer', thread: 'a1', body: 'merge now' }),
+      ];
+      expect(asksMeAbout(open(answered), slug, 214, toMe)).toBe(false);
+      const stale = ask('a2', { ts: NOW - LEDGER_ASK_TTL_MS - 1, to: OVERMIND, meta: { pr: 214, repo: slug } });
+      expect(asksMeAbout(open([stale]), slug, 214, toMe)).toBe(false);
+    });
+  });
+
+  describe('mergeWaiting', () => {
+    const merge = (id: string, command: string, over: Partial<LedgerEntry> = {}) =>
+      ask(id, { to: OVERMIND, meta: { kind: 'permission', tool: 'Bash', input: { command } }, ...over });
+
+    it('reads the shipper\'s gh pr merge permission ask for this PR', () => {
+      const one = merge('m1', 'gh pr merge 214 --squash --match-head-commit 3f2a9c1 --repo owner/name');
+      expect(mergeWaiting(open([one]), slug, 214)).toBe(true);
+    });
+
+    it('ignores another number, a command without --repo, and another asker', () => {
+      expect(mergeWaiting(open([merge('m1', 'gh pr merge 215 --squash --repo owner/name')]), slug, 214)).toBe(false);
+      expect(mergeWaiting(open([merge('m2', 'gh pr merge 214 --squash')]), slug, 214)).toBe(false);
+      expect(mergeWaiting(open([merge('m3', 'gh pr merge 214 --repo owner/name', { from: 'builder' })]), slug, 214)).toBe(false);
+    });
+
+    it('reads --repo=owner/name and ignores another repo', () => {
+      expect(mergeWaiting(open([merge('m1', 'gh pr merge 214 --squash --repo=Owner/Name')]), slug, 214)).toBe(true);
+      expect(mergeWaiting(open([merge('m2', 'gh pr merge 214 --squash --repo acme/name')]), slug, 214)).toBe(false);
+    });
+  });
+
+  describe('mergeAsk (HIVE-205)', () => {
+    const merge = (id: string, command: string) =>
+      ask(id, { to: OVERMIND, meta: { kind: 'permission', tool: 'Bash', input: { command } } });
+
+    it('returns the waiting merge card itself, so Merge can answer it', () => {
+      const card = merge('m1', 'gh pr merge 214 --squash --match-head-commit abc --repo owner/name');
+      expect(mergeAsk(open([card]), 'owner/name', 214)?.id).toBe('m1');
+      expect(mergeAsk(open([card]), 'owner/name', 215)).toBeUndefined();
+      expect(mergeWaiting(open([card]), 'owner/name', 214)).toBe(true);
+    });
+  });
+});
+
+describe('matches: ticket (HIVE-203)', () => {
+  it('keeps entries whose meta.ticket names the key, case-insensitively', () => {
+    const a = entry({ id: 'a', meta: { ticket: 'hive-7' } });
+    const b = entry({ id: 'b', meta: { ticket: 'HIVE-8' } });
+    const c = entry({ id: 'c' });
+    const d = entry({ id: 'd', meta: { ticket: 7 } });
+    expect([a, b, c, d].filter((e) => matches(e, { ticket: 'HIVE-7' })).map((e) => e.id)).toEqual(['a']);
+  });
+
+  it('ignores ticket when the query has none', () => {
+    expect(matches(entry({ id: 'x' }), {})).toBe(true);
   });
 });
 
@@ -353,6 +492,11 @@ describe('resolveRef', () => {
 
   it('returns undefined for anything it does not know', () => {
     expect(resolveRef(entries, 'a9')).toBeUndefined();
+  });
+
+  it('resolves a ref in any case, since A7 is the same handle to whoever types it', () => {
+    expect(resolveRef(entries, 'A7')).toBe('20260828-100000-0001');
+    expect(resolveRef([entry({ id: '20260828-100000-0002', kind: 'ask', ref: 'A8' })], 'a8')).toBe('20260828-100000-0002');
   });
 });
 
@@ -719,5 +863,203 @@ describe('laneOfRun (HIVE-186; shared since HIVE-188)', () => {
   it('only trusts the agent\'s own run.started — first one wins', () => {
     const forged = { ...started('r1', 'thread:Z'), id: 'f', from: 'other' };
     expect(laneOfRun('builder', 'r1', [forged, started('r1', 'thread:A')])).toBe('thread:A');
+  });
+});
+
+describe('closedAskThreads (HIVE-214)', () => {
+  it('closes a thread on an answer, a done and a failed', () => {
+    const closed = closedAskThreads([
+      entry({ id: 'x1', kind: 'answer', thread: 'a1' }),
+      entry({ id: 'x2', kind: 'done', thread: 'a2' }),
+      entry({ id: 'x3', kind: 'failed', thread: 'a3' }),
+      entry({ id: 'x4', kind: 'post', thread: 'a4' }),
+    ]);
+
+    expect([...closed].sort()).toEqual(['a1', 'a2', 'a3']);
+  });
+
+  it('closes a thread the overmind expired', () => {
+    const expiry = entry({ id: 'e1', from: OVERMIND, kind: 'event', thread: 'a1', meta: { expired: 'a1' } });
+
+    expect(closedAskThreads([expiry]).has('a1')).toBe(true);
+  });
+
+  it('ignores an expiry marker anyone else wrote', () => {
+    const forged = entry({ id: 'e2', from: 'sess-9', kind: 'event', meta: { expired: 'a1' } });
+
+    expect(closedAskThreads([forged]).has('a1')).toBe(false);
+  });
+});
+
+describe('shipTrack (HIVE-205)', () => {
+  const slug = 'acme/server';
+  const MIN = 60_000;
+  const at = (minutes: number) => NOW - 200 * MIN + minutes * MIN;
+  const claim = entry({ id: 'c1', ts: at(0), from: 'shipper', kind: 'claim', meta: { task: 'Acme/Server#1182' } });
+  const stage = (id: string, minutes: number, name: string) =>
+    entry({ id, ts: at(minutes), from: 'shipper', body: name, meta: { pr: 1182, repo: slug, stage: name } });
+  const askTo = (id: string, minutes: number, to: string, body: string, meta?: Record<string, unknown>) =>
+    entry({ id, ts: at(minutes), from: 'shipper', kind: 'ask', to, body, ...(meta ? { meta } : {}) });
+  const stop = (track: ReturnType<typeof shipTrack>, name: string) => track.stops.find((s) => s.stage === name)!;
+
+  it('has all eight stops, in order, and nothing held with no entries', () => {
+    const track = shipTrack([], slug, 1182, NOW);
+    expect(track.stops.map((s) => s.stage)).toEqual([...SHIP_STOPS]);
+    expect(track).toMatchObject({ held: false, current: null });
+    expect(track.stops.every((s) => s.firstAt === null && s.spentMs === 0 && s.holder === null)).toBe(true);
+  });
+
+  it('walks forward: the claim opens intake, each post the next stop, the last runs to now', () => {
+    const track = shipTrack([claim, stage('p1', 2, 'self-review'), stage('p2', 30, 'fix-self'), stage('p3', 56, 'ready'), stage('p4', 57, 'ci')], slug, 1182, at(100));
+    expect(stop(track, 'intake')).toEqual({ stage: 'intake', firstAt: at(0), spentMs: 2 * MIN, holder: 'shipper' });
+    expect(stop(track, 'self-review')).toMatchObject({ firstAt: at(2), spentMs: 28 * MIN });
+    expect(stop(track, 'ci')).toMatchObject({ firstAt: at(57), spentMs: 43 * MIN });
+    expect(track).toMatchObject({ held: true, current: { stage: 'ci' } });
+    expect(stop(track, 'merge')).toEqual({ stage: 'merge', firstAt: null, spentMs: 0, holder: null });
+  });
+
+  it('steps back from approval to findings, summing the time at findings over both visits', () => {
+    const track = shipTrack([claim, stage('p1', 10, 'findings'), stage('p2', 30, 'approval'), stage('p3', 40, 'findings')], slug, 1182, at(55));
+    expect(stop(track, 'findings')).toMatchObject({ firstAt: at(10), spentMs: (20 + 15) * MIN });
+    expect(stop(track, 'approval')).toMatchObject({ spentMs: 10 * MIN });
+    expect(track.current?.stage).toBe('findings');
+  });
+
+  it('takes the holder from an ask to acr or fixer naming the PR in meta or in its words', () => {
+    const track = shipTrack([
+      claim,
+      stage('p1', 2, 'self-review'),
+      askTo('a1', 2, 'acr', 'Review https://github.com/acme/server/pull/1182 --self'),
+      stage('p2', 30, 'fix-self'),
+      askTo('a2', 30, 'fixer', 'Fix these', { pr: 1182, repo: slug }),
+      stage('p3', 56, 'ready'),
+    ], slug, 1182, at(60));
+    expect(stop(track, 'self-review').holder).toBe('acr');
+    expect(stop(track, 'fix-self').holder).toBe('fixer');
+    expect(stop(track, 'ready').holder).toBe('shipper');
+  });
+
+  it('ignores an ask for another PR in the same window, and a number that only starts the same', () => {
+    const track = shipTrack([
+      claim,
+      stage('p1', 10, 'findings'),
+      askTo('a1', 11, 'fixer', 'acme/server#11820 has findings'),
+      askTo('a2', 12, 'fixer', 'acme/other#1182 has findings'),
+      askTo('a3', 13, 'fixer', 'xacme/server#1182 is not this one'),
+    ], slug, 1182, at(20));
+    expect(stop(track, 'findings').holder).toBe('shipper');
+  });
+
+  it('ends on a release or a closed post, keeping the times', () => {
+    const release = entry({ id: 'r1', ts: at(20), from: 'shipper', kind: 'release', meta: { task: 'acme/server#1182' } });
+    const released = shipTrack([claim, stage('p1', 10, 'ci'), release], slug, 1182, at(90));
+    expect(released).toMatchObject({ held: false, current: null });
+    expect(stop(released, 'ci').spentMs).toBe(10 * MIN);
+
+    const closed = shipTrack([claim, stage('p1', 10, 'merge'), stage('p2', 12, 'closed')], slug, 1182, at(90));
+    expect(closed).toMatchObject({ held: false, current: null });
+    expect(stop(closed, 'merge')).toMatchObject({ firstAt: at(10), spentMs: 2 * MIN });
+  });
+
+  it('reads only the shipper, only this repo, and holds an unknown stage word without a stop', () => {
+    const track = shipTrack([
+      entry({ id: 'x1', ts: at(1), from: 'drone', meta: { pr: 1182, repo: slug, stage: 'ci' } }),
+      entry({ id: 'x2', ts: at(1), from: 'shipper', meta: { pr: 1182, repo: 'other/server', stage: 'ci' } }),
+      stage('p1', 3, 'sync'),
+    ], slug, 1182, at(10));
+    expect(track).toMatchObject({ held: true, current: null });
+    expect(track.stops.every((s) => s.firstAt === null)).toBe(true);
+    expect(shipTrack([claim], '', 1182, at(10)).held).toBe(false);
+  });
+
+  it('returns its visits oldest first, the open one with no end (HIVE-208)', () => {
+    const track = shipTrack([claim, stage('p1', 2, 'self-review'), askTo('a1', 3, 'acr', 'https://github.com/acme/server/pull/1182 --self'), stage('p2', 30, 'fix-self')], slug, 1182, at(40));
+    expect(track.visits).toEqual([
+      { stage: 'intake', from: at(0), to: at(2), holder: null },
+      { stage: 'self-review', from: at(2), to: at(30), holder: 'acr' },
+      { stage: 'fix-self', from: at(30), to: null, holder: null },
+    ]);
+    expect(shipTrack([], slug, 1182, NOW).visits).toEqual([]);
+  });
+});
+
+describe('the PR page readings (HIVE-205)', () => {
+  const slug = 'acme/server';
+  const log = [
+    entry({ id: 'i1', ts: 1, from: 'builder', kind: 'ask', to: 'shipper', body: 'Ship it', meta: { pr: 1182, repo: slug, ticket: 'INCORP-598', stage: 'intake' } }),
+    entry({ id: 'i2', ts: 2, from: 'sess-b', kind: 'ask', to: 'shipper', body: 'Ship mine', meta: { pr: 7, repo: slug, stage: 'intake' } }),
+    entry({ id: 'f1', ts: 3, from: 'fixer', kind: 'claim', meta: { task: 'acme/server#1182 findings' } }),
+    entry({ id: 'f2', ts: 4, from: 'fixer', body: 'On it: acme/server#1182 finding 1, the registered agent' }),
+    entry({ id: 'f3', ts: 5, from: 'fixer', body: 'acme/server#7 is clean' }),
+    entry({ id: 'r1', ts: 6, from: 'acr', kind: 'answer', body: 'changes requested', meta: { review_url: 'https://github.com/acme/server/pull/1182#pullrequestreview-7' } }),
+    entry({ id: 'r2', ts: 7, from: 'sess-a', body: 'x', meta: { review_url: 'https://github.com/acme/server/pull/1182#pullrequestreview-9' } }),
+    entry({ id: 'f4', ts: 8, from: 'fixer', body: 'Pushed the fix for acme/server#1182' }),
+  ];
+
+  it('prEvents: every entry naming the PR, oldest first', () => {
+    expect(prEvents(log, slug, 1182).map((e) => e.id)).toEqual(['i1', 'f1', 'f2', 'f4']);
+    expect(prEvents(log, '', 1182)).toEqual([]);
+  });
+
+  it('reviewUrls: acr’s review URLs only', () => {
+    expect([...reviewUrls(log)]).toEqual(['https://github.com/acme/server/pull/1182#pullrequestreview-7']);
+  });
+
+  it('prOpener: who handed the PR to the shipper, or null', () => {
+    expect(prOpener(log, slug, 1182)).toBe('builder');
+    expect(prOpener(log, 'ACME/Server', 7)).toBe('sess-b');
+    expect(prOpener(log, slug, 99)).toBeNull();
+  });
+
+  it('holderPost: the holder’s newest entry naming the PR', () => {
+    expect(holderPost(log, slug, 1182, 'fixer')?.id).toBe('f4');
+    expect(holderPost(log, slug, 1182, 'acr')).toBeNull();
+    expect(holderPost(log, '', 1182, 'fixer')).toBeNull();
+  });
+});
+
+describe('delegatesOf (idle with agents)', () => {
+  const AGENTS = new Set(['shipper', 'fixer', 'acr', 'builder', 'pr-patrol-nightly']);
+  const isAgent = (id: string) => AGENTS.has(id);
+  const ask = (id: string, from: string, to: string, meta?: Record<string, unknown>) =>
+    entry({ id, from, to, kind: 'ask', body: 'job', ...(meta === undefined ? {} : { meta }) });
+  const of = (log: LedgerEntry[], party = 'sess-a') => delegatesOf(openAsks(log, NOW), log, party, isAgent);
+
+  it('names the agents the session asked, once each, in the order it asked', () => {
+    const log = [
+      ask('a1', 'sess-a', 'shipper', { pr: 106, repo: 'behiques/hivetty' }),
+      ask('a2', 'sess-a', 'builder', { ticket: 'HIVE-9' }),
+      ask('a3', 'sess-a', 'shipper', { pr: 107, repo: 'behiques/hivetty' }),
+    ];
+    expect(of(log).map((d) => d.agent)).toEqual(['shipper', 'builder']);
+  });
+
+  it('drops a closed ask, an ask to a session or the overmind, and another party\'s ask', () => {
+    const log = [
+      ask('a1', 'sess-a', 'shipper'),
+      entry({ id: 'd1', from: 'shipper', kind: 'done', body: 'merged', thread: 'a1' }),
+      ask('a2', 'sess-a', 'sess-b'),
+      ask('a3', 'sess-a', OVERMIND),
+      ask('a4', 'sess-b', 'fixer'),
+    ];
+    expect(of(log)).toEqual([]);
+  });
+
+  it('counts a held ask only once its PR has closed', () => {
+    const held = ask('a1', 'sess-a', 'builder', { after: 'behiques/hivetty#108' });
+    expect(of([held])).toEqual([]);
+    const closed = entry({ id: 'c1', from: 'shipper', body: 'closed', meta: { pr: 108, repo: 'behiques/hivetty', stage: 'closed' } });
+    expect(of([held, closed]).map((d) => d.agent)).toEqual(['builder']);
+  });
+
+  it('lists the helpers an agent brought in for the same PR or ticket, and no other job\'s', () => {
+    const log = [
+      ask('a1', 'sess-a', 'shipper', { pr: 106, repo: 'behiques/hivetty' }),
+      ask('s1', 'shipper', 'acr', { pr: 106, repo: 'Behiques/Hivetty' }),
+      ask('s2', 'shipper', 'fixer', { pr: 106, repo: 'behiques/hivetty' }),
+      ask('s3', 'shipper', 'acr', { pr: 99, repo: 'behiques/hivetty' }),
+      ask('s4', 'shipper', 'sess-a', { pr: 106, repo: 'behiques/hivetty' }),
+    ];
+    expect(of(log)).toEqual([{ agent: 'shipper', helpers: ['acr', 'fixer'] }]);
   });
 });

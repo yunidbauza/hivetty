@@ -53,7 +53,7 @@ export function SelectField({
      * `aria-describedby` is what says so.
      */
     <div className={cn('flex flex-col gap-1', className)}>
-      <label htmlFor={id} className="text-[12.5px] text-muted">
+      <label htmlFor={id} className="text-control text-muted">
         {label}
       </label>
 
@@ -64,8 +64,8 @@ export function SelectField({
           onChange={(event) => onChange(event.target.value)}
           aria-describedby={hint ? hintId : undefined}
           className={cn(
-            'w-full appearance-none rounded-[6px] border border-border bg-panel-2 py-1.5 pr-7 pl-2.5',
-            'text-[12.5px] text-ink outline-none hover:bg-hover',
+            'w-full appearance-none rounded-full border border-border bg-panel-2 py-1.5 pr-7 pl-3',
+            'text-control text-ink outline-none hover:bg-hover',
             'focus-visible:ring-1 focus-visible:ring-brand',
           )}
         >
@@ -87,7 +87,7 @@ export function SelectField({
       </span>
 
       {hint ? (
-        <span id={hintId} className="text-[11.5px] text-subtle">
+        <span id={hintId} className="text-ui-sm text-subtle">
           {hint}
         </span>
       ) : null}

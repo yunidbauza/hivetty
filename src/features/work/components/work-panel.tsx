@@ -1,24 +1,32 @@
-import { type ReactNode } from 'react';
+import { CaretRight, MagnifyingGlass } from '@phosphor-icons/react';
+import { type ReactNode, useState } from 'react';
 
 import { usePrRefresh } from '@/hooks/use-pr-refresh';
 import { usePullToRefresh } from '@/hooks/use-pull-to-refresh';
 import { useTicketRefresh } from '@/hooks/use-ticket-refresh';
+import { cn } from '@/lib/utils';
+import type { Ticket } from '@/types/ticket';
 
 import { EmptyState } from '@components/ui/empty-state';
 import { PullIndicator } from '@components/ui/pull-indicator';
 import { SwarmLine } from '@components/ui/swarm-line';
 import { SourceProblem } from '@features/shared/components/source-problem';
-import { TicketCard } from '@features/work/components/ticket-card';
+import { StaleLine } from '@features/shared/components/stale-line';
 import { TicketListSkeleton } from '@features/work/components/ticket-card-skeleton';
+import { TicketRow } from '@features/work/components/ticket-row';
 import { WorkSearchRow } from '@features/work/components/work-search-row';
+import { JIRA_MAX_ISSUES } from '@shared/jira-contract';
 import {
   useRefreshTickets,
+  useTicketGroups,
+  useTicketRowModels,
   useTicketSearch,
   useTicketSource,
   useTickets,
+  useTicketsReadAt,
   type TicketSource,
 } from '@stores/hive-store';
-import { useWorkSearchTerm } from '@stores/ui-store';
+import { useToggleWorkGroup, useWorkFolded, useWorkSearchTerm } from '@stores/ui-store';
 
 /**
  * Work panel — one card per ticket, with its linked sessions and PRs.
@@ -45,7 +53,7 @@ import { useWorkSearchTerm } from '@stores/ui-store';
  *
  * ## Refreshed on open, and every minute after (HIVE-81)
  *
- * `left-rail.tsx` swaps panels by unmounting them, so mounting *is* the pane
+ * `list-panel.tsx` swaps panels by unmounting them, so mounting *is* the pane
  * opening — the first read is exactly as prompt as the user looking at it. It
  * used to stop there, on the argument that a Jira issue moves when a human
  * moves it, which is roughly never while the panel is open. The premise is
@@ -54,6 +62,12 @@ import { useWorkSearchTerm } from '@stores/ui-store';
  * the panel stays open, on the same shared-timer poller the PR rows already
  * used.
  */
+
+/** The stale line reads its own time, so only it re-renders on a sweep (HIVE-211, D5). */
+function TicketsStaleLine({ failedAt, onRetry }: { failedAt: number | undefined; onRetry: () => void }) {
+  const readAt = useTicketsReadAt();
+  return <StaleLine service="Jira" failedAt={failedAt} readAt={readAt} onRetry={onRetry} />;
+}
 
 /** The line above the list. `null` when there is nothing worth saying. */
 function SourceNotice({
@@ -70,7 +84,7 @@ function SourceNotice({
     return (
       <div className="flex flex-col gap-[3px] pb-1">
         <SwarmLine phraseKey="empty.workUnconfigured" />
-        <p className="px-1 text-[11.5px] leading-[1.45] text-subtle">
+        <p className="px-1 text-ui-sm leading-[1.45] text-subtle">
           No Jira connection yet. Add your site and an API token in{' '}
           <span className="text-muted">Settings → Integrations</span>.
         </p>
@@ -83,18 +97,13 @@ function SourceNotice({
   }
 
   if (source.stale) {
-    return (
-      <SourceProblem
-        message="Could not reach Jira. These may be out of date."
-        onRetry={onRetry}
-      />
-    );
+    return <TicketsStaleLine failedAt={source.failedAt} onRetry={onRetry} />;
   }
 
   if (source.capped) {
     return (
-      <p className="px-1 pb-1 text-[11.5px] leading-[1.45] text-subtle">
-        Showing the first 200 — your query matched more.
+      <p className="px-1 pb-1 text-ui-sm leading-[1.45] text-subtle">
+        {`Showing the first ${String(JIRA_MAX_ISSUES)} — your query matched more. Narrow it in Jira.`}
       </p>
     );
   }
@@ -105,13 +114,10 @@ function SourceNotice({
 /**
  * The panel's frame: a header that stays put, over a list that scrolls.
  *
- * This panel used to have no header at all, which is why it was deliberately
- * left out of the equivalent change to the PRs panel — its cards scrolling in
- * the rail's own container was already right. A search box changes that: the
- * rail's `role="tabpanel"` wrapper scrolls whatever it holds, so the box would
- * travel upward with the results, out of reach of the list it controls.
+ * The list panel's wrapper scrolls whatever it holds, so a header would travel
+ * upward with the results, out of reach of the list it controls.
  *
- * Filling the rail's height exactly is what fixes it — the outer scroller then
+ * Filling the panel's height exactly is what fixes it — the outer scroller then
  * has nothing to scroll and never engages. Duplicated from `prs-panel.tsx`
  * rather than shared: the two slices are fenced from each other by design, and
  * a twenty-line frame in `features/shared` would be a dependency between them
@@ -143,12 +149,102 @@ function WorkLayout({
   );
 }
 
+/**
+ * Round two's header (HIVE-203): the place's name, how many tickets and how
+ * many need you, and a button that shows the search box. The box stays shown
+ * while a term is in it, so a search never hides its own control.
+ */
+function WorkHeader() {
+  const term = useWorkSearchTerm();
+  const { total, needYou } = useTicketGroups();
+  const [searchShown, setSearchShown] = useState(term !== '');
+
+  return (
+    <>
+      <div className="flex items-baseline gap-2.5 px-2 pt-2.5 pb-2">
+        <h2 className="text-ui-lg font-semibold text-ink">Work</h2>
+        <span className="text-ui-sm text-muted">
+          {total} tickets
+          {needYou > 0 ? (
+            <>
+              {' · '}
+              <span className="text-amber-text">{needYou} need you</span>
+            </>
+          ) : null}
+        </span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          aria-label="Search tickets"
+          aria-pressed={searchShown}
+          onClick={() => setSearchShown((shown) => !shown)}
+          className="self-center rounded-full p-1.5 text-muted hover:bg-hover hover:text-ink"
+        >
+          <MagnifyingGlass size={15} />
+        </button>
+      </div>
+      {searchShown || term !== '' ? <WorkSearchRow /> : null}
+    </>
+  );
+}
+
+/** The standing list in its groups, each with a fold caret; Done starts folded (HIVE-203). */
+function TicketGroups() {
+  const { groups } = useTicketGroups();
+  const folded = useWorkFolded();
+  const toggle = useToggleWorkGroup();
+
+  return (
+    <>
+      {groups.map((group) => {
+        const open = !folded[group.category];
+        return (
+          <div key={group.category} className="flex flex-col gap-0.5">
+            <button
+              type="button"
+              aria-expanded={open}
+              onClick={() => toggle(group.category)}
+              className="flex items-center gap-1.5 px-2 pt-2 pb-1 text-left"
+            >
+              <CaretRight
+                size={10}
+                aria-hidden
+                className={cn('text-subtle transition-transform', open && 'rotate-90')}
+              />
+              <span className="text-ui-sm font-semibold tracking-[0.06em] text-subtle uppercase">
+                {group.label}
+              </span>
+              <span className="text-ui-sm text-subtle">{group.rows.length}</span>
+            </button>
+            {open ? group.rows.map((row) => <TicketRow key={row.ticket.key} row={row} />) : null}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+/** Search results as rows, ungrouped: a search replaces the list rather than filtering it. */
+function TicketRows({ tickets }: { tickets: readonly Ticket[] }) {
+  const rows = useTicketRowModels(tickets);
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {rows.map((row) => (
+        <TicketRow key={row.ticket.key} row={row} />
+      ))}
+    </div>
+  );
+}
+
+/** The Work panel (HIVE-203): grouped rows, the skeleton, the notices, pull to refresh and both pollers. */
 export function WorkPanel() {
   const tickets = useTickets();
   const source = useTicketSource();
   const refresh = useRefreshTickets();
   const search = useTicketSearch();
   const term = useWorkSearchTerm();
+  const header = <WorkHeader />;
 
   /** A search replaces the list rather than filtering it — see `WorkSearchRow`. */
   const searching = term !== '';
@@ -201,7 +297,7 @@ export function WorkPanel() {
   */
   if (source.kind === 'loading' && !searching) {
     return (
-      <WorkLayout header={<WorkSearchRow />}>
+      <WorkLayout header={header}>
         <TicketListSkeleton />
       </WorkLayout>
     );
@@ -217,9 +313,9 @@ export function WorkPanel() {
     const results = search.results;
 
     return (
-      <WorkLayout header={<WorkSearchRow />}>
+      <WorkLayout header={header}>
         {search.error !== null ? (
-          <p className="px-1 pb-1 text-[11.5px] leading-[1.45] text-amber">
+          <p className="px-1 pb-1 text-ui-sm leading-[1.45] text-amber-text">
             {search.error}
           </p>
         ) : null}
@@ -240,9 +336,7 @@ export function WorkPanel() {
           <TicketListSkeleton />
         ) : null}
 
-        {results?.map((ticket) => (
-          <TicketCard key={ticket.key} ticket={ticket} />
-        ))}
+        {results ? <TicketRows tickets={results} /> : null}
 
         {search.error === null && !search.searching && results?.length === 0 ? (
           <EmptyState phrase="empty.work" creature="spire">
@@ -254,14 +348,12 @@ export function WorkPanel() {
   }
 
   return (
-    <WorkLayout header={<WorkSearchRow />} listRef={pull.ref}>
+    <WorkLayout header={header} listRef={pull.ref}>
       <PullIndicator distance={pull.distance} phase={pull.phase} />
 
       <SourceNotice source={source} onRetry={retry} />
 
-      {tickets.map((ticket) => (
-        <TicketCard key={ticket.key} ticket={ticket} />
-      ))}
+      <TicketGroups />
 
       {/*
         An empty live result is not a failure and not a misconfiguration — it is

@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 
-import { useRemoteLink, useUnreadCount } from '@stores/hive-store';
+import { useRemoteLink, useSummonsCount } from '@stores/hive-store';
 
 /**
- * Tell main how many unread rows this window's inbox is showing (HIVE-159).
+ * Tell main how many rows wait on you in this window's inbox (HIVE-159, HIVE-214).
  *
  * While attached, no hub runs in this process, so nothing in main knows the
  * count: it is computed on the server, and until this hook the server wrote it
@@ -36,7 +36,12 @@ import { useRemoteLink, useUnreadCount } from '@stores/hive-store';
  * is what fills the rows this counts.
  */
 export function useDockBadge(): void {
-  const unread = useUnreadCount();
+  /*
+    The Summons count (HIVE-214), with nothing left out: the dock speaks for
+    the app when nobody is looking, so the session on stage counts too. The hub
+    computes the same number from the same rows in local mode.
+  */
+  const count = useSummonsCount(null);
   const link = useRemoteLink();
 
   useEffect(() => {
@@ -45,6 +50,6 @@ export function useDockBadge(): void {
       The rejection is swallowed: the dock is decoration, and a report lost
       to a window torn down mid-call is replaced by the next one.
     */
-    void window.hive?.notifications.badge(unread).catch(() => undefined);
-  }, [unread, link]);
+    void window.hive?.notifications.badge(count).catch(() => undefined);
+  }, [count, link]);
 }

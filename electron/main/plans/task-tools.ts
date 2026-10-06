@@ -55,6 +55,14 @@ const withTasks = (entityId: string, tasks: PlanTask[]): SessionPlan => ({
   allDone: isAllDone(tasks),
 });
 
+/** The times a status change earns. `startedAt` is never re-stamped. */
+const stamped = (task: PlanTask, status: PlanTaskStatus, now: number): PlanTask => ({
+  ...task,
+  status,
+  ...(status === 'in_progress' && task.startedAt === undefined ? { startedAt: now } : {}),
+  ...(status === 'completed' && task.status !== 'completed' ? { endedAt: now } : {}),
+});
+
 /**
  * One `PostToolUse` of a task tool, folded into the session's plan.
  *
@@ -67,10 +75,13 @@ const withTasks = (entityId: string, tasks: PlanTask[]): SessionPlan => ({
  *   `deleted`. An id the plan does not hold is ignored, which is how a
  *   subagent's task (same id space) stays out if one ever slips through.
  * - `TodoWrite` replaces the whole list; ids are `"1".."n"` by position.
+ *
+ * `now` stamps `startedAt` / `endedAt` (HIVE-201); the store passes its injected clock.
  */
 export function reduceTaskTool(
   plan: SessionPlan | undefined,
   call: PlanToolCall,
+  now = 0,
 ): SessionPlan | undefined {
   const input = record(call.toolInput);
   switch (call.toolName) {
@@ -80,7 +91,11 @@ export function reduceTaskTool(
       if (id === undefined || title === undefined) return plan;
       // A task-tools plan is the base only while it is live; anything else starts fresh.
       const base = plan?.source === 'task-tools' && !plan.allDone ? plan.tasks : [];
-      return withTasks(call.entityId, [...base, { id, title, status: 'pending' }]);
+      const activeForm = str(input.activeForm);
+      return withTasks(call.entityId, [
+        ...base,
+        { id, title, status: 'pending', ...(activeForm === undefined ? {} : { activeForm }) },
+      ]);
     }
     case 'TaskUpdate': {
       if (plan?.source !== 'task-tools') return plan;
@@ -95,20 +110,42 @@ export function reduceTaskTool(
       }
       const status = isStatus(input.status) ? input.status : current.status;
       const title = str(input.subject) ?? current.title;
-      if (status === current.status && title === current.title) return plan;
+      const activeForm = str(input.activeForm) ?? current.activeForm;
+      if (status === current.status && title === current.title && activeForm === current.activeForm) {
+        return plan;
+      }
+      const next = stamped(
+        { ...current, title, ...(activeForm === undefined ? {} : { activeForm }) },
+        status,
+        now,
+      );
       return withTasks(
         call.entityId,
-        plan.tasks.map((task) => (task === current ? { ...current, status, title } : task)),
+        plan.tasks.map((task) => (task === current ? next : task)),
       );
     }
     case 'TodoWrite': {
       if (!Array.isArray(input.todos)) return plan;
+      // A whole-list rewrite: times survive by title, the only identity a todo has.
+      const previous = new Map(
+        plan?.source === 'task-tools' ? plan.tasks.map((task) => [task.title, task]) : [],
+      );
       const tasks = input.todos.flatMap((todo: unknown, index): PlanTask[] => {
         const fields = record(todo);
         const title = str(fields.content);
         if (title === undefined) return [];
         const status = isStatus(fields.status) ? fields.status : 'pending';
-        return [{ id: String(index + 1), title, status }];
+        const activeForm = str(fields.activeForm);
+        const before = previous.get(title);
+        const base: PlanTask = {
+          id: String(index + 1),
+          title,
+          status: before?.status ?? 'pending',
+          ...(activeForm === undefined ? {} : { activeForm }),
+          ...(before?.startedAt === undefined ? {} : { startedAt: before.startedAt }),
+          ...(before?.endedAt === undefined ? {} : { endedAt: before.endedAt }),
+        };
+        return [stamped(base, status, now)];
       });
       return withTasks(call.entityId, tasks);
     }

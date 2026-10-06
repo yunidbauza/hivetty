@@ -10,7 +10,6 @@ import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 
 import { seedDemoFleet } from '@tests/support/demo-fleet';
-import { seedLedger } from '@tests/support/ledger';
 
 import { notif, resetNotifIds } from '../../../support/notifications';
 
@@ -80,7 +79,7 @@ describe('NotificationCard', () => {
     const { rerender } = render(
       <NotificationCard notif={notif({ kind: 'session.blocked' })} />,
     );
-    expect(document.querySelector('.text-amber')).not.toBeNull();
+    expect(document.querySelector('.text-amber-text')).not.toBeNull();
 
     rerender(<NotificationCard notif={notif({ kind: 'pr.merged' })} />);
     expect(document.querySelector('.text-green')).not.toBeNull();
@@ -293,44 +292,6 @@ describe('NotificationCard', () => {
   });
 
   /**
-   * The structural fact Step 3 exists for: an ask cannot be a branch inside
-   * the button, so an `ask` action forks the whole render onto `AskCard`
-   * (HIVE-118).
-   */
-  describe('dispatching an ask instead of drawing the button row', () => {
-    it('renders an AskCard for an ask action instead of the button row', () => {
-      seedLedger([
-        {
-          id: 'a41',
-          ts: Date.now(),
-          from: 'drone',
-          to: 'overmind',
-          kind: 'ask',
-          body: 'ship it?',
-        },
-      ]);
-
-      render(
-        <NotificationCard
-          notif={notif({
-            title: 'ship it?',
-            action: { type: 'ask', thread: 'a41' },
-          })}
-        />,
-      );
-
-      // No button anywhere named after the ask — the old button row is gone,
-      // not merely relabelled.
-      expect(
-        screen.queryByRole('button', { name: /ship it/ }),
-      ).not.toBeInTheDocument();
-      // `AskCard` renders an `<article>`, never a `<button>` (see its own
-      // doc comment on why the two cannot share a role).
-      expect(screen.getByRole('article')).toBeInTheDocument();
-    });
-  });
-
-  /**
    * An agent's entity id *is* its name (`hive-store.ts`'s
    * `entities[summary.name]`), so opening one from the row is a direct
    * `openEntity` call — never `currentRowFor`, which exists to translate a
@@ -361,8 +322,8 @@ describe('NotificationCard', () => {
    * Everything the renderer does not answer itself goes back to main
    * (HIVE-151).
    *
-   * The row answers `session`, `agent` and `none` locally, and forks to
-   * `AskCard` before it ever draws a button row for an `ask`. What is left —
+   * The row answers `session`, `agent` and `none` locally; an `ask` never
+   * reaches it, because the caller renders `AskCard` instead. What is left —
    * `url`, `update.download`, `update.install` — is main's by definition: only
    * main has the external-link allowlist, and installing an update is not
    * something a renderer can do.

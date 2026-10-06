@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { TerminalSurface } from '@/components/terminal/terminal-surface';
 import { cancelClone, onCloneDone, startClone } from '@/lib/clone-repo';
 
+import { Button } from '@components/ui/button';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
 import { DirectoryPicker } from '@features/shared/components/directory-picker';
 import { useChooseDirectory } from '@hooks/use-choose-directory';
@@ -145,7 +146,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
         <button
           type="button"
           onClick={onDone}
-          className="flex w-fit items-center gap-1.5 text-[12px] text-muted hover:text-ink"
+          className="flex w-fit items-center gap-1.5 text-control text-muted hover:text-ink"
         >
           <ArrowLeft size={12} weight="bold" />
           Projects
@@ -160,7 +161,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
         }
         description={
           phase === 'compose'
-            ? 'The Hive runs git in a terminal, so it can ask you for credentials'
+            ? 'Hive TTY runs git in a terminal, so it can ask you for credentials'
             : (targetPath ?? '')
         }
       />
@@ -168,7 +169,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
       {phase === 'compose' ? (
         <>
           <div className="flex flex-col gap-1.5">
-            <label htmlFor="clone-url" className="text-[11.5px] text-muted">
+            <label htmlFor="clone-url" className="text-ui-sm text-muted">
               Repository URL
             </label>
             <input
@@ -179,27 +180,27 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
               placeholder="https://github.com/owner/repo.git"
               spellCheck={false}
               autoComplete="off"
-              className="rounded-md border border-border bg-bg px-2.5 py-1.5 text-[12.5px] text-ink placeholder:text-subtle"
+              className="rounded-full border border-border bg-bg px-3 py-1.5 text-control text-ink placeholder:text-subtle"
             />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <span className="text-[11.5px] text-muted">Clone into</span>
+            <span className="text-ui-sm text-muted">Clone into</span>
             <div className="flex items-stretch gap-2">
-              <span className="flex-1 truncate rounded-md border border-border bg-bg px-2.5 py-1.5 text-[12.5px] text-ink">
+              <span className="flex-1 truncate rounded-full border border-border bg-bg px-3 py-1.5 text-control text-ink">
                 {parentPath ?? (
                   <span className="text-subtle">Choose a folder…</span>
                 )}
               </span>
-              <button
-                type="button"
+              <Button
+                variant="ghost"
                 onClick={onChoose}
-                disabled={choosing}
-                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-[12.5px] text-muted hover:bg-hover hover:text-ink disabled:opacity-60"
+                pending={choosing}
+                className="flex items-center gap-1.5 rounded-md border-border px-3 py-1.5 text-control leading-normal text-muted hover:bg-hover hover:text-ink aria-disabled:opacity-60"
               >
                 <FolderOpen size={12} weight="bold" />
                 Choose…
-              </button>
+              </Button>
             </div>
           </div>
 
@@ -209,7 +210,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
             this only says what that will be.
           */}
           {ready ? (
-            <p className="text-[11.5px] text-subtle">
+            <p className="text-ui-sm text-subtle">
               Creates <span className="text-green">{parentPath}/{preview}</span>
             </p>
           ) : null}
@@ -217,25 +218,25 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
       ) : null}
 
       {error !== null ? (
-        <p className="rounded-[5px] border border-red px-2.5 py-1.5 text-[11.5px] text-red">
+        <p className="rounded-md border border-red px-2.5 py-1.5 text-ui-sm text-red">
           {error}
         </p>
       ) : null}
 
       {phase === 'compose' ? (
-        <button
-          type="button"
+        <Button
+          variant="primary"
           onClick={() => void onClone()}
           disabled={!ready}
-          className="flex w-fit items-center gap-1.5 rounded-md bg-brand-fill px-3 py-1.5 text-[12.5px] text-on-brand hover:bg-brand-fill-hover disabled:opacity-60"
+          className="flex w-fit items-center gap-1.5"
         >
           Clone
-        </button>
+        </Button>
       ) : null}
 
       {phase === 'cloning' ? (
         <>
-          <div className="min-h-0 flex-1 overflow-hidden rounded-[7px] border border-border">
+          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border">
             <TerminalSurface
               transport={transport}
               palette={palette}
@@ -248,7 +249,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
           <button
             type="button"
             onClick={() => void cancelClone()}
-            className="flex w-fit items-center gap-1.5 rounded-md bg-hover px-3 py-1.5 text-[12.5px] text-ink"
+            className="flex w-fit items-center gap-1.5 rounded-full bg-hover px-4 py-1.5 text-control font-semibold text-ink"
           >
             Cancel clone
           </button>
@@ -257,20 +258,20 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
 
       {phase === 'failed' ? (
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => {
               setPhase('compose');
               setError(null);
             }}
-            className="flex w-fit items-center gap-1.5 rounded-md bg-brand-fill px-3 py-1.5 text-[12.5px] text-on-brand hover:bg-brand-fill-hover"
+            className="flex w-fit items-center gap-1.5"
           >
             Retry
-          </button>
+          </Button>
           <button
             type="button"
             onClick={onDone}
-            className="flex w-fit items-center gap-1.5 rounded-md bg-hover px-3 py-1.5 text-[12.5px] text-ink"
+            className="flex w-fit items-center gap-1.5 rounded-full bg-hover px-4 py-1.5 text-control font-semibold text-ink"
           >
             Back
           </button>

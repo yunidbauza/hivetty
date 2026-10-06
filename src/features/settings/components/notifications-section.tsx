@@ -4,8 +4,8 @@ import {
   SegmentedControl,
   type SegmentedOption,
 } from '@components/ui/segmented-control';
-import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { useProjectConfig } from '@hooks/use-project-config';
 import {
   readNotificationDelivery,
@@ -105,8 +105,8 @@ function DeliveryControl({
   return (
     <div className="flex items-start justify-between gap-4 py-1.5">
       <div className="flex min-w-0 flex-col">
-        <span className="text-[12.5px] text-ink">{spec.label}</span>
-        <span className="text-[11.5px] leading-[1.4] text-subtle">
+        <span className="text-control text-ink">{spec.label}</span>
+        <span className="text-ui-sm leading-[1.4] text-subtle">
           {spec.description}
         </span>
       </div>
@@ -203,7 +203,7 @@ export function NotificationsSection() {
       />
 
       {status !== null && !status.supported ? (
-        <p className="text-[12.5px] text-amber">
+        <p className="text-control text-amber-text">
           This system cannot show desktop notifications, so the
           &ldquo;System&rdquo; option would have no effect. On Linux this usually
           means no notification daemon is running — the inbox itself still works.
@@ -220,7 +220,7 @@ export function NotificationsSection() {
         sentence is the useful part rather than an apology.
       */}
       {status !== null && status.supported && status.refused !== null ? (
-        <p className="text-[12.5px] text-amber">
+        <p className="text-control text-amber-text">
           The system refused this app&rsquo;s last desktop notification
           &mdash;&nbsp;
           <span className="text-subtle">{status.refused}</span>
@@ -269,5 +269,5 @@ const SOURCE_DESCRIPTIONS: Record<string, string> = {
   session: 'The fleet asking for you, or telling you it is done.',
   github: 'Pull requests across the repositories your projects map to.',
   agent: 'Anything a background agent posts to the local notify endpoint.',
-  app: 'The Hive itself.',
+  app: 'Hive TTY itself.',
 };

@@ -1,6 +1,11 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { test as base, expect } from '@playwright/test';
+
+import { SESSION_HISTORY_FILE } from '../../../electron/shared/session-history-contract';
+import { claudeProjectDir } from '../../../electron/main/sessions/title-origin';
+import { goToOvermind } from '../fixtures/places';
 
 import {
   launchHive,
@@ -27,15 +32,33 @@ const test = base;
 const PROJECT = 'nova-web';
 const REAL_DIRECTORY = join(import.meta.dirname, '../../..');
 
+/** The uuid main pinned as `claude --session-id` for `id`, read from its own history file. */
+function recordedSessionUuid(userDataDir: string, id: string): string {
+  const records = JSON.parse(readFileSync(join(userDataDir, SESSION_HISTORY_FILE), 'utf8')) as {
+    id: string;
+    sessionUuid?: string;
+  }[];
+  const uuid = records.find((record) => record.id === id)?.sessionUuid;
+  if (uuid === undefined) throw new Error(`the session history has no uuid for ${id}`);
+  return uuid;
+}
+
 test('start a session, quit, relaunch — it is still listed, under ENDED', async ({}, testInfo) => {
   const userDataDir = testInfo.outputPath('user-data');
   const configPath = testInfo.outputPath('hive-config.json');
   writeProjectConfig(configPath, { id: PROJECT, path: REAL_DIRECTORY });
+  /*
+    A replaced HOME, because main looks for the transcript under
+    `homedir()/.claude` and this spec writes one. The real `~/.claude` is never
+    touched; `session-panel.spec.ts` stages its transcript the same way.
+  */
+  const home = testInfo.outputPath('home');
+  const env = { HOME: home };
 
-  const first = await launchHive({ userDataDir, configPath });
+  const first = await launchHive({ userDataDir, configPath, env });
   const firstWindow = await first.firstWindow();
   await firstWindow.waitForLoadState('domcontentloaded');
-  await firstWindow.waitForSelector('header');
+  await firstWindow.waitForSelector('nav[aria-label="Places"]');
 
   const id = await startSession(firstWindow, PROJECT);
 
@@ -48,24 +71,37 @@ test('start a session, quit, relaunch — it is still listed, under ENDED', asyn
   await firstWindow.waitForTimeout(700);
   await first.close();
 
-  const second = await launchHive({ userDataDir, configPath });
+  /*
+    The transcript Claude would have written on the first message. The stub
+    `claude` never writes one, so the spec stands in for it, under the uuid main
+    recorded rather than one the spec made up.
+  */
+  const projects = join(home, '.claude', 'projects', claudeProjectDir(REAL_DIRECTORY));
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, `${recordedSessionUuid(userDataDir, id)}.jsonl`),
+    `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } })}\n`,
+  );
+
+  const second = await launchHive({ userDataDir, configPath, env });
   const secondWindow = await second.firstWindow();
   await secondWindow.waitForLoadState('domcontentloaded');
-  await secondWindow.waitForSelector('header');
+  await secondWindow.waitForSelector('nav[aria-label="Places"]');
 
   try {
+    await goToOvermind(secondWindow);
     /*
-      The app boots into the orchestrator, so the table is already on screen.
+      Round two boots on Home, so the table is one place away.
 
       ENDED, not PREVIOUS RUN. That group is gone: it was a layout answer to an
       ordering problem — while the lists were in insertion order, the top of
       ENDED was always its oldest row — and the fleet lists sort by recency now,
       so last run's rows land among this run's by when they actually ended.
 
-      `exact` because `getByText` is a case-insensitive substring match by
-      default, and the header's own counts line reads "… · 0 ended".
+      Anchored because the group heading carries its count, "ENDED · 1"
+      (HIVE-197), and the counts line above the table reads "… · 1 ended".
     */
-    await expect(secondWindow.getByText('ENDED', { exact: true })).toBeVisible();
+    await expect(secondWindow.getByText(/^ENDED · \d+$/)).toBeVisible();
     await expect(secondWindow.getByText('PREVIOUS RUN')).toBeHidden();
 
     /*
@@ -74,7 +110,10 @@ test('start a session, quit, relaunch — it is still listed, under ENDED', asyn
       is `resume <id>`. An unanchored pattern matches both and Playwright's
       strict mode — correctly — refuses to guess which one the test meant.
     */
-    const row = secondWindow.getByRole('button', { name: new RegExp(`^${id}\\b`) });
+    // The fleet table's row: the Sessions list draws one for it too.
+    const row = secondWindow
+      .getByTestId('session-table')
+      .getByRole('button', { name: new RegExp(`^${id}\\b`) });
     await expect(row).toBeVisible();
 
     /*
@@ -115,23 +154,18 @@ test('start a session, quit, relaunch — it is still listed, under ENDED', asyn
     await expect(row).toBeDisabled();
 
     /*
-      And the way back is a control, not the row (HIVE-93).
-
-      Offered only for the `done` half of the race above: an app-closed row kept
-      its uuid, so main reports it resumable, while a `terminated` one is a pty
-      this app watched die and has nothing to continue. Reading the ending
-      rather than assuming it is the same discipline as the two assertions
-      above — this spec refuses to arbitrate that race, so it must hold either
-      way.
+      The way back is a control, not the row (HIVE-93), and both endings of the
+      quit race offer it. A uuid is not a conversation: main offers resume only
+      once Claude has written the transcript (#269), which is why one was staged
+      above. A session from a previous run that has a transcript is resumable
+      whatever its ending (`resumableUuid` bars only a session still running in
+      this run), so this holds without reading the race. Without the
+      transcript there is no control; `history.test.ts` pins that half.
     */
-    const resume = secondWindow.getByRole('button', {
+    const resume = secondWindow.getByTestId('session-table').getByRole('button', {
       name: new RegExp(`^resume ${id}`),
     });
-    if (ending?.includes('done')) {
-      await expect(resume).toBeVisible();
-    } else {
-      await expect(resume).toHaveCount(0);
-    }
+    await expect(resume).toBeVisible();
   } finally {
     await second.close();
   }
@@ -149,11 +183,12 @@ test('a fresh profile still boots with an empty fleet', async ({}, testInfo) => 
   });
   const window = await app.firstWindow();
   await window.waitForLoadState('domcontentloaded');
-  await window.waitForSelector('header');
+  await window.waitForSelector('nav[aria-label="Places"]');
 
   try {
+    await goToOvermind(window);
     await expect(window.getByTestId('session-table-empty')).toBeVisible();
-    await expect(window.getByText('ENDED', { exact: true })).toBeHidden();
+    await expect(window.getByText(/^ENDED · \d+$/)).toBeHidden();
   } finally {
     await app.close();
   }

@@ -296,7 +296,7 @@ export function skillNameProblem(
 ): string | null {
   if (name === '') return 'Give the skill a name in its frontmatter.';
   if (name === RESERVED_SKILL_NAME) {
-    return `"${RESERVED_SKILL_NAME}" is reserved by The Hive.`;
+    return `"${RESERVED_SKILL_NAME}" is reserved by Hive TTY.`;
   }
   if (!SKILL_NAME_PATTERN.test(name)) {
     return 'Lowercase letters, digits and dashes only.';

@@ -9,6 +9,7 @@ import {
   parseJiraIssueRequest,
   parseJiraSearchRequest,
   parseJiraTransitionsRequest,
+  parseJiraUsersRequest,
   parseSetJiraRequest,
   parseSetJiraTokenRequest,
 } from '../../../electron/shared/guards';
@@ -359,6 +360,16 @@ describe('parseJiraConversationRequest', () => {
     refuses(() => parseJiraConversationRequest({ key: 'nope' }), /key/);
     refuses(() => parseJiraConversationRequest({}), /missing key/);
   });
+
+  it('admits newest: true and refuses any other newest (HIVE-203)', () => {
+    expect(parseJiraConversationRequest({ key: 'HIVE-71', newest: true })).toEqual({ key: 'HIVE-71', newest: true });
+    refuses(() => parseJiraConversationRequest({ key: 'HIVE-71', newest: 'yes' }), /newest/);
+    refuses(() => parseJiraConversationRequest({ key: 'HIVE-71', newest: false }), /newest/);
+  });
+
+  it('still refuses a key it does not know (HIVE-203)', () => {
+    refuses(() => parseJiraConversationRequest({ key: 'HIVE-71', bogus: 1 }), /bogus/);
+  });
 });
 
 describe('parseAddJiraCommentRequest', () => {
@@ -427,5 +438,90 @@ describe('parseAddJiraCommentRequest', () => {
         }),
       /unexpected key/,
     );
+  });
+
+  it('accepts mentions, deduped by account id, in order (HIVE-216)', () => {
+    expect(
+      parseAddJiraCommentRequest({
+        key: 'HIVE-71',
+        markdown: 'hi',
+        mentions: [
+          { accountId: '712020:9f3c-ab', name: 'Dana Kim' },
+          { accountId: '5b10a2844c20165700ede21g', name: 'Cam' },
+          { accountId: '712020:9f3c-ab', name: 'Dana again' },
+        ],
+      }),
+    ).toEqual({
+      key: 'HIVE-71',
+      markdown: 'hi',
+      mentions: [
+        { accountId: '712020:9f3c-ab', name: 'Dana Kim' },
+        { accountId: '5b10a2844c20165700ede21g', name: 'Cam' },
+      ],
+    });
+  });
+
+  it('accepts an empty comment that mentions someone, and still refuses one that does not (HIVE-216)', () => {
+    expect(
+      parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: '', mentions: [{ accountId: 'a1', name: 'A' }] }),
+    ).toEqual({ key: 'HIVE-71', markdown: '', mentions: [{ accountId: 'a1', name: 'A' }] });
+    refuses(() => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: ' ', mentions: [] }), /empty/);
+  });
+
+  it('bounds the mentions: at most ten, each a well-formed account id and a printable name (HIVE-216)', () => {
+    const many = Array.from({ length: 11 }, (_, i) => ({ accountId: `a${String(i)}`, name: 'N' }));
+    refuses(() => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', mentions: many }), /mentions: at most 10/);
+    refuses(() => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', mentions: 'Dana' }), /mentions: expected an array/);
+    for (const accountId of ['', 'a/b', 'a b', 'x'.repeat(129), '../me']) {
+      refuses(
+        () => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', mentions: [{ accountId, name: 'N' }] }),
+        /accountId/,
+      );
+    }
+    for (const name of ['', 'a\u0000b', 'a\u001bb', 'x'.repeat(129)]) {
+      refuses(
+        () => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', mentions: [{ accountId: 'a1', name }] }),
+        /name/,
+      );
+    }
+    refuses(
+      () => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', mentions: [{ accountId: 'a1', name: 'N', via: 'x' }] }),
+      /unexpected key "via"/,
+    );
+  });
+
+  it('never takes a via field: the renderer cannot mark a comment as an agent\'s (HIVE-216)', () => {
+    refuses(
+      () => parseAddJiraCommentRequest({ key: 'HIVE-71', markdown: 'x', via: { agent: 'builder' } }),
+      /unexpected key "via"/,
+    );
+  });
+});
+
+describe('parseJiraUsersRequest (HIVE-216)', () => {
+  it('accepts a query, trimmed', () => {
+    expect(parseJiraUsersRequest({ query: '  dana ' })).toEqual({ query: 'dana' });
+  });
+
+  it('refuses an empty, over-long or control-character query, and any other key', () => {
+    refuses(() => parseJiraUsersRequest({ query: '   ' }), /jiraUsers\.query: must not be empty/);
+    refuses(() => parseJiraUsersRequest({ query: 'x'.repeat(65) }), /jiraUsers\.query: too long/);
+    refuses(() => parseJiraUsersRequest({ query: 'da\u0000na' }), /control characters/);
+    refuses(() => parseJiraUsersRequest({ query: 'dana', maxResults: 50 }), /unexpected key "maxResults"/);
+    refuses(() => parseJiraUsersRequest({}), /missing key "query"/);
+  });
+});
+
+describe('parseSetJiraRequest — workflow', () => {
+  it('accepts a workflow, and null, which goes back to just opening', () => {
+    expect(parseSetJiraRequest({ workflow: { kind: 'skill', skill: '/hive:work-on' } })).toEqual({
+      workflow: { kind: 'skill', skill: 'hive:work-on' },
+    });
+    expect(parseSetJiraRequest({ workflow: null })).toEqual({ workflow: null });
+  });
+
+  it('refuses a malformed one, naming the field', () => {
+    refuses(() => parseSetJiraRequest({ workflow: { kind: 'skill', skill: 'a; b' } }), /setJira\.workflow: skill/);
+    refuses(() => parseSetJiraRequest({ workflow: { kind: 'skill', skill: 'x', prompt: 'a\nb' } }), /one line/);
   });
 });

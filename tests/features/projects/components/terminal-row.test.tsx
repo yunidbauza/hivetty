@@ -55,7 +55,7 @@ describe('TerminalRow', () => {
 
     const label = screen.getByText('vitest');
     expect(label.className).toContain('text-brand');
-    expect(label.className).not.toContain('text-amber');
+    expect(label.className).not.toContain('text-amber-text');
   });
 
   it('carries the terminal glyph, hidden from the accessibility tree', () => {

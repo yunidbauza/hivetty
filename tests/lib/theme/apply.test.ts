@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
+import { swarmPaletteOf } from '@lib/theme/colour';
 import { THEME_STYLE_ID, applyThemeColors, themeCss } from '@lib/theme/apply';
 import type { HiveTheme } from '@lib/theme/contract';
 import {
@@ -64,6 +65,32 @@ describe('themeCss', () => {
       `--cc-code-active-line: ${BUILT_IN_THEME.modes.dark.syntax.activeLine}`,
     );
   });
+
+  it('writes the creature tokens: the theme value, else the derived fallback', () => {
+    const theme = structuredClone(BUILT_IN_THEME);
+    delete theme.modes.dark.ui.creep;
+    const out = themeCss(theme);
+    expect(out).toContain(`--cc-creep: ${swarmPaletteOf(theme.modes.dark.ui).creep};`);
+    expect(out).toContain('--cc-chitin: #b9a7f0;');
+  });
+
+  it.each(['dark', 'light'] as const)(
+    'derives both creature tokens in %s when the theme leaves both out',
+    (mode) => {
+      const theme = structuredClone(BUILT_IN_THEME);
+      delete theme.modes[mode].ui.creep;
+      delete theme.modes[mode].ui.chitin;
+      const derived = swarmPaletteOf(theme.modes[mode].ui);
+      const out = themeCss(theme);
+      // apply.ts's own selectors: `:root:root` for dark, the light one nested under it.
+      const opener = mode === 'dark' ? ':root:root {' : ":root:root body[data-theme='light'] {";
+      const start = out.indexOf(opener);
+      expect(start).toBeGreaterThan(-1);
+      const section = out.slice(start, out.indexOf('}', start));
+      expect(section).toContain(`--cc-creep: ${derived.creep};`);
+      expect(section).toContain(`--cc-chitin: ${derived.chitin};`);
+    },
+  );
 
   it('emits no spacing tokens — a theme is colour', () => {
     expect(css).not.toContain('--cc-rail-');

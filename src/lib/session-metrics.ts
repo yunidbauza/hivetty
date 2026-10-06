@@ -92,6 +92,20 @@ export function chipLabel(
   model: Model | undefined,
   effort: string | undefined,
 ): string {
+  const { name, window, level } = chipParts(metrics, model, effort);
+  return `${name}${window} · ${level}`;
+}
+
+/**
+ * {@link chipLabel}'s three parts, apart: the narrow header shows the model
+ * name alone and leaves the window and the effort to the tooltip (HIVE-220).
+ * `window` is empty, or carries its leading space: ` (1M)`.
+ */
+export function chipParts(
+  metrics: SessionMetrics | undefined,
+  model: Model | undefined,
+  effort: string | undefined,
+): { name: string; window: string; level: string } {
   const name = metrics?.model ?? modelLabel(model);
   const level = metrics?.effort ?? effort ?? DEFAULT_EFFORT;
   /*
@@ -106,7 +120,7 @@ export function chipLabel(
     size !== undefined && size >= EXTENDED_WINDOW_TOKENS
       ? ` (${Math.round(size / 1_000_000)}M)`
       : '';
-  return `${name}${window} · ${level}`;
+  return { name, window, level };
 }
 
 /**
@@ -180,4 +194,27 @@ export function dayClockLabel(epochSeconds: number | undefined): string | null {
     weekday: 'short',
   });
   return `${day} ${clock}`;
+}
+
+const plausible = (epochSeconds: number | undefined): epochSeconds is number =>
+  epochSeconds !== undefined &&
+  Number.isFinite(epochSeconds) &&
+  epochSeconds >= EARLIEST_PLAUSIBLE_RESET;
+
+/** `3h 12m left`, `48m left` — Home's Limits row for the five-hour window (HIVE-200). */
+export function timeLeftLabel(epochSeconds: number | undefined, nowMs: number): string | null {
+  if (!plausible(epochSeconds)) return null;
+  const ms = epochSeconds * 1000 - nowMs;
+  if (ms <= 0) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return '<1m left';
+  return minutes < 60
+    ? `${minutes}m left`
+    : `${Math.floor(minutes / 60)}h ${minutes % 60}m left`;
+}
+
+/** `resets Mon` — Home's Limits row for the seven-day window (HIVE-200). */
+export function resetsDayLabel(epochSeconds: number | undefined): string | null {
+  if (!plausible(epochSeconds)) return null;
+  return `resets ${new Date(epochSeconds * 1000).toLocaleDateString(undefined, { weekday: 'short' })}`;
 }

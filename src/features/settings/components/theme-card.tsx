@@ -80,9 +80,6 @@ export function ThemeCard({
   onExport,
   onRemove,
 }: ThemeCardProps) {
-  const item =
-    'rounded-[4px] px-2 py-1 text-[12.5px] text-muted focus:bg-hover focus:text-ink data-[disabled]:opacity-35';
-
   // See `project-row-menu.tsx`: Radix returns focus to the trigger when the
   // menu closes, which is wrong for actions that replace this card's own
   // controls with something that focuses itself on mount (none here yet, but
@@ -97,7 +94,7 @@ export function ThemeCard({
 
   return (
     <div
-      className={`relative flex w-full flex-col gap-2 rounded-[7px] border bg-panel p-[9px] hover:bg-hover ${
+      className={`relative flex w-full flex-col gap-2 rounded-lg border bg-panel p-[9px] hover:bg-hover ${
         isActive
           ? 'border-brand-fill shadow-[0_0_0_1px_var(--cc-brand-fill)]'
           : 'border-border'
@@ -116,10 +113,10 @@ export function ThemeCard({
           long name never truncates underneath it instead of before it.
         */}
         <div className="min-w-0 pr-16">
-          <div className="truncate text-[12.5px] font-medium text-ink">
+          <div className="truncate text-control font-medium text-ink">
             {theme.name}
           </div>
-          <div className="truncate text-[11px] text-muted">
+          <div className="truncate text-micro text-muted">
             {isBuiltIn ? 'Built in' : theme.author}
           </div>
         </div>
@@ -142,7 +139,7 @@ export function ThemeCard({
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={`${theme.name} actions`}
-            className="shrink-0 rounded p-1 text-subtle hover:bg-hover hover:text-ink"
+            className="shrink-0 rounded-full p-1.5 text-subtle hover:bg-hover hover:text-ink"
           >
             <DotsThreeVertical size={13} weight="bold" />
           </DropdownMenuTrigger>
@@ -153,25 +150,23 @@ export function ThemeCard({
               handsOffFocus.current = false;
               event.preventDefault();
             }}
-            className="min-w-[9rem] rounded-[7px] border border-border bg-panel p-1 shadow-lg"
+            className="min-w-[9rem]"
           >
             <DropdownMenuItem
               disabled={isActive}
               onSelect={() => select(() => onActivate(id))}
-              className={item}
             >
               Activate
             </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => select(() => onExport(id))}
-              className={item}
             >
               Export…
             </DropdownMenuItem>
             {!isBuiltIn ? (
               <DropdownMenuItem
                 onSelect={() => select(() => onRemove(id), true)}
-                className={`${item} text-red focus:text-red`}
+                variant="destructive"
               >
                 Remove
               </DropdownMenuItem>
@@ -185,8 +180,10 @@ export function ThemeCard({
 
 /** The dark-fills / light-triangle swatch, drawn from the theme's own tokens. */
 function ThemeSwatch({ theme }: { theme: HiveTheme }) {
+  /** The seam: a hairline from the swatch's own two inks, so it shows on both halves. */
+  const seam = `color-mix(in srgb, ${theme.modes.dark.ui.ink} 50%, ${theme.modes.light.ui.ink})`;
   return (
-    <div className="relative aspect-[16/9] overflow-hidden rounded-[5px] border border-border">
+    <div className="relative aspect-[16/9] overflow-hidden rounded-md border border-border">
       <SwatchHalf mode="dark" colors={theme.modes.dark} />
       <SwatchHalf
         mode="light"
@@ -199,8 +196,7 @@ function ThemeSwatch({ theme }: { theme: HiveTheme }) {
         aria-hidden="true"
         className="pointer-events-none absolute inset-0"
         style={{
-          background:
-            'linear-gradient(to top right, transparent calc(50% - 0.5px), rgba(255,255,255,0.30) calc(50% - 0.5px), rgba(255,255,255,0.30) calc(50% + 0.5px), transparent calc(50% + 0.5px))',
+          background: `linear-gradient(to top right, transparent calc(50% - 0.5px), ${seam} calc(50% - 0.5px), ${seam} calc(50% + 0.5px), transparent calc(50% + 0.5px))`,
         }}
       />
     </div>

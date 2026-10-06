@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { hostname } from 'node:os';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { emptySnapshot } from '../../../../electron/shared/config-contract';
@@ -192,6 +194,9 @@ const { OVERMIND } = await import('../../../../electron/shared/ledger-contract')
 const { registerIpcHandlers, resetIpcHandlers } = await import(
   '../../../../electron/main/ipc'
 );
+const { resetServerModeForTest, setServerMode } = await import(
+  '../../../../electron/main/server-mode'
+);
 
 const mainFrame = { url: 'file:///out/renderer/index.html' };
 const trustedEvent = { senderFrame: mainFrame, sender: { mainFrame } } as never;
@@ -243,6 +248,48 @@ describe('ledger:answer answers as the coordinator (HIVE-111)', () => {
     // builds the request from `thread`/`body`/`meta` alone, so the object
     // reaching `ledger.answer` has no such field regardless of the payload.
     expect(ledgerAnswer).toHaveBeenCalledWith({ thread: 'a1', body: 'done' }, OVERMIND);
+  });
+});
+
+describe('ledger:answer stamps where it was answered (HIVE-218)', () => {
+  const answerFrom = (sender: unknown, payload: unknown) =>
+    Promise.resolve().then(() =>
+      handlers.get(CH.ledgerAnswer)!({ senderFrame: mainFrame, sender } as never, payload),
+    );
+
+  afterEach(() => resetServerModeForTest());
+
+  it('stamps the paired device for a socket, overriding what the caller claimed', async () => {
+    await answerFrom(
+      { mainFrame, deviceName: 'MacBook', on: () => undefined },
+      { thread: 'q1', body: 'yes', meta: { answeredOn: 'liar' } },
+    );
+    expect(ledgerAnswer).toHaveBeenCalledWith(
+      { thread: 'q1', body: 'yes', meta: { answeredOn: 'MacBook' } },
+      OVERMIND,
+    );
+  });
+
+  it('strips a claimed device from a local window outside server mode', async () => {
+    await answer({ thread: 'q1', body: 'yes', meta: { answeredOn: 'liar', edited: 'x' } });
+    expect(ledgerAnswer).toHaveBeenCalledWith(
+      { thread: 'q1', body: 'yes', meta: { edited: 'x' } },
+      OVERMIND,
+    );
+  });
+
+  it('leaves meta out when nothing remains', async () => {
+    await answer({ thread: 'q1', body: 'yes', meta: { answeredOn: 'liar' } });
+    expect(ledgerAnswer).toHaveBeenCalledWith({ thread: 'q1', body: 'yes' }, OVERMIND);
+  });
+
+  it("stamps this machine's hostname for a local window while it serves", async () => {
+    setServerMode(true);
+    await answer({ thread: 'q1', body: 'yes' });
+    expect(ledgerAnswer).toHaveBeenCalledWith(
+      { thread: 'q1', body: 'yes', meta: { answeredOn: hostname() } },
+      OVERMIND,
+    );
   });
 });
 
@@ -432,7 +479,7 @@ describe('notifications:act — an ask focuses the window and reveals the card (
 
     act({ type: 'ask', thread: 'a41' });
 
-    expect(send).toHaveBeenCalledWith(CH.notificationsActivate, { type: 'ask' });
+    expect(send).toHaveBeenCalledWith(CH.notificationsActivate, { type: 'ask', thread: 'a41' });
   });
 
   /** The session path still says which entity, and still says it the same way. */

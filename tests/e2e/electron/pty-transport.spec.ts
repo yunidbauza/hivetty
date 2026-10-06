@@ -99,7 +99,7 @@ test('opening a session runs a real shell in the mapped project', async ({}, tes
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await startSession(page, PROJECT);
     await expect(page.locator(`[data-terminal-id="${SESSION}"]`)).toBeVisible();
@@ -131,7 +131,7 @@ test('a session keeps running while the user looks at something else', async ({}
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await startSession(page, PROJECT);
     await expect(page.locator(`[data-terminal-id="${SESSION}"]`)).toBeVisible();
@@ -170,7 +170,7 @@ test('an exit reports its code, and signal 0 rather than no signal', async ({}, 
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await startSession(page, PROJECT);
     await expect(page.locator(`[data-terminal-id="${SESSION}"]`)).toBeVisible();

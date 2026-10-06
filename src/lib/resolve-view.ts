@@ -7,6 +7,10 @@ import type { Entity } from '@/types/entity';
 export type ViewState =
   | 'settings'
   | 'picker'
+  | 'home'
+  | 'work'
+  | 'agents'
+  | 'prs'
   | 'editor'
   | 'orchestrator'
   | 'session'
@@ -23,6 +27,28 @@ export interface ViewInput {
   picker: boolean;
   /** Whether the settings overlay is open (story 101). */
   settings: boolean;
+  /**
+   * Round two's Home is on stage (HIVE-195): the layout is round two **and**
+   * the place is Home. One boolean for the reason `editorFull` is one: this
+   * function decides precedence, not what a layout means.
+   */
+  home: boolean;
+  /**
+   * Round two's Work place is on stage (HIVE-203): the ticket page, or Pick a
+   * ticket. Never true with `home` — one place is open at a time.
+   */
+  work: boolean;
+  /**
+   * The Agents place owns the stage (HIVE-204). An agent `activeTab` still resolves to `'agent'`;
+   * anything else shows the agents stage.
+   */
+  agents: boolean;
+  /**
+   * Round two's PRs place owns the stage (HIVE-205): the open PR's page, the
+   * empty Hatchery, or "Pick a pull request". Never true with `home`, `work`
+   * or `agents`: one place is open at a time.
+   */
+  prs: boolean;
   /** The entity behind `activeTab`, or null for the orchestrator. */
   entity: Entity | null;
   /**
@@ -55,6 +81,17 @@ export interface ViewInput {
  *    it deliberately does not change `activeTab` — closing it has to return the
  *    user to whatever they were looking at, which only works if the underlying
  *    tab is untouched. Settings follows the same rule for the same reason.
+ * 2a. **Home sits below both overlays and above everything else** (HIVE-195).
+ *    Like the overlays it never touches `activeTab`, so leaving Home finds the
+ *    stage as it was.
+ * 2b. **Work sits where Home does** (HIVE-203). The Work place always owns the
+ *    stage, an open ticket's page or "Pick a ticket", and leaves `activeTab`
+ *    alone for the same reason.
+ * 2c. **Agents sits just below Work** (HIVE-204). The place owns the stage
+ *    with an agent's page or "Pick an agent", except that an agent
+ *    `activeTab` still resolves to `'agent'` so the page shows for it.
+ * 2d. **PRs sits just below Agents** (HIVE-205), the same way: the place owns
+ *    the stage and leaves `activeTab` alone.
  * 3. **The editor sits below both overlays and above the entity views.** It is
  *    not an overlay — it has no scrim, no focus trap and no dismissal — but it
  *    does fill the stage, so a settings pane opened from behind it must win.
@@ -69,11 +106,19 @@ export function resolveView({
   activeTab,
   picker,
   settings,
+  home,
+  work,
+  agents,
+  prs,
   entity,
   editorFull,
 }: ViewInput): ViewState {
   if (settings) return 'settings';
   if (picker) return 'picker';
+  if (home) return 'home';
+  if (work) return 'work';
+  if (agents && !(entity !== null && entity.kind === 'agent')) return 'agents';
+  if (prs) return 'prs';
   if (editorFull) return 'editor';
   if (activeTab === ORCH_TAB) return 'orchestrator';
   if (!entity) return 'orchestrator';

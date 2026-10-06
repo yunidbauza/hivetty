@@ -1,5 +1,7 @@
 import { expect, test } from '@playwright/test';
 
+import { goToOvermind, overmindNewSession } from '../fixtures/places';
+
 /**
  * The picker's heading, in a real browser (HIVE-73).
  *
@@ -29,21 +31,22 @@ const APP_URL = '/?sim=0';
 
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await goToOvermind(page);
 });
 
-test('the header opens a picker with no ticket on it', async ({ page }) => {
-  await page.getByRole('button', { name: 'New session' }).click();
+test('the Overmind opens a picker with no ticket on it', async ({ page }) => {
+  await overmindNewSession(page).click();
 
-  const picker = page.getByRole('dialog');
+  /*
+    The browser target has no config, so no project: the picker leads with its
+    first-run block and no visible title (#77). Its screen-reader title names
+    that state, and no ticket key appears anywhere in it.
+  */
+  const picker = page.getByRole('dialog', { name: 'No projects yet' });
   await expect(picker).toBeVisible();
-
-  await expect(
-    picker.getByText('Start a new session', { exact: true }),
-  ).toBeVisible();
-  await expect(
-    picker.getByText('Pick a project — a Claude Code terminal will open for it'),
-  ).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Add project' })).toBeVisible();
+  await expect(picker.getByText(/Start a session for/)).toHaveCount(0);
 });
 
 /**
@@ -52,14 +55,14 @@ test('the header opens a picker with no ticket on it', async ({ page }) => {
  * notice — the dialog would still be visible and still have a title.
  */
 test('never renders an object as the ticket key', async ({ page }) => {
-  await page.getByRole('button', { name: 'New session' }).click();
+  await overmindNewSession(page).click();
 
   await expect(page.getByText(/\[object Object\]/)).toHaveCount(0);
   await expect(page.getByText(/Start a session for/)).toHaveCount(0);
 });
 
 test('the model and effort steppers are on the picker', async ({ page }) => {
-  await page.getByRole('button', { name: 'New session' }).click();
+  await overmindNewSession(page).click();
 
   const picker = page.getByRole('dialog');
   await expect(picker.getByRole('radio', { name: 'opus' })).toBeChecked();
@@ -67,7 +70,7 @@ test('the model and effort steppers are on the picker', async ({ page }) => {
 });
 
 test('escape closes it', async ({ page }) => {
-  await page.getByRole('button', { name: 'New session' }).click();
+  await overmindNewSession(page).click();
   await expect(page.getByRole('dialog')).toBeVisible();
 
   await page.keyboard.press('Escape');
@@ -95,7 +98,7 @@ test('escape closes it', async ({ page }) => {
 test('picking haiku fades the thinking scale without moving it', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  await overmindNewSession(page).click();
   const dialog = page.getByRole('dialog');
 
   const effort = dialog.getByRole('radio', { name: 'max' });

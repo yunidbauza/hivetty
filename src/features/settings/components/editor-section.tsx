@@ -4,8 +4,8 @@ import {
 } from '@components/ui/segmented-control';
 import { SelectField, type SelectFieldOption } from '@components/ui/select-field';
 import { Switch } from '@components/ui/switch';
-import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { TERMINAL_FONTS, type TerminalFontId } from '@lib/terminal/fonts';
 import {
   EDITOR_FONT_SIZES,
@@ -112,7 +112,7 @@ export function EditorSection() {
           />
 
           {split ? (
-            <p className="text-[11.5px] text-subtle">
+            <p className="text-ui-sm text-subtle">
               Drag the divider to resize. Side by side leaves the terminal
               roughly half the stage — narrow enough that long agent output
               wraps.

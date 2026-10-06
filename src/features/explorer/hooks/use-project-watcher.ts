@@ -17,11 +17,11 @@ import { useBumpFsRevision } from '@stores/ui-store';
  *
  * ## Why this is not inside `ExplorerPanel`
  *
- * It was, and that was a bug. The rail swaps `PANELS[railTab]` and the shell
- * unmounts the rail entirely on `showActivityRail`, so the watcher's lifetime
- * was "the explorer tab is the one on screen". Switch to Inbox with a file open
- * and freshness stopped dead: no silent reload, no `staleOnDisk`, and the next
- * save failed with a conflict the user was never warned about.
+ * It was, and that was a bug: the panel unmounts whenever the session panel
+ * closes or shows another tab, so the watcher's lifetime was 'the Files tab is
+ * on screen'. Switch tabs with a file open and freshness stopped dead: no
+ * silent reload, no `staleOnDisk`, and the next save failed with a conflict the
+ * user was never warned about.
  *
  * The tree is only *one* consumer of these events. The editor is the other, it
  * lives on the centre stage, and it outlives the panel — so the subscription

@@ -1,8 +1,8 @@
 import {
   JIRA_MAX_COMMENTS,
+  STATUS_CATEGORY_RANK,
   type JiraIssue,
   type JiraResult,
-  type JiraStatusCategory,
   type JiraToolHandlers,
   type JiraToolIssue,
   type JiraToolTransitionReply,
@@ -15,11 +15,16 @@ import type { Jira } from './index';
 /** The slice of the integration the tools read and write through. */
 export type JiraToolSource = Pick<
   Jira,
-  'issue' | 'detail' | 'transitions' | 'applyTransition' | 'comments' | 'links' | 'addComment' | 'assignToMe'
+  | 'issue'
+  | 'detail'
+  | 'transitions'
+  | 'applyTransition'
+  | 'comments'
+  | 'links'
+  | 'addComment'
+  | 'assignToMe'
+  | 'searchUsers'
 >;
-
-/** Forward is up this ladder; a move down it is refused (HIVE-174). */
-const RANK: Record<JiraStatusCategory, number> = { todo: 0, 'in-progress': 1, done: 2 };
 
 const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
 
@@ -30,8 +35,9 @@ const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.tri
  * description, the comments or the links that fail are reported in `partial`
  * beside what did arrive. A model with the summary and half the thread can
  * still work; one with a refusal cannot. The comments read is the oldest
- * `JIRA_MAX_COMMENTS`, and a full page is reported in `partial` too: "every
- * comment" and "the first fifty" are different answers.
+ * `JIRA_MAX_COMMENTS`, and a thread longer than that is reported in `partial`
+ * too, with Jira's total: "every comment" and "the first fifty" are different
+ * answers (HIVE-203).
  *
  * `transition` is by status name because that is what every skill says
  * ("Jira → In Review"); the id is Jira's business. Three no-ops, each said in
@@ -90,7 +96,7 @@ export function jiraToolsFor(jira: JiraToolSource): JiraToolHandlers {
         },
       };
     }
-    if (RANK[match.to.statusCategory] < RANK[issue.statusCategory]) {
+    if (STATUS_CATEGORY_RANK[match.to.statusCategory] < STATUS_CATEGORY_RANK[issue.statusCategory]) {
       return skip(`moving from ${issue.status} to ${match.to.name} would be backwards; nothing was changed`);
     }
 
@@ -112,8 +118,8 @@ export function jiraToolsFor(jira: JiraToolSource): JiraToolHandlers {
       const partial: string[] = [];
       if (!detail.ok) partial.push(`description: ${detail.error.message}`);
       if (!comments.ok) partial.push(`comments: ${comments.error.message}`);
-      else if (comments.value.length >= JIRA_MAX_COMMENTS) {
-        partial.push(`comments: only the oldest ${JIRA_MAX_COMMENTS} were read; the thread may be longer`);
+      else if (comments.value.total > JIRA_MAX_COMMENTS) {
+        partial.push(`comments: only the oldest ${JIRA_MAX_COMMENTS} of ${comments.value.total} were read`);
       }
       if (!links.ok) partial.push(`links: ${links.error.message}`);
 
@@ -122,7 +128,7 @@ export function jiraToolsFor(jira: JiraToolSource): JiraToolHandlers {
         value: {
           issue: issue.value,
           detail: detail.ok ? detail.value : null,
-          comments: comments.ok ? comments.value : [],
+          comments: comments.ok ? comments.value.comments : [],
           links: links.ok ? links.value : [],
           partial,
         },
@@ -146,7 +152,8 @@ export function jiraToolsFor(jira: JiraToolSource): JiraToolHandlers {
       };
     },
 
-    comment: (request) => jira.addComment(request),
+    comment: (request, via) => jira.addComment(request, via),
+    users: (request) => jira.searchUsers(request),
   };
 
 }

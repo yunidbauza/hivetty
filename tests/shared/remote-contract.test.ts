@@ -81,7 +81,7 @@ const MAIN_ONLY: ReadonlyMap<string, FrameKind> = new Map([
 
 describe('remote contract: coverage', () => {
   it('classifies every channel exactly once for frame kind', () => {
-    expect(entries).toHaveLength(144);
+    expect(entries).toHaveLength(159);
     expect(Object.keys(FRAME_KIND).sort()).toEqual([...Object.values(CH)].sort());
   });
 
@@ -95,6 +95,11 @@ describe('remote contract: coverage', () => {
     expect(Object.keys(FRAME_KIND).sort()).toEqual(
       Object.keys(CHANNEL_AUTHORIZATION).sort(),
     );
+  });
+
+  it('jira:users is a call any attached reader may make (HIVE-216)', () => {
+    expect(frameKindOf(CH.jiraUsers)).toBe('call');
+    expect(CHANNEL_AUTHORIZATION[CH.jiraUsers]).toBe('read');
   });
 });
 
@@ -120,11 +125,11 @@ describe('remote contract: frame kinds match the preload bridge', () => {
     expect(frameKindOf(channel)).toBe(expected);
   });
 
-  it('splits 110 call, 6 notify and 28 event', () => {
+  it('splits 124 call, 6 notify and 29 event', () => {
     const tally = { call: 0, notify: 0, event: 0 };
     for (const kind of Object.values(FRAME_KIND)) tally[kind] += 1;
 
-    expect(tally).toEqual({ call: 110, notify: 6, event: 28 });
+    expect(tally).toEqual({ call: 124, notify: 6, event: 29 });
   });
 
   /**
@@ -197,11 +202,11 @@ describe('remote contract: authorization', () => {
     expect(authorizationOf(channel)).toBe('execute');
   });
 
-  it('grades the 144 as 62 read, 44 mutate and 38 execute', () => {
+  it('grades the 159 as 66 read, 45 mutate and 48 execute', () => {
     const tally = { read: 0, mutate: 0, execute: 0 };
     for (const authz of Object.values(CHANNEL_AUTHORIZATION)) tally[authz] += 1;
 
-    expect(tally).toEqual({ read: 62, mutate: 44, execute: 38 });
+    expect(tally).toEqual({ read: 66, mutate: 45, execute: 48 });
   });
 
   /**
@@ -217,6 +222,12 @@ describe('remote contract: authorization', () => {
     CH.configDiagnoseEnv,
     CH.githubPrs,
     CH.githubSearchPrs,
+    CH.githubPrDetail,
+    CH.githubPrComment,
+    CH.githubPrDiff,
+    CH.githubPrThread,
+    CH.githubPrViewed,
+    CH.githubPrTimeline,
     CH.integrationsStatus,
     CH.integrationsLoginEnv,
     CH.slackStatus,
@@ -225,6 +236,25 @@ describe('remote contract: authorization', () => {
     CH.slackSignOut,
   ])('%s spawns a host process and is execute', (channel) => {
     expect(authorizationOf(channel)).toBe('execute');
+  });
+
+  it('carries the PR page across the socket, graded as the gh calls are (HIVE-205)', () => {
+    expect(frameKindOf(CH.githubPrDetail)).toBe('call');
+    expect(frameKindOf(CH.githubPrComment)).toBe('call');
+    expect(authorizationOf(CH.githubPrDetail)).toBe('execute');
+    expect(authorizationOf(CH.githubPrComment)).toBe('execute');
+  });
+
+  it('carries the Files tab across the socket, graded as the gh calls are (HIVE-207)', () => {
+    for (const channel of [CH.githubPrDiff, CH.githubPrThread, CH.githubPrViewed]) {
+      expect(frameKindOf(channel)).toBe('call');
+      expect(authorizationOf(channel)).toBe('execute');
+    }
+  });
+
+  it('carries the Timeline tab across the socket, graded as the gh calls are (HIVE-208)', () => {
+    expect(frameKindOf(CH.githubPrTimeline)).toBe('call');
+    expect(authorizationOf(CH.githubPrTimeline)).toBe('execute');
   });
 
   /**
@@ -475,7 +505,7 @@ describe('remote contract: process-local channels refused at the receiving end (
     PROCESS_LOCAL.forEach((channel, index) => expect(reasons[index]).toContain(channel));
   });
 
-  it('refuses the same eight whatever payload a peer attaches', () => {
+  it('refuses every PROCESS_LOCAL channel whatever payload a peer attaches', () => {
     for (const channel of PROCESS_LOCAL) {
       expect(remoteRefusedReason(channel, { anything: true }), channel).not.toBeNull();
     }
@@ -536,7 +566,7 @@ describe('remote contract: the version handshake', () => {
   });
 
   it('is protocol 3: 2 carried a generation (HIVE-144), 3 caught up on unbumped channels (HIVE-140 audit)', () => {
-    expect(REMOTE_PROTOCOL_VERSION).toBe(6);
+    expect(REMOTE_PROTOCOL_VERSION).toBe(14);
   });
 });
 
@@ -568,8 +598,8 @@ describe('remote contract: the call deadline (HIVE-144)', () => {
  * conflict — has somewhere to be caught.
  */
 describe('remote contract: the attach snapshot (HIVE-144)', () => {
-  it('is exactly these seven channels, in this order', () => {
-    expect(SNAPSHOT_CHANNELS).toHaveLength(7);
+  it('is exactly these eight channels, in this order', () => {
+    expect(SNAPSHOT_CHANNELS).toHaveLength(8);
     expect(SNAPSHOT_CHANNELS).toEqual([
       CH.sessionHistory,
       CH.agentsList,
@@ -578,7 +608,16 @@ describe('remote contract: the attach snapshot (HIVE-144)', () => {
       CH.githubPrs,
       CH.configGet,
       CH.plansList,
+      CH.changedFilesList,
     ]);
+  });
+
+  it('snapshots and pushes changed files (HIVE-201)', () => {
+    expect(SNAPSHOT_CHANNELS).toContain(CH.changedFilesList);
+    expect(EVENT_CHANNELS).toContain(CH.changedFilesChanged);
+    expect(frameKindOf(CH.changedFilesChanged)).toBe('event');
+    expect(frameKindOf(CH.changedFilesList)).toBe('call');
+    expect(REMOTE_PROTOCOL_VERSION).toBe(14);
   });
 
   it('snapshots the plans so a reattaching client sees the current plan (HIVE-179)', () => {
@@ -689,7 +728,7 @@ describe('WINDOW_BOUND', () => {
  * admitted and nobody had applied it to.
  */
 describe('PROCESS_LOCAL', () => {
-  it('names exactly nine channels', () => {
+  it('names exactly ten channels', () => {
     expect([...PROCESS_LOCAL].sort()).toEqual(
       [
         CH.appInfo,
@@ -701,8 +740,20 @@ describe('PROCESS_LOCAL', () => {
         CH.configGetRemote,
         CH.notificationsDelivery,
         CH.notificationsBadge,
+        CH.remoteDialNow,
       ].sort(),
     );
+  });
+
+  /*
+    Named on its own (HIVE-211). Try now restarts *this* process's reconnect
+    loop, at the one moment there is no socket to proxy it over, and a server
+    has no loop of a peer's to restart.
+  */
+  it('answers remote:dial-now locally, because the reconnect loop is this machine\'s own', () => {
+    expect(isProcessLocal('remote:dial-now')).toBe(true);
+    expect(isClientFrameAllowed('call', CH.remoteDialNow, 'execute')).toBe(false);
+    expect(remoteRefusedReason(CH.remoteDialNow, undefined)).toMatch(/reconnect loop/);
   });
 
   /*

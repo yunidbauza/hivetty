@@ -69,7 +69,7 @@ async function opened(hive: ElectronApplication): Promise<string[]> {
 }
 
 test('the call the link handler makes reaches the browser', async ({ hive, page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
   await stubOpenExternal(hive);
 
   /*
@@ -96,7 +96,7 @@ test('the call xterm ships by default reaches nothing — the bug', async ({
   hive,
   page,
 }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
   await stubOpenExternal(hive);
 
   // `window.open()` with no argument: the first line of the addon's default
@@ -140,7 +140,7 @@ test('fs:resolve answers through the bridge for the session on screen', async ({
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
     const sessionId = await startSession(page, 'demo');

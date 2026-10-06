@@ -1,6 +1,7 @@
 import { CaretRight, Folder, FolderOpen } from '@phosphor-icons/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { Button } from '@components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -157,15 +158,15 @@ export function DirectoryPicker({
         utilities after unprefixed ones — so an unprefixed cap loses above
         640px and the dialog renders 512px wide.
       */}
-      <DialogContent className="gap-0 border-border bg-panel p-0 sm:max-w-[420px]">
+      <DialogContent className="gap-0 p-0 sm:max-w-[420px]">
         <DialogHeader className="gap-[7px] border-b border-border-soft px-3.5 pt-3 pb-2.5">
-          <DialogTitle className="text-[13px] font-semibold text-ink">
+          <DialogTitle className="text-ui font-semibold text-ink">
             {title}
           </DialogTitle>
           <DialogDescription className="sr-only">
             Browse folders on {serverName} and choose one.
           </DialogDescription>
-          <span className="flex w-fit items-center gap-1.5 rounded-[3px] border border-border bg-chip px-[7px] py-0.5 text-[11px] text-muted">
+          <span className="flex w-fit items-center gap-1.5 rounded border border-border bg-chip px-[7px] py-0.5 text-micro text-muted">
             <span aria-hidden="true" className="size-1.5 rounded-full bg-amber" />
             reading {serverName} · not this Mac
           </span>
@@ -182,7 +183,7 @@ export function DirectoryPicker({
                     type="button"
                     onClick={() => void browse(crumb.path)}
                     aria-current={index === crumbs.length - 1 ? 'true' : undefined}
-                    className="rounded-[3px] px-1.5 py-0.5 text-[11.5px] text-muted hover:bg-hover hover:text-ink aria-[current]:font-semibold aria-[current]:text-ink"
+                    className="rounded-full px-2 py-0.5 text-ui-sm text-muted hover:bg-hover hover:text-ink aria-[current]:font-semibold aria-[current]:text-ink"
                   >
                     {crumb.label}
                   </button>
@@ -207,12 +208,12 @@ export function DirectoryPicker({
         */}
         <div aria-busy={busy} className="max-h-56 overflow-y-auto p-1.5">
           {failure !== null && (
-            <p role="status" className="px-2 py-1.5 text-[11.5px] text-red">
+            <p role="status" className="px-2 py-1.5 text-ui-sm text-red">
               {failure}
             </p>
           )}
           {listing !== null && listing.entries.length === 0 && failure === null && (
-            <p className="flex items-center gap-2 px-2 py-1.5 text-[11.5px] text-subtle">
+            <p className="flex items-center gap-2 px-2 py-1.5 text-ui-sm text-subtle">
               <FolderOpen aria-hidden="true" className="size-3.5 shrink-0" />
               No folders here. You can still use this one.
             </p>
@@ -234,14 +235,14 @@ export function DirectoryPicker({
                     disabled={unreadable}
                     title={unreadable ? 'this folder cannot be read' : undefined}
                     onClick={() => void browse(entry.path)}
-                    className="flex w-full items-center gap-2 rounded-[3px] border border-transparent px-2 py-1.5 text-left text-ink hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent"
+                    className="flex w-full items-center gap-2 rounded border border-transparent px-2 py-1.5 text-left text-ink hover:bg-hover disabled:opacity-50 disabled:hover:bg-transparent"
                   >
                     <Folder
                       aria-hidden="true"
                       className="size-3.5 shrink-0 text-subtle"
                     />
                     <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                    <span className="shrink-0 text-[11px] text-subtle">
+                    <span className="shrink-0 text-micro text-subtle">
                       {unreadable
                         ? 'no access'
                         : entry.childCount === 0
@@ -262,7 +263,7 @@ export function DirectoryPicker({
         </div>
 
         <DialogFooter className="flex-row flex-wrap items-center gap-2.5 border-t border-border-soft px-3.5 py-2.5">
-          <p className="min-w-0 flex-1 truncate text-[11px] text-muted">
+          <p className="min-w-0 flex-1 truncate text-micro text-muted">
             {listing === null ? (
               'Reading…'
             ) : (
@@ -271,23 +272,19 @@ export function DirectoryPicker({
               </>
             )}
           </p>
-          <button
-            type="button"
-            onClick={() => onOpenChange(false)}
-            className="rounded-[3px] border border-border bg-panel-2 px-[11px] py-[5px] text-[12px] text-ink hover:bg-hover"
-          >
+          <Button size="sm" onClick={() => onOpenChange(false)}>
             Cancel
-          </button>
-          <button
-            type="button"
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
             disabled={listing === null}
             onClick={() => {
               if (listing !== null) onChoose(listing.path);
             }}
-            className="rounded-[3px] border border-brand-fill-strong bg-brand-fill-strong px-[11px] py-[5px] text-[12px] text-on-brand hover:border-brand-fill hover:bg-brand-fill disabled:opacity-60"
           >
             {confirmLabel}
-          </button>
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

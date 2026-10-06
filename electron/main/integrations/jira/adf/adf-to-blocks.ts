@@ -63,12 +63,16 @@ function runsOf(nodes: AdfNode[] | undefined): AdfRun[] {
     }
 
     /**
-     * A mention or an emoji has no `text`, and dropping it would silently
-     * remove the person a comment is addressed to. Jira puts the display form
-     * in `attrs`, so the flattening below picks up whatever is there — and
-     * where there is nothing, the node contributes nothing rather than an empty
-     * artefact.
+     * A mention has no `text` of its own; Jira puts the display form in
+     * `attrs.text` (`@Dana Kim`). Dropping it would silently remove the person
+     * the comment is addressed to, so a nameless one still says someone was
+     * named (HIVE-216).
      */
+    if (node.type === 'mention') {
+      runs.push({ text: node.attrs?.text ?? '@unknown', marks: [], mention: true });
+      return;
+    }
+
     if (node.type === 'inlineCard') {
       const href = node.attrs?.href;
       if (href !== undefined) runs.push({ text: href, marks: [], href });
@@ -118,6 +122,19 @@ function listBlocks(
   return out;
 }
 
+/**
+ * A task list's items, one `bullet` block each (HIVE-202). The TODO/DONE state
+ * is dropped: nothing in the app checks a criterion, so nothing claims to. A
+ * nested taskList sits directly in the list (not inside an item) in Jira's ADF.
+ */
+function taskBlocks(node: AdfNode, depth: number): AdfBlock[] {
+  return (node.content ?? []).flatMap((child): AdfBlock[] => {
+    if (child.type === 'taskList') return taskBlocks(child, depth + 1);
+    if (child.type !== 'taskItem') return [];
+    return [{ kind: 'bullet', runs: runsOf(child.content), depth }];
+  });
+}
+
 function blockOf(node: AdfNode): AdfBlock[] {
   switch (node.type) {
     case 'paragraph':
@@ -154,6 +171,8 @@ function blockOf(node: AdfNode): AdfBlock[] {
       return listBlocks(node, 'bullet', 0);
     case 'orderedList':
       return listBlocks(node, 'ordered', 0);
+    case 'taskList':
+      return taskBlocks(node, 0);
     case 'rule':
       return [{ kind: 'rule', runs: [] }];
     default: {

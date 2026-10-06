@@ -183,7 +183,7 @@ describe('createUpdater — the menu', () => {
 
     expect(h.inform).toHaveBeenCalledWith({
       message: "You're up to date.",
-      detail: 'The Hive 0.1.0 is the latest version.',
+      detail: 'Hive TTY 0.1.0 is the latest version.',
     });
   });
 
@@ -191,7 +191,7 @@ describe('createUpdater — the menu', () => {
     const yes = harness(SELF_INSTALL);
     await createUpdater(yes.deps).check('menu');
     expect(yes.confirm.mock.calls[0][0]).toMatchObject({
-      message: 'The Hive 0.2.0 is available.',
+      message: 'Hive TTY 0.2.0 is available.',
       confirmLabel: 'Download',
     });
     expect(yes.engine.download).toHaveBeenCalledTimes(1);
@@ -325,7 +325,7 @@ describe('createUpdater — a staged update is not lost', () => {
 
     expect(h.confirm).not.toHaveBeenCalled();
     expect(h.inform.mock.calls.at(-1)?.[0]).toMatchObject({
-      message: 'The Hive 0.2.0 is ready to install.',
+      message: 'Hive TTY 0.2.0 is ready to install.',
     });
   });
 

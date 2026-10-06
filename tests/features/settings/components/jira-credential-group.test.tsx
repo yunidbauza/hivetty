@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -168,6 +168,29 @@ describe('writing', () => {
 });
 
 describe('testing the connection', () => {
+  it('keeps focus on Test while it runs, and announces the verdict (HIVE-225)', async () => {
+    const user = userEvent.setup();
+    let settle: (value: JiraResult<JiraIdentity>) => void = () => {};
+    testJiraConnection.mockReturnValueOnce(
+      new Promise((resolve) => {
+        settle = resolve;
+      }),
+    );
+    draw(status({ kind: 'stored', email: 'me@example.com' }));
+    const button = screen.getByRole('button', { name: 'Test connection' });
+
+    await user.click(button);
+    expect(button).toHaveFocus();
+    expect(button).toHaveAttribute('aria-disabled', 'true');
+    expect(button).not.toBeDisabled();
+
+    await act(async () => {
+      settle({ ok: true, value: { displayName: 'Yunid Bauza', accountId: '712020:9f3c' } });
+    });
+    expect(button).toHaveFocus();
+    expect(screen.getByRole('status')).toHaveTextContent('Signed in as Yunid Bauza.');
+  });
+
   it('shows the display name on success', async () => {
     const user = userEvent.setup();
     testJiraConnection.mockResolvedValueOnce({

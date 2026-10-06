@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -76,6 +77,13 @@ const seed = (over: Partial<AgentSummary> = {}): Agent => {
   return entity;
 };
 
+/** The page owns the notice now (HIVE-204); this holds it the way the page does. */
+function Harness({ entity }: { entity: Agent }) {
+  const [notice, setNotice] = useState<string | null>(null);
+
+  return <AgentView entity={entity} notice={notice} onNotice={setNotice} />;
+}
+
 const bridge = () => {
   const run = vi.fn().mockResolvedValue({ started: true, run: 'r18' });
   const post = vi.fn().mockResolvedValue({ ok: true });
@@ -98,15 +106,43 @@ describe('AgentView', () => {
 
   describe('the facts', () => {
     it('renders all five', () => {
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       for (const label of ['Status', 'Wake', 'Next', 'Today', 'Session']) {
         expect(screen.getByText(label)).toBeInTheDocument();
       }
     });
 
+    it('lays them out as five even tiles, in order, labels above values', () => {
+      render(<Harness entity={seed()} />);
+
+      const labels = ['Status', 'Wake', 'Next', 'Today', 'Session'].map((label) => screen.getByText(label));
+      const row = labels[0]?.parentElement?.parentElement as HTMLElement;
+
+      // Even columns that wrap on a narrow stage rather than squeeze.
+      expect(row).toHaveClass('grid', '[grid-template-columns:repeat(auto-fit,minmax(150px,1fr))]');
+      expect(Array.from(row.children).map((fact) => fact.firstElementChild?.textContent)).toEqual([
+        'Status',
+        'Wake',
+        'Next',
+        'Today',
+        'Session',
+      ]);
+
+      for (const label of labels) {
+        expect(label).toHaveClass('text-micro', 'uppercase');
+        expect(label.parentElement).toHaveClass('rounded-lg', 'border', 'border-border-soft', 'bg-panel');
+      }
+    });
+
+    it('gives the ledger a 300px column beside the run log', () => {
+      const { container } = render(<Harness entity={seed()} />);
+
+      expect(container.querySelector('[class*="minmax(0,1fr)_300px"]')).not.toBeNull();
+    });
+
     it('shows the rotation as a fraction, so it is visible before it happens', () => {
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       expect(screen.getByText(/9f3c1e2a · run 17\/50/)).toBeInTheDocument();
     });
@@ -123,7 +159,7 @@ describe('AgentView', () => {
     */
     it('shows today’s totals rather than the last run’s cost', () => {
       render(
-        <AgentView
+        <Harness
           entity={seed({ today: { day: dayKey(Date.now()), runs: 31, usd: 2.14 } })}
         />,
       );
@@ -132,7 +168,7 @@ describe('AgentView', () => {
     });
 
     it('reads a quiet day as none rather than as unmeasured', () => {
-      render(<AgentView entity={seed({ today: undefined })} />);
+      render(<Harness entity={seed({ today: undefined })} />);
 
       expect(screen.getByText('0 runs · $0.00')).toBeInTheDocument();
     });
@@ -143,19 +179,19 @@ describe('AgentView', () => {
       quiet agent distinguishable from a broken one.
     */
     it('shows the skip count beside the next wake', () => {
-      render(<AgentView entity={seed({ status: 'sleeping', skipsSinceRun: 3 })} />);
+      render(<Harness entity={seed({ status: 'sleeping', skipsSinceRun: 3 })} />);
 
       expect(screen.getByText(/skipped 3/)).toBeInTheDocument();
     });
 
     it('draws no skip count when nothing has been skipped', () => {
-      render(<AgentView entity={seed({ status: 'sleeping', skipsSinceRun: 0 })} />);
+      render(<Harness entity={seed({ status: 'sleeping', skipsSinceRun: 0 })} />);
 
       expect(screen.queryByText(/skipped/)).not.toBeInTheDocument();
     });
 
     it('reads an em dash for an agent that has never run', () => {
-      render(<AgentView entity={seed({ sessionUuid: undefined, runs: [] })} />);
+      render(<Harness entity={seed({ sessionUuid: undefined, runs: [] })} />);
 
       expect(screen.getByText('—')).toBeInTheDocument();
     });
@@ -174,216 +210,15 @@ describe('AgentView', () => {
         },
       ]);
 
-      render(<AgentView entity={entity} />);
+      render(<Harness entity={entity} />);
 
       expect(screen.getByText(/asking a71/)).toBeInTheDocument();
     });
   });
 
-  describe('the controls', () => {
-    it('runs the agent by name and nothing else', async () => {
-      // The IPC key set is closed: a payload carrying a trigger is a hard
-      // IpcValidationError, not a silently ignored field.
-      const { run } = bridge();
-      render(<AgentView entity={seed()} />);
-
-      await userEvent.click(screen.getByRole('button', { name: /Run now/i }));
-
-      expect(run).toHaveBeenCalledWith({ name: 'watcher' });
-    });
-
-    it('says why a run was refused rather than looking like a dead button', async () => {
-      // `AgentRunResult` is a value precisely so the renderer can draw the
-      // reason; discarding it made Run now on an invalid agent do nothing.
-      const run = vi
-        .fn()
-        .mockResolvedValue({ started: false, refused: 'working' });
-      vi.stubGlobal('hive', {
-        agents: { run },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Run now/i }));
-
-      // The wording is `agentRunRefusal`'s, shared with the console (HIVE-117).
-      expect(await screen.findByText(/is working/)).toBeInTheDocument();
-    });
-
-    it('says a saturated agent is saturated, not that the runtime is down (HIVE-128)', async () => {
-      const run = vi
-        .fn()
-        .mockResolvedValue({ started: false, refused: 'saturated' });
-      vi.stubGlobal('hive', {
-        agents: { run },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Run now/i }));
-
-      expect(await screen.findByText(/is saturated/)).toBeInTheDocument();
-    });
-
-    /**
-     * HIVE-126 added a third arm, and this view is the second reader of it.
-     *
-     * The same failure the exhaustive switch was extracted to prevent, one
-     * story later: a queued run reaching `agentRunRefusal` would fall through
-     * every case and draw nothing, on the surface whose whole complaint was a
-     * button that looked dead.
-     */
-    it('says a busy agent queued the run rather than refusing it', async () => {
-      const run = vi
-        .fn()
-        .mockResolvedValue({ started: false, queued: true, behind: 'working' });
-      vi.stubGlobal('hive', {
-        agents: { run },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Run now/i }));
-
-      expect(await screen.findByText(/queued for/)).toBeInTheDocument();
-    });
-
-    /**
-     * HIVE-117 widened `AgentRunResult.refused` with `paused`, and this view's
-     * refusal used to be a ternary ending in a bare `else` reading "The agent
-     * runtime is not up." — so the new member arrived as a confident lie about
-     * an agent the user had paused themselves. The wording is shared now, and
-     * this is the case that would have caught it.
-     */
-    it('names a pause as a pause, not as a dead runtime', async () => {
-      const run = vi
-        .fn()
-        .mockResolvedValue({ started: false, refused: 'paused' });
-      vi.stubGlobal('hive', {
-        agents: { run },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Run now/i }));
-
-      expect(await screen.findByText(/is paused/)).toBeInTheDocument();
-      expect(screen.queryByText(/runtime is not/)).not.toBeInTheDocument();
-    });
-
-    it('pauses a running agent through the channel (HIVE-117)', async () => {
-      const pause = vi.fn().mockResolvedValue('paused');
-      vi.stubGlobal('hive', {
-        agents: { pause, resume: vi.fn() },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Pause/i }));
-
-      expect(pause).toHaveBeenCalledWith({ name: 'watcher' });
-    });
-
-    /*
-      One control, not two: the states are exclusive, so the button names the
-      move rather than offering a disabled twin.
-    */
-    it('offers Resume, and only Resume, for a paused agent', async () => {
-      const resume = vi.fn().mockResolvedValue('sleeping');
-      vi.stubGlobal('hive', {
-        agents: { pause: vi.fn(), resume },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={{ ...seed(), status: 'paused' }} />);
-
-      expect(
-        screen.queryByRole('button', { name: /⏸ Pause/ }),
-      ).not.toBeInTheDocument();
-      await userEvent.click(screen.getByRole('button', { name: /Resume/i }));
-
-      expect(resume).toHaveBeenCalledWith({ name: 'watcher' });
-    });
-
-    /*
-      Both channels reject when the runtime is not up — answering a status they
-      never wrote is what their contract calls worth a rejected promise — so the
-      user is owed the sentence rather than a button that did nothing.
-    */
-    it('shows why a pause failed instead of swallowing it', async () => {
-      const pause = vi
-        .fn()
-        .mockRejectedValue(new Error('The agent runtime is not running.'));
-      vi.stubGlobal('hive', {
-        agents: { pause, resume: vi.fn() },
-        ledger: { post: vi.fn(), answer: vi.fn() },
-      });
-
-      render(<AgentView entity={seed()} />);
-      await userEvent.click(screen.getByRole('button', { name: /Pause/i }));
-
-      expect(
-        await screen.findByText(/The agent runtime is not running/),
-      ).toBeInTheDocument();
-    });
-
-    it('offers no Stop, because a run is one bounded turn', () => {
-      render(<AgentView entity={seed()} />);
-
-      expect(
-        screen.queryByRole('button', { name: /Stop/i }),
-      ).not.toBeInTheDocument();
-    });
-
-    it('sends Edit definition to Settings › Agents', async () => {
-      render(<AgentView entity={seed()} />);
-
-      await userEvent.click(
-        screen.getByRole('button', { name: /Edit definition/i }),
-      );
-
-      expect(useUiStore.getState().settingsSection).toBe('agents');
-    });
-  });
-
-  describe('the frame', () => {
-    /*
-      There was no way out of an agent tab. It can be entered from the rail,
-      the fleet table and the console, and the button that leaves every other
-      centre-stage view belongs to `SessionMetaBar` — which an agent stopped
-      mounting when HIVE-116 gave it a view of its own.
-    */
-    it('goes back to the overmind', async () => {
-      useUiStore.getState().openTab('watcher');
-      render(<AgentView entity={seed()} />);
-
-      await userEvent.click(
-        screen.getByRole('button', { name: 'Back to overmind' }),
-      );
-
-      expect(useUiStore.getState().activeTab).toBe('orch');
-    });
-
-    /*
-      The button leads, the identity follows. The row reads "back → this
-      agent", not "back from this agent": what the control does is leave, and
-      the name beside it says what is being left.
-    */
-    it('puts the way back before the agent it belongs to', () => {
-      render(<AgentView entity={seed()} />);
-
-      const back = screen.getByRole('button', { name: 'Back to overmind' });
-      const name = screen.getByText('watcher');
-
-      expect(
-        back.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING,
-      ).toBeTruthy();
-    });
-  });
-
   describe('the run log', () => {
     it('draws older runs as receipts, with no control promising an expansion', () => {
-      render(<AgentView entity={seed({ status: 'sleeping' })} />);
+      render(<Harness entity={seed({ status: 'sleeping' })} />);
 
       expect(screen.getByText(/#r16/)).toBeInTheDocument();
       expect(screen.getByText(/#r17/)).toBeInTheDocument();
@@ -406,7 +241,7 @@ describe('AgentView', () => {
      * live row has an identity of its own — and it is still not r17's.
      */
     it('never labels a live run with the previous run’s identity', () => {
-      render(<AgentView entity={seed(working())} />);
+      render(<Harness entity={seed(working())} />);
 
       // r17 is the last *finished* run, so it keeps its receipt…
       expect(screen.getByText(/#r17/)).toBeInTheDocument();
@@ -417,7 +252,7 @@ describe('AgentView', () => {
     });
 
     it('keeps every finished run’s receipt while another is live', () => {
-      render(<AgentView entity={seed(working())} />);
+      render(<Harness entity={seed(working())} />);
 
       expect(screen.getByText(/#r16/)).toBeInTheDocument();
       expect(screen.getByText(/#r17/)).toBeInTheDocument();
@@ -433,13 +268,13 @@ describe('AgentView', () => {
         ],
       });
 
-      render(<AgentView entity={entity} />);
+      render(<Harness entity={entity} />);
 
       expect(screen.getByText(/● turn ended/)).toBeInTheDocument();
     });
 
     it('says so plainly when there is nothing yet', () => {
-      render(<AgentView entity={seed({ runs: [] })} />);
+      render(<Harness entity={seed({ runs: [] })} />);
 
       expect(screen.getByText(/Nothing yet/)).toBeInTheDocument();
     });
@@ -462,7 +297,7 @@ describe('AgentView', () => {
         lines: [{ text: 'still going', color: 'ink' }],
       });
 
-      const { container } = render(<AgentView entity={entity} />);
+      const { container } = render(<Harness entity={entity} />);
 
       const receipts = container.querySelector('[data-region="run-receipts"]');
       const output = container.querySelector('[data-region="run-output"]');
@@ -479,7 +314,7 @@ describe('AgentView', () => {
       claim its border and its share of the height for nothing.
     */
     it('draws no receipts region for an agent that has never run', () => {
-      const { container } = render(<AgentView entity={seed({ runs: [] })} />);
+      const { container } = render(<Harness entity={seed({ runs: [] })} />);
 
       expect(container.querySelector('[data-region="run-receipts"]')).toBeNull();
       expect(container.querySelector('[data-region="run-output"]')).not.toBeNull();
@@ -508,7 +343,7 @@ describe('AgentView', () => {
         },
       ]);
 
-      render(<AgentView entity={entity} />);
+      render(<Harness entity={entity} />);
 
       const ledger = screen.getByText('Ledger').parentElement as HTMLElement;
 
@@ -539,7 +374,7 @@ describe('AgentView', () => {
         },
       ]);
 
-      render(<AgentView entity={entity} />);
+      render(<Harness entity={entity} />);
 
       expect(screen.getByText('Retry the deploy?')).toBeInTheDocument();
       expect(
@@ -551,7 +386,7 @@ describe('AgentView', () => {
   describe('the input', () => {
     it('answers an open ask', async () => {
       const { answer } = bridge();
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       await userEvent.type(
         screen.getByRole('textbox'),
@@ -563,7 +398,7 @@ describe('AgentView', () => {
 
     it('posts free text as an ask addressed to this agent', async () => {
       const { post } = bridge();
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       await userEvent.type(
         screen.getByRole('textbox'),
@@ -579,7 +414,7 @@ describe('AgentView', () => {
 
     it('clears the box after posting', async () => {
       bridge();
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       const box = screen.getByRole('textbox');
       await userEvent.type(box, 'check the deploy{Enter}');
@@ -589,7 +424,7 @@ describe('AgentView', () => {
 
     it('posts nothing on a stray Enter', async () => {
       const { post, answer } = bridge();
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       await userEvent.type(screen.getByRole('textbox'), '{Enter}');
 
@@ -610,7 +445,7 @@ describe('AgentView', () => {
         ledger: { post, answer: vi.fn() },
       });
 
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       return userEvent
         .type(screen.getByRole('textbox'), 'check the deploy{Enter}')
@@ -623,7 +458,7 @@ describe('AgentView', () => {
     });
 
     it('says it speaks as the overmind, which is what main enforces', () => {
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       expect(screen.getByText(/as the overmind/i)).toBeInTheDocument();
       expect(screen.getByText(/not a terminal/i)).toBeInTheDocument();
@@ -638,7 +473,7 @@ describe('AgentView', () => {
       const { post } = bridge();
       post.mockResolvedValue({ ok: false, reason: 'the ledger is not up' });
 
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
       await userEvent.type(screen.getByRole('textbox'), 'hello{Enter}');
 
       expect(
@@ -654,7 +489,7 @@ describe('AgentView', () => {
       widget sitting on the view rather than the surface it is typed into.
     */
     it('names the agent in the prompt, the way the console names the overmind', () => {
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       expect(screen.getByText('watcher ❯')).toBeInTheDocument();
     });
@@ -675,7 +510,7 @@ describe('AgentView', () => {
      */
     it('demonstrates a grammar the parser actually accepts', async () => {
       const { answer, post } = bridge();
-      render(<AgentView entity={seed()} />);
+      render(<Harness entity={seed()} />);
 
       const box = screen.getByRole('textbox');
       const shown = box.getAttribute('placeholder') ?? '';
@@ -694,5 +529,48 @@ describe('AgentView', () => {
       );
       expect(post).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('a paused agent (HIVE-211)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useUiStore.getState().reset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('reads paused in amber, swaps the prompt for the bar, and keeps the draft through resume', async () => {
+    const resume = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('hive', { agents: { resume, pause: vi.fn() }, ledger: {} });
+    const { rerender } = render(<Harness entity={seed({ status: 'sleeping' })} />);
+    await userEvent.type(screen.getByLabelText(/Post to watcher/), 'half a thought');
+
+    rerender(<Harness entity={seed({ status: 'paused' })} />);
+    expect(screen.queryByLabelText(/Post to watcher/)).toBeNull();
+    expect(screen.getByText('watcher is paused.')).toHaveClass('text-amber-text');
+    expect(
+      screen.getByText(/Nothing wakes it, not the ledger, not a schedule, until you resume it\. Your draft is kept\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/posts to the ledger as the overmind/)).toBeNull();
+    const status = screen.getByText('Status').nextElementSibling;
+    expect(status).toHaveClass('text-amber-text');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(resume).toHaveBeenCalledWith({ name: 'watcher' });
+
+    rerender(<Harness entity={seed({ status: 'sleeping' })} />);
+    expect(screen.getByLabelText(/Post to watcher/)).toHaveValue('half a thought');
+  });
+
+  it('a refused resume lands in the notice', async () => {
+    const resume = vi.fn().mockRejectedValue(new Error('The agent runtime is not running.'));
+    vi.stubGlobal('hive', { agents: { resume, pause: vi.fn() }, ledger: {} });
+    render(<Harness entity={seed({ status: 'paused' })} />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(await screen.findByText('The agent runtime is not running.')).toBeInTheDocument();
   });
 });

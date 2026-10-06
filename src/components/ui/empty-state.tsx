@@ -7,7 +7,7 @@ import type { PhraseKey } from '@lib/swarm/phrases';
 /**
  * The rail size, named once.
  *
- * It is the number the whole "a rail may have a sprite" argument rests on, so
+ * It is the number the whole "a rail may have a creature" argument rests on, so
  * it is a constant rather than six call sites that could drift apart — and one
  * that drifts upward stops being a mark and becomes the illustration this
  * component's doc rules out.
@@ -35,7 +35,7 @@ type EmptyStateProps = {
   | {
       /** Which pool to draw a flavour line from. */
       phrase: PhraseKey;
-      /** The sprite above the flavour line. 44px — see the note above. */
+      /** The creature above the flavour line. 44px — see the note above. */
       creature?: Creature;
       /**
        * The way out this panel can take *itself* — a control, not a sentence.
@@ -58,7 +58,7 @@ type EmptyStateProps = {
 );
 
 /**
- * What a left-rail panel says when it has nothing to list.
+ * What a list panel says when it has nothing to list.
  *
  * ## Why this exists at all
  *
@@ -90,7 +90,7 @@ type EmptyStateProps = {
  * the way out, exactly as before. Nothing became decorative instead of useful,
  * which is the only reading under which the paragraph above stays true.
  *
- * `creature` adds the sprite that goes with it, at **44px** — a size chosen so
+ * `creature` adds the creature that goes with it, at **44px** — a size chosen so
  * the paragraph above stays true rather than in spite of it. It is shorter than
  * the two lines of copy beneath it and reads as a mark, not an illustration.
  * The centred 96–120px block the full-stage surfaces use is exactly what a rail
@@ -132,7 +132,7 @@ export function EmptyState({
 
   const body =
     sentence === undefined ? null : (
-      <p className="px-1 py-1 text-[11.5px] leading-[1.45] text-subtle">
+      <p className="px-1 py-1 text-ui-sm leading-[1.45] text-subtle">
         {sentence}
       </p>
     );
@@ -157,7 +157,13 @@ export function EmptyState({
       }
     >
       {creature === undefined ? null : (
-        <div className="px-1 pb-0.5">
+        /*
+          Room for what the creature draws past its box (HIVE-222): the rail's
+          scroller clips at its own edge, and at 44px a mutalisk's wingtips
+          reach about 8px past the box at the sides and a spire's ring about
+          4px above it. The canvas's bleed beyond that is transparent.
+        */
+        <div className="pt-1 pr-1 pb-0.5 pl-2">
           <SwarmCreature creature={creature} size={RAIL_CREATURE_SIZE} />
         </div>
       )}

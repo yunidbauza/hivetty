@@ -24,7 +24,7 @@ import { useSettingsActions, useSettingsSection } from '@stores/ui-store';
  *
  * The same reason the new-session picker gives (story 044): the vendored
  * `DialogContent` always portals to `document.body` and centres a fixed card.
- * Settings fills the **center stage** — the rails and header stay visible — so
+ * Settings fills the **center stage** — the panels and session header stay visible — so
  * it is composed from the primitive directly and rendered in place. The parts
  * that matter are kept: the focus trap, Escape, and the `aria-modal` semantics
  * that hide the rest of the tree from assistive tech.
@@ -83,7 +83,7 @@ const SECTIONS: readonly { id: SettingsSection; label: string }[] = [
 type SectionId = SettingsSection;
 
 /**
- * Section id → pane, the same shape `left-rail.tsx` uses for its panels.
+ * Section id → pane, the same shape `list-panel.tsx` uses for its panels.
  *
  * A map rather than a chain of ternaries: adding story 104's section should be
  * two lines and no control flow.
@@ -144,7 +144,7 @@ export function SettingsOverlay() {
    * asked, and landing them on Projects would lose it.
    *
    * The request is honoured on arrival, not only at mount. This overlay is
-   * `modal={false}` precisely so the rails stay live underneath it, so
+   * `modal={false}` precisely so the panels stay live underneath it, so
    * `openSettings('agents')` can fire while it is already open — and reading
    * the request once made that click do visibly nothing. The effect below
    * consumes each request exactly once, which is what keeps a stale value from
@@ -225,13 +225,14 @@ export function SettingsOverlay() {
         }}
         className="flex min-h-0 flex-1 flex-col bg-panel-2 outline-none"
       >
-        <div className="flex items-center justify-between border-b border-border-soft px-4 py-2.5">
-          <DialogPrimitive.Title className="text-[13px] text-ink">
+        {/* The Overmind head's own title and padding, so a place and Settings read at the same weight. */}
+        <div className="flex items-center justify-between border-b border-border-soft px-7 pt-4 pb-3">
+          <DialogPrimitive.Title className="text-[18px] font-semibold text-ink">
             Settings
           </DialogPrimitive.Title>
           <DialogPrimitive.Close
             aria-label="Close settings"
-            className="rounded p-1 text-subtle hover:bg-hover hover:text-ink"
+            className="rounded-full p-1.5 text-subtle hover:bg-hover hover:text-ink"
           >
             <X size={13} weight="bold" />
           </DialogPrimitive.Close>
@@ -254,7 +255,7 @@ export function SettingsOverlay() {
                   aria-current={active ? 'page' : undefined}
                   onClick={() => setSection(entry.id)}
                   className={cn(
-                    'rounded-[5px] px-2.5 py-1 text-left text-[13px] outline-none',
+                    'rounded-md px-2.5 py-1 text-left text-ui outline-none',
                     'focus-visible:ring-1 focus-visible:ring-brand',
                     active
                       ? 'bg-active text-ink'

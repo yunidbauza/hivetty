@@ -2,6 +2,7 @@ import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { clockTime } from '@lib/format-clock';
 import { WorkPanel } from '@features/work/components/work-panel';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
@@ -86,6 +87,8 @@ describe('a mode switch while a search is on screen', () => {
             status: 'In Progress',
             statusCategory: 'in-progress' as const,
             title: 'from the departed machine',
+            priority: null,
+            assignee: null,
           },
         ],
         searching: false,
@@ -226,24 +229,14 @@ describe('the live state', () => {
     expect(screen.getByText('HIVE-1')).toBeInTheDocument();
     expect(screen.getByText('HIVE-2')).toBeInTheDocument();
     expect(screen.queryByText(/out of date/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/first 200/i)).not.toBeInTheDocument();
-  });
-
-  it('links a real ticket out to Jira', () => {
-    state().hydrateTickets([issue()], false);
-    render(<WorkPanel />);
-
-    expect(screen.getByRole('link', { name: 'HIVE-1' })).toHaveAttribute(
-      'href',
-      'https://behiques.atlassian.net/browse/HIVE-1',
-    );
+    expect(screen.queryByText(/Showing the first 200 — your query matched more\. Narrow it in Jira\./)).not.toBeInTheDocument();
   });
 
   it('says so when the cap stopped paging', () => {
     state().hydrateTickets([issue()], true);
     render(<WorkPanel />);
 
-    expect(screen.getByText(/first 200/i)).toBeInTheDocument();
+    expect(screen.getByText(/Showing the first 200 — your query matched more\. Narrow it in Jira\./)).toBeInTheDocument();
   });
 
   it('says a query matched nothing rather than rendering a blank column', () => {
@@ -257,7 +250,7 @@ describe('the live state', () => {
     state().hydrateTickets([], false);
     render(<WorkPanel />);
 
-    const img = screen.getByRole('presentation', { hidden: true });
+    const img = document.querySelector('[data-creature]');
 
     expect(img).toHaveAttribute('data-creature', 'spire');
     expect(img).toHaveStyle({ height: '44px' });
@@ -277,11 +270,20 @@ describe('the stale state', () => {
     expect(screen.getByText('HIVE-1')).toBeInTheDocument();
   });
 
-  it('says they may be out of date, and offers a retry', async () => {
+  it('says when it failed and when the list was read, and offers a retry (HIVE-211)', async () => {
     const user = userEvent.setup();
+    const { ticketSource, ticketsReadAt } = state();
+    if (ticketSource.kind !== 'live' || ticketSource.failedAt === undefined || ticketsReadAt === null) {
+      throw new Error('the beforeEach leaves a stale live source');
+    }
     render(<WorkPanel />);
 
-    expect(screen.getByText(/may be out of date/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Couldn't reach Jira at ${clockTime(ticketSource.failedAt)}. Showing what was loaded at ${clockTime(ticketsReadAt)}.`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/may be out of date/i)).toBeNull();
 
     await user.click(screen.getByRole('button', { name: /Try again/i }));
     expect(refreshTickets).toHaveBeenCalled();

@@ -1,125 +1,93 @@
-import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from '@components/layout/app-shell';
+import { TooltipProvider } from '@components/ui/tooltip';
+import { STAGE_MIN, useAppearanceStore } from '@stores/appearance-store';
+import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
+import { resetProjectConfig } from '@lib/project-config';
+import { seedDemoFleet } from '@tests/support/demo-fleet';
 
 vi.mock('@xterm/xterm');
 vi.mock('@xterm/addon-fit');
 
+const stubWindowWidth = (narrow: boolean) => {
+  const mql = { matches: narrow, addEventListener: vi.fn(), removeEventListener: vi.fn() };
+  vi.stubGlobal('matchMedia', vi.fn(() => mql as unknown as MediaQueryList));
+};
+
+const renderShell = () =>
+  render(
+    <TooltipProvider>
+      <AppShell />
+    </TooltipProvider>,
+  );
+
 describe('AppShell', () => {
   beforeEach(() => {
+    localStorage.clear();
     useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+    useHiveStore.getState().reset();
+    // jsdom's window is 1,024px, which reads as narrow (HIVE-211). These cases are about a wide window.
+    stubWindowWidth(false);
+  });
+  afterEach(() => {
+    resetProjectConfig();
+    vi.unstubAllGlobals();
   });
 
-  it('renders all four regions', () => {
-    render(<AppShell />);
+  it('draws one tree with no setting seeded: the bar, the list panel and the stage, no header (HIVE-213)', () => {
+    const { container } = renderShell();
 
-    expect(screen.getByRole('banner')).toBeInTheDocument();
-    expect(
-      screen.getByRole('navigation', { name: 'Projects, work, and agents' }),
-    ).toBeInTheDocument();
+    expect(container.querySelector('header')).toBeNull();
+    expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Places' })).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
-    expect(
-      screen.getByRole('complementary', { name: 'Activity' }),
-    ).toBeInTheDocument();
-  });
-
-  it('removes the activity rail from the tree when it is hidden', () => {
-    useUiStore.setState({ showActivityRail: false });
-
-    render(<AppShell />);
-
-    expect(
-      screen.queryByRole('complementary', { name: 'Activity' }),
-    ).not.toBeInTheDocument();
-    // The other three regions are unaffected.
-    expect(screen.getByRole('banner')).toBeInTheDocument();
-    expect(screen.getByRole('main')).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Activity' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('slider', { name: /rail/i })).not.toBeInTheDocument();
   });
 
   /**
    * The `min-*: 0` overrides are the whole layout. A flex item defaults to
-   * `min-height: auto` / `min-width: auto` and refuses to shrink below its
-   * content, which would push the rails past the viewport and let a long
-   * terminal line widen the center column — the trap story 020 calls out.
+   * `min-*: auto` and refuses to shrink below its content, so the row would
+   * push past the viewport and a long terminal line would widen the stage.
    * happy-dom does no layout, so assert the contract on the class list.
    */
   it('keeps the flex children shrinkable', () => {
-    const { container } = render(<AppShell />);
-
+    const { container } = renderShell();
     const row = container.querySelector('div > div.flex.min-h-0');
     expect(row).not.toBeNull();
     expect(row).toHaveClass('min-h-0', 'flex-1');
-
-    expect(screen.getByRole('main')).toHaveClass('min-w-0', 'flex-1');
+    // An explicit floor, not `auto`: content cannot widen the stage, and the rails yield to it (HIVE-223).
+    expect(screen.getByRole('main').style.minWidth).toBe(`${String(STAGE_MIN)}px`);
   });
 
-  it('pins the rails to a fixed width so the center column absorbs resizes', () => {
-    render(<AppShell />);
+  it('mounts the session panel for a session on stage (HIVE-201)', () => {
+    seedDemoFleet();
+    act(() => useUiStore.getState().openTab('hero-refresh', 'sessions'));
+    renderShell();
+    expect(screen.getByRole('complementary', { name: 'Session panel' })).toBeInTheDocument();
+  });
+});
 
-    // The width is a custom property from story 105 so density can change it,
-    // but it is still a *fixed* width: neither rail flexes, which is what makes
-    // the center column absorb every resize.
-    expect(
-      screen.getByRole('navigation', { name: 'Projects, work, and agents' }),
-    ).toHaveClass('w-[var(--cc-rail-w-left)]', 'shrink-0');
-    expect(screen.getByRole('complementary', { name: 'Activity' })).toHaveClass(
-      'w-[var(--cc-rail-w-right)]',
-      'shrink-0',
+describe('AppShell — the narrow window (HIVE-211)', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useAppearanceStore.getState().reset();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('tells ui-store the window is narrow', () => {
+    stubWindowWidth(true);
+
+    render(
+      <TooltipProvider>
+        <AppShell />
+      </TooltipProvider>,
     );
-  });
 
-  it('gives each rail its own scrollbar rather than scrolling the page', () => {
-    render(<AppShell />);
-
-    // Both rails delegate scrolling to their tab panel — the left rail since
-    // story 030, the activity rail since 050 — so neither tab bar can be
-    // scrolled off-screen by a long list beneath it.
-    const panels = screen.getAllByRole('tabpanel');
-    expect(panels).toHaveLength(2);
-    for (const panel of panels) {
-      expect(panel).toHaveClass('overflow-y-auto');
-    }
-  });
-
-  /**
-   * The rail drag handles (HIVE-105).
-   *
-   * Only that they are mounted, and mounted as overlays. Their wiring belongs
-   * to `rail-handles.test.tsx` — they are a leaf specifically so this shell
-   * does not re-render with them, and re-testing them here would assert the
-   * same behaviour through thirteen extra surfaces.
-   */
-  it('mounts a resize handle for each rail', () => {
-    render(<AppShell />);
-
-    expect(
-      screen.getByRole('slider', { name: 'Resize the navigation rail' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('slider', { name: 'Resize the activity rail' }),
-    ).toBeInTheDocument();
-  });
-
-  /**
-   * The handles take no layout space, so the three regions measure exactly as
-   * they did before they existed. Asserted here rather than in the leaf's own
-   * suite because it is a fact about the row, not about the buttons.
-   */
-  it('keeps the rail row a three-item flex layout', () => {
-    render(<AppShell />);
-
-    const row = screen.getByRole('main').parentElement;
-    expect(row).toHaveClass('relative', 'flex');
-
-    /*
-      The two *rail* handles, by name. The stage mounts a slider of its own —
-      the overmind's fleet-table divider — which is in-flow between two panes
-      by design and is not what this asserts.
-    */
-    for (const name of ['Resize the navigation rail', 'Resize the activity rail']) {
-      expect(screen.getByRole('slider', { name })).toHaveClass('absolute');
-    }
+    expect(useUiStore.getState().narrow).toBe(true);
   });
 });

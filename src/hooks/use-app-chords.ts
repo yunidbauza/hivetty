@@ -8,9 +8,9 @@ import {
   type KeyEventLike,
   type TerminalChordDetail,
 } from '@lib/terminal/keymap';
-import { useToggleRailCollapsed } from '@stores/appearance-store';
+import { useToggleSessionPanel } from '@stores/appearance-store';
 import { useSpawnTerminalBeside } from '@stores/hive-store';
-import { useActiveTab } from '@stores/ui-store';
+import { useActiveTab, useTogglePanel } from '@stores/ui-store';
 
 /**
  * One chord, both ways it can arrive.
@@ -33,11 +33,10 @@ interface AppChord {
  * docblock said a third chord is when a table earns itself. The terminal-here
  * chord is the third. What the table shares is the two listeners and the
  * de-duplication between them; what it does not become is a binding registry —
- * `header.tsx` still defers `Cmd+,` to story 060, and nothing here is
- * rebindable.
+ * `Cmd+,` is still deferred to story 060, and nothing here is rebindable.
  */
 export function useAppChords(): void {
-  const toggleRailCollapsed = useToggleRailCollapsed();
+  const toggleSessionPanel = useToggleSessionPanel();
   const spawnTerminalBeside = useSpawnTerminalBeside();
   const activeTab = useActiveTab();
   /*
@@ -50,6 +49,8 @@ export function useAppChords(): void {
     activeTabRef.current = activeTab;
   }, [activeTab]);
 
+  const togglePanel = useTogglePanel();
+
   useEffect(() => {
     const isMac = isMacPlatform();
 
@@ -57,12 +58,14 @@ export function useAppChords(): void {
       {
         matches: (event, mac) => isRailChord(event, mac) === 'left',
         name: 'rail-left',
-        run: () => toggleRailCollapsed('left'),
+        // The list panel beside the stage (HIVE-195).
+        run: () => togglePanel(),
       },
       {
         matches: (event, mac) => isRailChord(event, mac) === 'right',
         name: 'rail-right',
-        run: () => toggleRailCollapsed('right'),
+        // The session panel (HIVE-201).
+        run: () => toggleSessionPanel(),
       },
       {
         matches: (event) => isTerminalHereChord(event),
@@ -102,5 +105,5 @@ export function useAppChords(): void {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener(TERMINAL_CHORD_EVENT, onChord);
     };
-  }, [toggleRailCollapsed, spawnTerminalBeside]);
+  }, [toggleSessionPanel, spawnTerminalBeside, togglePanel]);
 }

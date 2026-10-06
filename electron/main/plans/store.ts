@@ -24,6 +24,8 @@ export interface Plans {
   get(entityId: string): SessionPlan | undefined;
   /** Forget the session's plan and publish `plan: null`, if it had one. */
   drop(entityId: string): void;
+  /** Session ended: the plan and the plan file it was read from (HIVE-201). */
+  forget(entityId: string): void;
   list(): SessionPlan[];
   /** Cancel every pending all-done drop. */
   dispose(): void;
@@ -47,14 +49,19 @@ export const PLAN_SOURCE_RANK: Readonly<Record<PlanSource, number>> = {
 export function createPlans({
   send,
   graceMs = PLAN_GRACE_MS,
+  now = Date.now,
 }: {
   send: (channel: string, payload: unknown) => void;
   graceMs?: number;
+  /** Stamps task times and the plan file's read (HIVE-201). */
+  now?: () => number;
 }): Plans {
   const plans = new Map<string, SessionPlan>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
   const refused = new Set<string>();
+  /** The last plan file each session read, kept across sources and the grace drop (HIVE-201). */
+  const planFiles = new Map<string, { file: string; at: number }>();
 
   const publish = (entityId: string, plan: SessionPlan | null): void => {
     send(CH.planChanged, { entityId, plan } satisfies PlanChangedEvent);
@@ -70,12 +77,18 @@ export function createPlans({
     if (plans.delete(entityId)) publish(entityId, null);
   }
 
-  function set(entityId: string, next: SessionPlan | undefined): void {
-    if (next === plans.get(entityId)) return;
+  function set(entityId: string, proposed: SessionPlan | undefined): void {
+    if (proposed === plans.get(entityId)) return;
     cancel(entityId);
-    if (next === undefined || next.tasks.length === 0) {
+    if (proposed === undefined || proposed.tasks.length === 0) {
       drop(entityId);
       return;
+    }
+    let next = proposed;
+    // A plan from another source still names the session's plan file (HIVE-201).
+    const record = planFiles.get(entityId);
+    if (record !== undefined && next.file === undefined) {
+      next = { ...next, file: record.file, fileAt: record.at };
     }
     plans.set(entityId, next);
     publish(entityId, next);
@@ -118,6 +131,8 @@ export function createPlans({
     }
     const tasks = parsePlanFile(read.text);
     if (tasks.length === 0) return;
+    const at = now();
+    planFiles.set(call.entityId, { file: read.file, at });
     const current = plans.get(call.entityId);
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     offer(call.entityId, 'plan-file', {
@@ -126,6 +141,7 @@ export function createPlans({
       tasks,
       allDone: isAllDone(tasks),
       file: read.file,
+      fileAt: at,
       ...(build === undefined ? {} : { build }),
     });
   }
@@ -148,11 +164,15 @@ export function createPlans({
       }
       if (!TASK_TOOL_NAMES.has(call.toolName)) return;
       // Rank 1 is always accepted, so no `accepts` check here.
-      set(call.entityId, reduceTaskTool(plans.get(call.entityId), call));
+      set(call.entityId, reduceTaskTool(plans.get(call.entityId), call, now()));
     },
     offer,
     get: (entityId) => plans.get(entityId),
     drop,
+    forget(entityId) {
+      planFiles.delete(entityId);
+      drop(entityId);
+    },
     list: () => [...plans.values()],
     dispose() {
       for (const entityId of [...timers.keys()]) cancel(entityId);

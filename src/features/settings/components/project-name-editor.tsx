@@ -99,7 +99,7 @@ export function ProjectNameEditor({
           onCancel();
         }
       }}
-      className="w-full rounded-[5px] border border-brand-fill bg-bg px-1.5 py-0.5 text-[13px] text-ink"
+      className="w-full rounded-md border border-brand-fill bg-bg px-1.5 py-0.5 text-ui text-ink"
     />
   );
 }

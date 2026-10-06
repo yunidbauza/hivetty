@@ -8,6 +8,7 @@ import {
   frontmatterName,
   laneLabel,
   loadAgents,
+  nameProblem,
   nextAgentName,
   readAgent,
   renameAgent,
@@ -16,6 +17,7 @@ import {
   saveAgent,
   slackSignedOut,
   subscribeAgents,
+  templateFor,
 } from '@/lib/agents';
 
 import {
@@ -397,5 +399,20 @@ describe('laneLabel (HIVE-185)', () => {
 
   it('shows a thread id it cannot read as written', () => {
     expect(laneLabel('thread:a86')).toBe('thread a86');
+  });
+});
+
+describe('templateFor / nameProblem (moved, HIVE-204)', () => {
+  it('seeds the next free agent name', () => {
+    expect(templateFor([...AGENT_NAME_POOL])).toMatch(/^---\nname: [a-z]+-2\n/);
+    expect(templateFor([])).toContain('icon: ph-robot\n');
+  });
+
+  it('names each problem', () => {
+    expect(nameProblem('', [])).toBe('Give the agent a name in its frontmatter.');
+    expect(nameProblem('overmind', [])).toBe('"overmind" is reserved by Hive TTY.');
+    expect(nameProblem('Bad', [])).toBe('Lowercase letters, digits and dashes only.');
+    expect(nameProblem('acr', ['acr'])).toBe('You already have an agent called acr.');
+    expect(nameProblem('scout', [])).toBeNull();
   });
 });

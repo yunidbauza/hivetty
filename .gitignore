@@ -31,12 +31,14 @@ blob-report/
 .claude/worktrees/
 .tmp/
 
-# The impeccable hook's per-session cache — machine-generated, rewritten on
-# every edit, and keyed by session id with absolute paths inside. It has no
-# reader outside the tool that writes it, and tracking it meant a routine
-# `git add -A` swept it into a feature PR (#155). `.impeccable/config.json`
-# is real configuration and stays tracked.
-.impeccable/hook.cache.json
+# Impeccable's materials are each developer's own, kept locally and never
+# committed: the product record and design record it reads (PRODUCT.md,
+# DESIGN.md) and its folder (config, the design.json sidecar, and the hook's
+# per-session cache, which a routine `git add -A` once swept into a feature
+# PR, #155). The repo's design source of truth is .claude/DESIGN-SYSTEM.md.
+/PRODUCT.md
+/DESIGN.md
+/.impeccable/
 
 # Brainstorming visual companion (superpowers)
 .superpowers/

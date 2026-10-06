@@ -2,7 +2,7 @@ import { CheckCircle, WarningCircle } from '@phosphor-icons/react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import type { LoginEnvStatus } from '@shared/ipc-contract';
 
 /**
@@ -47,15 +47,15 @@ export function PathSourceGroup({
       title="PATH source"
       description="Which environment this app searched when it started, and where it came from."
     >
-      <div className="flex flex-col gap-2 rounded-[7px] border border-border-soft p-3">
+      <div className="flex flex-col gap-2 rounded-lg border border-border-soft p-3">
         {loginEnv === null ? (
-          <p data-probing className="text-[12.5px] text-subtle">
+          <p data-probing className="text-control text-subtle">
             {probing}
           </p>
         ) : loginEnv === 'unavailable' ? (
-          <p className="flex items-start gap-2 text-[12.5px]">
-            <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
-            <span className="text-amber">
+          <p className="flex items-start gap-2 text-control">
+            <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
+            <span className="text-amber-text">
               This app could not be asked what environment it is using. Nothing
               is broken by that beyond this box — reopening Settings asks again.
             </span>
@@ -85,13 +85,13 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
   if (loginEnv.error !== null) {
     return (
       <>
-        <p className="flex items-start gap-2 text-[12.5px]">
-          <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
-          <span className="text-amber">
+        <p className="flex items-start gap-2 text-control">
+          <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
+          <span className="text-amber-text">
             Your login shell could not be read: {loginEnv.error}.
           </span>
         </p>
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           The app kept the environment it was launched with — {counts} Nothing is
           broken by this beyond what it could not find.
         </p>
@@ -102,7 +102,7 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
   if (!loginEnv.enabled) {
     return (
       <>
-        <p className="text-[12.5px] text-ink">
+        <p className="text-control text-ink">
           Inherited from whatever launched this app. {counts}
         </p>
         {/*
@@ -117,7 +117,7 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
           true, and says the thing the reader actually needs — that what they
           just changed has not happened yet.
         */}
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           The login-shell import was off when this app started. The switch above
           controls it, and takes effect on the next launch.
         </p>
@@ -128,13 +128,13 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
   if (!loginEnv.imported) {
     return (
       <>
-        <p className="flex items-start gap-2 text-[12.5px]">
+        <p className="flex items-start gap-2 text-control">
           <CheckCircle size={14} className="mt-px shrink-0 text-green" />
           <span className="text-ink">
             Already your login shell&rsquo;s. {counts}
           </span>
         </p>
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           <code className="font-mono">{loginEnv.shell ?? 'Your shell'}</code> was
           asked and had nothing to add — which is the normal answer when the app
           was started from a terminal.
@@ -145,7 +145,7 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
 
   return (
     <>
-      <p className="flex items-start gap-2 text-[12.5px]">
+      <p className="flex items-start gap-2 text-control">
         <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         <span className="text-ink">
           Imported from your login shell (
@@ -153,7 +153,7 @@ function PathSourceLine({ loginEnv }: { loginEnv: LoginEnvStatus }) {
         </span>
       </p>
       {loginEnv.varsImported.some((name) => name !== 'PATH') ? (
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           Also taken from it:{' '}
           {loginEnv.varsImported
             .filter((name) => name !== 'PATH')

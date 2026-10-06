@@ -51,6 +51,14 @@ export interface PrRecord {
   checks: GhPrChecks;
   /** ISO 8601, straight from GitHub. Used for ordering, never parsed for display. */
   updatedAt: string;
+  /** ISO 8601, as `updatedAt`; `null` until the PR merges. The HATCHED time (HIVE-215). */
+  mergedAt: string | null;
+  /**
+   * Whether the token's owner wrote it (HIVE-215). Every sweep record is, by
+   * `collectPrs`' author check; a search result is when its author is the
+   * payload's `viewer`. Only a PR of yours can ask for you (SUMMONS).
+   */
+  mine: boolean;
 }
 
 /**
@@ -167,3 +175,179 @@ export interface PrLookupReply {
   pr: PrRecord | null;
   reason?: string;
 }
+
+/** How many comments, reviews, threads, requests and checks one PR page reads (HIVE-205). */
+export const GH_DETAIL_PAGE = 100;
+
+/** One PR by repository and number, as the renderer names it (HIVE-205). Main maps it to a configured repo or refuses. */
+export interface PrRef {
+  owner: string;
+  repo: string;
+  n: number;
+}
+
+/** A comment to post on {@link PrRef}'s PR (HIVE-205). */
+export interface PrCommentRequest extends PrRef {
+  body: string;
+}
+
+/** `github:pr-thread` (HIVE-207): a reply, a resolve or an unresolve on one review thread. */
+export type PrThreadRequest = PrRef & { threadId: string } & (
+    | { op: 'reply'; body: string }
+    | { op: 'resolve' | 'unresolve' }
+  );
+
+/** `github:pr-viewed` (HIVE-207): mark or unmark one path viewed. */
+export interface PrViewedRequest extends PrRef {
+  path: string;
+  viewed: boolean;
+}
+
+/** A PR-level comment. `author` is `null` for a deleted ("ghost") account. */
+export interface PrComment {
+  author: string | null;
+  body: string;
+  createdAt: string;
+  url: string;
+}
+
+/** A submitted review; `state` is GitHub's (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`). */
+export interface PrReview {
+  author: string | null;
+  state: string;
+  body: string;
+  submittedAt: string | null;
+  url: string;
+}
+
+export type PrThreadComment = PrComment & { diffHunk: string };
+
+/** A review thread; `line` is `null` once outdated, `originalLine` is where it was left. */
+export interface PrThread {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  originalLine: number | null;
+  diffSide: string | null;
+  comments: PrThreadComment[];
+}
+
+/** GitHub's `viewerViewedState`; `dismissed` is "pushed to since you viewed it" (HIVE-207). */
+export type PrFileViewed = 'viewed' | 'unviewed' | 'dismissed';
+
+/** One changed file (HIVE-207). `changeType` is GitHub's PatchStatus, lowercased. */
+export interface PrFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  changeType: string;
+  viewed: PrFileViewed;
+}
+
+export type PrCheckStatus = 'success' | 'failure' | 'running' | 'queued' | 'neutral';
+
+/** A check run or a commit status on the head commit, read as one shape. */
+export interface PrCheck {
+  name: string;
+  status: PrCheckStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  url: string | null;
+  /** The check suite's app slug (`github-actions`, `netlify`, …); null for a commit status (HIVE-206). */
+  app: string | null;
+  /** The Actions job id (the CheckRun's `databaseId`) when `app` is `github-actions`, else null (HIVE-206). */
+  jobId: number | null;
+}
+
+/** One PR, read for its page (HIVE-205). `owner`/`repo` are the configured repository's spelling. */
+export interface PrDetail {
+  id: string;
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  state: 'open' | 'closed' | 'merged';
+  isDraft: boolean;
+  body: string;
+  createdAt: string;
+  mergedAt: string | null;
+  baseRef: string | null;
+  headRef: string | null;
+  headSha: string | null;
+  additions: number;
+  deletions: number;
+  changedFiles: number;
+  author: string | null;
+  reviewDecision: string | null;
+  mergeStateStatus: string | null;
+  comments: PrComment[];
+  reviews: PrReview[];
+  /** A requested user's login or team's name. */
+  reviewRequests: string[];
+  threads: PrThread[];
+  checks: PrCheck[];
+  /** At most GH_DETAIL_PAGE; `changedFiles` is the true total (HIVE-207). */
+  files: PrFile[];
+}
+
+/** One CI run on the Timeline, from a commit's check suite (HIVE-208). */
+export interface PrTimelineRun {
+  /** The workflow run's database id. */
+  id: number;
+  number: number;
+  url: string;
+  /** The commit the suite ran on. */
+  sha: string;
+  workflow: string;
+  startedAt: string;
+  /** `null` while it runs. */
+  endedAt: string | null;
+  state: 'passed' | 'failed' | 'running' | 'other';
+  /** The names of its failed check runs (jobs), at most ten. */
+  failedJobs: string[];
+}
+
+/** A PR's history for the Timeline tab (HIVE-208). Newest hundred timeline items. */
+export interface PrTimeline {
+  createdAt: string;
+  mergedAt: string | null;
+  isDraft: boolean;
+  commits: { oid: string; at: string; url: string }[];
+  runs: PrTimelineRun[];
+  reviews: { at: string; author: string | null; state: string; url: string }[];
+  comments: { at: string; author: string | null; url: string }[];
+  events: { kind: 'ready' | 'draft' | 'review-requested' | 'merged'; at: string; actor: string | null }[];
+}
+
+/** `github:pr-runs` (HIVE-206): the runs of one PR's head branch. */
+export interface PrRunsRequest { owner: string; repo: string; branch: string }
+/** A run or a job, by id, in a configured repository (HIVE-206). */
+export interface RunRef { owner: string; repo: string; id: number }
+
+/** One workflow run, as `gh run list` names it. Status and conclusion are gh's lowercase words. */
+export interface WorkflowRun {
+  id: number; number: number; attempt: number;
+  status: string; conclusion: string | null;
+  headSha: string; event: string; workflowName: string;
+  createdAt: string; updatedAt: string; url: string;
+}
+/** A job as a workflow file declares it: its id, its `name:` and its `needs`. */
+export interface WorkflowJobDef { id: string; name: string | null; needs: string[] }
+/** One `.github/workflows/*.yml`: its file name, top-level `name:`, and jobs in file order. */
+export interface WorkflowDef { file: string; name: string | null; jobs: WorkflowJobDef[] }
+/** Runs newest first (at most 40) and the checkout's workflow files. */
+export interface PrRuns { runs: WorkflowRun[]; workflows: WorkflowDef[] }
+
+export interface RunStep {
+  number: number; name: string; status: string; conclusion: string | null;
+  startedAt: string | null; completedAt: string | null;
+}
+export interface RunJob {
+  id: number; runId: number; name: string; status: string; conclusion: string | null;
+  startedAt: string | null; completedAt: string | null; url: string; steps: RunStep[];
+}
+/** A failed job's log, cut to the failure in main (HIVE-206). `truncated`: lines were dropped. */
+export interface JobLog { lines: string[]; truncated: boolean }

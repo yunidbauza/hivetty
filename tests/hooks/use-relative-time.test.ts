@@ -1,10 +1,11 @@
-import { act, render } from '@testing-library/react';
+import { act, render, renderHook } from '@testing-library/react';
 import { createElement, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   formatLastUsed,
   formatRelativeTime,
+  useAge,
   useLastUsed,
 } from '@hooks/use-relative-time';
 
@@ -183,5 +184,26 @@ describe('useLastUsed', () => {
     });
 
     expect(label()).toBe('4 hr ago');
+  });
+});
+
+describe('useAge (HIVE-204)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(AT);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reads the age as the ledger column does, and keeps it current', () => {
+    const { result } = renderHook(() => useAge(AT - 2 * 60_000));
+    expect(result.current).toBe('2m');
+
+    act(() => {
+      vi.advanceTimersByTime(60 * 60_000);
+    });
+
+    expect(result.current).toBe('1h');
   });
 });

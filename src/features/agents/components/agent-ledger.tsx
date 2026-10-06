@@ -72,12 +72,12 @@ export function AgentLedger({ name }: AgentLedgerProps) {
       className="flex min-h-0 flex-col gap-2.5 overflow-y-auto rounded-lg border border-border-soft bg-panel p-2.5"
       data-region="ledger"
     >
-      <p className="text-[10px] tracking-[0.12em] text-subtle uppercase">
+      <p className="text-micro tracking-[0.12em] text-subtle uppercase">
         Ledger
       </p>
 
       {shown.length === 0 ? (
-        <p className="text-[11px] text-subtle">
+        <p className="text-micro text-subtle">
           Nothing on the record yet.
         </p>
       ) : (
@@ -86,21 +86,21 @@ export function AgentLedger({ name }: AgentLedgerProps) {
             <div className="flex items-center gap-1.5">
               <span
                 className={cn(
-                  'rounded border px-1 py-px text-[9px] tracking-[0.06em] uppercase',
+                  'rounded border px-1 py-px text-micro tracking-[0.06em] uppercase',
                   KIND_TONE[entry.kind],
                 )}
               >
                 {entry.kind}
                 {entry.ref === undefined ? null : ` ${entry.ref}`}
               </span>
-              <span className="ml-auto text-[9.5px] text-subtle">
+              <span className="ml-auto text-micro text-subtle">
                 {new Date(entry.ts).toLocaleTimeString([], {
                   hour: '2-digit',
                   minute: '2-digit',
                 })}
               </span>
             </div>
-            <p className="text-[11px] leading-relaxed break-words text-muted">
+            <p className="text-micro leading-relaxed break-words text-muted">
               {entry.body}
             </p>
           </div>
@@ -115,7 +115,7 @@ export function AgentLedger({ name }: AgentLedgerProps) {
         and may hold thousands more.
       */}
       {older === 0 ? null : (
-        <p className="border-t border-border-soft pt-2 text-[10px] text-subtle">
+        <p className="border-t border-border-soft pt-2 text-micro text-subtle">
           {`+${String(older)} older in this view`}
         </p>
       )}
@@ -129,14 +129,16 @@ export function AgentLedger({ name }: AgentLedgerProps) {
  * `ask` is amber because an open question is the "needs you" state everywhere
  * else in the app; `done` and `answer` are green because they close something;
  * `failed` is red. The bookkeeping kinds — `post`, `claim`, `release` — are
- * deliberately muted: they are the record working, not news.
+ * deliberately muted: they are the record working, not news. So is `event`
+ * (HIVE-204), in the quieter grey: a run starting or ending is the runtime
+ * keeping its own record, and it outnumbers everything else in the column.
  */
 const KIND_TONE: Record<LedgerKind, string> = {
-  ask: 'text-amber',
+  ask: 'text-amber-text',
   answer: 'text-green',
   done: 'text-green',
   failed: 'text-red',
-  event: 'text-brand',
+  event: 'text-subtle',
   handoff: 'text-brand',
   post: 'text-muted',
   claim: 'text-muted',

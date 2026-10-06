@@ -82,7 +82,11 @@ export interface Surface {
  * meant two identities for one socket and a lookup between them. They are the
  * same object now, and this is the type that says so.
  */
-export type AttachedSurface = AttachedSocket & RemoteReporter;
+export type AttachedSurface = AttachedSocket &
+  RemoteReporter & {
+    /** The paired device's name (HIVE-218): who answered, when an answer comes over this socket. */
+    readonly deviceName?: string;
+  };
 
 interface SurfaceRegistry {
   /**
@@ -171,6 +175,13 @@ const asReporter = (value: unknown): RemoteReporter | null => {
   if (typeof value !== 'object' || value === null) return null;
   const candidate = value as { on?: unknown };
   return typeof candidate.on === 'function' ? (value as RemoteReporter) : null;
+};
+
+/** The paired device behind a call's sender, when it came over a socket (HIVE-218). */
+export const deviceNameOf = (sender: unknown): string | undefined => {
+  if (sender === null || typeof sender !== 'object') return undefined;
+  const name = (sender as { deviceName?: unknown }).deviceName;
+  return typeof name === 'string' && name !== '' ? name : undefined;
 };
 
 export function createSurfaceRegistry(): SurfaceRegistry {

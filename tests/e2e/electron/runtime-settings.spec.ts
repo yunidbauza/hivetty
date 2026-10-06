@@ -94,7 +94,7 @@ test('edits the default shell and preserves the file’s comments', async ({}, t
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
 
@@ -122,7 +122,7 @@ test('sets and clears a per-project override', async ({}, testInfo) => {
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await page
@@ -158,7 +158,7 @@ test('saves per-project environment variables', async ({}, testInfo) => {
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await page
@@ -195,7 +195,7 @@ test('adds a workspace environment variable and writes a top-level env block', a
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
 
@@ -239,7 +239,7 @@ test('a per-project override wins over the workspace value for the same key', as
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
 
@@ -320,7 +320,7 @@ test('the diagnostic reports the PATH it actually searched', async ({}, testInfo
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await page.getByRole('button', { name: 'Check the default command' }).click();
@@ -364,7 +364,7 @@ test('renders the nested Container group, switches freshness, and writes an edit
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openRuntime(page);
   await page

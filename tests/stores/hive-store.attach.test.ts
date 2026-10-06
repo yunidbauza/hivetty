@@ -1,13 +1,14 @@
+import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { isAgent, isSession } from '@/types/entity';
 import type { AgentSummary } from '@shared/agent-contract';
 import type { GhResult, PrsSnapshot } from '@shared/github-contract';
-import { CH } from '@shared/ipc-contract';
+import { CH, type RemoteLinkStatus } from '@shared/ipc-contract';
 import type { LedgerEntry } from '@shared/ledger-contract';
 import type { SessionPlan } from '@shared/plan-contract';
 import type { SessionHistoryEntry } from '@shared/session-history-contract';
-import { useHiveStore } from '@stores/hive-store';
+import { useHiveStore, useUnackedLost } from '@stores/hive-store';
 
 import { notif } from '../support/notifications';
 import { prRecord } from '../support/prs';
@@ -96,6 +97,14 @@ describe('applyAttachSnapshot', () => {
     const ids = state().ledger.map((entry) => entry.id);
     expect(ids).toContain('20260830-140000-0001');
     expect(ids).toContain('20260830-140000-0002');
+  });
+
+  it('carries the snapshot\'s closed asks into the closed set (HIVE-198)', () => {
+    state().applyAttachSnapshot({
+      [CH.ledgerList]: { entries: [], openAsks: [], claims: {}, closedAsks: ['q1'] },
+    });
+
+    expect(state().closedAsks.has('q1')).toBe(true);
   });
 
   it('unions notifications by id', () => {
@@ -458,5 +467,75 @@ describe('plans (HIVE-179)', () => {
     state().reset();
 
     expect(state().plans).toEqual({});
+  });
+});
+
+/** The changed-files slice (HIVE-201): mirrored the way plans are. */
+describe('changed files (HIVE-201)', () => {
+  const a = { path: 'src/a.ts', mark: 'M' as const, added: 2, removed: 1 };
+  const b = { path: 'b.ts', mark: 'A' as const, added: 4, removed: 0 };
+
+  it('hydrates by merging, replaces one session, and deletes on []', () => {
+    state().hydrateChangedFiles([{ entityId: 's1', files: [a] }]);
+    state().setChangedFiles('s2', [b]);
+    expect(state().changedFiles).toEqual({ s1: [a], s2: [b] });
+    state().setChangedFiles('s1', []);
+    expect(state().changedFiles).toEqual({ s2: [b] });
+  });
+
+  it('[] for a session with no list changes nothing', () => {
+    const before = state().changedFiles;
+    state().setChangedFiles('nobody', []);
+    expect(state().changedFiles).toBe(before);
+  });
+
+  it('applyAttachSnapshot hydrates CH.changedFilesList, merging', () => {
+    state().setChangedFiles('old', [b]);
+    state().applyAttachSnapshot({ [CH.changedFilesList]: { sessions: [{ entityId: 's1', files: [a] }] } });
+    expect(state().changedFiles).toEqual({ old: [b], s1: [a] });
+  });
+
+  it('clearModeEntities and reset clear changed files', () => {
+    state().setChangedFiles('s1', [a]);
+    state().clearModeEntities();
+    expect(state().changedFiles).toEqual({});
+    state().setChangedFiles('s1', [a]);
+    state().reset();
+    expect(state().changedFiles).toEqual({});
+  });
+});
+
+describe('the lost count, acknowledged (HIVE-211)', () => {
+  const link = (lost: number): RemoteLinkStatus => ({
+    state: 'reconnecting',
+    serverName: 'mini',
+    attempt: 1,
+    nextAttemptAt: 0,
+    reason: null,
+    epoch: 1,
+    lost,
+  });
+  beforeEach(() => state().reset());
+
+  it('Clear acknowledges what was lost so far; more losses show again', () => {
+    const { result } = renderHook(() => useUnackedLost());
+    act(() => state().setRemoteLink(link(3)));
+    expect(result.current).toBe(3);
+    act(() => state().acknowledgeLost());
+    expect(result.current).toBe(0);
+    act(() => state().setRemoteLink(link(5)));
+    expect(result.current).toBe(2);
+  });
+
+  it('going local resets the acknowledgement in the same write', () => {
+    state().setRemoteLink(link(3));
+    state().acknowledgeLost();
+    state().setRemoteLink(null);
+    expect(state().remoteLostAcked).toBe(0);
+  });
+
+  it('acknowledges nothing with no link', () => {
+    state().acknowledgeLost();
+    expect(state().remoteLostAcked).toBe(0);
   });
 });

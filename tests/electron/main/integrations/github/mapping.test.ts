@@ -4,9 +4,17 @@ import { describe, expect, it } from 'vitest';
 import {
   collectPrs,
   collectSearchPrs,
+  commentAdded,
   countFindings,
+  echoedId,
+  echoedResolved,
+  mutated,
+  readPrId,
+  readThreadPr,
   readViewerLogin,
   toChecks,
+  toPrDetail,
+  toPrTimeline,
   toPrRecord,
   toState,
 } from '../../../../../electron/main/integrations/github/mapping';
@@ -170,6 +178,8 @@ describe('toPrRecord', () => {
       findings: 0,
       checks: 'passing',
       updatedAt: '2026-08-09T11:00:00Z',
+      mergedAt: null,
+      mine: false,
     });
   });
 
@@ -464,5 +474,282 @@ describe('collectSearchPrs', () => {
   it('answers empty for a payload with nothing in it', () => {
     expect(collectSearchPrs(null)).toEqual([]);
     expect(collectSearchPrs({})).toEqual([]);
+  });
+});
+
+describe('mergedAt and mine (HIVE-215)', () => {
+  it('keeps mergedAt on a merged PR and null on an open one', () => {
+    const merged = toPrRecord(node({ state: 'MERGED', mergedAt: '2026-08-09T11:32:00Z' }));
+    expect(merged?.mergedAt).toBe('2026-08-09T11:32:00Z');
+    expect(toPrRecord(node())?.mergedAt).toBeNull();
+  });
+
+  it('marks every sweep record mine', () => {
+    const prs = collectPrs(
+      { viewer: { login: 'octocat' }, open: { nodes: [node()] }, merged: { nodes: [] } },
+      'octocat',
+      NOW,
+    );
+    expect(prs.map((pr) => pr.mine)).toEqual([true]);
+  });
+
+  it('marks a search result mine only when the viewer wrote it', () => {
+    const prs = collectSearchPrs({
+      viewer: { login: 'octocat' },
+      open: {
+        nodes: [
+          node({ number: 1, author: { login: 'octocat' } }),
+          node({ number: 2, author: { login: 'someone-else' } }),
+        ],
+      },
+      merged: { nodes: [] },
+    });
+    expect(prs.map((pr) => [pr.number, pr.mine])).toEqual([[1, true], [2, false]]);
+  });
+
+  it('marks nothing mine in a search whose payload names no viewer', () => {
+    const prs = collectSearchPrs({ open: { nodes: [node()] }, merged: { nodes: [] } });
+    expect(prs[0]?.mine).toBe(false);
+  });
+});
+
+describe('toPrDetail (HIVE-205)', () => {
+  const pr = (over: Record<string, unknown> = {}) => ({
+    id: 'PR_kwDO1',
+    number: 1182,
+    title: 'Fee rule validator',
+    url: 'https://github.com/acme/server/pull/1182',
+    state: 'OPEN',
+    isDraft: false,
+    body: 'Validates **every** filing.\n\n- [x] corporations\n- [ ] LLCs',
+    createdAt: '2026-10-03T08:00:00Z',
+    mergedAt: null,
+    baseRefName: 'main',
+    headRefName: 'feat/fee-rule',
+    headRefOid: '9f3c2ab',
+    additions: 214,
+    deletions: 38,
+    changedFiles: 9,
+    author: { login: 'octocat' },
+    reviewDecision: 'CHANGES_REQUESTED',
+    mergeStateStatus: null,
+    comments: { nodes: [
+      { author: { login: 'maria' }, body: 'Does this cover 2026?', createdAt: '2026-10-03T09:31:00Z', url: 'https://github.com/acme/server/pull/1182#issuecomment-1' },
+      { author: null, body: 'from a deleted account', createdAt: '2026-10-03T09:40:00Z', url: 'https://github.com/acme/server/pull/1182#issuecomment-2' },
+      { author: { login: 'x' }, body: 'no url', createdAt: '2026-10-03T09:41:00Z' },
+    ] },
+    reviews: { nodes: [
+      { author: { login: 'acr-bot' }, state: 'CHANGES_REQUESTED', body: 'Three findings.', submittedAt: '2026-10-03T08:50:00Z', url: 'https://github.com/acme/server/pull/1182#pullrequestreview-7' },
+      { author: { login: 'octocat' }, state: 'PENDING', body: '', submittedAt: null, url: 'https://github.com/acme/server/pull/1182#pullrequestreview-8' },
+    ] },
+    reviewRequests: { nodes: [] },
+    reviewThreads: { nodes: [] },
+    commits: { nodes: [] },
+    ...over,
+  });
+  const payload = (node: unknown) => ({ repository: { pullRequest: node } });
+
+  it('maps the scalars, keeping the configured owner and repo', () => {
+    expect(toPrDetail(payload(pr()), 'acme', 'server')).toMatchObject({
+      id: 'PR_kwDO1', owner: 'acme', repo: 'server', number: 1182, title: 'Fee rule validator',
+      state: 'open', isDraft: false, createdAt: '2026-10-03T08:00:00Z', mergedAt: null,
+      baseRef: 'main', headRef: 'feat/fee-rule', headSha: '9f3c2ab',
+      additions: 214, deletions: 38, changedFiles: 9, author: 'octocat',
+      reviewDecision: 'CHANGES_REQUESTED', mergeStateStatus: null,
+    });
+  });
+
+  it('maps the changed files, GitHub’s viewed state included (HIVE-207)', () => {
+    const detail = toPrDetail(payload(pr({ files: { nodes: [
+      { path: 'src/a.ts', additions: 3, deletions: 1, changeType: 'MODIFIED', viewerViewedState: 'VIEWED' },
+      { path: 'src/b.ts', additions: 0, deletions: 0, changeType: 'RENAMED', viewerViewedState: 'DISMISSED' },
+      { path: 'src/c.ts', additions: null, deletions: 2, changeType: null, viewerViewedState: 'UNVIEWED' },
+      { additions: 1 },
+      null,
+    ] } })), 'acme', 'server');
+    expect(detail?.files).toEqual([
+      { path: 'src/a.ts', additions: 3, deletions: 1, changeType: 'modified', viewed: 'viewed' },
+      { path: 'src/b.ts', additions: 0, deletions: 0, changeType: 'renamed', viewed: 'dismissed' },
+      { path: 'src/c.ts', additions: 0, deletions: 2, changeType: 'modified', viewed: 'unviewed' },
+    ]);
+  });
+
+  it('has no files when GitHub sent none (HIVE-207)', () => {
+    expect(toPrDetail(payload(pr()), 'acme', 'server')?.files).toEqual([]);
+  });
+
+  it('reads MERGED and CLOSED, and nulls as nulls or zero', () => {
+    expect(toPrDetail(payload(pr({ state: 'MERGED', mergedAt: '2026-10-03T11:32:00Z' })), 'acme', 'server'))
+      .toMatchObject({ state: 'merged', mergedAt: '2026-10-03T11:32:00Z' });
+    expect(toPrDetail(payload(pr({ state: 'CLOSED', author: null, body: null, additions: null, baseRefName: null })), 'acme', 'server'))
+      .toMatchObject({ state: 'closed', author: null, body: '', additions: 0, baseRef: null });
+  });
+
+  it('keeps a ghost author as null and drops a comment it cannot place', () => {
+    const detail = toPrDetail(payload(pr()), 'acme', 'server');
+    expect(detail?.comments.map((comment) => comment.author)).toEqual(['maria', null]);
+  });
+
+  it('keeps submitted reviews and leaves the pending draft out', () => {
+    const detail = toPrDetail(payload(pr()), 'acme', 'server');
+    expect(detail?.reviews).toEqual([
+      { author: 'acr-bot', state: 'CHANGES_REQUESTED', body: 'Three findings.', submittedAt: '2026-10-03T08:50:00Z', url: 'https://github.com/acme/server/pull/1182#pullrequestreview-7' },
+    ]);
+  });
+
+  it('answers null with no pull request, or one missing a required field', () => {
+    expect(toPrDetail(payload(null), 'acme', 'server')).toBeNull();
+    expect(toPrDetail({ repository: null }, 'acme', 'server')).toBeNull();
+    expect(toPrDetail(payload(pr({ id: null })), 'acme', 'server')).toBeNull();
+    expect(toPrDetail(undefined, 'acme', 'server')).toBeNull();
+  });
+
+  it('maps threads with their hunks, a null line once outdated', () => {
+    const detail = toPrDetail(payload(pr({ reviewThreads: { nodes: [
+      { id: 'T1', isResolved: false, isOutdated: true, path: 'src/fees/validator.ts', line: null, originalLine: 118, diffSide: 'RIGHT',
+        comments: { nodes: [{ author: { login: 'acr-bot' }, body: 'An LLC without an agent passes.', createdAt: '2026-10-03T08:50:00Z', url: 'https://github.com/acme/server/pull/1182#discussion_r1', diffHunk: '@@ -116,3 +116,3 @@\n if (llc) return ok();' }] } },
+      { id: 'T2', isResolved: true, isOutdated: false, path: 'a.ts', line: 3, originalLine: 3, diffSide: null, comments: { nodes: [{ author: null, body: 'x', createdAt: '2026-10-03T08:51:00Z', url: 'https://u/2' }] } },
+      { id: null, path: 'dropped.ts' },
+    ] } })), 'acme', 'server');
+
+    expect(detail?.threads).toEqual([
+      { id: 'T1', isResolved: false, isOutdated: true, path: 'src/fees/validator.ts', line: null, originalLine: 118, diffSide: 'RIGHT',
+        comments: [{ author: 'acr-bot', body: 'An LLC without an agent passes.', createdAt: '2026-10-03T08:50:00Z', url: 'https://github.com/acme/server/pull/1182#discussion_r1', diffHunk: '@@ -116,3 +116,3 @@\n if (llc) return ok();' }] },
+      { id: 'T2', isResolved: true, isOutdated: false, path: 'a.ts', line: 3, originalLine: 3, diffSide: null,
+        comments: [{ author: null, body: 'x', createdAt: '2026-10-03T08:51:00Z', url: 'https://u/2', diffHunk: '' }] },
+    ]);
+  });
+
+  it('reads check runs and commit statuses as one shape', () => {
+    const contexts = { nodes: [
+      { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-10-03T10:00:00Z', completedAt: '2026-10-03T10:01:00Z', detailsUrl: 'https://ci/1' },
+      { __typename: 'CheckRun', name: 'integration', status: 'COMPLETED', conclusion: 'TIMED_OUT', startedAt: null, completedAt: null, detailsUrl: null },
+      { __typename: 'CheckRun', name: 'e2e', status: 'IN_PROGRESS', conclusion: null, startedAt: '2026-10-03T10:02:00Z', completedAt: null, detailsUrl: 'https://ci/3' },
+      { __typename: 'CheckRun', name: 'build', status: 'QUEUED', conclusion: null },
+      { __typename: 'CheckRun', name: 'docs', status: 'COMPLETED', conclusion: 'SKIPPED' },
+      { __typename: 'StatusContext', context: 'vercel', state: 'PENDING', targetUrl: 'https://v/1', createdAt: '2026-10-03T10:03:00Z' },
+      { __typename: 'StatusContext', context: 'legacy', state: 'ERROR', targetUrl: null, createdAt: null },
+      { __typename: 'CheckRun', name: null, status: 'COMPLETED' },
+    ] };
+    const detail = toPrDetail(payload(pr({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts } } }] } })), 'acme', 'server');
+
+    expect(detail?.checks).toEqual([
+      { name: 'lint', status: 'success', startedAt: '2026-10-03T10:00:00Z', completedAt: '2026-10-03T10:01:00Z', url: 'https://ci/1', app: null, jobId: null },
+      { name: 'integration', status: 'failure', startedAt: null, completedAt: null, url: null, app: null, jobId: null },
+      { name: 'e2e', status: 'running', startedAt: '2026-10-03T10:02:00Z', completedAt: null, url: 'https://ci/3', app: null, jobId: null },
+      { name: 'build', status: 'queued', startedAt: null, completedAt: null, url: null, app: null, jobId: null },
+      { name: 'docs', status: 'neutral', startedAt: null, completedAt: null, url: null, app: null, jobId: null },
+      { name: 'vercel', status: 'running', startedAt: '2026-10-03T10:03:00Z', completedAt: null, url: 'https://v/1', app: null, jobId: null },
+      { name: 'legacy', status: 'failure', startedAt: null, completedAt: null, url: null, app: null, jobId: null },
+    ]);
+  });
+
+  it('has no checks when the head commit has no rollup', () => {
+    expect(toPrDetail(payload(pr({ commits: { nodes: [{ commit: { statusCheckRollup: null } }] } })), 'acme', 'server')?.checks).toEqual([]);
+  });
+
+  describe('check app and job id (HIVE-206)', () => {
+    const rollup = (nodes: unknown[]) => payload(pr({ commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes } } } }] } }));
+
+    it('reads an Actions check run’s job id and app', () => {
+      const detail = toPrDetail(rollup([{ __typename: 'CheckRun', name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS',
+        startedAt: null, completedAt: null, detailsUrl: 'https://x', databaseId: 991, checkSuite: { app: { slug: 'github-actions' } } }]), 'acme', 'nova');
+      expect(detail?.checks[0]).toMatchObject({ app: 'github-actions', jobId: 991 });
+    });
+
+    it('keeps a third-party check run’s app and gives it no job id', () => {
+      const detail = toPrDetail(rollup([{ __typename: 'CheckRun', name: 'netlify', status: 'COMPLETED', conclusion: 'SUCCESS',
+        databaseId: 5, checkSuite: { app: { slug: 'netlify' } } }]), 'acme', 'nova');
+      expect(detail?.checks[0]).toMatchObject({ app: 'netlify', jobId: null });
+    });
+
+    it('gives a commit status neither', () => {
+      const detail = toPrDetail(rollup([{ __typename: 'StatusContext', context: 'ci/legacy', state: 'SUCCESS', targetUrl: null, createdAt: null }]), 'acme', 'nova');
+      expect(detail?.checks[0]).toMatchObject({ app: null, jobId: null });
+    });
+  });
+
+  it('names requested users by login and teams by name', () => {
+    const detail = toPrDetail(payload(pr({ reviewRequests: { nodes: [
+      { requestedReviewer: { login: 'maria' } },
+      { requestedReviewer: { name: 'platform' } },
+      { requestedReviewer: null },
+    ] } })), 'acme', 'server');
+    expect(detail?.reviewRequests).toEqual(['maria', 'platform']);
+  });
+
+  it('reads the node id, and whether a comment was added', () => {
+    expect(readPrId(payload({ id: 'PR_kwDO1' }))).toBe('PR_kwDO1');
+    expect(readPrId(payload(null))).toBeNull();
+    expect(commentAdded({ addComment: { subject: { id: 'PR_kwDO1' } } })).toBe(true);
+    expect(commentAdded({ addComment: null })).toBe(false);
+    expect(commentAdded(undefined)).toBe(false);
+  });
+});
+
+describe('readThreadPr and mutated (HIVE-207)', () => {
+  it('reads the PR a thread is on', () => {
+    expect(readThreadPr({ node: { pullRequest: { number: 482, repository: { owner: { login: 'acme' }, name: 'nova-web' } } } }))
+      .toEqual({ owner: 'acme', name: 'nova-web', number: 482 });
+  });
+  it.each([[null], [{ node: null }], [{ node: {} }], [{ node: { pullRequest: { number: 1 } } }]])('is null for %j', (payload) => {
+    expect(readThreadPr(payload)).toBeNull();
+  });
+  it('says whether a mutation answered with its field', () => {
+    expect(mutated({ resolveReviewThread: { thread: { id: 'T' } } }, 'resolveReviewThread')).toBe(true);
+    expect(mutated({ resolveReviewThread: null }, 'resolveReviewThread')).toBe(false);
+    expect(mutated(undefined, 'resolveReviewThread')).toBe(false);
+  });
+  it('reads success from the echo, never from a hollow answer', () => {
+    const resolvedTo = (to: boolean) => (answer: Record<string, unknown>) => echoedResolved(answer, to);
+    expect(mutated({ resolveReviewThread: { thread: { id: 'T', isResolved: true } } }, 'resolveReviewThread', resolvedTo(true))).toBe(true);
+    expect(mutated({ resolveReviewThread: { thread: { id: 'T', isResolved: false } } }, 'resolveReviewThread', resolvedTo(true))).toBe(false);
+    expect(mutated({ resolveReviewThread: { thread: null } }, 'resolveReviewThread', resolvedTo(true))).toBe(false);
+    expect(echoedId({ comment: { id: 'C' } }, 'comment')).toBe(true);
+    expect(echoedId({ comment: null }, 'comment')).toBe(false);
+    expect(echoedId({ comment: { id: 7 } }, 'comment')).toBe(false);
+  });
+});
+
+describe('toPrTimeline (HIVE-208)', () => {
+  const suite = (over: Record<string, unknown>) => ({
+    status: 'COMPLETED', conclusion: 'SUCCESS', createdAt: '2026-10-03T12:01:00Z', updatedAt: '2026-10-03T12:12:00Z',
+    workflowRun: { runNumber: 2198, url: 'https://github.com/acme/server/actions/runs/9', databaseId: 9, workflow: { name: 'CI' } },
+    checkRuns: { nodes: [] }, ...over,
+  });
+  const payload = (nodes: unknown[], over: Record<string, unknown> = {}) => ({ repository: { pullRequest: {
+    createdAt: '2026-10-03T11:00:00Z', mergedAt: null, isDraft: false, timelineItems: { nodes }, ...over } } });
+
+  it('maps commits, their workflow suites to runs, reviews, comments and events', () => {
+    const timeline = toPrTimeline(payload([
+      { __typename: 'PullRequestCommit', url: 'https://github.com/acme/server/pull/1182/commits/7c21e0f', commit: { oid: '7c21e0f', committedDate: '2026-10-03T12:00:00Z', checkSuites: { nodes: [
+        suite({}),
+        suite({ conclusion: 'FAILURE', workflowRun: { runNumber: 2204, url: 'u2', databaseId: 10, workflow: { name: 'CI' } }, checkRuns: { nodes: [{ name: 'integration' }] } }),
+        suite({ status: 'IN_PROGRESS', conclusion: null, workflowRun: { runNumber: 2210, url: 'u3', databaseId: 11, workflow: { name: 'CI' } } }),
+        suite({ workflowRun: null }),
+      ] } } },
+      { __typename: 'ReadyForReviewEvent', createdAt: '2026-10-03T12:00:00Z', actor: { login: 'shipper-bot' } },
+      { __typename: 'PullRequestReview', submittedAt: '2026-10-03T12:38:00Z', author: { login: 'acr-bot' }, state: 'CHANGES_REQUESTED', url: 'https://github.com/acme/server/pull/1182#pullrequestreview-1' },
+      { __typename: 'IssueComment', createdAt: '2026-10-03T13:31:00Z', author: { login: 'maria' }, url: 'https://github.com/acme/server/pull/1182#issuecomment-1' },
+      { __typename: 'MergedEvent', createdAt: '2026-10-03T14:00:00Z', actor: null },
+    ]));
+    expect(timeline).toMatchObject({
+      createdAt: '2026-10-03T11:00:00Z', mergedAt: null, isDraft: false,
+      commits: [{ oid: '7c21e0f', at: '2026-10-03T12:00:00Z', url: 'https://github.com/acme/server/pull/1182/commits/7c21e0f' }],
+      reviews: [{ at: '2026-10-03T12:38:00Z', author: 'acr-bot', state: 'CHANGES_REQUESTED' }],
+      comments: [{ at: '2026-10-03T13:31:00Z', author: 'maria' }],
+      events: [{ kind: 'ready', actor: 'shipper-bot' }, { kind: 'merged', actor: null }],
+    });
+    expect(timeline?.runs).toEqual([
+      { id: 9, number: 2198, url: 'https://github.com/acme/server/actions/runs/9', sha: '7c21e0f', workflow: 'CI', startedAt: '2026-10-03T12:01:00Z', endedAt: '2026-10-03T12:12:00Z', state: 'passed', failedJobs: [] },
+      { id: 10, number: 2204, url: 'u2', sha: '7c21e0f', workflow: 'CI', startedAt: '2026-10-03T12:01:00Z', endedAt: '2026-10-03T12:12:00Z', state: 'failed', failedJobs: ['integration'] },
+      { id: 11, number: 2210, url: 'u3', sha: '7c21e0f', workflow: 'CI', startedAt: '2026-10-03T12:01:00Z', endedAt: null, state: 'running', failedJobs: [] },
+    ]);
+  });
+
+  it('is null without a pull request or its createdAt, and drops unreadable items', () => {
+    expect(toPrTimeline({ repository: null })).toBeNull();
+    expect(toPrTimeline(payload([], { createdAt: null }))).toBeNull();
+    expect(toPrTimeline(payload([{ __typename: 'IssueComment' }, { __typename: 'Mystery' }, null]))).toMatchObject({ comments: [], commits: [], events: [] });
   });
 });

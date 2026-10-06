@@ -8,6 +8,7 @@ import {
   TERMINAL_KEYS,
   TERMINAL_SURFACE_KEYS,
   THEME_MODES,
+  type UiColors,
   UI_KEYS,
 } from '@lib/theme/contract';
 import { contrastRatio, importTheme, isHiveTheme } from '@lib/theme/validate';
@@ -155,5 +156,42 @@ describe('the set as a whole', () => {
   it('names every theme distinctly', () => {
     const names = Object.values(BUILT_IN_THEMES).map((t) => t.name);
     expect(new Set(names).size).toBe(names.length);
+  });
+});
+
+/** HIVE-223: text tokens clear WCAG 1.4.3 (4.5:1) on every ground they are drawn on, in every built-in theme. */
+describe('text tokens clear AA (HIVE-223)', () => {
+  const UI_GROUNDS = ['bg', 'panel', 'panel2', 'chip', 'hover', 'active'] as const;
+  const TERM_GROUNDS = ['termBg', 'termRowHover', 'termRowActive'] as const;
+  const worst = (ink: string, ui: UiColors, grounds: readonly (keyof UiColors)[]) =>
+    Math.min(...grounds.map((g) => contrastRatio(ink, ui[g] ?? '') ?? 0));
+
+  describe.each(Object.keys(BUILT_IN_THEMES))('%s', (id) => {
+    describe.each(THEME_MODES)('%s mode', (mode) => {
+      const { ui } = BUILT_IN_THEMES[id]!.modes[mode];
+
+      it('subtle and muted clear 4.5:1 on every UI ground', () => {
+        expect(worst(ui.subtle, ui, UI_GROUNDS)).toBeGreaterThanOrEqual(4.5);
+        expect(worst(ui.muted, ui, UI_GROUNDS)).toBeGreaterThanOrEqual(4.5);
+      });
+
+      it('status text (red, green, brand) clears 4.5:1 on panel and on active (HIVE-225)', () => {
+        for (const key of ['red', 'green', 'brand'] as const) {
+          expect(worst(ui[key], ui, ['panel', 'active']), key).toBeGreaterThanOrEqual(4.5);
+        }
+      });
+
+      it('keeps the ladder: muted sits 1.25x further from active than subtle', () => {
+        expect(contrastRatio(ui.muted, ui.active)!).toBeGreaterThanOrEqual(contrastRatio(ui.subtle, ui.active)! * 1.25);
+      });
+
+      it('term-head clears 4.5:1 on the terminal grounds', () => {
+        expect(worst(ui.termHead, ui, TERM_GROUNDS)).toBeGreaterThanOrEqual(4.5);
+      });
+
+      it('a primary button label clears 4.5:1 on its fill', () => {
+        expect(contrastRatio(ui.onBrand, ui.brandFill)).toBeGreaterThanOrEqual(4.5);
+      });
+    });
   });
 });

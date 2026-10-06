@@ -1,11 +1,14 @@
+import { AGENT_NAME_PATTERN } from '../../../shared/agent-contract';
 import { isRecord } from '../../../shared/guards';
-import type {
-  JiraComment,
-  JiraIssue,
-  JiraIssueDetail,
-  JiraLink,
-  JiraStatusCategory,
-  JiraTransition,
+import {
+  JIRA_VIA_PROPERTY,
+  type JiraComment,
+  type JiraIssue,
+  type JiraIssueDetail,
+  type JiraLink,
+  type JiraStatusCategory,
+  type JiraTransition,
+  type JiraUser,
 } from '../../../shared/jira-contract';
 
 import { adfToBlocks } from './adf/adf-to-blocks';
@@ -158,16 +161,45 @@ export function toComment(raw: unknown): JiraComment | null {
     : 'Unknown';
 
   const updated = text(raw.updated);
+  const authorId = isRecord(raw.author) ? text(raw.author.accountId) : null;
+  const via = viaOf(raw.properties);
 
   return {
     id,
     author,
+    ...(authorId === null ? {} : { authorId }),
     created,
     // Jira sends `updated === created` for an untouched comment, and showing
     // "edited" on one nobody edited is a small lie told very often.
     ...(updated === null || updated === created ? {} : { updated }),
     body: adfToBlocks(raw.body),
+    ...(via === undefined ? {} : { via }),
   };
+}
+
+/**
+ * The agent a comment was posted for, or nothing (HIVE-216).
+ *
+ * Only the Hive's own key, only an `{ agent }` object, only a name an agent
+ * could have: anything else reads as a person's comment. A label for
+ * drawing; anyone who can edit the issue can write a property.
+ */
+function viaOf(properties: unknown): { agent: string } | undefined {
+  if (!Array.isArray(properties)) return undefined;
+  const ours = properties.find(
+    (entry): entry is { value: unknown } => isRecord(entry) && entry.key === JIRA_VIA_PROPERTY,
+  );
+  if (ours === undefined || !isRecord(ours.value)) return undefined;
+  const agent = ours.value.agent;
+  return typeof agent === 'string' && AGENT_NAME_PATTERN.test(agent) ? { agent } : undefined;
+}
+
+/** One user-search hit (HIVE-216): an active person, never an app or a deactivated account. */
+export function toJiraUser(raw: unknown): JiraUser | null {
+  if (!isRecord(raw) || raw.active !== true || raw.accountType !== 'atlassian') return null;
+  const accountId = text(raw.accountId);
+  const displayName = text(raw.displayName);
+  return accountId === null || displayName === null ? null : { accountId, displayName };
 }
 
 /**
@@ -215,15 +247,21 @@ export function toIssueLink(raw: unknown, site: string): JiraLink | null {
 
   const fields = isRecord(other.fields) ? other.fields : null;
   const summary = fields === null ? null : text(fields.summary);
-  const status =
-    fields !== null && isRecord(fields.status) ? text(fields.status.name) : null;
+  const status = fields !== null && isRecord(fields.status) ? fields.status : null;
+  const statusName = status === null ? null : text(status.name);
+  const linkType = text(type.name);
 
   return {
     kind: 'issue',
     title: summary === null ? key : `${key} — ${summary}`,
     url: `https://${site}/browse/${key}`,
     relationship,
-    ...(status === null ? {} : { status }),
+    ...(statusName === null ? {} : { status: statusName }),
+    key,
+    summary: summary ?? '',
+    statusCategory: toStatusCategory(isRecord(status?.statusCategory) ? status.statusCategory.key : undefined),
+    ...(linkType === null ? {} : { linkType }),
+    direction: outward !== null ? 'outward' : 'inward',
   };
 }
 
@@ -239,11 +277,17 @@ export function toIssueDetail(raw: unknown): JiraIssueDetail | null {
   const parent = isRecord(fields.parent) ? fields.parent : null;
   const parentKey = parent === null ? null : text(parent.key);
   const parentFields = parent !== null && isRecord(parent.fields) ? parent.fields : null;
+  const parentType =
+    parentFields !== null && isRecord(parentFields.issuetype) ? text(parentFields.issuetype.name) : null;
   return {
     description: adfToBlocks(fields.description),
     parent:
       parentKey === null
         ? null
-        : { key: parentKey, summary: (parentFields === null ? null : text(parentFields.summary)) ?? '' },
+        : {
+            key: parentKey,
+            summary: (parentFields === null ? null : text(parentFields.summary)) ?? '',
+            ...(parentType === null ? {} : { issueType: parentType }),
+          },
   };
 }

@@ -14,11 +14,11 @@
 # moment the change costs nothing.
 appId: com.behiques.the-hive
 
-# The name macOS shows — in the menu bar, the dock, the About box and the
-# Applications folder. It lands in the bundle's `Info.plist` as `CFBundleName`,
-# which is the *only* thing that fixes the leftmost menu title. `app.setName()`
-# in the main process cannot: macOS reads that title from the running bundle,
-# and under `pnpm desktop:dev` the running bundle is Electron's own.
+# The app's identity, not its display name: it names the bundle (`The Hive.app`),
+# its executable, the dmg and zip the updater fetches, and so the Finder
+# label and the path a server's LaunchAgent runs. The name people read,
+# "Hive TTY", is set over it below as `CFBundleName` (`mac.extendInfo`) and in
+# `electron/shared/app-name.ts`. Changing this one is a migration, not a rename.
 productName: The Hive
 
 copyright: Copyright © 2026 Behiques Consulting LLC
@@ -74,6 +74,15 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   icon: resources/icon.icns
+  # The name people read, over the identity `productName` keeps
+  # (`electron/shared/app-name.ts`). `CFBundleName` is the menu bar's leftmost
+  # title, and the Dock, Cmd-Tab and Launchpad read these keys too, so they are
+  # expected to say "Hive TTY"; Finder still says "The Hive" (the file name).
+  # Neither key is part of the code signature's designated requirement, so
+  # in-place updates are unaffected.
+  extendInfo:
+    CFBundleName: Hive TTY
+    CFBundleDisplayName: Hive TTY
   target:
     - target: dmg
       arch: [arm64]

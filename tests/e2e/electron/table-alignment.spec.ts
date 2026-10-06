@@ -7,6 +7,8 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { goToOvermind } from '../fixtures/places';
+
 import {
   launchHive,
   startSession,
@@ -24,10 +26,8 @@ import {
  * — last and narrowest — ended up a whole control adrift. Four thousand unit
  * tests were green throughout. They had to be: happy-dom performs no layout, so
  * a component test can prove the cell *exists* and never that it is under its
- * heading. This is the same reason `rail-alignment.spec.ts` and
- * `chip-alignment.spec.ts` exist, and the defect they were written for is the
- * same defect — a *relationship* between two pieces of markup that no single
- * component owns.
+ * heading. The defect is a *relationship* between two pieces of markup that no
+ * single component owns, and only a real layout engine measures one.
  *
  * ## Why geometry rather than DOM order
  *
@@ -101,11 +101,25 @@ async function resizeTo(
 }
 
 /**
- * Rounded before comparison, for `rail-alignment.spec.ts`'s reason: these are
+ * Rounded before comparison, because these are
  * fractional CSS pixels in a flex line whose free space is divided three ways,
  * and demanding an exact match would fail on a rounding difference rather than
  * on a layout regression.
  */
+/**
+ * Unfold ENDED when the table folds it (HIVE-197): unfiltered, only today's
+ * endings are drawn and the rest wait behind "N more ›". A restored row usually
+ * ended today, so the button is usually absent; when it is there, the rows
+ * being measured may be behind it.
+ */
+async function revealEnded(page: Page): Promise<void> {
+  const more = page.getByRole('button', { name: /more ›$/ });
+  if ((await more.count()) > 0) await more.click();
+}
+
+/** The ENDED group's head, `ENDED · N` since HIVE-197. */
+const endedHead = (page: Page) => page.getByText(/^ENDED · \d+$/);
+
 function alignedAt(xs: number[]): number {
   const distinct = new Set(xs.map((x) => Math.round(x)));
   expect(distinct.size).toBe(1);
@@ -122,7 +136,7 @@ test('the PR header sits over the PR cells', async ({}, testInfo) => {
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
     await startSession(page, PROJECT);
@@ -130,6 +144,36 @@ test('the PR header sits over the PR cells', async ({}, testInfo) => {
     await page.getByRole('button', { name: 'Back to overmind' }).click();
 
     const xs = await prColumnXs(page);
+
+    // The header plus the one row that exists.
+    expect(xs).toHaveLength(2);
+    alignedAt(xs);
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * The Plan column (HIVE-197): the header sits over every row's plan cell, by
+ * the same `data-col` handle and for the same reason as `PR`.
+ */
+test('the PLAN header sits over the plan cells', async ({}, testInfo) => {
+  const configPath = testInfo.outputPath('hive-config.json');
+  writeProjectConfig(configPath, { id: PROJECT, path: REAL_DIRECTORY });
+
+  const app = await launchHive({
+    userDataDir: testInfo.outputPath('user-data'),
+    configPath,
+  });
+  const page = await app.firstWindow();
+  await page.waitForLoadState('domcontentloaded');
+  await page.waitForSelector('nav[aria-label="Places"]');
+
+  try {
+    await startSession(page, PROJECT);
+    await goToOvermind(page);
+
+    const xs = await columnXs(page, 'plan');
 
     // The header plus the one row that exists.
     expect(xs).toHaveLength(2);
@@ -155,7 +199,7 @@ test('the PR header still sits over the PR cells beside a resume control', async
   const first = await launchHive({ userDataDir, configPath });
   const firstWindow = await first.firstWindow();
   await firstWindow.waitForLoadState('domcontentloaded');
-  await firstWindow.waitForSelector('header');
+  await firstWindow.waitForSelector('nav[aria-label="Places"]');
   await startSession(firstWindow, PROJECT);
 
   // The session-history write is debounced at 400ms — `session-history.spec.ts`
@@ -166,10 +210,12 @@ test('the PR header still sits over the PR cells beside a resume control', async
   const second = await launchHive({ userDataDir, configPath });
   const page = await second.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
-    await expect(page.getByText('ENDED', { exact: true })).toBeVisible();
+    await goToOvermind(page);
+    await expect(endedHead(page)).toBeVisible();
+    await revealEnded(page);
 
     /*
       Only meaningful if a resume control is actually on screen: the restored
@@ -209,7 +255,7 @@ test('the PR header still sits over the PR cells beside a resume control', async
  * `COL`'s docblock computes it — 17 characters at 12.5px in this monospace face
  * is about 128px — and that computation is exactly the kind of thing that is
  * right until the type scale, the density or the font stack moves under it.
- * `MIN_WINDOW_SIZE` is 1100px and the two rails leave the centre stage roughly
+ * `MIN_WINDOW_SIZE` is 1100px and the bar and the list panel leave the centre stage roughly
  * 516px of it, so the whole flex line is spent; there is no slack for an
  * estimate to be wrong into.
  *
@@ -238,14 +284,14 @@ test('the status column fits its widest label at the minimum window size', async
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
     // The window the arithmetic in `COL` is written against.
     await resizeTo(app, page, 1100);
 
     await startSession(page, PROJECT);
-    await page.getByRole('button', { name: 'Back to overmind' }).click();
+    await goToOvermind(page);
 
     const cell = page.locator('[data-col="status"]').last();
     await expect(cell).toBeVisible();
@@ -322,7 +368,7 @@ test('the columns hold together at the minimum window with a resumable row', asy
   const first = await launchHive({ userDataDir, configPath });
   const firstWindow = await first.firstWindow();
   await firstWindow.waitForLoadState('domcontentloaded');
-  await firstWindow.waitForSelector('header');
+  await firstWindow.waitForSelector('nav[aria-label="Places"]');
   await startSession(firstWindow, PROJECT);
 
   // The session-history write is debounced at 400ms — see `session-history.spec.ts`.
@@ -332,23 +378,25 @@ test('the columns hold together at the minimum window with a resumable row', asy
   const second = await launchHive({ userDataDir, configPath });
   const page = await second.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
     await resizeTo(second, page, 1100);
+    await goToOvermind(page);
 
     /*
       Wait for the restored fleet to paint **before** counting.
 
       `count()` does not auto-wait, and the session history arrives over IPC after
-      `waitForSelector('header')` has already resolved. Counting straight away
+      `waitForSelector('nav[aria-label="Places"]')` has already resolved. Counting straight away
       can therefore find zero Resume controls simply because no row has
       rendered yet — and the `test.skip` below is this test's only guard, so a
       premature count skips it green while never exercising the regression at
       all. `session-history.spec.ts` waits on the same divider for the same
       reason.
     */
-    await expect(page.getByText('ENDED', { exact: true })).toBeVisible();
+    await expect(endedHead(page)).toBeVisible();
+    await revealEnded(page);
 
     /*
       Same skip as the test above, and the same reason: whether the quit
@@ -368,6 +416,7 @@ test('the columns hold together at the minimum window with a resumable row', asy
     alignedAt(await columnXs(page, 'last-used'));
     alignedAt(await columnXs(page, 'action'));
     alignedAt(await columnXs(page, 'status'));
+    alignedAt(await columnXs(page, 'plan'));
 
     const table = page.getByTestId('session-table');
     const overflow = await table.evaluate((node) => ({
@@ -405,7 +454,7 @@ test('the columns hold together at the minimum window with a resumable row', asy
  *
  * The **alignment** half of this column's claim is not here — it is in the test
  * above, which drives the case that actually breaks it: the minimum window with
- * a Resume column, where `LAST USED` is one more `shrink-0` term in the 426px
+ * a Resume column, where `LAST USED` is one more `shrink-0` term in the 486px
  * threshold. Asserting alignment on a fresh profile would be asserting the
  * first test again under a different name.
  */
@@ -421,13 +470,13 @@ test('the LAST USED column fits its widest label at the minimum window size', as
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
     await resizeTo(app, page, 1100);
 
     await startSession(page, PROJECT);
-    await page.getByRole('button', { name: 'Back to overmind' }).click();
+    await goToOvermind(page);
 
     const cell = page.locator('[data-col="last-used"]').last();
     await expect(cell).toBeVisible();
@@ -449,5 +498,57 @@ test('the LAST USED column fits its widest label at the minimum window size', as
     expect(fits.text).toBeLessThanOrEqual(fits.column);
   } finally {
     await app.close();
+  }
+});
+
+/**
+ * The same minimum window in round two (HIVE-211, D8). Under 1,200px the list
+ * panel overlays the stage instead of taking a column, so it starts closed and
+ * the Overmind's table gets the panel's width back. With a Resume column that
+ * width is what keeps `PR` under its header.
+ */
+test('round two at the minimum window: the panel takes no column, and PR stays under its header', async ({}, testInfo) => {
+  const userDataDir = testInfo.outputPath('user-data');
+  const configPath = testInfo.outputPath('hive-config.json');
+  writeProjectConfig(configPath, { id: PROJECT, path: REAL_DIRECTORY });
+
+  const first = await launchHive({ userDataDir, configPath });
+  const firstWindow = await first.firstWindow();
+  await firstWindow.waitForLoadState('domcontentloaded');
+  await firstWindow.waitForSelector('nav[aria-label="Places"]');
+  await startSession(firstWindow, PROJECT);
+  await firstWindow.waitForTimeout(700);
+  await first.close();
+
+  const second = await launchHive({ userDataDir, configPath });
+  const page = await second.firstWindow();
+  await page.waitForLoadState('domcontentloaded');
+
+  try {
+    await page.waitForSelector('nav[aria-label="Places"]');
+    await resizeTo(second, page, 1100);
+
+    await page
+      .getByRole('navigation', { name: 'Places' })
+      .getByRole('button', { name: 'Sessions', exact: true })
+      .click();
+    // The bar icon opened the overlay; a pick or Escape closes it, and the table is the whole stage.
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('region', { name: 'Sessions list' })).toHaveCount(0);
+
+    await expect(endedHead(page)).toBeVisible();
+    await revealEnded(page);
+    const resume = page.getByRole('button', { name: /^resume / });
+    test.skip(
+      (await resume.count()) === 0,
+      'the quit produced a terminated row — nothing to resume, so no Resume column',
+    );
+
+    alignedAt(await prColumnXs(page));
+    const table = page.getByTestId('session-table');
+    const overflow = await table.evaluate((node) => ({ scroll: node.scrollWidth, client: node.clientWidth }));
+    expect(overflow.scroll).toBeLessThanOrEqual(overflow.client);
+  } finally {
+    await second.close();
   }
 });

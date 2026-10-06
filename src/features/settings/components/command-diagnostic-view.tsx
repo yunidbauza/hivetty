@@ -26,14 +26,14 @@ export function CommandDiagnosticView({ diagnostic }: CommandDiagnosticViewProps
   const found = resolved !== null;
 
   return (
-    <div className="flex flex-col gap-2 rounded-[7px] border border-border-soft p-3">
-      <p className="flex items-start gap-2 text-[12.5px]">
+    <div className="flex flex-col gap-2 rounded-lg border border-border-soft p-3">
+      <p className="flex items-start gap-2 text-control">
         {found ? (
           <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         ) : (
-          <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
+          <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
         )}
-        <span className={found ? 'text-ink' : 'text-amber'}>
+        <span className={found ? 'text-ink' : 'text-amber-text'}>
           {found ? (
             <>
               <code className="font-mono">{command}</code> resolves to{' '}
@@ -48,7 +48,7 @@ export function CommandDiagnosticView({ diagnostic }: CommandDiagnosticViewProps
       </p>
 
       {!found && !isPath ? (
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           This app searches its own <code className="font-mono">PATH</code>, which is
           usually not the one your login shell builds — a desktop app inherits the
           environment it was launched from, not your <code className="font-mono">
@@ -59,7 +59,7 @@ export function CommandDiagnosticView({ diagnostic }: CommandDiagnosticViewProps
       ) : null}
 
       {!found && isPath ? (
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           The command contains a path separator, so it is used as a path and{' '}
           <code className="font-mono">PATH</code> is never consulted. A relative path
           is resolved against the project directory when the session starts, which
@@ -68,8 +68,8 @@ export function CommandDiagnosticView({ diagnostic }: CommandDiagnosticViewProps
       ) : null}
 
       <div className="flex flex-col gap-1">
-        <span className="text-[11.5px] text-muted">Searched</span>
-        <code className="rounded-[5px] bg-chip px-2 py-1.5 font-mono text-[11px] break-all text-muted">
+        <span className="text-ui-sm text-muted">Searched</span>
+        <code className="rounded-md bg-chip px-2 py-1.5 font-mono text-micro break-all text-muted">
           {path === '' ? '(empty)' : path}
         </code>
       </div>

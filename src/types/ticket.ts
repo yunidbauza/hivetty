@@ -1,4 +1,11 @@
-import type { JiraStatusCategory } from '@shared/jira-contract';
+import type {
+  JiraComment,
+  JiraIssueDetail,
+  JiraLink,
+  JiraStatusCategory,
+  JiraTransition,
+} from '@shared/jira-contract';
+import type { LedgerEntry } from '@shared/ledger-contract';
 
 /**
  * One work item.
@@ -24,6 +31,12 @@ export interface Ticket {
    */
   statusCategory: JiraStatusCategory;
   title: string;
+  /** Jira's priority name; `null` on a project without a scheme (HIVE-203). */
+  priority: string | null;
+  /** Display name; `null` when unassigned (HIVE-203). */
+  assignee: string | null;
+  /** Jira's issue type name, "Bug", "Story" (HIVE-202). Absent on fixtures. */
+  issueType?: string;
   /*
     There is deliberately no `sessions` array here (HIVE-73).
 
@@ -43,4 +56,62 @@ export interface Ticket {
    * Built in main, because only main knows the site.
    */
   url?: string;
+}
+
+/** The parent epic's children, done of total (HIVE-202). */
+export interface EpicProgress {
+  done: number;
+  total: number;
+  /** The search hit JIRA_MAX_ISSUES: the total is a floor. */
+  capped: boolean;
+}
+
+/** What a reader of a ticket wants beside the common parts (HIVE-202): the page wants its ledger history, the Ticket tab its links. */
+export type TicketDetailWant = 'page' | 'tab';
+
+/**
+ * One entry per ticket read, keyed by issue key (HIVE-203, HIVE-202).
+ *
+ * Every part is optional because each read merges on its own as it lands: one
+ * failed read never blanks another, and a part read before stays on screen with
+ * its problem beside it rather than vanishing.
+ */
+export interface TicketDetail {
+  key: string;
+  /** Read with jira:issue only when the key is not in the list. */
+  issue?: Ticket;
+  detail?: JiraIssueDetail;
+  /** The newest JIRA_MAX_COMMENTS, oldest first. */
+  comments?: JiraComment[];
+  /** How many comments the thread holds, read or not. */
+  total?: number;
+  transitions?: JiraTransition[];
+  /** ledger:list { ticket } on open; the tail covers what arrives after. */
+  history?: LedgerEntry[];
+  /** When the detail or comments last read successfully (ms). */
+  readAt?: number;
+  /** jira:links, for the Ticket tab (HIVE-202). */
+  links?: JiraLink[];
+  /** For each ticket this one blocks: its own outward Blocks links. Read only at ≤ SECOND_HOP_MAX_LINKS issue links. */
+  secondHop?: Record<string, JiraLink[]>;
+  /** The parent epic's children, done of total (HIVE-202). */
+  epicProgress?: EpicProgress;
+  problems: { detail?: string; comments?: string; links?: string };
+}
+
+/** The ticket page's key/value column, derived (HIVE-203). Absent keys have no row. */
+export interface TicketProperties {
+  status: string;
+  /** The title's `[Pn]` tag, else Jira's priority. */
+  priority?: string;
+  /** The title's `[BE]`/`[FE]` tag. */
+  side?: string;
+  /** The first live session's project. */
+  project?: string;
+  /** `Unassigned` when Jira has nobody. */
+  assignee: string;
+  /** Whoever posted the latest progress on the ticket. */
+  agent?: string;
+  /** The parent's key, once the detail has been read. */
+  epic?: string;
 }

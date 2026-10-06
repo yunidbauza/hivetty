@@ -39,11 +39,11 @@ export function TicketSessionRow({ id }: TicketSessionRowProps) {
         detail={entity.idleDetail}
       />
 
-      <span className="flex-1 truncate text-left font-mono text-[12px] text-muted">
+      <span className="flex-1 truncate text-left tabular-nums text-control text-muted">
         {entityLabel(entity)}
       </span>
 
-      <span className="shrink-0 font-mono text-[10px] text-subtle">
+      <span className="shrink-0 tabular-nums text-micro text-subtle">
         {entity.project}
       </span>
     </button>

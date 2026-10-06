@@ -113,8 +113,8 @@ export function MessageInput({ entityId, inputRef }: MessageInputProps) {
       `items-start`, as in the overmind console: a centred prompt glyph slides
       down the side of a grown message and stops reading as a prompt.
     */
-    <div className="flex shrink-0 items-start gap-2.5 border-t border-border-soft bg-term-input px-[18px] py-2.5">
-      <span className="shrink-0 font-mono text-[13px] text-green">
+    <div data-stage-input="" className="flex shrink-0 items-start gap-2.5 border-t border-border-soft bg-term-input px-[18px] py-2.5">
+      <span className="shrink-0 font-mono text-ui text-green">
         {`${entityId} ❯`}
       </span>
       <textarea
@@ -138,7 +138,7 @@ export function MessageInput({ entityId, inputRef }: MessageInputProps) {
          * cap the row scrolls. `resize-none` because a drag handle in the
          * corner of a terminal prompt would fight that.
          */
-        className="min-w-0 flex-1 resize-none field-sizing-content max-h-[10lh] overflow-y-auto border-none bg-transparent font-mono text-[12.5px] leading-normal text-ink caret-green outline-none placeholder:text-subtle"
+        className="min-w-0 flex-1 resize-none field-sizing-content max-h-[10lh] overflow-y-auto border-none bg-transparent font-mono text-control leading-normal text-ink caret-green outline-none placeholder:text-subtle"
       />
       <KeyHint hints={HINTS} />
     </div>

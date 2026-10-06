@@ -138,6 +138,12 @@ export function registerIpc(mode: IpcMode, options: RegisterIpcOptions = {}): vo
       localRemotePair: (payload) => applyRemotePair(payload, remoteCredentialStore()),
       localRemoteForget: () => applyRemoteForget(remoteCredentialStore()),
       localRemotePaired: () => remoteCredentialStore().read() !== null,
+      /*
+        `CH.remoteDialNow` (HIVE-211). Try now restarts this process's own
+        reconnect loop, which lives in this module, so it is handed down for
+        the cycle reason the four above are.
+      */
+      localDialNow: dialNowAttached,
     });
     return;
   }
@@ -259,6 +265,11 @@ export function attachedServerName(): string | null {
  * asked to work locally, some seconds after they asked.
  */
 let reattach: ReattachLoop | null = null;
+
+/** Try now (HIVE-211): no-op unless a reattach loop is running. */
+export function dialNowAttached(): void {
+  reattach?.dialNow();
+}
 
 /**
  * What this attachment has seen, so a reconnect can resume rather than

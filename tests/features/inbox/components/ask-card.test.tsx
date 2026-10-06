@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Agent } from '@/types/entity';
 
@@ -8,6 +8,7 @@ import { honestPermissionAsk } from '@shared/permission-rules';
 
 import { AskCard } from '@features/inbox/components/ask-card';
 import { useHiveStore } from '@stores/hive-store';
+import { useUiStore } from '@stores/ui-store';
 
 import { seedLedger } from '@tests/support/ledger';
 
@@ -83,6 +84,17 @@ describe('AskCard', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'yes' }));
     expect(answerAsk).toHaveBeenCalledWith('a41', 'yes');
+  });
+
+  it('keeps focus on the option it sent while the answer is in flight (HIVE-225)', async () => {
+    const user = userEvent.setup();
+    const answerAsk = vi.fn().mockReturnValue(new Promise(() => {}));
+    seedLedger([ask], { answerAsk });
+    render(<AskCard notif={notif} thread="a41" />);
+    const option = screen.getByRole('button', { name: 'yes' });
+    await user.click(option);
+    expect(option).toHaveFocus();
+    expect(option).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('offers a text input and Send when the ask carries no options', async () => {
@@ -767,5 +779,103 @@ describe('AskCard', () => {
 
       expect(screen.getByText('Yunid · 2:41pm · via drone')).toBeInTheDocument();
     });
+  });
+});
+
+describe('AskCard head (HIVE-198)', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hive');
+  });
+
+  it('heads the card with the asker, what it did, and the wait', () => {
+    seedLedger([{ ...ask, ts: Date.now() }]);
+    render(<AskCard notif={notif} thread="a41" />);
+    expect(screen.getByText('drone')).toBeInTheDocument();
+    expect(screen.getByText('asks')).toBeInTheDocument();
+    expect(screen.getByText('now')).toHaveClass('text-amber-text');
+    expect(screen.getByText('ship it?')).toHaveClass('text-ui-lg', 'font-semibold');
+  });
+
+  it('says it drafted a reply when the ask carries a quote', () => {
+    seedLedger([{ ...ask, meta: { options: ['Send it', 'Edit', 'Discard'], quote: 'Yes, today.' } }]);
+    render(<AskCard notif={notif} thread="a41" />);
+    expect(screen.getByText('drafted a reply')).toBeInTheDocument();
+  });
+
+  it('says it wants to run a command for a permission', () => {
+    const honest = honestPermissionAsk('Allow Bash?\npnpm test', {
+      kind: 'permission',
+      tool: 'Bash',
+      input: { command: 'pnpm test' },
+    });
+    seedLedger([{ ...ask, body: honest.body, meta: honest.meta }]);
+    render(<AskCard notif={{ ...notif, kind: 'agent.permission' }} thread="a41" />);
+    expect(screen.getByText('wants to run a command')).toBeInTheDocument();
+  });
+
+  it('shows the age, not now, once the ask is a minute old', () => {
+    seedLedger([{ ...ask, ts: Date.now() - 5 * 60_000 }]);
+    render(<AskCard notif={notif} thread="a41" />);
+    expect(screen.queryByText('now')).toBeNull();
+  });
+
+  it('draws the agent glyph for an agent asker, and a dot for a session', () => {
+    const agent = { kind: 'agent', id: 'drone', name: 'drone', icon: 'ph-robot' } as unknown as Agent;
+    seedLedger([ask]);
+    useHiveStore.setState((state) => ({ entities: { ...state.entities, drone: agent }, agentOrder: ['drone'] }));
+    const { container, unmount } = render(<AskCard notif={notif} thread="a41" />);
+    expect(container.querySelector('polygon')).not.toBeNull();
+    unmount();
+
+    seedLedger([{ ...ask, from: 'sess-a' }]);
+    const session = render(<AskCard notif={notif} thread="a41" />);
+    expect(session.container.querySelector('polygon')).toBeNull();
+    expect(session.container.querySelector('.bg-amber.rounded-full')).not.toBeNull();
+  });
+
+  it('a ✕ folds it when onClose is given', async () => {
+    const onClose = vi.fn();
+    seedLedger([ask]);
+    render(<AskCard notif={notif} thread="a41" onClose={onClose} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Fold into the pill' }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('links to the asker with openLink', async () => {
+    seedLedger([ask]);
+    const openEntity = vi.fn(() => true);
+    useHiveStore.setState({ openEntity });
+    render(<AskCard notif={notif} thread="a41" openLink />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open drone ›' }));
+    expect(openEntity).toHaveBeenCalledWith('drone');
+  });
+
+  it('always draws the float head: glyph, asker, verb and the wait (HIVE-213)', () => {
+    seedLedger([ask]);
+    render(<AskCard notif={notif} thread="a41" />);
+    expect(screen.getByText('asks')).toBeInTheDocument();
+    expect(screen.getByRole('article')).toHaveClass('rounded-xl');
+  });
+});
+
+describe('answered here (HIVE-218)', () => {
+  beforeEach(() => useUiStore.getState().reset());
+
+  it('remembers the thread as answered here once the answer lands', async () => {
+    const answerAsk = vi.fn().mockResolvedValue({ ok: true });
+    seedLedger([ask], { answerAsk });
+    render(<AskCard notif={notif} thread="a41" />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'yes' }));
+    expect(useUiStore.getState().answeredHere.has('a41')).toBe(true);
+  });
+
+  it('does not remember a refused answer', async () => {
+    const answerAsk = vi.fn().mockResolvedValue({ ok: false, status: 409, reason: 'This ask is no longer open.' });
+    seedLedger([ask], { answerAsk });
+    render(<AskCard notif={notif} thread="a41" />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'yes' }));
+    expect(useUiStore.getState().answeredHere.has('a41')).toBe(false);
   });
 });

@@ -41,6 +41,21 @@ describe('useLedgerSync', () => {
     });
   });
 
+  it('seeds the closed asks the snapshot names (HIVE-198)', async () => {
+    (window as { hive?: unknown }).hive = {
+      ledger: {
+        list: vi.fn().mockResolvedValue({ entries: [], openAsks: [], claims: {}, closedAsks: ['q1'] }),
+        onChanged: vi.fn().mockReturnValue(() => {}),
+      },
+    };
+
+    renderHook(() => useLedgerSync());
+
+    await waitFor(() => {
+      expect(useHiveStore.getState().closedAsks.has('q1')).toBe(true);
+    });
+  });
+
   it('appends what the push channel delivers', async () => {
     let deliver: ((entry: LedgerEntry) => void) | undefined;
     (window as { hive?: unknown }).hive = {

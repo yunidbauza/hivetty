@@ -89,7 +89,7 @@ const TONE_BORDER: Record<ThemeBannerTone, string> = {
 
 const TONE_ICON_COLOR: Record<ThemeBannerTone, string> = {
   ok: 'text-green',
-  warn: 'text-amber',
+  warn: 'text-amber-text',
   err: 'text-red',
 };
 
@@ -121,14 +121,14 @@ export function ThemeImportResult({ result, onDismiss }: ThemeImportResultProps)
     >
       <ToneGlyph tone={banner.tone} />
       <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-medium text-ink">{banner.title}</p>
-        <p className="text-[11.5px] text-muted">{banner.detail}</p>
+        <p className="text-control font-medium text-ink">{banner.title}</p>
+        <p className="text-ui-sm text-muted">{banner.detail}</p>
       </div>
       <button
         type="button"
         aria-label="Dismiss"
         onClick={onDismiss}
-        className="shrink-0 rounded p-1 text-subtle hover:bg-hover hover:text-ink"
+        className="shrink-0 rounded-full p-1.5 text-subtle hover:bg-hover hover:text-ink"
       >
         <X size={13} weight="bold" />
       </button>

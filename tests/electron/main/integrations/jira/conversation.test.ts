@@ -10,6 +10,7 @@ import type { FetchLike } from '../../../../../electron/main/integrations/jira/c
 import {
   toComment,
   toIssueLink,
+  toJiraUser,
   toRemoteLink,
 } from '../../../../../electron/main/integrations/jira/mapping';
 import {
@@ -33,6 +34,7 @@ const CONFIGURED: JiraConfig = {
   site: SITE,
   email: 'me@example.com',
   jql: null,
+  workflow: null,
 };
 
 function store(): SecretStore {
@@ -124,6 +126,7 @@ describe('toComment', () => {
     expect(toComment(rawComment())).toEqual({
       id: '10001',
       author: 'Yunid Bauza',
+      authorId: '712020:9f3c',
       created: '2026-08-07T00:00:00.000-0400',
       body: [
         { kind: 'paragraph', runs: [{ text: 'Looks good to me.', marks: [] }] },
@@ -164,6 +167,37 @@ describe('toComment', () => {
     for (const leaked of ['self', 'avatarUrls', 'private@example.com']) {
       expect(serialised).not.toContain(leaked);
     }
+  });
+
+  it('reads via only from the Hive\'s own property with a valid agent name (HIVE-216)', () => {
+    const via = (properties: unknown) => toComment(rawComment({ properties }))?.via;
+
+    expect(via([{ key: 'hive.via', value: { agent: 'builder' } }])).toEqual({ agent: 'builder' });
+    expect(via([{ key: 'other.via', value: { agent: 'builder' } }])).toBeUndefined();
+    expect(via([{ key: 'hive.via', value: 'builder' }])).toBeUndefined();
+    expect(via([{ key: 'hive.via', value: { agent: 'Builder Bot' } }])).toBeUndefined();
+    expect(via([{ key: 'hive.via', value: { agent: '../etc' } }])).toBeUndefined();
+    expect(via('nope')).toBeUndefined();
+    expect(via(undefined)).toBeUndefined();
+  });
+
+  it('omits authorId when Jira sent none (HIVE-216)', () => {
+    expect(toComment(rawComment({ author: { displayName: 'Ghost' } }))).not.toHaveProperty('authorId');
+  });
+});
+
+describe('toJiraUser (HIVE-216)', () => {
+  it('keeps an active person, as id and name', () => {
+    expect(
+      toJiraUser({ accountId: '712020:dana', displayName: 'Dana Kim', accountType: 'atlassian', active: true, emailAddress: 'x@y' }),
+    ).toEqual({ accountId: '712020:dana', displayName: 'Dana Kim' });
+  });
+
+  it('drops an inactive account, an app, and anything unreadable', () => {
+    expect(toJiraUser({ accountId: 'a', displayName: 'Gone', accountType: 'atlassian', active: false })).toBeNull();
+    expect(toJiraUser({ accountId: 'b', displayName: 'Bot', accountType: 'app', active: true })).toBeNull();
+    expect(toJiraUser({ displayName: 'No id', accountType: 'atlassian', active: true })).toBeNull();
+    expect(toJiraUser('x')).toBeNull();
   });
 });
 
@@ -211,7 +245,43 @@ describe('toIssueLink — the direction is the whole point', () => {
       url: `https://${SITE}/browse/HIVE-72`,
       relationship: 'blocks',
       status: 'To Do',
+      key: 'HIVE-72',
+      summary: 'A bug',
+      statusCategory: 'todo',
+      linkType: 'Blocks',
+      direction: 'outward',
     });
+  });
+
+  it('carries the structured fields beside the wording (HIVE-202)', () => {
+    const outward = toIssueLink(
+      {
+        type: linkType,
+        outwardIssue: {
+          key: 'HIVE-72',
+          fields: { summary: 'A bug', status: { name: 'In Review', statusCategory: { key: 'indeterminate' } } },
+        },
+      },
+      SITE,
+    );
+    const inward = toIssueLink(
+      { type: linkType, inwardIssue: { key: 'HIVE-1', fields: { summary: 'Root', status: { name: 'Done', statusCategory: { key: 'done' } } } } },
+      SITE,
+    );
+
+    expect(outward).toEqual({
+      kind: 'issue',
+      title: 'HIVE-72 — A bug',
+      url: `https://${SITE}/browse/HIVE-72`,
+      relationship: 'blocks',
+      status: 'In Review',
+      key: 'HIVE-72',
+      summary: 'A bug',
+      statusCategory: 'in-progress',
+      linkType: 'Blocks',
+      direction: 'outward',
+    });
+    expect(inward).toMatchObject({ key: 'HIVE-1', statusCategory: 'done', linkType: 'Blocks', direction: 'inward', relationship: 'is blocked by' });
   });
 
   it('uses the inward wording for an inwardIssue', () => {
@@ -253,7 +323,27 @@ describe('comments', () => {
     // A comment thread is an argument, and reading one backwards is how you
     // misunderstand it.
     expect(url.searchParams.get('orderBy')).toBe('created');
-    expect(result.ok && result.value).toHaveLength(1);
+    expect(result.ok && result.value.comments).toHaveLength(1);
+  });
+
+  it('reads the newest page when asked, still oldest first, with the total (HIVE-203)', async () => {
+    const seen: { url: string; method: string }[] = [];
+    const result = await build({
+      fetch: replies([[200, { total: 80, comments: [rawComment({ id: '9' }), rawComment({ id: '8' })] }]], seen),
+    }).comments({ key: 'HIVE-71', newest: true });
+
+    const url = new URL(seen[0]?.url ?? '');
+    expect(url.searchParams.get('orderBy')).toBe('-created');
+    expect(result).toEqual({
+      ok: true,
+      value: { comments: [expect.objectContaining({ id: '8' }), expect.objectContaining({ id: '9' })], total: 80 },
+    });
+  });
+
+  it('falls back to the count when Jira sends no total (HIVE-203)', async () => {
+    const result = await build({ fetch: replies([[200, { comments: [rawComment()] }]]) })
+      .comments({ key: 'HIVE-71' });
+    expect(result.ok && result.value.total).toBe(1);
   });
 
   it('skips an unreadable comment rather than losing the conversation', async () => {
@@ -263,20 +353,30 @@ describe('comments', () => {
       ]),
     }).comments({ key: 'HIVE-71' });
 
-    expect(result.ok && result.value.map((c) => c.id)).toEqual(['10001', '2']);
+    expect(result.ok && result.value.comments.map((c) => c.id)).toEqual(['10001', '2']);
   });
 
   it('answers an empty list when there are none', async () => {
     const result = await build({ fetch: replies([[200, { comments: [] }]]) })
       .comments({ key: 'HIVE-71' });
-    expect(result).toEqual({ ok: true, value: [] });
+    expect(result).toEqual({ ok: true, value: { comments: [], total: 0 } });
   });
 
   it('refuses before configuration, without asking', async () => {
     const result = await build({
-      jira: { site: null, email: null, jql: null },
+      jira: { site: null, email: null, jql: null, workflow: null },
     }).comments({ key: 'HIVE-71' });
     expect(result.ok).toBe(false);
+  });
+
+  it('asks for the comment properties, so a comment posted for an agent reads back with via (HIVE-216)', async () => {
+    const seen: { url: string; method: string }[] = [];
+    const result = await build({
+      fetch: replies([[200, { comments: [rawComment({ properties: [{ key: 'hive.via', value: { agent: 'acr' } }] })] }]], seen),
+    }).comments({ key: 'HIVE-71' });
+
+    expect(new URL(seen[0]?.url ?? '').searchParams.get('expand')).toBe('properties');
+    expect(result.ok && result.value.comments[0]?.via).toEqual({ agent: 'acr' });
   });
 });
 
@@ -386,7 +486,7 @@ describe('addComment', () => {
   it('refuses before configuration, without posting', async () => {
     const seen: { url: string; method: string }[] = [];
     const result = await build({
-      jira: { site: null, email: null, jql: null },
+      jira: { site: null, email: null, jql: null, workflow: null },
       fetch: replies([[201, rawComment()]], seen),
     }).addComment({ key: 'HIVE-71', markdown: 'hi' });
 
@@ -400,5 +500,86 @@ describe('addComment', () => {
     }).addComment({ key: 'HIVE-71', markdown: 'hi' });
 
     expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it('sends the via property only when posting for an agent (HIVE-216)', async () => {
+    const seen: { url: string; method: string; body?: unknown }[] = [];
+    const jira = build({ fetch: replies([[201, rawComment()], [201, rawComment()]], seen) });
+
+    await jira.addComment({ key: 'HIVE-71', markdown: 'hi' }, { agent: 'builder' });
+    await jira.addComment({ key: 'HIVE-71', markdown: 'hi' });
+
+    expect((seen[0]?.body as { properties?: unknown }).properties).toEqual([
+      { key: 'hive.via', value: { agent: 'builder' } },
+    ]);
+    expect(seen[1]?.body).not.toHaveProperty('properties');
+  });
+
+  it('puts mention nodes first, and posts a mention-only comment (HIVE-216)', async () => {
+    const seen: { url: string; method: string; body?: unknown }[] = [];
+    await build({ fetch: replies([[201, rawComment()]], seen) }).addComment({
+      key: 'HIVE-71',
+      markdown: '',
+      mentions: [{ accountId: '712020:dana', name: 'Dana Kim' }],
+    });
+
+    const body = seen[0]?.body as { body: { content: { content: unknown[] }[] } };
+    expect(body.body.content[0]?.content[0]).toEqual({
+      type: 'mention',
+      attrs: { id: '712020:dana', text: '@Dana Kim' },
+    });
+  });
+
+  it('answers a comment posted for an agent with via already set (HIVE-216)', async () => {
+    const result = await build({
+      fetch: replies([[201, rawComment({ properties: [{ key: 'hive.via', value: { agent: 'builder' } }] })]]),
+    }).addComment({ key: 'HIVE-71', markdown: 'hi' }, { agent: 'builder' });
+
+    expect(result.ok && result.value.via).toEqual({ agent: 'builder' });
+  });
+
+  it('sets via itself when Jira\'s answer to the POST leaves the property out (HIVE-216)', async () => {
+    const result = await build({ fetch: replies([[201, rawComment()]]) }).addComment(
+      { key: 'HIVE-71', markdown: 'hi' },
+      { agent: 'builder' },
+    );
+
+    expect(result.ok && result.value.via).toEqual({ agent: 'builder' });
+  });
+
+  it('leaves via off a comment posted for nobody', async () => {
+    const result = await build({ fetch: replies([[201, rawComment()]]) }).addComment({ key: 'HIVE-71', markdown: 'hi' });
+
+    expect(result.ok && result.value.via).toBeUndefined();
+  });
+});
+
+describe('searchUsers (HIVE-216)', () => {
+  it('asks user/search for eight, and keeps active people only', async () => {
+    const seen: { url: string; method: string }[] = [];
+    const result = await build({
+      fetch: replies(
+        [[200, [
+          { accountId: '712020:dana', displayName: 'Dana Kim', accountType: 'atlassian', active: true },
+          { accountId: 'gone', displayName: 'Gone', accountType: 'atlassian', active: false },
+          { accountId: 'bot', displayName: 'Automation', accountType: 'app', active: true },
+        ]]],
+        seen,
+      ),
+    }).searchUsers({ query: 'da' });
+
+    const url = new URL(seen[0]?.url ?? '');
+    expect(url.pathname).toBe('/rest/api/3/user/search');
+    expect(url.searchParams.get('query')).toBe('da');
+    expect(url.searchParams.get('maxResults')).toBe('8');
+    expect(result).toEqual({ ok: true, value: [{ accountId: '712020:dana', displayName: 'Dana Kim' }] });
+  });
+
+  it('reports a failure, and refuses before configuration without asking', async () => {
+    expect((await build({ fetch: replies([[403, {}]]) }).searchUsers({ query: 'da' })).ok).toBe(false);
+    const seen: { url: string; method: string }[] = [];
+    const bare = await build({ jira: { site: null, email: null, jql: null, workflow: null }, fetch: replies([[200, []]], seen) }).searchUsers({ query: 'da' });
+    expect(bare.ok).toBe(false);
+    expect(seen).toHaveLength(0);
   });
 });

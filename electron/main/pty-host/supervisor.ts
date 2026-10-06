@@ -1,3 +1,4 @@
+import { APP_DISPLAY_NAME } from '@shared/app-name';
 import {
   CRASH_LIMIT,
   CRASH_WINDOW_MS,
@@ -223,7 +224,7 @@ export function createPtyHostSupervisor(
         type: 'error',
         message: `pty host crashed ${crashes.length} times in ${Math.round(
           CRASH_WINDOW_MS / 1000,
-        )}s — not restarting. Restart The Hive once the cause is fixed.`,
+        )}s — not restarting. Restart ${APP_DISPLAY_NAME} once the cause is fixed.`,
       });
     }
   }

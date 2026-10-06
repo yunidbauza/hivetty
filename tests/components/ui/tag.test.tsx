@@ -12,7 +12,7 @@ describe('Tag', () => {
   it.each([
     ['brand', 'text-brand'],
     ['green', 'text-green'],
-    ['amber', 'text-amber'],
+    ['amber', 'text-amber-text'],
     ['red', 'text-red'],
     ['subtle', 'text-subtle'],
   ] as const)('colours the %s tone with %s', (tone, expected) => {

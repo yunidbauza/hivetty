@@ -1025,6 +1025,7 @@ describe('start forwards the Jira tools (HIVE-174)', () => {
           Promise.resolve({ ok: false, error: { kind: 'not-found', message: `composed: ${request.key}` } }),
         transition: () => Promise.reject(new Error('not exercised')),
         comment: () => Promise.reject(new Error('not exercised')),
+        users: () => Promise.reject(new Error('not exercised')),
       },
     });
     const env = runtime.envFor('sess-a');

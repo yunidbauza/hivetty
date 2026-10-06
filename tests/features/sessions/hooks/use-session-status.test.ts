@@ -2,6 +2,7 @@ import { renderHook } from '@testing-library/react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ChangedFilesEvent, ChangedFilesSnapshot } from '@shared/changed-files-contract';
 import type { SessionMetricsEvent } from '@shared/metrics-contract';
 import type { PlanChangedEvent, PlansSnapshot, SessionPlan } from '@shared/plan-contract';
 import type {
@@ -47,6 +48,9 @@ let endedListeners: ((event: SessionTerminalEndedEvent) => void)[];
 let planListeners: ((event: PlanChangedEvent) => void)[];
 let plansSnapshot: PlansSnapshot;
 let planListCalls: number;
+/** HIVE-201: the changed-files pushes, and what `changedFiles.list` answers at boot. */
+let changedListeners: ((event: ChangedFilesEvent) => void)[];
+let changedSnapshot: ChangedFilesSnapshot;
 let disposals: number;
 /** What the hook handed to `session.note` (HIVE-87). */
 let notedTickets: SessionNoteRequest[];
@@ -162,6 +166,15 @@ function withBridge() {
         };
       },
     },
+    changedFiles: {
+      list: () => Promise.resolve(changedSnapshot),
+      onChanged: (callback: (event: ChangedFilesEvent) => void) => {
+        changedListeners.push(callback);
+        return () => {
+          disposals += 1;
+        };
+      },
+    },
   };
 }
 
@@ -224,6 +237,8 @@ beforeEach(() => {
   planListeners = [];
   plansSnapshot = { plans: [] };
   planListCalls = 0;
+  changedListeners = [];
+  changedSnapshot = { sessions: [] };
   notedTickets = [];
   issueCalls = [];
   issueReplies = {};
@@ -287,6 +302,42 @@ describe('useSessionStatus — plans', () => {
   });
 });
 
+/** Changed files (HIVE-201), mirrored the way plans are. */
+describe('useSessionStatus — changed files', () => {
+  const a = { path: 'src/a.ts', mark: 'M' as const, added: 2, removed: 1 };
+
+  it('hydrates on mount, mirrors a push, and deletes on []', async () => {
+    changedSnapshot = { sessions: [{ entityId: 's1', files: [a] }] };
+    withBridge();
+    renderHook(() => useSessionStatus());
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useHiveStore.getState().changedFiles.s1).toEqual([a]);
+
+    act(() => {
+      for (const listener of changedListeners) listener({ entityId: 's1', files: [] });
+    });
+
+    expect('s1' in useHiveStore.getState().changedFiles).toBe(false);
+  });
+
+  it('drops a snapshot that answers after unmount', async () => {
+    changedSnapshot = { sessions: [{ entityId: 's1', files: [a] }] };
+    withBridge();
+    const { unmount } = renderHook(() => useSessionStatus());
+
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useHiveStore.getState().changedFiles).toEqual({});
+  });
+});
+
 describe('useSessionStatus', () => {
   it('applies a status pushed from main', () => {
     withBridge();
@@ -318,11 +369,11 @@ describe('useSessionStatus', () => {
 
     // Status, name (HIVE-61), cleared, finished (HIVE-93), ready (HIVE-101),
     // branch, metrics, ticket-intent (HIVE-78), foreground, terminal-ended
-    // (terminals) and plans (HIVE-179) — a leaked listener on any of them would
+    // (terminals), plans (HIVE-179) and changed files (HIVE-201) — a leaked listener on any of them would
     // keep writing to a store the unmounted shell no longer renders, the
     // cleared one would go on minting sessions, and the finished one would go
     // on bouncing the user back to the orchestrator.
-    expect(disposals).toBe(11);
+    expect(disposals).toBe(12);
   });
 
   it('applies a rename pushed from main', () => {
@@ -1004,7 +1055,8 @@ describe('terminals', () => {
     const before = disposals;
     unmount();
     // Every subscription the hook opened, including the two new ones — the
-    // existing unmount test's count (8), the two added here, and plans (HIVE-179).
-    expect(disposals - before).toBe(11);
+    // existing unmount test's count (8), the two added here, plans (HIVE-179)
+    // and changed files (HIVE-201).
+    expect(disposals - before).toBe(12);
   });
 });

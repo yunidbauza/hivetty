@@ -236,6 +236,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
       entityId: 'sess-01',
       source: 'plan-file',
       file,
+      fileAt: Date.now(),
       tasks: parsePlanFile(PLAN_TEXT),
       allDone: false,
     };
@@ -355,5 +356,34 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     await plans.onTool(fileCall());
 
     expect(plans.get('sess-01')?.source).toBe('task-tools');
+  });
+
+  it('stamps task times from the injected clock (HIVE-201)', () => {
+    let t = 1_000;
+    const plans = createPlans({ send: vi.fn(), now: () => t });
+    void plans.onTool(create('1', 'A'));
+    t = 5_000;
+    void plans.onTool(update('1', 'in_progress'));
+    expect(plans.get('sess-01')?.tasks[0]?.startedAt).toBe(5_000);
+  });
+
+  it('carries the plan file and its time onto a task-tools plan that takes over (HIVE-201)', async () => {
+    const plans = createPlans({ send: vi.fn(), now: () => 42 });
+    await plans.onTool(fileCall());
+    void plans.onTool(create('1', 'A'));
+    expect(plans.get('sess-01')).toMatchObject({ source: 'task-tools', file, fileAt: 42 });
+  });
+
+  it('keeps the plan-file record across the all-done grace drop, and forget clears it (HIVE-201)', async () => {
+    const plans = createPlans({ send: vi.fn(), now: () => 7 });
+    await plans.onTool(fileCall());
+    void plans.onTool(create('1', 'A'));
+    void plans.onTool(update('1', 'completed'));
+    vi.advanceTimersByTime(PLAN_GRACE_MS);
+    void plans.onTool(create('2', 'B'));
+    expect(plans.get('sess-01')?.file).toBe(file);
+    plans.forget('sess-01');
+    void plans.onTool(create('3', 'C'));
+    expect(plans.get('sess-01')?.file).toBeUndefined();
   });
 });

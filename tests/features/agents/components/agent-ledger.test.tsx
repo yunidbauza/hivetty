@@ -42,6 +42,23 @@ describe('AgentLedger', () => {
     useHiveStore.getState().reset();
   });
 
+  /*
+    An event is the record working, so it reads grey with the bookkeeping kinds
+    (HIVE-204); the kinds that are news keep their colour.
+  */
+  it.each([
+    ['event', 'text-subtle'],
+    ['ask', 'text-amber-text'],
+    ['done', 'text-green'],
+    ['answer', 'text-green'],
+  ] as const)('badges %s in %s', (kind, tone) => {
+    hydrate([entry(1, { kind })]);
+
+    render(<AgentLedger name="watcher" />);
+
+    expect(within(column()).getByText(kind)).toHaveClass(tone);
+  });
+
   it('says so plainly when the thread is empty', () => {
     render(<AgentLedger name="watcher" />);
 

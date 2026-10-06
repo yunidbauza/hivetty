@@ -14,7 +14,7 @@ import { launchHive, mainWindow, splashWindow, writeProjectConfig } from './fixt
  * the whole of it rather than just that a window appeared.
  *
  * What a unit test cannot reach, and this can: that the document loads at all,
- * that the sprite draws pixels, and that the app window is genuinely hidden
+ * that the globe draws pixels, and that the app window is genuinely hidden
  * behind the splash rather than merely scheduled to appear later.
  */
 
@@ -48,7 +48,7 @@ test.describe('the cold-start splash', () => {
 
       await test.step('it is the chamber, at the size both processes agree on', async () => {
         await expect(splash.locator('.chamber')).toBeVisible();
-        await expect(splash.locator('.wordmark')).toHaveText(/THE\s*HIVE/);
+        await expect(splash.locator('.wordmark')).toHaveText(/HIVE\s*tty/);
         await expect(splash.locator('.log li')).toHaveCount(5);
         await expect(splash.locator('.log li.online')).toHaveText('hive cluster online');
 
@@ -59,63 +59,33 @@ test.describe('the cold-start splash', () => {
         expect(size).toEqual({ width: SPLASH_SIZE.width, height: SPLASH_SIZE.height });
       });
 
-      await test.step('the fallback GIF is a real, loaded image', async () => {
+      await test.step('the globe is drawn, not missing', async () => {
         /**
-         * Asserted whether or not it is used, and this is the only place it can
-         * be. The fallback is loaded up front and merely hidden, so a GIF that
-         * failed to emit, or emitted broken, is silent until the day the video
-         * path fails — which is exactly the day nobody is watching.
+         * Polled: the cells drift in from 0.35s, so a single early read would
+         * see a nearly empty canvas that is correct a moment later.
          *
-         * `naturalWidth` is the honest check: it is non-zero only if the file
-         * was found, decoded, and is a valid image.
+         * Painted pixels inside the globe's disc, and none in the left third of
+         * the chamber, which the copy owns and the orbit (radius 171 about
+         * x = 660) never reaches. The canvas is transparent there, so an
+         * opaque ground painted by mistake fails this as surely as an empty
+         * globe does.
          */
-        const image = await splash.locator('#sprite-fallback').evaluate((node) => {
-          const img = node as HTMLImageElement;
-          return { src: img.currentSrc, width: img.naturalWidth, height: img.naturalHeight };
-        });
-
-        expect(image.src).toMatch(/\.gif$/);
-        expect(image.width).toBeGreaterThan(0);
-        expect(image.height).toBeGreaterThan(0);
-      });
-
-      await test.step('the creature is drawn, not missing', async () => {
-        /**
-         * The creature arrives asynchronously — the video has to decode first —
-         * so this polls rather than reading once. Reading once is what the
-         * first version of this spec did, and it failed against a canvas that
-         * was correct half a second later.
-         *
-         * Either path counts. The canvas is the one every normal launch takes,
-         * but a machine slow enough to miss `DECODE_GRACE_MS` legitimately
-         * shows the GIF, and a spec that called that a failure would be
-         * asserting the host's speed rather than the app's behaviour. What is
-         * not allowed is *neither* — an empty chamber, which is the bug this
-         * step exists to catch.
-         */
-        const showing = async () =>
+        const drawn = async () =>
           splash.evaluate(() => {
-            const canvas = document.querySelector<HTMLCanvasElement>('#sprite');
-            const img = document.querySelector<HTMLImageElement>('#sprite-fallback');
-            if (img && !img.hidden && img.naturalWidth > 0) return 'fallback';
-            if (!canvas || canvas.hidden) return 'none';
-            const ctx = canvas.getContext('2d');
-            if (!ctx) return 'none';
-            const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            let opaque = 0;
-            let clear = 0;
-            for (let i = 3; i < data.length; i += 4) {
-              if (data[i] > 200) opaque += 1;
-              else if (data[i] < 20) clear += 1;
-            }
-            const total = data.length / 4;
-            // Roughly 56% creature against 43% keyed-away ground, measured.
-            // Wide enough to survive a re-encode, tight enough to fail on a
-            // blank canvas or an unkeyed white block.
-            return opaque / total > 0.25 && clear / total > 0.2 ? 'canvas' : 'none';
+            const canvas = document.querySelector<HTMLCanvasElement>('#globe');
+            const ctx = canvas?.getContext('2d');
+            if (!canvas || !ctx) return false;
+            const k = canvas.width / 960;
+            const painted = (x: number, y: number, w: number, h: number): number => {
+              const { data } = ctx.getImageData(x * k, y * k, w * k, h * k);
+              let n = 0;
+              for (let i = 3; i < data.length; i += 4) if (data[i] > 20) n += 1;
+              return n / (data.length / 4);
+            };
+            return painted(600, 216, 120, 120) > 0.2 && painted(0, 0, 300, 600) === 0;
           });
 
-        await expect.poll(showing, { timeout: 5_000 }).not.toBe('none');
+        await expect.poll(drawn, { timeout: 5_000 }).toBe(true);
       });
 
       await test.step('the app window stays hidden underneath it', async () => {

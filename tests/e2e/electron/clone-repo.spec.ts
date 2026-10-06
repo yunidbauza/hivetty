@@ -94,7 +94,7 @@ async function launchOnCloneForm(
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await page.getByRole('button', { name: 'Settings' }).click();
   await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
@@ -200,17 +200,14 @@ test('badges the dock and reports how the OS answered', async ({}, testInfo) => 
     ).toBeVisible({ timeout: 30_000 });
 
     /**
-     * One unread row, and the dock says so. Polled because the badge is pushed
-     * from main after the clone's own event, not before the button appears.
-     *
-     * Skipped where there is no dock at all rather than asserted loosely — a
-     * spec that passes on Linux because `undefined` is falsy is a spec that
-     * would go on passing after the badge stopped being set on macOS.
+     * The clone's row is news, not a summons, and the dock counts only what
+     * waits on you (HIVE-214), so the badge stays clear. Read after the push
+     * has had time to land: main badges after the clone's own event, not
+     * before the button appears. Skipped where there is no dock at all.
      */
+    await page.waitForTimeout(1_000);
     const badge = await dockBadge(app);
-    if (badge !== undefined) {
-      await expect.poll(() => dockBadge(app), { timeout: 10_000 }).toBe('1');
-    }
+    if (badge !== undefined) expect(badge).toBe('');
 
     /**
      * Asked through `notifications.delivery()`, which is the verb the pane

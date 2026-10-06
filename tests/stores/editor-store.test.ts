@@ -1,6 +1,7 @@
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fileKey, useEditorStore } from '@stores/editor-store';
+import { fileKey, useAgentDraft, useAgentDraftActions, useEditorStore } from '@stores/editor-store';
 
 /**
  * Open file buffers.
@@ -653,5 +654,87 @@ describe('pendingCursor', () => {
     expect(() => {
       store().consumeCursor('demo::nope');
     }).not.toThrow();
+  });
+});
+
+describe('editor-store — agent drafts (HIVE-204)', () => {
+  const draft = (key: string) => useEditorStore.getState().agentDrafts[key];
+
+  it('loads a clean draft from disk', () => {
+    useEditorStore.getState().loadAgentDraft('acr', 'A');
+    expect(draft('acr')).toEqual({ text: 'A', saved: 'A' });
+  });
+
+  it('a reload under a dirty draft keeps the typing and moves the baseline', () => {
+    useEditorStore.getState().loadAgentDraft('acr', 'A');
+    useEditorStore.getState().editAgentDraft('acr', 'AB');
+    useEditorStore.getState().loadAgentDraft('acr', 'A2');
+    expect(draft('acr')).toEqual({ text: 'AB', saved: 'A2' });
+  });
+
+  it('a reload under a clean draft takes the new text', () => {
+    useEditorStore.getState().loadAgentDraft('acr', 'A');
+    useEditorStore.getState().loadAgentDraft('acr', 'A2');
+    expect(draft('acr')).toEqual({ text: 'A2', saved: 'A2' });
+  });
+
+  it('editing a key never loaded starts it unsaved', () => {
+    useEditorStore.getState().editAgentDraft('', 'tmpl');
+    expect(draft('')).toEqual({ text: 'tmpl', saved: null });
+  });
+
+  it('moves a draft to its saved name', () => {
+    useEditorStore.getState().editAgentDraft('', 'X');
+    useEditorStore.getState().moveAgentDraft('', 'scout');
+    expect(draft('')).toBeUndefined();
+    expect(draft('scout')).toEqual({ text: 'X', saved: null });
+  });
+
+  it('moving a draft that does not exist changes nothing', () => {
+    useEditorStore.getState().loadAgentDraft('acr', 'A');
+    useEditorStore.getState().moveAgentDraft('', 'scout');
+    expect(useEditorStore.getState().agentDrafts).toEqual({ acr: { text: 'A', saved: 'A' } });
+  });
+
+  it('drops a draft', () => {
+    useEditorStore.getState().loadAgentDraft('acr', 'A');
+    useEditorStore.getState().dropAgentDraft('acr');
+    expect(draft('acr')).toBeUndefined();
+  });
+
+  it('reset clears every draft', () => {
+    useEditorStore.getState().editAgentDraft('', 'X');
+    useEditorStore.getState().reset();
+    expect(useEditorStore.getState().agentDrafts).toEqual({});
+  });
+});
+
+describe('useAgentDraft (HIVE-204)', () => {
+  it('reports dirty after an edit, and undefined for an unknown key', () => {
+    const { result } = renderHook(() => ({ acr: useAgentDraft('acr'), other: useAgentDraft('nope') }));
+    expect(result.current.acr).toBeUndefined();
+    act(() => {
+      useEditorStore.getState().loadAgentDraft('acr', 'A');
+    });
+    expect(result.current.acr).toEqual({ text: 'A', saved: 'A', dirty: false });
+    act(() => {
+      useEditorStore.getState().editAgentDraft('acr', 'AB');
+    });
+    expect(result.current.acr).toEqual({ text: 'AB', saved: 'A', dirty: true });
+    expect(result.current.other).toBeUndefined();
+  });
+
+  it('the actions hook hands back the four actions', () => {
+    const { result } = renderHook(() => useAgentDraftActions());
+    act(() => {
+      result.current.editAgentDraft('', 'X');
+      result.current.moveAgentDraft('', 'scout');
+      result.current.loadAgentDraft('scout', 'X');
+    });
+    expect(useEditorStore.getState().agentDrafts.scout).toEqual({ text: 'X', saved: 'X' });
+    act(() => {
+      result.current.dropAgentDraft('scout');
+    });
+    expect(useEditorStore.getState().agentDrafts).toEqual({});
   });
 });

@@ -30,12 +30,11 @@
  * A surface that can draw a phrase.
  *
  * Keys are `family.surface`. The family is the *state*, not the panel, because
- * two panels in different rails can be in the same state and the vocabulary
+ * two panels in different places can be in the same state and the vocabulary
  * should agree with itself when they are.
  */
 export type PhraseKey =
   // Empty — nothing to show.
-  | 'empty.inbox'
   | 'empty.work'
   | 'empty.workUnconfigured'
   | 'empty.pullRequests'
@@ -74,13 +73,6 @@ export type PhraseKey =
  * empty pool at runtime, and so nothing can push onto one of these by accident.
  */
 export const PHRASES = {
-  'empty.inbox': [
-    'The swarm is silent.',
-    'No signals on the creep.',
-    'All larvae accounted for.',
-    'Nothing stirs in the hive.',
-    'The Overmind rests.',
-  ],
   'empty.work': [
     'Nothing left to mutate.',
     'The mutation queue is empty.',

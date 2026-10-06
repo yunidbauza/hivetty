@@ -1128,7 +1128,7 @@ export function TerminalSurface({
         */
         <div
           data-testid="terminal-link-tip"
-          className="pointer-events-none fixed z-50 rounded border border-border bg-panel px-2 py-1 text-[11px] text-ink shadow-md"
+          className="pointer-events-none fixed z-50 rounded border border-border bg-panel px-2 py-1 text-micro text-ink shadow-md"
           style={{ left: linkTipAt.x + 12, top: linkTipAt.y - 28 }}
         >
           {`Open in editor (${isMacPlatform() ? '⌘' : 'Ctrl'} + click)`}

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   emptySnapshot,
@@ -60,23 +60,29 @@ describe('NewSessionPicker', () => {
   });
 
   /**
-   * The ordinary picker leads with a spire (HIVE-93).
-   *
-   * The surface is cast twice on purpose, and this is the half that had no sprite
-   * at all: the **first run** keeps its 120px hive as territory on a screen with
-   * nothing on it, and once projects exist the picker is a *lifecycle* surface —
-   * you are about to bring a session into being — which is the spire's register.
-   * `swarm-creature.tsx` documents both.
+   * The picker casts one creature at random per opening, from the egg, the
+   * spire, the overlord and the hovering mutalisk, always at 120px.
    */
-  it('leads with a spire at the full-stage size', () => {
+  it.each([
+    [0, 'egg'],
+    [0.3, 'spire'],
+    [0.6, 'overlord'],
+    [0.99, 'mutalisk'],
+  ])('leads with a random creature at 120px (Math.random %s → %s)', (roll, creature) => {
+    vi.spyOn(Math, 'random').mockReturnValue(roll);
     render(<NewSessionPicker />);
 
-    const img = screen.getByRole('presentation', { hidden: true });
+    const img = document.querySelector('[data-creature]');
 
-    expect(img).toHaveAttribute('data-creature', 'spire');
-    // The quieter end of the documented 72–120 full-stage register: it sits above
-    // a title rather than standing in for missing content.
-    expect(img).toHaveStyle({ height: '96px' });
+    expect(img).toHaveAttribute('data-creature', creature);
+    expect(img).toHaveStyle({ height: '120px' });
+    vi.restoreAllMocks();
+  });
+
+  it('sets its title in the sans face, not a serif', () => {
+    render(<NewSessionPicker />);
+
+    expect(screen.getByRole('heading', { name: 'Start a new session' })).toHaveClass('font-sans');
   });
 
   it('focuses the search box on open', () => {
@@ -631,23 +637,35 @@ describe('NewSessionPicker · unmapped projects', () => {
     expect(screen.queryByText(new RegExp(CONFIG_PATH))).not.toBeInTheDocument();
   });
 
-  /**
-   * First run keeps the hive, and gets **only** the hive (HIVE-93).
-   *
-   * The condition guarding the header spire is the whole of this: two creatures
-   * stacked in one dialog reads as a bug rather than as atmosphere. The surface
-   * has two states and each gets exactly one sprite — hive as territory when
-   * there is nothing to pick, spire as lifecycle once there is.
-   */
-  it('shows the hive hero alone on first run, with no second creature', () => {
+  it('casts one random creature on first run too, at 120px, and only one', () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     setProjectConfigForTest(snapshot([], { templateWritten: true }));
     render(<NewSessionPicker />);
 
-    const creatures = screen.getAllByRole('presentation', { hidden: true });
+    const creatures = [...document.querySelectorAll('[data-creature]')];
 
     expect(creatures).toHaveLength(1);
-    expect(creatures[0]).toHaveAttribute('data-creature', 'hive');
+    expect(creatures[0]).toHaveAttribute('data-creature', 'egg');
     expect(creatures[0]).toHaveStyle({ height: '120px' });
+    expect(creatures[0]).toHaveClass('mb-8');
+    vi.restoreAllMocks();
+  });
+
+  it('drops the title and subtitle while no project exists', () => {
+    setProjectConfigForTest(snapshot([], { templateWritten: true }));
+    render(<NewSessionPicker />);
+
+    expect(screen.queryByRole('heading', { name: 'Start a new session' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Pick a project — a Claude Code terminal will open for it')).not.toBeInTheDocument();
+  });
+
+  it('shows the first-run hive whenever no project exists, not only on the first launch', () => {
+    setProjectConfigForTest(snapshot([]));
+    render(<NewSessionPicker />);
+
+    expect(screen.getByRole('button', { name: /add project/i })).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-creature]')).toHaveLength(1);
+    expect(screen.queryByRole('heading', { name: 'Start a new session' })).not.toBeInTheDocument();
   });
 
   it('opens settings when the first-run button is pressed', async () => {
@@ -789,5 +807,139 @@ describe('NewSessionPicker · opened for a ticket', () => {
     await user.click(rowsFor(/^nova-web/)[0]);
 
     expect(linkedCount()).toBe(before);
+  });
+});
+
+/**
+ * Settings › Jira › Ticket workflow, as the picker carries it out: the first
+ * message filled from the setting and editable for one start, ⌥↵ to start
+ * empty, and an agent woken instead of a session.
+ */
+describe('NewSessionPicker — the ticket workflow', () => {
+  const spawnSession = vi.fn();
+  const post = vi.fn();
+  const original = window.hive;
+
+  const withWorkflow = (workflow: ConfigSnapshot['jira']['workflow']) => {
+    const current = projectConfigSnapshot()!;
+    setProjectConfigForTest({ ...current, jira: { ...current.jira, workflow } });
+  };
+  const firstMessage = () => screen.getByRole('textbox', { name: 'First message' });
+  const taskOf = () => spawnSession.mock.lastCall?.[1] as string | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useHiveStore.getState().reset();
+    seedDemoFleet();
+    useHiveStore.setState({ spawnSession });
+    useUiStore.getState().reset();
+    resetProjectConfig();
+    seedDemoProjectConfig();
+    post.mockResolvedValue({ ok: true, id: 'a1', ref: 'a1' });
+    window.hive = { ledger: { post } } as unknown as typeof window.hive;
+    useHiveStore.getState().hydrateTickets(
+      [
+        {
+          key: 'HIVE-226',
+          summary: 'Ticket workflow',
+          status: 'To Do',
+          statusCategory: 'todo',
+          issueType: 'Story',
+          priority: null,
+          assignee: null,
+          updated: '2026-10-05T00:00:00.000+0000',
+          url: 'https://example.test/HIVE-226',
+        },
+      ],
+      false,
+    );
+    useUiStore.getState().openPicker('HIVE-226');
+  });
+
+  afterEach(() => {
+    window.hive = original;
+    resetProjectConfig();
+  });
+
+  it('has no first-message line when not started from a ticket', () => {
+    useUiStore.getState().openPicker();
+    render(<NewSessionPicker />);
+    expect(screen.queryByRole('textbox', { name: 'First message' })).toBeNull();
+  });
+
+  it('with no workflow, offers an empty line and starts the session at an empty prompt', async () => {
+    render(<NewSessionPicker />);
+    expect(firstMessage()).toHaveValue('');
+    await userEvent.click(rowsFor(/^nova-web/)[0]);
+    expect(taskOf()).toBe('');
+    expect(spawnSession.mock.lastCall?.[4]).toBe('HIVE-226');
+  });
+
+  it('types the skill on the ticket as the session’s first message', async () => {
+    withWorkflow({ kind: 'skill', skill: 'hive:work-on', prompt: 'one PR' });
+    render(<NewSessionPicker />);
+    expect(firstMessage()).toHaveValue('/hive:work-on HIVE-226 one PR');
+    await userEvent.click(rowsFor(/^nova-web/)[0]);
+    expect(taskOf()).toBe('/hive:work-on HIVE-226 one PR');
+  });
+
+  it('an edit here is what is sent, and Enter in the line starts the first match', async () => {
+    withWorkflow({ kind: 'skill', skill: 'hive:work-on' });
+    render(<NewSessionPicker />);
+    await userEvent.clear(firstMessage());
+    await userEvent.type(firstMessage(), '/hive:debug HIVE-226{Enter}');
+    expect(taskOf()).toBe('/hive:debug HIVE-226');
+  });
+
+  it('⌥↵ starts at an empty prompt, from the search box or the line', async () => {
+    withWorkflow({ kind: 'skill', skill: 'hive:work-on' });
+    render(<NewSessionPicker />);
+    await userEvent.type(search(), '{Alt>}{Enter}{/Alt}');
+    expect(taskOf()).toBe('');
+    await userEvent.type(firstMessage(), '{Alt>}{Enter}{/Alt}');
+    expect(taskOf()).toBe('');
+  });
+
+  it('wakes the agent with the ticket instead of a session, and opens its page', async () => {
+    withWorkflow({ kind: 'agent', agent: 'builder', via: 'wake' });
+    render(<NewSessionPicker />);
+    expect(screen.queryByRole('textbox', { name: 'First message' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Wake builder' }));
+
+    expect(post).toHaveBeenCalledWith({
+      to: 'builder',
+      kind: 'ask',
+      body: 'Work HIVE-226: Ticket workflow. https://example.test/HIVE-226',
+      meta: { ticket: 'HIVE-226' },
+    });
+    expect(spawnSession).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(useUiStore.getState().place).toBe('agents'));
+    expect(useUiStore.getState().agentPage).toEqual({ name: 'builder', view: 'activity' });
+  });
+
+  it('says why when the ledger refuses the ask, and stays open', async () => {
+    withWorkflow({ kind: 'agent', agent: 'builder', via: 'wake' });
+    post.mockResolvedValue({ ok: false, reason: 'unknown party' });
+    render(<NewSessionPicker />);
+    await userEvent.click(screen.getByRole('button', { name: 'Wake builder' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not ask builder: unknown party');
+    expect(useUiStore.getState().picker).toBe(true);
+  });
+
+  it('can open a session instead, which starts empty', async () => {
+    withWorkflow({ kind: 'agent', agent: 'builder', via: 'wake' });
+    render(<NewSessionPicker />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open a session instead' }));
+    expect(firstMessage()).toHaveValue('');
+    await userEvent.click(rowsFor(/^nova-web/)[0]);
+    expect(taskOf()).toBe('');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('has the session ask the agent itself when the workflow says so', () => {
+    withWorkflow({ kind: 'agent', agent: 'builder', via: 'session' });
+    render(<NewSessionPicker />);
+    expect((firstMessage() as HTMLInputElement).value).toMatch(/^Hand HIVE-226 to the builder agent: call ledger_ask/);
   });
 });

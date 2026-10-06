@@ -65,7 +65,7 @@ import type { SessionStatusEvent } from '../../electron/shared/session-contract'
  *                   -> Stop             idle      => row: session.idle (HIVE-89)
  *                   -> Notification     idle     idle_prompt        (+60s)
  *                   => 2 rows: session.idle (presented), session.input_needed
- *                      (inbox only), badge 2
+ *                      (inbox only), badge 2 (both rows are Summons)
  *
  * AskUserQuestion   -> UserPromptSubmit  working
  *                   -> PermissionRequest waiting
@@ -74,9 +74,10 @@ import type { SessionStatusEvent } from '../../electron/shared/session-contract'
  *                   -> PostToolUse       working                    (the fix)
  *                   -> Stop              idle      => row: session.idle
  *                   => 2 rows: session.blocked, session.idle — both presented,
- *                      badge **1**: answering the question is what retires the
- *                      blocked row, so it is raised, toasted and then swept
- *                      (see `expectedBadge`). Still not a second blocked row.
+ *                      badge **1**: answering the question retires the
+ *                      blocked row, so it is raised, toasted and then swept,
+ *                      and the idle row still counts (see `expectedBadge`).
+ *                      Still not a second blocked row.
  * ```
  *
  * ## The fifth row (HIVE-89)
@@ -331,26 +332,21 @@ const RACY_BELOW = 60;
 const SCENARIO_TIMEOUT_MS = (IDLE_PROMPT_DEADLINE + 75) * 1000;
 
 /**
- * What the dock badge should read at the end of a run.
- *
- * Not simply `kinds.length` any more, and the difference is the point: the
- * badge counts rows **still in the inbox**, while `kinds` is every row the run
- * *raised*. A `session.blocked` whose question the driver answered is retired
- * on the spot — the notifier asks the hub to sweep it the moment the session
- * stops being `waiting`, which is exactly the `PostToolUse` these scenarios
- * already assert on — so the row is raised, toasted, and then gone.
+ * What the dock badge should read at the end of a run (HIVE-214): the rows
+ * that wait on you: the `session.blocked` row, and only while its question is
+ * unanswered, and the idle and input-needed rows, which are Summons too.
  *
  * `completesTool` is the discriminator because it is precisely "the block was
- * answered inside the run". The scenario that never answers keeps its row, and
- * the three that never block have none to lose.
- *
- * The live run is what caught this file's belief going stale, which is what it
- * is for: `presented` still counts two toasts, because a toast already on
- * screen is not retracted by the row behind it being cleared.
+ * answered inside the run": the notifier sweeps the blocked row the moment the
+ * session stops being `waiting`. The scenario that never answers keeps its row.
  */
 const expectedBadge = (kinds: NotificationKind[], completesTool: boolean): number =>
-  kinds.length -
-  (completesTool ? kinds.filter((kind) => kind === 'session.blocked').length : 0);
+  kinds.filter(
+    (kind) =>
+      kind === 'session.idle' ||
+      kind === 'session.input_needed' ||
+      (kind === 'session.blocked' && !completesTool),
+  ).length;
 
 const scenarios: Scenario[] = [
   {
@@ -606,7 +602,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         },
         activate: () => undefined,
         announceRead: () => undefined,
-        announceUnread: (count) => {
+        announceBadge: (count) => {
           badge = count;
         },
         announceDismissed: () => undefined,

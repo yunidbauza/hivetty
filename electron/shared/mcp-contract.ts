@@ -9,6 +9,8 @@ import type {
   JiraToolKeyRequest,
   JiraToolTransitionReply,
   JiraTransitionByName,
+  JiraUser,
+  JiraUsersRequest,
 } from './jira-contract';
 import type {
   LedgerPostRequest,
@@ -183,6 +185,8 @@ export interface ReceiverClient {
   jiraGet(request: JiraToolKeyRequest): Promise<JiraResult<JiraToolIssue>>;
   jiraTransition(request: JiraTransitionByName): Promise<JiraResult<JiraToolTransitionReply>>;
   jiraComment(request: JiraToolCommentRequest): Promise<JiraResult<JiraComment>>;
+  /** People to mention (HIVE-216). */
+  jiraUsers(request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>>;
   /**
    * Flip one project's auto-merge (retro B), answered with the directory
    * `projects` returns. A refusal is a `ReceiverError` carrying its reason.

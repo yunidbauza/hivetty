@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { Button } from '@components/ui/button';
 import { SelectField } from '@components/ui/select-field';
 import { Switch } from '@components/ui/switch';
 import { TextField } from '@components/ui/text-field';
@@ -8,8 +9,8 @@ import { ContainerGroup } from '@features/settings/components/container-group';
 import { EnvDiagnosticView } from '@features/settings/components/env-diagnostic-view';
 import { EnvEditor } from '@features/settings/components/env-editor';
 import { PathSourceGroup } from '@features/settings/components/path-source-group';
-import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { useProjectConfig } from '@hooks/use-project-config';
 import {
   diagnoseAgentCommand,
@@ -183,7 +184,7 @@ export function RuntimeSection() {
       {snapshot.errors.map((error) => (
         <p
           key={error}
-          className="rounded-[5px] border border-red px-2.5 py-1.5 text-[11.5px] text-red"
+          className="rounded-md border border-red px-2.5 py-1.5 text-ui-sm text-red"
         >
           {error}
         </p>
@@ -242,12 +243,12 @@ export function RuntimeSection() {
            *   secret-detection here, since a check that rejects `API_TOKEN`
            *   while waving through `TOKEN_API` teaches nothing.
            */}
-          <p className="text-[11.5px] text-subtle">
+          <p className="text-ui-sm text-subtle">
             Environment for every session, applied before the shell starts. A
             login shell’s rc file runs afterward and can override anything
             set here.
           </p>
-          <p className="text-[11.5px] text-subtle">
+          <p className="text-ui-sm text-subtle">
             Prefer your rc file for tokens and credentials — this file is
             stored in plain text.
           </p>
@@ -257,7 +258,7 @@ export function RuntimeSection() {
            * a quick scroll relies on, not just proximity to the section
            * heading above.
            */}
-          <span className="text-[12.5px] text-muted">Environment variables</span>
+          <span className="text-control text-muted">Environment variables</span>
           <EnvEditor
             // `EnvEditor` seeds its rows once, from a lazy initializer with
             // no effect and no key of its own (see its doc comment). `shell`
@@ -357,7 +358,7 @@ export function RuntimeSection() {
         <button
           type="button"
           onClick={() => void runDiagnostic()}
-          className="w-fit rounded-[6px] border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover hover:text-ink"
+          className="w-fit rounded-full border border-edge px-3 py-1 text-control font-semibold text-ink hover:bg-hover"
         >
           {selectedId === ''
             ? 'Check the default command'
@@ -371,21 +372,23 @@ export function RuntimeSection() {
         title="Environment diagnostic"
         description="Which variables survived the shell’s rc file."
       >
-        <button
-          type="button"
+        <Button
+          variant="ghost"
           onClick={() => void runEnvDiagnostic()}
-          disabled={envDiagnosticPending}
-          aria-busy={envDiagnosticPending}
-          className="w-fit rounded-[6px] border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover hover:text-ink disabled:opacity-60"
+          pending={envDiagnosticPending}
+          className="w-fit rounded-md border-border px-2.5 py-1 text-control leading-normal text-muted hover:bg-hover hover:text-ink aria-disabled:opacity-60"
         >
           {envDiagnosticPending
             ? 'Checking…'
             : selectedId === ''
               ? 'Check the default environment'
               : 'Check this project’s environment'}
-        </button>
+        </Button>
 
-        {envDiagnostic ? <EnvDiagnosticView diagnostic={envDiagnostic} /> : null}
+        {/* Always mounted: a live region that mounts with its text is not reliably announced (HIVE-225). */}
+        <div role="status" className="empty:-mt-2">
+          {envDiagnostic ? <EnvDiagnosticView diagnostic={envDiagnostic} /> : null}
+        </div>
       </SettingsGroup>
     </div>
   );
@@ -448,7 +451,7 @@ function ProjectOverrides({
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-[7px] border border-border-soft p-3">
+    <div className="flex flex-col gap-3 rounded-lg border border-border-soft p-3">
       <div className="grid max-w-[520px] grid-cols-2 gap-3">
         <TextField
           label="Shell override"
@@ -480,7 +483,7 @@ function ProjectOverrides({
         aria-label="Project environment variables"
         className="flex flex-col gap-1.5"
       >
-        <span className="text-[12.5px] text-muted">Environment variables</span>
+        <span className="text-control text-muted">Environment variables</span>
         <EnvEditor
           value={env}
           onSave={(next) =>

@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
 
+import { goToOvermind, openProject, overmindNewSession } from '../fixtures/places';
+
 import { launchHive, SHIPPED_SKILLS } from './fixtures/hive-app';
 
 /** The skill folders a spec wrote: the shipped ones are seeded beside them (HIVE-162). */
@@ -54,7 +56,7 @@ async function launchWithConfig(
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   return { app, page, configPath, repoDir };
 }
@@ -113,15 +115,16 @@ test('adds a folder, shows it in the rail, and makes it spawnable', async ({}, t
     // The comment survived the write.
     expect(written['//']).toBe('a comment the UI must not eat');
 
-    // Close settings and confirm the project reached the left rail.
+    // Close settings and confirm the project reached the Sessions list.
     await page.getByRole('button', { name: 'Close settings' }).click();
     await expect(
-      page.getByRole('button', { name: /^scratch-repo/ }),
+      (await openProject(page, 'scratch-repo')).getByRole('button', { name: /^scratch-repo/ }),
     ).toBeVisible();
 
     // …and the picker offers it as spawnable, which is the acceptance criterion
     // the whole story is named for.
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
     const offered = page.getByRole('button', { name: /^scratch-repo/ }).first();
     await expect(offered).toBeVisible();
     await expect(offered).not.toContainText('unmapped');

@@ -5,7 +5,7 @@ import { useSwarmPhrase } from '@hooks/use-swarm-phrase';
 import { PHRASES } from '@lib/swarm/phrases';
 
 function Probe() {
-  const phrase = useSwarmPhrase('empty.inbox');
+  const phrase = useSwarmPhrase('empty.work');
 
   return <p data-testid="phrase">{phrase}</p>;
 }
@@ -23,7 +23,7 @@ describe('useSwarmPhrase', () => {
   it('draws from the pool for the key it was given', () => {
     render(<Probe />);
 
-    expect(PHRASES['empty.inbox']).toContain(
+    expect(PHRASES['empty.work']).toContain(
       screen.getByTestId('phrase').textContent,
     );
   });
@@ -35,7 +35,7 @@ describe('useSwarmPhrase', () => {
      * same one — the failure has to be visible, not probabilistic.
      */
     let call = 0;
-    const pool = PHRASES['empty.inbox'];
+    const pool = PHRASES['empty.work'];
     vi.spyOn(Math, 'random').mockImplementation(() => {
       const value = (call % pool.length) / pool.length;
       call += 1;
@@ -59,7 +59,7 @@ describe('useSwarmPhrase', () => {
      * back a different line.
      */
     let call = 0;
-    const pool = PHRASES['empty.inbox'];
+    const pool = PHRASES['empty.work'];
     vi.spyOn(Math, 'random').mockImplementation(() => {
       const value = (call % pool.length) / pool.length;
       call += 1;

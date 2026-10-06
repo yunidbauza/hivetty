@@ -39,6 +39,7 @@ import {
   DEFAULT_DISABLED_SESSION_PLUGINS,
 } from '@shared/config-contract';
 import { resolveNotificationPrefs } from '@shared/notification-contract';
+import type { TicketWorkflow } from '@shared/ticket-workflow';
 
 import { deriveProjectId, deriveProjectKey } from './identity';
 import { parseConfig, type RawProject } from './parse';
@@ -971,6 +972,7 @@ export function setJira(request: SetJiraRequest): ConfigSnapshot {
       applyOverride(current, 'site', request.site);
       applyOverride(current, 'email', request.email);
       applyOverride(current, 'jql', request.jql);
+      applyOverride(current, 'workflow', request.workflow);
 
       return { ...draft, jira: current };
     }),
@@ -1286,8 +1288,8 @@ export function resetConfig(): ConfigSnapshot {
  */
 function applyOverride(
   entry: Record<string, unknown>,
-  key: 'shell' | 'claudeCommand' | 'env' | 'site' | 'email' | 'jql' | 'container',
-  value: string | Record<string, string> | ContainerConfig | null | undefined,
+  key: 'shell' | 'claudeCommand' | 'env' | 'site' | 'email' | 'jql' | 'workflow' | 'container',
+  value: string | Record<string, string> | ContainerConfig | TicketWorkflow | null | undefined,
 ): void {
   if (value === undefined) return;
   if (value === null) {

@@ -74,7 +74,7 @@ test('a session spawned from the renderer runs a real shell and streams back seq
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     const run = await page.evaluate(async (): Promise<PtyRun> => {
       const hive = window.hive!;
@@ -141,7 +141,7 @@ test('refuses to spawn into a project with no usable directory', async ({}, test
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     const rejection = await page.evaluate(async () => {
       try {

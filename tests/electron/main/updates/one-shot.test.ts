@@ -88,7 +88,7 @@ describe('runUpdateOneShot', () => {
     await expect(runUpdateOneShot(h.deps)).resolves.toBe(2);
 
     expect(h.release).toHaveBeenCalledOnce();
-    expect(h.lines).toEqual(['The Hive 0.1.0 is already current.']);
+    expect(h.lines).toEqual(['Hive TTY 0.1.0 is already current.']);
   });
 
   it('prints a version-specific release URL instead of opening a browser for a manual build', async () => {
@@ -129,14 +129,14 @@ describe('runUpdateOneShot', () => {
   it('says it will relaunch only when it will', async () => {
     const laptop = harness();
     await runUpdateOneShot(laptop.deps);
-    expect(laptop.lines.at(-1)).toBe('Installing The Hive 0.2.0; the app will relaunch.');
+    expect(laptop.lines.at(-1)).toBe('Installing Hive TTY 0.2.0; the app will relaunch.');
 
     // A server-configured machine is relaunched by launchd, after the user
     // bootstraps the agent again (HIVE-147).
     const server = harness({ relaunch: false });
     await runUpdateOneShot(server.deps);
     expect(server.lines.at(-1)).toBe(
-      'Installing The Hive 0.2.0; start the server again to run it.',
+      'Installing Hive TTY 0.2.0; start the server again to run it.',
     );
   });
 
@@ -146,7 +146,7 @@ describe('runUpdateOneShot', () => {
 
     await expect(runUpdateOneShot(h.deps)).resolves.toBe(1);
 
-    expect(h.lines).toEqual(['Could not update The Hive: getaddrinfo ENOTFOUND']);
+    expect(h.lines).toEqual(['Could not update Hive TTY: getaddrinfo ENOTFOUND']);
   });
 
   it('delegates an asynchronous install failure to the Electron adapter', async () => {

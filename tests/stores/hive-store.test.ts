@@ -44,9 +44,7 @@ import {
   agentStatusWord,
   agentStatusColor,
   useActiveSessions,
-  useAgentCount,
   useAgentFacts,
-  useAgentFleetStatus,
   useAgentRuns,
   useAgentsByGroup,
   useAgentThread,
@@ -59,7 +57,7 @@ import {
   useProjectSessions,
   useReattachEpoch,
   useRemoteLink,
-  useBuildProgress,
+  useAgentLastWord,
   useIsAgentId,
   useLedgerEntries,
   useNavOrder,
@@ -2627,18 +2625,20 @@ describe('hive-store', () => {
       });
 
       /**
-       * `null` means the whole buffer went — the echo of a Clear all, which the
+       * `null` means the news went — the echo of a Clear all, which the
        * renderer that issued it has already applied locally. This is what makes
-       * a *second* window agree with the first.
+       * a *second* window agree with the first. What waits on you stays, as it
+       * does in the hub (HIVE-214).
        */
-      it('empties the list for a null id', () => {
-        useHiveStore
-          .getState()
-          .hydrateNotifs([notif2({ id: 'a' }), notif2({ id: 'b' })]);
+      it('drops the news for a null id, keeping what waits on you', () => {
+        useHiveStore.getState().hydrateNotifs([
+          notif2({ id: 'a', kind: 'pr.merged', action: { type: 'none' } }),
+          notif2({ id: 'b' }),
+        ]);
 
         useHiveStore.getState().applyDismiss(null);
 
-        expect(useHiveStore.getState().notifs).toEqual([]);
+        expect(useHiveStore.getState().notifs.map((n) => n.id)).toEqual(['b']);
       });
     });
 
@@ -2662,9 +2662,9 @@ describe('hive-store', () => {
         useHiveStore
           .getState()
           .hydrateNotifs([
-            notif2({ id: 'a' }),
-            notif2({ id: 'b' }),
-            notif2({ id: 'c' }),
+            notif2({ id: 'a', kind: 'pr.merged', action: { type: 'none' } }),
+            notif2({ id: 'b', kind: 'pr.merged', action: { type: 'none' } }),
+            notif2({ id: 'c', kind: 'pr.merged', action: { type: 'none' } }),
           ]);
 
         useHiveStore.getState().clearNotifs();
@@ -2677,12 +2677,26 @@ describe('hive-store', () => {
 
       it('survives a browser build with no bridge', () => {
         delete window.hive;
-        useHiveStore.getState().hydrateNotifs([notif2({ id: 'a' })]);
+        useHiveStore
+          .getState()
+          .hydrateNotifs([notif2({ id: 'a', kind: 'pr.merged', action: { type: 'none' } })]);
 
         expect(() => {
           useHiveStore.getState().clearNotifs();
         }).not.toThrow();
         expect(useHiveStore.getState().notifs).toEqual([]);
+      });
+
+      it('keeps an open ask', () => {
+        delete window.hive;
+        useHiveStore.getState().hydrateNotifs([
+          notif2({ id: 'q1', kind: 'agent.ask', action: { type: 'ask', thread: 'q1' } }),
+          notif2({ id: 'm', kind: 'pr.merged', action: { type: 'none' } }),
+        ]);
+
+        useHiveStore.getState().clearNotifs();
+
+        expect(useHiveStore.getState().notifs.map((n) => n.id)).toEqual(['q1']);
       });
     });
   });
@@ -2736,7 +2750,7 @@ describe('hive-store', () => {
     let seq = 0;
     const notif = (title: string) => {
       seq += 1;
-      return notif2({ id: `local-${seq}`, title, createdAt: seq });
+      return notif2({ id: `local-${seq}`, title, createdAt: seq, kind: 'pr.merged', action: { type: 'none' } });
     };
 
     it('prepends, so the newest notification is first', () => {
@@ -2755,6 +2769,30 @@ describe('hive-store', () => {
       const after = useHiveStore.getState().notifs;
       expect(after).toHaveLength(NOTIFICATION_CAP);
       expect(after.map((n) => n.title)).not.toContain('oldest');
+    });
+
+    it('keeps open asks under a burst of news (HIVE-214)', () => {
+      for (let i = 0; i < 6; i += 1) {
+        useHiveStore.getState().pushNotif(
+          notif2({ id: `q${i}`, kind: 'agent.ask', action: { type: 'ask', thread: `q${i}` }, createdAt: i }),
+        );
+      }
+      for (let i = 0; i < 60; i += 1) useHiveStore.getState().pushNotif(notif(`echo ${i}`));
+
+      expect(useHiveStore.getState().notifs.filter((n) => n.kind === 'agent.ask')).toHaveLength(6);
+    });
+
+    it('hydrates a burst without dropping an open ask (HIVE-214)', () => {
+      useHiveStore.getState().hydrateNotifs([
+        notif2({ id: 'q0', kind: 'agent.ask', action: { type: 'ask', thread: 'q0' }, createdAt: 0 }),
+        ...Array.from({ length: 60 }, (_, i) =>
+          notif2({ id: `m${i}`, kind: 'pr.merged', action: { type: 'none' }, createdAt: i + 1 }),
+        ),
+      ]);
+
+      const ids = useHiveStore.getState().notifs.map((n) => n.id);
+      expect(ids).toContain('q0');
+      expect(ids).toHaveLength(NOTIFICATION_CAP + 1);
     });
 
     it('counts as unread the moment it lands', () => {
@@ -2886,6 +2924,13 @@ describe('hive-store', () => {
       expect(statusWord('idle')).toBe('idle');
       expect(statusWord('waiting')).toBe('needs input');
     });
+
+    it('names the agent on a quiet session, and its own running work wins', () => {
+      expect(statusWord('idle', undefined, 'shipper')).toBe('idle (shipper)');
+      expect(statusWord('idle', 'agents', 'shipper')).toBe('working (agents)');
+      expect(statusWord('waiting', undefined, 'shipper')).toBe('needs input');
+      expect(statusWord('idle', undefined, null)).toBe('idle');
+    });
   });
 
   /**
@@ -3005,8 +3050,8 @@ describe('hive-store', () => {
       It used to take every summary's name, so a definition the guard below
       refused kept its place in the order with nothing behind it. Every
       selector that walks the order narrows with `isAgent` and quietly skipped
-      it, which is why the lie survived — until `useAgentCount` turned the
-      array's length into a number on screen.
+      it, which is why the lie survived — until a count over `agentOrder`
+      turned the array's length into a number on screen.
     */
     it('leaves out a name the session guard refused', () => {
       seedDemoProjectConfig();
@@ -4229,6 +4274,23 @@ describe('hive-store', () => {
       expect(useHiveStore.getState().order).toContain(id);
     });
 
+    it('markTerminalLost on a session puts the reason on its live row, and a resume clears it', () => {
+      const store = useHiveStore.getState();
+      store.setSessionStatus('hero-refresh', 'working');
+      store.markTerminalLost('hero-refresh', 'its process was killed by signal 15');
+      store.markTerminalLost('hero-refresh', 'a later consequence');
+      expect(useHiveStore.getState().entities['hero-refresh']).toMatchObject({
+        lost: 'its process was killed by signal 15',
+      });
+
+      store.setSessionStatus('hero-refresh', 'terminated');
+      expect(useHiveStore.getState().entities['hero-refresh']).toMatchObject({ lost: 'its process was killed by signal 15' });
+
+      // Back to life: neither when it ended nor why still holds.
+      store.setSessionStatus('hero-refresh', 'working');
+      expect(useHiveStore.getState().entities['hero-refresh']).not.toHaveProperty('lost');
+    });
+
     it('markTerminalLost keeps the first reason — the second is a consequence', () => {
       const id = useHiveStore.getState().spawnTerminal('nova-web');
       useHiveStore.getState().markTerminalLost(id, 'the pty host crashed');
@@ -4315,6 +4377,47 @@ describe('hive-store', () => {
       // terminals, appended, so the table's order is untouched inside it.
       expect(hosts.current.slice(0, nav.current.length)).toEqual(nav.current);
       expect(hosts.current.slice(nav.current.length)).toEqual([id]);
+    });
+  });
+
+  describe('the place follows what opens (HIVE-195)', () => {
+    beforeEach(() => {
+      useUiStore.getState().reset();
+    });
+
+    it('openEntity puts an agent under Agents and a session under Sessions', () => {
+      useHiveStore.getState().openEntity('slack-agent');
+      expect(useUiStore.getState().place).toBe('agents');
+
+      useHiveStore.getState().openEntity('hero-refresh');
+      expect(useUiStore.getState().place).toBe('sessions');
+    });
+
+    it('spawning a session or a terminal puts Sessions on the bar', () => {
+      useHiveStore.getState().spawnSession('nova-web');
+      expect(useUiStore.getState().place).toBe('sessions');
+
+      useUiStore.getState().reset();
+      useHiveStore.getState().spawnTerminal('nova-web');
+      expect(useUiStore.getState().place).toBe('sessions');
+    });
+
+    it('removing the terminal on stage leaves the user on Home (D6)', () => {
+      const id = useHiveStore.getState().spawnTerminal('nova-web');
+      useUiStore.setState({ place: 'home' });
+
+      useHiveStore.getState().removeTerminal(id);
+
+      expect(useUiStore.getState()).toMatchObject({ activeTab: 'orch', place: 'home' });
+    });
+
+    it('a session finishing on stage leaves the user on Home (D6)', () => {
+      const id = useHiveStore.getState().spawnSession('the-hive');
+      useUiStore.setState({ place: 'home' });
+
+      useHiveStore.getState().finishSession(id, true);
+
+      expect(useUiStore.getState()).toMatchObject({ activeTab: 'orch', place: 'home' });
     });
   });
 });
@@ -4944,13 +5047,14 @@ describe('statusWord agrees with statusLabel', () => {
     'terminated',
   ];
   const DETAILS: (IdleDetail | undefined)[] = [undefined, 'agents', 'script'];
+  const DELEGATES: (string | null)[] = [null, 'shipper'];
 
   it.each(
     STATUSES.flatMap((status) =>
-      DETAILS.map((detail) => [status, detail] as const),
+      DETAILS.flatMap((detail) => DELEGATES.map((delegate) => [status, detail, delegate] as const)),
     ),
-  )('says the same thing for %s / %s', (status, detail) => {
-    expect(statusWord(status, detail)).toBe(statusLabel(status, detail));
+  )('says the same thing for %s / %s / %s', (status, detail, delegate) => {
+    expect(statusWord(status, detail, delegate)).toBe(statusLabel(status, detail, delegate));
   });
 
   /**
@@ -5378,6 +5482,24 @@ describe('the ledger slice', () => {
     expect(result.current.map((found) => found.id)).toEqual(['2']);
   });
 
+  it("returns the agent's newest entry, first line only (HIVE-204)", () => {
+    useHiveStore.getState().hydrateLedger([
+      entry({ id: '20261002-100000-0001', from: 'acr', kind: 'done', body: 'old', ts: 1 }),
+      entry({ id: '20261002-100100-0002', from: 'shipper', kind: 'post', body: 'not mine', ts: 3 }),
+      entry({ id: '20261002-100050-0003', from: 'acr', kind: 'ask', ref: 'a3', body: 'Reply?\nmore', ts: 2 }),
+    ]);
+
+    const { result } = renderHook(() => useAgentLastWord('acr'));
+    expect(result.current).toEqual({ kind: 'ask', ref: 'a3', line: 'Reply?', ts: 2 });
+  });
+
+  it('has no last word for an agent that never wrote', () => {
+    useHiveStore.getState().hydrateLedger([entry({ id: '1', from: 'acr' })]);
+
+    const { result } = renderHook(() => useAgentLastWord('ghost'));
+    expect(result.current).toBeUndefined();
+  });
+
   it('returns a thread in order', () => {
     useHiveStore.getState().hydrateLedger([
       entry({ id: '1', kind: 'ask' }),
@@ -5389,21 +5511,14 @@ describe('the ledger slice', () => {
     expect(result.current.map((found) => found.id)).toEqual(['1', '3']);
   });
 
-  it('reads the workflow stage off the tail and keeps the answer stable until the ledger moves (HIVE-171)', () => {
+  it('reads the workflow stage off the tail until the ledger moves (HIVE-171)', () => {
     useHiveStore.getState().hydrateLedger([
       entry({ id: '1', from: 'shipper', kind: 'post', meta: { pr: 4, repo: 'acme/nova', stage: 'ci' } }),
       entry({ id: '2', from: 'builder', kind: 'post', meta: { ticket: 'ACME-9', stage: 'build', task: 2 } }),
     ]);
 
     const ship = renderHook(() => useShipping('acme/nova', 4));
-    const build = renderHook(() => useBuildProgress('ACME-9'));
     expect(ship.result.current).toBe(true);
-    expect(build.result.current).toEqual({ stage: 'build', task: 2 });
-
-    const before = build.result.current;
-    act(() => useHiveStore.getState().setSessionStatus('hero-refresh', 'working'));
-    build.rerender();
-    expect(build.result.current).toBe(before);
 
     act(() =>
       useHiveStore.getState().hydrateLedger([
@@ -5567,44 +5682,88 @@ describe('the agent view selectors', () => {
   });
 
   describe('useAgentsByGroup', () => {
-    it('groups by state, with asking first inside Awake', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('zzz-working', { status: 'working', lastRunAt: 500 }),
-          summary('aaa-asking', { status: 'asking' }),
-          summary('sleeper', { status: 'sleeping' }),
-          summary('held', { status: 'paused' }),
-        ]);
+    it('files each status and an invalid definition in its lane (HIVE-204)', () => {
+      useHiveStore.getState().hydrateAgents([
+        summary('slack', { status: 'asking', lastRunAt: 1 }),
+        summary('fixer', { status: 'failed', lastRunAt: 5 }),
+        summary('broken', {
+          status: 'sleeping',
+          invalid: 'unknown key: foo',
+          lastRunAt: 9,
+        }),
+        summary('shipper', { status: 'working', lastRunAt: 3 }),
+        summary('builder', { status: 'working', lastRunAt: 4 }),
+        summary('acr', { status: 'sleeping', lastRunAt: 2 }),
+        summary('patrol', { status: 'paused', lastRunAt: 8 }),
+      ]);
 
       const { result } = renderHook(() => useAgentsByGroup());
 
-      expect(result.current.map((group) => [group.key, group.ids])).toEqual([
-        ['awake', ['aaa-asking', 'zzz-working']],
-        ['sleeping', ['sleeper']],
-        ['paused', ['held']],
+      expect(result.current).toEqual([
+        { key: 'summons', label: 'Summons', ids: ['slack', 'broken', 'fixer'] },
+        { key: 'morphing', label: 'Morphing', ids: ['builder', 'shipper'] },
+        { key: 'burrowed', label: 'Burrowed', ids: ['acr', 'patrol'] },
       ]);
     });
 
-    it('breaks an Awake tie on the most recent run', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('older', { status: 'working', lastRunAt: 100 }),
-          summary('newer', { status: 'working', lastRunAt: 900 }),
-        ]);
+    it('sorts asking first in Summons even when older', () => {
+      useHiveStore.getState().hydrateAgents([
+        summary('broke', { status: 'failed', lastRunAt: 9 }),
+        summary('waiting', { status: 'asking', lastRunAt: 1 }),
+      ]);
 
       const { result } = renderHook(() => useAgentsByGroup());
 
-      expect(result.current[0]?.ids).toEqual(['newer', 'older']);
+      expect(result.current[0]?.ids).toEqual(['waiting', 'broke']);
     });
 
-    it('omits a group with no members, rather than a header reading zero', () => {
-      useHiveStore.getState().hydrateAgents([summary('sleeper')]);
+    it('sorts sleeping before paused in Burrowed, each newest first', () => {
+      useHiveStore.getState().hydrateAgents([
+        summary('held-new', { status: 'paused', lastRunAt: 9 }),
+        summary('old', { status: 'sleeping', lastRunAt: 1 }),
+        summary('held-old', { status: 'paused', lastRunAt: 2 }),
+        summary('new', { status: 'sleeping', lastRunAt: 5 }),
+      ]);
 
       const { result } = renderHook(() => useAgentsByGroup());
 
-      expect(result.current.map((group) => group.key)).toEqual(['sleeping']);
+      expect(result.current[0]?.ids).toEqual([
+        'new',
+        'old',
+        'held-new',
+        'held-old',
+      ]);
+    });
+
+    it('omits an empty lane, rather than a header reading zero', () => {
+      useHiveStore.getState().hydrateAgents([
+        summary('older', { status: 'working', lastRunAt: 100 }),
+        summary('newer', { status: 'working', lastRunAt: 900 }),
+      ]);
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(result.current).toEqual([
+        { key: 'morphing', label: 'Morphing', ids: ['newer', 'older'] },
+      ]);
+    });
+
+    it('lane counts add up to the number of agents', () => {
+      const statuses = ['asking', 'failed', 'working', 'sleeping', 'paused'] as const;
+
+      useHiveStore
+        .getState()
+        .hydrateAgents(
+          statuses.map((status, index) =>
+            summary(`agent-${String(index)}`, { status }),
+          ),
+        );
+
+      const { result } = renderHook(() => useAgentsByGroup());
+
+      expect(
+        result.current.reduce((sum, group) => sum + group.ids.length, 0),
+      ).toBe(statuses.length);
     });
 
     /**
@@ -5649,20 +5808,7 @@ describe('the agent view selectors', () => {
       });
 
       expect(result.current).not.toBe(before);
-      expect(result.current[0]?.key).toBe('awake');
-    });
-
-    it('files a failed agent under Awake, because it is the loudest yes', () => {
-      // The grouping answers "should I look at this?" — a broken agent is not
-      // resting, and burying it under Sleeping would hide the one row that
-      // needs a person.
-      useHiveStore
-        .getState()
-        .hydrateAgents([summary('broke', { status: 'failed' })]);
-
-      const { result } = renderHook(() => useAgentsByGroup());
-
-      expect(result.current[0]?.key).toBe('awake');
+      expect(result.current[0]?.key).toBe('summons');
     });
   });
 
@@ -5770,154 +5916,6 @@ describe('the agent view selectors', () => {
       const { result } = renderHook(() => useAgentFacts('nobody'));
 
       expect(result.current).toBeNull();
-    });
-  });
-
-  describe('useAgentCount', () => {
-    it('counts the agents on disk, whatever they are doing', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'working' }),
-          summary('patrol', { status: 'paused' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentCount());
-
-      expect(result.current).toBe(2);
-    });
-
-    it('is zero before any agent is hydrated', () => {
-      const { result } = renderHook(() => useAgentCount());
-
-      expect(result.current).toBe(0);
-    });
-
-    it('ignores sessions', () => {
-      seedDemoFleet();
-      useHiveStore.getState().hydrateAgents([summary('watcher')]);
-
-      const { result } = renderHook(() => useAgentCount());
-
-      expect(result.current).toBe(1);
-    });
-
-    /*
-      The case the guard in `hydrateAgents` exists for, and the one this count
-      made visible. `entities` holds both kinds in one map and an agent name is
-      a legal session id, so a definition named after a live session is refused
-      the entity write — and used to keep its place in `agentOrder` anyway. The
-      badge would then read "2 agents" while the panel listed one and the dot,
-      which narrows, reported on one.
-    */
-    it('does not count a definition the session guard refused', () => {
-      seedDemoProjectConfig();
-      const id = useHiveStore.getState().spawnSession('nova-web');
-
-      useHiveStore.getState().hydrateAgents([summary(id), summary('watcher')]);
-
-      const { result } = renderHook(() => useAgentCount());
-
-      expect(result.current).toBe(1);
-      // The terminal is untouched — it is why the guard refused the write.
-      expect(useHiveStore.getState().entities[id]?.kind).toBe('session');
-    });
-  });
-
-  describe('useAgentFleetStatus', () => {
-    it('is undefined when every agent is resting', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'sleeping' }),
-          summary('patrol', { status: 'paused' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBeUndefined();
-    });
-
-    it('is undefined with no agents at all', () => {
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBeUndefined();
-    });
-
-    it('reports a working agent', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'working' }),
-          summary('patrol', { status: 'sleeping' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBe('working');
-    });
-
-    /*
-      The precedence the rail's own grouping already reads in: `asking` sorts
-      ahead of everything in `useAgentsByGroup` because somebody is blocked on
-      the user, and a summary dot that showed green while an agent waited would
-      invert that.
-    */
-    it('prefers asking over working', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'working' }),
-          summary('patrol', { status: 'asking' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBe('asking');
-    });
-
-    it('prefers failed over working', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'working' }),
-          summary('patrol', { status: 'failed' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBe('failed');
-    });
-
-    it('prefers asking over failed', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('watcher', { status: 'failed' }),
-          summary('patrol', { status: 'asking' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBe('asking');
-    });
-
-    /*
-      An unparseable definition is filed as `sleeping` by `registry.ts`, which
-      has nowhere better to put a folder it could not read. Taking that at face
-      value would leave a broken agent with no mark at all — invisible in the
-      collapsed rail, which is the one place the dot is the whole signal.
-    */
-    it('counts an unparseable definition as a failure, not as sleep', () => {
-      useHiveStore
-        .getState()
-        .hydrateAgents([
-          summary('broke', { status: 'sleeping', invalid: 'bad frontmatter' }),
-        ]);
-
-      const { result } = renderHook(() => useAgentFleetStatus());
-
-      expect(result.current).toBe('failed');
     });
   });
 
@@ -6125,5 +6123,20 @@ describe('the agent view selectors', () => {
 
       expect(useHiveStore.getState().remoteLink).toBeNull();
     });
+  });
+});
+
+describe('openEntity unfolds the project (HIVE-197)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().reset();
+    useUiStore.getState().reset();
+    seedDemoFleet();
+  });
+
+  it('unfolds a session’s project and leaves the Overmind filter alone', () => {
+    useUiStore.setState({ sessionsProject: 'referral-api' });
+    useHiveStore.getState().openEntity('hero-refresh'); // nova-web
+    expect(useUiStore.getState().expanded['nova-web']).toBe(true);
+    expect(useUiStore.getState().sessionsProject).toBe('referral-api');
   });
 });

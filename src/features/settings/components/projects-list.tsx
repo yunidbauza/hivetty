@@ -163,7 +163,7 @@ export function ProjectsList({ entries }: ProjectsListProps) {
   };
 
   return (
-    <ul className="overflow-hidden rounded-[7px] border border-border">
+    <ul className="overflow-hidden rounded-lg border border-border">
       {ordered.map((project, index) => {
         /*
           `index` is the row's **painted** position, not its position in

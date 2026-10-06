@@ -110,14 +110,11 @@ export const TERM = BUILT_IN_THEME.modes.dark.terminal satisfies TermPalette;
  * `--cc-code-keyword`, `bg` `--cc-panel-2` (and `--cc-term-bg` in light), and
  * `selection` `--cc-code-selection`. Two of them need a reason:
  *
- * - **`dim` is `--cc-term-head`, not `--cc-muted`**, and the four-step
- *   difference is a contrast fix rather than a preference. `--cc-muted`
- *   (#73767c) is calibrated against `--cc-panel` (#ffffff), where it clears AA
- *   at 4.55:1. The terminal's ground is `--cc-panel-2` (#f7fafb), and on it the
- *   same grey falls to 4.34:1 — under the line. `dim` carries the
+ * - **`dim` is `--cc-term-head`, not `--cc-muted`**, because it is a grey
+ *   chosen for the surface it actually sits on. `dim` carries the
  *   session-lifecycle notices ("── session exited ──"), which is text a user
- *   has to read, so it gets a grey chosen for the surface it actually sits on:
- *   4.87:1 here, 5.11:1 on the input bar.
+ *   has to read, and `--cc-term-head` is tuned to clear 4.5:1 on the terminal
+ *   ground and both terminal row fills (HIVE-223).
  * - **`black` is dark ink, *not* the background.** This is the one slot where
  *   mirroring dark's mapping would be actively wrong. On a dark ground
  *   `black: bg` is invisible and harmless, because no program picks black for

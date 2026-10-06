@@ -106,7 +106,7 @@ export function OptionStepper<T extends string>({
         when it was not. A control that moves while you are choosing is worse
         than one that says less, which is why the reason is four words.
       */}
-      <span className="flex items-baseline gap-1.5 truncate font-mono text-[11px] tracking-[0.06em] whitespace-nowrap text-term-head uppercase">
+      <span className="flex items-baseline gap-1.5 truncate tabular-nums text-micro tracking-[0.06em] whitespace-nowrap text-term-head uppercase">
         {label}
         {disabled && disabledReason ? (
           /*
@@ -181,7 +181,7 @@ export function OptionStepper<T extends string>({
                 />
                 <span
                   className={cn(
-                    'font-mono text-[11px]',
+                    'tabular-nums text-micro',
                     selected ? 'font-bold text-ink' : 'text-subtle',
                   )}
                 >

@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+import { openConsole } from '../fixtures/places';
+
 /**
  * Appearance settings, in a real browser (story 105).
  *
@@ -7,7 +9,7 @@ import { expect, test, type Page } from '@playwright/test';
  * xterm — happy-dom performs no layout, so a terminal can never measure a cell
  * — and it has no page to reload. So the three things that actually matter are
  * proved here: the settings survive a reload, changing the terminal font does
- * not destroy the terminal, and compact density really does resize the rails.
+ * not destroy the terminal, and compact density really does tighten the rows.
  */
 
 const APP_URL = '/?sim=0';
@@ -19,9 +21,6 @@ const openSettings = async (page: Page) => {
     .getByRole('button', { name: 'Appearance' })
     .click();
 };
-
-const leftRail = (page: Page) =>
-  page.getByRole('navigation', { name: 'Projects, work, and agents' });
 
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
@@ -58,47 +57,43 @@ test('theme applies to the document and survives a reload', async ({ page }) => 
   await expect(page.locator('body')).toHaveAttribute('data-theme', 'light');
 });
 
-test('compact density narrows the rail and survives a reload', async ({ page }) => {
-  const width = () => leftRail(page).evaluate((el) => el.clientWidth);
+test('native controls follow the mode: a checkbox is dark in dark, light in light', async ({ page }) => {
+  const scheme = () =>
+    page.evaluate(() => {
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      document.body.append(box);
+      const value = getComputedStyle(box).colorScheme;
+      box.remove();
+      return value;
+    });
+  expect(await scheme()).toBe('dark');
 
-  /**
-   * Asserted as a *difference*, not as two pixel constants.
-   *
-   * The rail is `box-sizing: border-box` with a 1px right border, so
-   * `clientWidth` reports one less than the token — pinning 320 here would fail
-   * on a true implementation and teach the next person to distrust the number.
-   * The claim worth making is that compact is 36px narrower, which is the gap
-   * between the two tokens.
-   */
-  const comfortable = await width();
+  await openSettings(page);
+  await page.getByRole('radio', { name: 'Light' }).click();
+  await expect(page.locator('body')).toHaveAttribute('data-theme', 'light');
+  expect(await scheme()).toBe('light');
+});
+
+test('compact density tightens the rows and survives a reload', async ({ page }) => {
+  // The token density drives (7px and 4px are tokens.css's comfortable and compact `--cc-row-py`).
+  const rowPy = () => page.evaluate(() => getComputedStyle(document.body).getPropertyValue('--cc-row-py').trim());
+  expect(await rowPy()).toBe('7px');
 
   await openSettings(page);
   await page.getByRole('radio', { name: 'Compact' }).click();
-
   await expect(page.locator('body')).toHaveAttribute('data-density', 'compact');
-
-  /**
-   * Closed before measuring, though no longer because it has to be: the
-   * overlay used to be `aria-modal`, which marked the rest of the tree
-   * `aria-hidden` and made a role query for the left rail unresolvable until
-   * it was dismissed. It is non-modal now — see `overlay-chrome.spec.ts` for
-   * why — so this is ordinary tidiness, and measuring the rail with the
-   * overlay open would work too.
-   */
   await page.getByRole('button', { name: 'Close settings' }).click();
 
-  // The measurement is the point: a CSS custom property that nothing reads
-  // would still set the attribute and change nothing on screen.
-  await expect.poll(width).toBe(comfortable - 36);
-
+  await expect.poll(rowPy).toBe('4px');
   await page.reload();
-
-  await expect.poll(width).toBe(comfortable - 36);
+  await expect.poll(rowPy).toBe('4px');
 });
 
 test('changing the terminal font resizes the terminal without destroying it', async ({
   page,
 }) => {
+  await openConsole(page);
   const terminal = page.locator('[data-testid="terminal-surface"]').first();
   await expect(terminal).toBeVisible();
 

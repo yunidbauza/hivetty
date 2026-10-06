@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { expect, test, type Locator, type Page } from '@playwright/test';
+
+import { openConsole, openProject } from '../fixtures/places';
 
 import { launchHive, startSession } from './fixtures/hive-app';
 
@@ -83,7 +85,7 @@ async function openLiveSession(
   markers: { ready: string; bootstrap: string },
 ): Promise<Locator> {
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
   await startSession(page, PROJECT);
 
   const terminal = page.locator(`[data-terminal-id="${SESSION}"]`);
@@ -384,7 +386,9 @@ test('bare ← at an empty Claude prompt returns to the orchestrator', async ({}
      * `sleep` keeps the shell from printing a prompt underneath and moving the
      * caret back out of the frame.
      */
-    const rule = '─'.repeat(96);
+    // Narrower than any stage this window draws: round two's session panel
+    // takes width beside the terminal, and a rule that wraps is not a rule row.
+    const rule = '─'.repeat(64);
     const staged = testInfo.outputPath('frame-staged.txt');
     await page.keyboard.type(
       // `\033[2J\033[H` rather than `clear(1)`, which needs a terminfo entry and
@@ -432,10 +436,11 @@ test('the interactive terminal takes a GPU context; the console does not', async
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     // The console is a command surface, never a shell (story 041) — so it stays
     // on the DOM renderer even in the desktop build.
+    await openConsole(page);
     const orchestrator = page.locator('[data-terminal-id="orch"]');
     await expect(orchestrator).toBeVisible();
     await expect(orchestrator.locator('canvas')).toHaveCount(0);
@@ -470,7 +475,7 @@ test('a hidden terminal gives its GPU context back and takes one again on return
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     /**
      * Two sessions, then switch between them.
@@ -498,8 +503,11 @@ test('a hidden terminal gives its GPU context back and takes one again on return
      */
     await expect(terminal.locator('canvas')).toHaveCount(0, { timeout: 10_000 });
 
-    // Back to the first: a tab switch, not a new session.
-    await page.getByRole('button', { name: new RegExp(first) }).first().click();
+    // Back to the first: a tab switch, not a new session, from its Sessions list row.
+    // The config names no project, so the list labels it by its directory.
+    await (await openProject(page, basename(REAL_DIRECTORY)))
+      .getByRole('button', { name: new RegExp(`^${first}\\b`) })
+      .click();
     await expect(terminal.locator('canvas').first()).toBeAttached({
       timeout: 10_000,
     });

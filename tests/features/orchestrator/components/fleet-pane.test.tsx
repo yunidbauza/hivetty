@@ -153,7 +153,7 @@ describe('FleetPane', () => {
   /*
     The same seam the agent run log draws, and for the same reason: the fleet
     table and the overmind console sit on one terminal black, so a 1px rule in
-    `border-soft` is indistinguishable from the row rules a few pixels above it
+    `border-border-soft` is indistinguishable from the row rules a few pixels above it
     and the divider between two regions read as one more ended session. A band
     of the panel ground is the one thing a rule sharing that black cannot be.
   */
@@ -177,5 +177,20 @@ describe('FleetPane', () => {
     const divider = screen.getByRole('slider', { name: 'Resize the fleet table' });
     expect(divider).toHaveAttribute('aria-valuemin', String(MIN_SPLIT_RATIO * 100));
     expect(divider).toHaveAttribute('aria-valuemax', String(MAX_SPLIT_RATIO * 100));
+  });
+
+  it('draws no divider when the console is folded (HIVE-197)', () => {
+    const container = createRef<HTMLDivElement>();
+    render(
+      <div ref={container}>
+        <FleetPane containerRef={container} floored split={false} />
+      </div>,
+    );
+
+    expect(screen.queryByRole('slider', { name: 'Resize the fleet table' })).not.toBeInTheDocument();
+    const pane = screen.getByTestId('fleet-pane');
+    expect(pane).toHaveClass('flex-1');
+    expect(pane).not.toHaveClass('max-h-max');
+    expect(pane.getAttribute('style')).toBeNull();
   });
 });

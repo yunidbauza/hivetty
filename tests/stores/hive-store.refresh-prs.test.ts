@@ -82,6 +82,7 @@ describe('refreshPrs', () => {
     expect(useHiveStore.getState().prSource).toEqual({
       kind: 'unconfigured',
       message: 'Pull requests need the desktop app — this is the browser preview.',
+      reason: null,
     });
     expect(readPullRequests).not.toHaveBeenCalled();
   });
@@ -100,6 +101,7 @@ describe('refreshPrs', () => {
       expect(useHiveStore.getState().prSource).toEqual({
         kind: 'unconfigured',
         message: `it went ${kind}`,
+        reason: kind,
       });
     },
   );
@@ -143,7 +145,12 @@ describe('refreshPrs', () => {
 
     const state = useHiveStore.getState();
     expect(state.prs).toHaveLength(1);
-    expect(state.prSource).toEqual({ kind: 'live', stale: true, repos: 2 });
+    expect(state.prSource).toEqual({
+      kind: 'live',
+      stale: true,
+      repos: 2,
+      failedAt: expect.any(Number),
+    });
   });
 
   /** An unconfigured machine clears the list: those rows describe a setup that is gone. */
@@ -409,5 +416,57 @@ describe('refreshPrs', () => {
     await useHiveStore.getState().refreshPrs();
 
     expect(seen).toEqual(['live']);
+  });
+});
+
+describe('read and failure times (HIVE-211, D5)', () => {
+  const state = () => useHiveStore.getState();
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('hydrate sets the read time; a failure keeps PRs and read time and stamps the failure once', () => {
+    vi.setSystemTime(new Date('2026-10-03T10:31:00'));
+    state().hydratePrs([prRecord()], 1);
+    const readAt = Date.now();
+    expect(state().prsReadAt).toBe(readAt);
+
+    vi.setSystemTime(new Date('2026-10-03T10:42:00'));
+    state().reportPrFailure('down');
+    const failedAt = Date.now();
+    expect(state().prs).toHaveLength(1);
+    expect(state().prsReadAt).toBe(readAt);
+    expect(state().prSource).toEqual({ kind: 'live', stale: true, repos: 1, failedAt });
+
+    vi.setSystemTime(new Date('2026-10-03T10:43:00'));
+    const before = state().prSource;
+    state().reportPrFailure('down');
+    expect(state().prSource).toBe(before); // the first failure of the outage stands
+
+    state().hydratePrs([prRecord()], 1);
+    expect(state().prSource).toEqual({ kind: 'live', stale: false, repos: 1 });
+  });
+
+  it('reset clears the read time', () => {
+    state().hydratePrs([prRecord()], 1);
+    state().reset();
+    expect(state().prsReadAt).toBeNull();
+  });
+});
+
+describe('gh\'s reason (HIVE-211, D6)', () => {
+  it('a different reason with the same sentence is a change', () => {
+    useHiveStore.getState().reportPrsUnconfigured('m', 'not-installed');
+    const before = useHiveStore.getState().prSource;
+    useHiveStore.getState().reportPrsUnconfigured('m', 'unauthenticated');
+    expect(useHiveStore.getState().prSource).not.toBe(before);
+    expect(useHiveStore.getState().prSource).toEqual({ kind: 'unconfigured', message: 'm', reason: 'unauthenticated' });
+  });
+
+  it('the same reason and sentence is not', () => {
+    useHiveStore.getState().reportPrsUnconfigured('m', 'no-repos');
+    const before = useHiveStore.getState().prSource;
+    useHiveStore.getState().reportPrsUnconfigured('m', 'no-repos');
+    expect(useHiveStore.getState().prSource).toBe(before);
   });
 });

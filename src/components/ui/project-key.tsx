@@ -13,7 +13,7 @@ interface ProjectKeyProps {
  * A thin composition over {@link Tag} rather than a `tone` added to it. The
  * chip needs no colour `Tag` does not already have — `brand` ink on the `chip`
  * ground is exactly it — so what a new tone would have carried is not colour at
- * all but *shape*: monospaced, and a fixed width so a column of them lines up
+ * all but *shape*: a fixed width so a column of them lines up
  * whether the key is two letters or four. Putting those on `Tag` would make a
  * general-purpose atom grow a variant that means "project key", which is what
  * this file is for.
@@ -23,16 +23,16 @@ interface ProjectKeyProps {
  * other. That is the fence working as intended: shared UI moves down, not
  * sideways.
  *
- * Monospaced on purpose. The key exists to be **typed**, and the console it is
- * typed into is monospaced; rendering it in the proportional UI face would show
- * the user a shape they then have to re-recognise at the prompt.
+ * Sans like every other identifier (ticket keys, branches, PR numbers); the
+ * design system keeps mono for code and consoles. `tabular-nums` and the fixed
+ * width are what make a column of keys line up.
  */
 export function ProjectKey({ value, title }: ProjectKeyProps) {
   return (
     <Tag
       tone="brand"
       title={title}
-      className="w-11 shrink-0 justify-center font-mono lowercase"
+      className="w-11 shrink-0 justify-center tabular-nums lowercase"
     >
       {value}
     </Tag>

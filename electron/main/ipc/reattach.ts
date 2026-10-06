@@ -54,6 +54,8 @@ export interface ReattachLoop {
   begin(cause: CloseCause): void;
   /** Stop for good: no pending timer survives, no in-flight dial is adopted. */
   cancel(): void;
+  /** Dial at once, restarting the backoff (Try now, HIVE-211). A no-op unless reconnecting. */
+  dialNow(): void;
 }
 
 /**
@@ -162,6 +164,22 @@ export function createReattachLoop(deps: ReattachDeps): ReattachLoop {
     onAttached(client);
   };
 
+  /** Restart from the first step and dial now: on wake, and on Try now (HIVE-211). */
+  const restartNow = (): void => {
+    if (!running) return;
+    generation += 1;
+    attempt = 1;
+    stopTimer();
+    /*
+      Say so before dialling. Without this the pane keeps rendering the
+      `nextAttemptAt` from the step that was pending when the machine went to
+      sleep — a countdown to a moment that has already passed, next to an
+      attempt number that is about to restart anyway.
+    */
+    emit({ state: 'reconnecting', attempt: 1, nextAttemptAt: now(), reason: null });
+    void dial(generation);
+  };
+
   return {
     begin(cause) {
       // `onClose` fires once, so this is a guard rather than an expectation:
@@ -175,28 +193,18 @@ export function createReattachLoop(deps: ReattachDeps): ReattachLoop {
 
       running = true;
       attempt = 0;
-      stopWake =
-        onWake?.(() => {
-          if (!running) return;
-          /*
-            A machine that just woke has a network that just came back, and the
-            schedule may be parked thirty seconds out. Restarting from the first
-            step and dialling now is the difference between a lid that opens
-            already attached and one that looks broken for half a minute.
-          */
-          generation += 1;
-          attempt = 1;
-          stopTimer();
-          /*
-            Say so before dialling. Without this the pane keeps rendering the
-            `nextAttemptAt` from the step that was pending when the machine went
-            to sleep — a countdown to a moment that has already passed, next to
-            an attempt number that is about to restart anyway.
-          */
-          emit({ state: 'reconnecting', attempt: 1, nextAttemptAt: now(), reason: null });
-          void dial(generation);
-        }) ?? null;
+      /*
+        A machine that just woke has a network that just came back, and the
+        schedule may be parked thirty seconds out. Restarting from the first
+        step and dialling now is the difference between a lid that opens
+        already attached and one that looks broken for half a minute.
+      */
+      stopWake = onWake?.(restartNow) ?? null;
       schedule();
+    },
+
+    dialNow() {
+      restartNow();
     },
 
     cancel() {

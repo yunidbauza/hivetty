@@ -21,12 +21,12 @@ describe('SwarmLine', () => {
    * explaining what actually happened.
    */
   it('is muted, not coloured', () => {
-    render(<SwarmLine phraseKey="empty.inbox" />);
+    render(<SwarmLine phraseKey="empty.work" />);
 
     const line = document.querySelector('[data-swarm-line]');
 
     expect(line).toHaveClass('text-muted');
-    expect(line?.className).not.toContain('text-amber');
+    expect(line?.className).not.toContain('text-amber-text');
     expect(line?.className).not.toContain('text-red');
   });
 });

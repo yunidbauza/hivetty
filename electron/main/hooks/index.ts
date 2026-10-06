@@ -211,6 +211,8 @@ export interface HookHandlers {
   onCleared: (entityId: string) => void;
   /** A main-agent PostToolUse of a task tool (HIVE-179). See `ReceiverOptions.onPlanTool`. */
   onPlanTool: (call: PlanToolCall) => void;
+  /** A main-agent edit (HIVE-201). See `ReceiverOptions.onFileTool`. */
+  onFileTool?: (entityId: string) => void;
   /** A session reported its context and rate-limit usage (HIVE-79). */
   onMetrics: (entityId: string, metrics: SessionMetrics) => void;
   /** A session declared itself finished — `/done` (HIVE-93). */
@@ -449,6 +451,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onPromptName,
       onCleared,
       onPlanTool,
+      onFileTool,
       onMetrics,
       onDone,
       onReady,
@@ -466,6 +469,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onPromptName,
         onCleared,
         onPlanTool,
+        ...(onFileTool === undefined ? {} : { onFileTool }),
         onMetrics,
         onDone,
         onReady,

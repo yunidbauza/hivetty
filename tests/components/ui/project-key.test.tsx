@@ -7,7 +7,7 @@ import { ProjectKey } from '@components/ui/project-key';
  * The project key chip (HIVE-94).
  *
  * Small enough that the interesting assertions are about the two decisions the
- * component actually makes — a fixed width, and a monospaced face — because
+ * component actually makes — a fixed width, and tabular figures — because
  * those are what a future edit would quietly drop while the text still rendered.
  */
 describe('ProjectKey', () => {
@@ -27,10 +27,11 @@ describe('ProjectKey', () => {
     expect(screen.getByText('is')).toHaveClass('w-11');
   });
 
-  it('is monospaced, matching the console the key is typed into', () => {
+  it('is sans with tabular figures: mono is for code and consoles only', () => {
     render(<ProjectKey value="is" />);
 
-    expect(screen.getByText('is')).toHaveClass('font-mono');
+    expect(screen.getByText('is')).toHaveClass('tabular-nums');
+    expect(screen.getByText('is')).not.toHaveClass('font-mono');
   });
 
   it('carries a tooltip when one is given, and none when it is not', () => {

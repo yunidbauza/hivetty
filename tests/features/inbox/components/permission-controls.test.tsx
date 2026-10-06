@@ -59,10 +59,10 @@ describe('PermissionControls', () => {
     expect(screen.getByRole('button', { name: 'Allow' })).toBeTruthy();
   });
 
-  it('disables both buttons while an answer is in flight', () => {
+  it('marks both buttons pending while an answer is in flight (HIVE-225: aria-disabled, so focus stays)', () => {
     setup({ sending: true });
-    expect(screen.getByRole('button', { name: 'Allow' })).toHaveProperty('disabled', true);
-    expect(screen.getByRole('button', { name: 'Deny' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Allow' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveAttribute('aria-disabled', 'true');
   });
 
   /**

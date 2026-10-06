@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 
 import { laneLabel } from '@/lib/agents';
 import { cn } from '@/lib/utils';
 import type { TermLine } from '@/types/terminal';
 
 import { SplitHandle } from '@components/ui/split-handle';
+import { formatDuration } from '@lib/format-duration';
 import type { LiveRunSummary, RunSummary } from '@shared/agent-contract';
 import { formatRunCost } from '@shared/agent-contract';
 import {
@@ -85,10 +86,10 @@ const RUN_LOG_SPLIT_DEFAULT = 0.4;
  * *definite* width, and against a definite width every grid here resolves the
  * same tracks, because only the floors and the factors take part.
  *
- * The reason and prompt lines under a row are `contain: inline-size` for the
+ * The prompt line under a live task's row is `contain: inline-size` for the
  * same reason: a wrapping paragraph's max-content is its unwrapped length,
- * and one long failure reason would otherwise have widened the whole table
- * to fit it on a single line.
+ * and one long prompt would otherwise have widened the whole table to fit it
+ * on a single line.
  *
  * That is also not the `minmax(0,1fr)` this grid once had, and the difference
  * is the zero. A track allowed to reach nothing does reach it the moment the
@@ -96,10 +97,10 @@ const RUN_LOG_SPLIT_DEFAULT = 0.4;
  * first. A floor in `ch` closes that hole: no track can fall below its
  * shortest honest value.
  *
- * The failure reason is still **not a column** — it gets its own line under
- * the row it belongs to, drawn only when there is one — for the reason the
- * old fixed grid recorded: the one field a reader needs in full must not be
- * clipped by a layout it participates in.
+ * The failure reason is **not a column**. Since HIVE-204 it rides inline in
+ * the outcome cell (`failed · app closed`), which truncates, with the whole
+ * sentence in the cell's `title` — one row per run, so the table reads as a
+ * table, and the full reason one hover away.
  *
  * `Turns`, `Took` and `Cost` are right-aligned with `tabular-nums`, so `9s` and
  * `10s` line up on their units and `$0.04` under `$0.16`. Left-aligned digits
@@ -115,6 +116,9 @@ const RECEIPT_GRID =
  * The pointer cursor is not here — `global.css` gives every `[role='button']` one.
  */
 const ROW = 'pb-0.5 hover:bg-hover focus-visible:bg-hover focus-visible:outline-none';
+
+/** The selected run's row: the panel fill and a 2px brand bar inset on its left (HIVE-204). */
+const SELECTED = 'bg-panel-2 shadow-[inset_2px_0_var(--cc-brand)]';
 
 /**
  * What makes a receipts row a button without making it a `<button>`, which may
@@ -260,30 +264,15 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
     agent being itself; a task is one job, and the newest job is the one the
     reader most likely just started.
   */
-  const inFlight = liveRuns
-    .slice()
-    .sort((a, b) =>
-      a.kind === b.kind ? b.startedAt - a.startedAt : a.kind === 'standing' ? -1 : 1,
-    );
-
-  /*
-    `Took` counts up while a run is open, so this component owns a clock — one
-    second, which is the resolution the column shows. It runs only while
-    something is live, so a finished log re-renders on nothing at all.
-  */
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!live) return undefined;
-
-    const timer = setInterval(() => {
-      setNow(Date.now());
-    }, 1_000);
-
-    return () => {
-      clearInterval(timer);
-    };
-  }, [live]);
+  const inFlight = useMemo(
+    () =>
+      liveRuns
+        .slice()
+        .sort((a, b) =>
+          a.kind === b.kind ? b.startedAt - a.startedAt : a.kind === 'standing' ? -1 : 1,
+        ),
+    [liveRuns],
+  );
 
   /*
     Newest first, in both halves.
@@ -295,8 +284,29 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
     `scrollTop: 0`, which is where a scroll box already opens, and the reader
     who scrolls away is not fighting an effect that wants to pull them back.
   */
-  const receipts = runs.toReversed();
-  const groups = groupsOf(lines, inFlight, receipts);
+  const receipts = useMemo(() => runs.toReversed(), [runs]);
+  const groups = useMemo(() => groupsOf(lines, inFlight, receipts), [lines, inFlight, receipts]);
+
+  /*
+    The run the output is showing (HIVE-204), the latest by default.
+
+    A new run takes the selection only from a reader who was on the latest one
+    (decision 2): someone who clicked an older run is reading it, and a run
+    starting elsewhere must not pull them off it. The previous latest is kept in
+    a ref so the effect can tell "was following" from "had pinned".
+  */
+  const latestKey = inFlight[0]?.run ?? receipts[0]?.run ?? null;
+  const [selected, setSelected] = useState<string | null>(latestKey);
+  const previousLatest = useRef(latestKey);
+
+  useEffect(() => {
+    if (latestKey === previousLatest.current) return;
+
+    const was = previousLatest.current;
+
+    setSelected((current) => (current === null || current === was ? latestKey : current));
+    previousLatest.current = latestKey;
+  }, [latestKey]);
 
   /*
     Which group the autoscroll anchor belongs to: the one that wrote the newest
@@ -380,9 +390,33 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
     group?.scrollIntoView({ block: 'start' });
   };
 
+  const select = (key: string) => {
+    setSelected(key);
+    jumpTo(key);
+  };
+
+  const selectedLive = inFlight.find((run) => run.run === selected);
+  const selectedReceipt = selectedLive === undefined ? receipts.find((run) => run.run === selected) : undefined;
+  const summary =
+    selectedLive !== undefined ? (
+      <>
+        {'running · '}
+        <Took startedAt={selectedLive.startedAt} />
+      </>
+    ) : selectedReceipt === undefined
+      ? null
+      : [
+          selectedReceipt.outcome,
+          selectedReceipt.turns === undefined ? null : `${String(selectedReceipt.turns)} turns`,
+          formatDuration(selectedReceipt.endedAt - selectedReceipt.startedAt),
+          formatRunCost(selectedReceipt.costUsd),
+        ]
+          .filter((part) => part !== null && part !== undefined)
+          .join(' · ');
+
   return (
     <div
-      className="flex min-h-0 flex-col rounded-lg bg-term-bg p-2.5"
+      className="flex min-h-0 flex-col rounded-lg bg-term-bg p-2.5 font-mono"
       style={{ fontFamily, fontSize }}
       data-region="run-log"
     >
@@ -460,12 +494,12 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
             <LiveRow
               key={run.run}
               run={run}
-              now={now}
               dim={palette.dim}
               brand={palette.blue}
               green={palette.green}
               first={index === 0}
-              onJump={() => jumpTo(run.run)}
+              selected={selected === run.run}
+              onJump={() => select(run.run)}
             />
           ))}
 
@@ -483,7 +517,10 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
                 separator in the list is 1px.
               */
               first={index === 0 && inFlight.length === 0}
-              onJump={() => jumpTo(run.run)}
+              selected={selected === run.run}
+              amber={palette.amber}
+              red={palette.red}
+              onJump={() => select(run.run)}
             />
           ))}
           </div>
@@ -497,7 +534,7 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
         has nothing on either side of a seam.
 
         **A gutter, not a hairline**, and the reason is that both sides of this
-        particular seam are the same black. A 1px rule in `border-soft` is
+        particular seam are the same black. A 1px rule in `border-border-soft` is
         exactly what separates one receipt row from the next a few pixels above,
         so the divider between two *documents* read as one more row of the
         table. A 12px band of the panel ground cuts the black in two, which is
@@ -526,21 +563,26 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
         header does: the output can be scrolled without losing the label that
         says what it is.
 
-        It reads "Latest output" rather than "Last output" now, because the
-        buffer holds several turns and the newest is on top — "last" named a
-        single run that this has not been for a while.
+        It names the selected run (HIVE-204) — its chip, then the receipt's
+        facts, or `running` and the time so far for one in flight — and so it
+        shows for a live run too, which "Latest output" could not: that heading
+        named whichever run was newest, and the newest was not always the one
+        on screen. No `border-t` of its own: the divider above it is the rule.
       */}
-      {!live && receipts.length > 0 && groups.length > 0 ? (
-        /*
-          No `border-t` of its own any more: the divider above it is the rule
-          now, and a hairline under a hairline read as a 2px seam.
-        */
-        <p
-          className="shrink-0 pt-2 pb-0.5 text-[0.85em] tracking-[0.1em] uppercase"
+      {groups.length > 0 && selected !== null && summary !== null ? (
+        <div
+          className="flex shrink-0 items-center gap-2.5 pt-2 pb-0.5 text-[0.85em]"
           style={{ color: palette.dim }}
+          data-testid="run-output-heading"
         >
-          Latest output
-        </p>
+          <span className="tracking-[0.1em] uppercase">Output</span>
+          <i className="rounded-md bg-panel-2 px-[7px] py-0.5 not-italic" style={{ color: palette.blue }}>
+            {`#${selected.slice(0, 8)}`}
+          </i>
+          <span>{summary}</span>
+          <span className="flex-1" />
+          <span>newest run first</span>
+        </div>
       ) : null}
 
       <div
@@ -613,45 +655,11 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
               )}
 
               {group.turns.map((turn, turnIndex) => (
-                <div
-                  /*
-                    Counted from the **oldest** turn, so appending does not
-                    renumber.
-
-                    `turns` is newest-first, so `turnIndex` alone shifts every
-                    key each time a turn arrives — which is every turn boundary
-                    — and React would rebuild the whole subtree, losing a text
-                    selection someone was making in an older turn. Subtracting
-                    from the length pins each turn to its position from the far
-                    end, which only moves when a turn is *evicted*: past
-                    `AGENT_LINE_CAP`, far rarer than an append, and with nothing
-                    stateful in these blocks to lose when it does.
-
-                    A content key was tried and is worse on both counts: every
-                    turn opens with the same `ledger_read` line, so it is not
-                    unique without the index — and with the index it is the
-                    index that decides, which is the churn this avoids.
-                  */
+                <TurnBlock
                   key={group.turns.length - turnIndex}
-                  className="pt-0.5"
-                >
-                  {turn.map((line, index) => (
-                    <p
-                      key={index}
-                      className="break-words whitespace-pre-wrap"
-                      /*
-                        `palette` is keyed by every `TermColor`, and
-                        `RunLineColor` is a strict subset of it, so this indexes
-                        without a cast — the same subset relationship a contract
-                        test pins.
-                      */
-                      style={{ color: palette[line.color] }}
-                    >
-                      {line.text}
-                    </p>
-                  ))}
-
-                  {/*
+                  turn={turn}
+                  palette={palette}
+                  /*
                     The anchor the live autoscroll chases, at the end of the
                     newest turn's lines — which is where the newest line is.
                     Only on the newest turn of the group that wrote that line
@@ -659,11 +667,9 @@ export function AgentRunLog({ name }: AgentRunLogProps) {
                     the group being followed has to be the one currently
                     talking, not whichever sorts first. A finished log has
                     nothing to follow and mounts no anchor at all.
-                  */}
-                  {live && groupIndex === anchored && turnIndex === 0 ? (
-                    <div ref={foot} data-testid="run-foot" />
-                  ) : null}
-                </div>
+                  */
+                  footRef={live && groupIndex === anchored && turnIndex === 0 ? foot : null}
+                />
               ))}
             </div>
           ))
@@ -791,13 +797,82 @@ function groupsOf(
   return groups;
 }
 
+type RunPalette = ReturnType<typeof useTerminalAppearance>['palette'];
+
+interface TurnBlockProps {
+  turn: readonly TermLine[];
+  palette: RunPalette;
+  /** The live autoscroll anchor, on the newest turn of the talking group only. */
+  footRef: RefObject<HTMLDivElement | null> | null;
+}
+
+/**
+ * One turn of the output, its lines in order.
+ *
+ * Keyed by the caller counted from the **oldest** turn, so appending does not
+ * renumber.
+ *
+ * `turns` is newest-first, so `turnIndex` alone shifts every key each time a
+ * turn arrives — which is every turn boundary — and React would rebuild the
+ * whole subtree, losing a text selection someone was making in an older turn.
+ * Subtracting from the length pins each turn to its position from the far end,
+ * which only moves when a turn is *evicted*: past `AGENT_LINE_CAP`, far rarer
+ * than an append, and with nothing stateful in these blocks to lose when it
+ * does.
+ *
+ * A content key was tried and is worse on both counts: every turn opens with
+ * the same `ledger_read` line, so it is not unique without the index — and with
+ * the index it is the index that decides, which is the churn this avoids.
+ */
+function TurnBlockImpl({ turn, palette, footRef }: TurnBlockProps) {
+  return (
+    <div className="pt-0.5">
+      {turn.map((line, index) => (
+        <p
+          key={index}
+          className="break-words whitespace-pre-wrap"
+          /*
+            `palette` is keyed by every `TermColor`, and `RunLineColor` is a
+            strict subset of it, so this indexes without a cast — the same
+            subset relationship a contract test pins.
+          */
+          style={{ color: palette[line.color] }}
+        >
+          {line.text}
+        </p>
+      ))}
+      {footRef === null ? null : <div ref={footRef} data-testid="run-foot" />}
+    </div>
+  );
+}
+
+/**
+ * Same lines, same objects, in the same order (HIVE-225).
+ *
+ * `groupsOf` rebuilds every turn array on each push, so identity alone would
+ * never match. The store appends without copying line objects, so comparing
+ * the lines one by one is exact: an old turn compares equal and skips its
+ * render, and only the turn that grew reconciles.
+ */
+function sameTurn(a: TurnBlockProps, b: TurnBlockProps): boolean {
+  return (
+    a.palette === b.palette &&
+    a.footRef === b.footRef &&
+    a.turn.length === b.turn.length &&
+    a.turn.every((line, index) => line === b.turn[index])
+  );
+}
+
+const TurnBlock = memo(TurnBlockImpl, sameTurn);
+
 interface LiveRowProps {
   run: LiveRunSummary;
-  now: number;
   dim: string;
   brand: string;
   green: string;
   first: boolean;
+  /** The run the output heading names: a panel fill and an inset brand bar (HIVE-204). */
+  selected: boolean;
   onJump: () => void;
 }
 
@@ -823,27 +898,27 @@ interface LiveRowProps {
  */
 function LiveRow({
   run,
-  now,
   dim,
   brand,
   green,
   first,
+  selected,
   onJump,
 }: LiveRowProps) {
   const at = new Date(run.startedAt).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   });
-  const seconds = Math.max(0, Math.round((now - run.startedAt) / 1000));
   const standing = run.kind === 'standing';
   // The lane a conversation run holds, or null for the standing lane (HIVE-185).
   const lane = laneLabel(run.lane);
 
   return (
     <div
-      className={cn(ROW, first ? 'pt-1' : 'border-t border-border-soft pt-1')}
+      className={cn(ROW, first ? 'pt-1' : 'border-t border-border-soft pt-1', selected && SELECTED)}
       style={{ color: dim }}
       data-live-run={run.kind}
+      aria-current={selected ? 'true' : undefined}
       {...jumpProps(onJump)}
     >
       <div className={RECEIPT_GRID}>
@@ -867,7 +942,9 @@ function LiveRow({
         </span>
         {/* A turn count a run cannot know until it ends — see the docblock. */}
         <span className="truncate text-right tabular-nums">—</span>
-        <span className="truncate text-right tabular-nums">{`${String(seconds)}s`}</span>
+        <span className="truncate text-right tabular-nums">
+          <Took startedAt={run.startedAt} />
+        </span>
         {/* A cost a run cannot know until it ends — the same em dash a receipt uses. */}
         <span className="truncate text-right tabular-nums">—</span>
       </div>
@@ -888,12 +965,42 @@ function LiveRow({
   );
 }
 
+/**
+ * How long a live run has taken, counting up (HIVE-225).
+ *
+ * A leaf on purpose. The clock used to be `AgentRunLog`'s own state, so every
+ * second re-rendered the whole log — up to `AGENT_LINE_CAP` lines — to move one
+ * cell. Here it re-renders a string. One second is the resolution the column
+ * shows; each instance keeps its own interval, so two live runs may tick a
+ * fraction of a second apart, which the column cannot show.
+ */
+function Took({ startedAt }: { startedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1_000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
+
+  return formatDuration(now - startedAt);
+}
+
 interface RunHeaderProps {
   run: RunSummary;
   dim: string;
   brand: string;
   /** The row directly under the sticky header, which draws its own rule. */
   first: boolean;
+  /** The run the output heading names (HIVE-204). */
+  selected: boolean;
+  /** The outcome's colours: `failed` red, `asking` amber; the rest stay `dim` (HIVE-204). */
+  amber: string;
+  red: string;
   onJump: () => void;
 }
 
@@ -914,22 +1021,25 @@ interface RunHeaderProps {
  * and a run that took `10s` pushed its cost a character right of one that took
  * `9s`. Columns cannot do that.
  *
- * `reason` is not a column at all — it gets its own line under the row, see
- * {@link RECEIPT_GRID}. It rode in the outcome cell first, which clipped it at
- * every window size and font size the app can render.
+ * `reason` is not a column at all — it rides inline in the outcome cell, in
+ * the row's own `dim`, with the whole of it in the cell's `title`; see
+ * {@link RECEIPT_GRID}. The outcome takes its state's colour: `failed` red,
+ * `asking` amber, and the rest the row's plain `dim` (HIVE-204).
  */
-function RunHeader({ run, dim, brand, first, onJump }: RunHeaderProps) {
+function RunHeader({ run, dim, brand, first, selected, amber, red, onJump }: RunHeaderProps) {
   const at = new Date(run.startedAt).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
   });
-  const seconds = Math.max(0, Math.round((run.endedAt - run.startedAt) / 1000));
   const cost = formatRunCost(run.costUsd);
+  const outcomeColor = run.outcome === 'failed' ? red : run.outcome === 'asking' ? amber : undefined;
+  const outcome = run.reason === undefined ? run.outcome : `${run.outcome} · ${run.reason}`;
 
   return (
     <div
-      className={cn(ROW, first ? 'pt-1' : 'border-t border-border-soft pt-1')}
+      className={cn(ROW, first ? 'pt-1' : 'border-t border-border-soft pt-1', selected && SELECTED)}
       style={{ color: dim }}
+      aria-current={selected ? 'true' : undefined}
       {...jumpProps(onJump)}
     >
       <div className={RECEIPT_GRID}>
@@ -946,8 +1056,13 @@ function RunHeader({ run, dim, brand, first, onJump }: RunHeaderProps) {
         {run.trigger}
       </span>
       <span className="truncate tabular-nums">{at}</span>
-      <span className="truncate" title={run.outcome}>
+      <span
+        className="truncate"
+        title={outcome}
+        style={outcomeColor === undefined ? undefined : { color: outcomeColor }}
+      >
         {run.outcome}
+        {run.reason === undefined ? null : <span style={{ color: dim }}>{` · ${run.reason}`}</span>}
       </span>
       {/*
         An em dash rather than a blank for a run that reported no turn count and
@@ -956,21 +1071,11 @@ function RunHeader({ run, dim, brand, first, onJump }: RunHeaderProps) {
         saying.
       */}
       <span className="truncate text-right tabular-nums">{run.turns ?? '—'}</span>
-      <span className="truncate text-right tabular-nums">{`${seconds}s`}</span>
+      <span className="truncate text-right tabular-nums">
+        {formatDuration(run.endedAt - run.startedAt)}
+      </span>
       <span className="truncate text-right tabular-nums">{cost ?? '—'}</span>
       </div>
-
-      {/*
-        Its own line, indented to the Trigger column so it reads as belonging to
-        the row above rather than as a row of its own. Drawn only when a run
-        actually ended badly, which is almost never — so it costs the ordinary
-        row no height and the table no width.
-      */}
-      {run.reason === undefined ? null : (
-        <p className="pl-[11ch] break-words whitespace-pre-wrap [contain:inline-size]">
-          {run.reason}
-        </p>
-      )}
     </div>
   );
 }

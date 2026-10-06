@@ -2,6 +2,8 @@ import { join } from 'node:path';
 
 import { app, powerSaveBlocker } from 'electron';
 
+import { APP_IDENTITY_NAME } from '@shared/app-name';
+
 import { applyDevDockIcon } from './app-icon';
 import { primaryWindow } from './aux-windows';
 import { parseInvocation } from './cli';
@@ -42,7 +44,10 @@ import { createWindow } from './window';
  */
 
 /**
- * The app is called The Hive, and says so — in the menu bar and the About box.
+ * The app's identity is "The Hive", and stays so; what people read is
+ * `APP_DISPLAY_NAME`, "Hive TTY" (`@shared/app-name` says why the two differ).
+ * The menu is built with the display name, so this only decides `userData`
+ * and the Keychain item `safeStorage` uses.
  *
  * Without this, `app.getName()` falls back to `package.json`'s `name` field and
  * every role-driven menu item reads `About the-hive`, `Quit the-hive`. The
@@ -52,12 +57,12 @@ import { createWindow } from './window';
  * takes that from `CFBundleName` in the running bundle's `Info.plist`, and
  * under `pnpm desktop:dev` the running bundle is Electron's own — so dev shows
  * `Electron` no matter what any API says. The packaged app sets `CFBundleName`
- * properly through `productName` in `electron-builder.yml`, which is the real
+ * properly through `mac.extendInfo` in `electron-builder.yml`, which is the real
  * fix and the only honest one. Patching Electron's `Info.plist` in
  * `node_modules` would make dev *look* right while changing nothing about what
  * ships.
  */
-app.setName('The Hive');
+app.setName(APP_IDENTITY_NAME);
 
 /**
  * Development keeps the userData directory it already has.

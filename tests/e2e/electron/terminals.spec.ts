@@ -2,12 +2,14 @@ import { join } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { openProject } from '../fixtures/places';
+
 import { launchHive, writeProjectConfig } from './fixtures/hive-app';
 
 /**
  * A terminal in the built app (terminals, phases 1 and 2).
  *
- * The only test that proves the whole path: a click in the tree, a real
+ * The only test that proves the whole path: a click in the Sessions list, a real
  * spawn through main, a real host poll reading a real foreground process
  * group, and the `exit` ending taking the row and the tab with it.
  */
@@ -24,11 +26,11 @@ test('opens at a prompt, names a running command, and leaves on exit', async ({}
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   try {
-    const tree = page.locator('[data-panel="projects"]');
-    await page.getByRole('button', { name: 'Terminal in nova-web' }).click();
+    const tree = await openProject(page, 'nova-web');
+    await tree.getByRole('button', { name: 'Terminal in nova-web' }).click();
 
     const terminal = page.locator('[data-terminal-id^="term-"]').last();
     await expect(terminal).toBeVisible();
@@ -36,8 +38,8 @@ test('opens at a prompt, names a running command, and leaves on exit', async ({}
 
     const row = tree.getByRole('button', { name: new RegExp(`^${id}`) });
     await expect(row).toContainText('at prompt');
-    // No meta bar: a terminal has no session behind it.
-    await expect(page.getByTestId('session-meta-bar')).toHaveCount(0);
+    // Round two draws a header over a terminal too (TerminalLine).
+    await expect(page.getByTestId('session-header')).toBeVisible();
 
     await terminal.click();
     await page.keyboard.type('sleep 3');

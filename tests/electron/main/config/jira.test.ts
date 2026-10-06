@@ -118,6 +118,20 @@ const seed = (text: string): void => {
 const onDisk = (): Record<string, unknown> =>
   JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
 
+describe('parseConfig — jira.workflow', () => {
+  it('reads a ticket workflow', () => {
+    const parsed = parseConfig(doc({ jira: { workflow: { kind: 'skill', skill: 'hive:work-on', prompt: 'one PR' } } }), 'config');
+    expect(parsed.jira).toEqual({ workflow: { kind: 'skill', skill: 'hive:work-on', prompt: 'one PR' } });
+    expect(parsed.errors).toEqual([]);
+  });
+
+  it('reports a malformed one and skips it, keeping the rest of the block', () => {
+    const parsed = parseConfig(doc({ jira: { site: 'a.b.net', workflow: { kind: 'agent', agent: 'builder' } } }), 'config');
+    expect(parsed.jira).toEqual({ site: 'a.b.net' });
+    expect(parsed.errors.join(' ')).toMatch(/jira\.workflow: via/);
+  });
+});
+
 describe('setJira', () => {
   it('writes only the field the request names', () => {
     seed('{\n  "version": 2,\n  "jira": { "site": "a.b.net" }\n}\n');
@@ -128,11 +142,23 @@ describe('setJira', () => {
       site: 'a.b.net',
       email: 'me@example.com',
       jql: null,
+      workflow: null,
     });
     expect(onDisk().jira).toEqual({
       site: 'a.b.net',
       email: 'me@example.com',
     });
+  });
+
+  it('writes a ticket workflow, and null takes it out of the file', () => {
+    seed('{\n  "version": 2,\n  "jira": { "site": "a.b.net" }\n}\n');
+    const workflow = { kind: 'agent' as const, agent: 'builder', via: 'wake' as const };
+
+    expect(setJira({ workflow }).jira.workflow).toEqual(workflow);
+    expect(onDisk().jira).toEqual({ site: 'a.b.net', workflow });
+
+    expect(setJira({ workflow: null }).jira.workflow).toBeNull();
+    expect(onDisk().jira).toEqual({ site: 'a.b.net' });
   });
 
   it('creates the block on a file that has none', () => {
@@ -176,6 +202,7 @@ describe('setJira', () => {
       site: null,
       email: null,
       jql: null,
+      workflow: null,
     });
   });
 
@@ -230,6 +257,7 @@ describe('setJira', () => {
       site: 'a.b.net',
       email: 'me@example.com',
       jql: null,
+      workflow: null,
     });
   });
 });

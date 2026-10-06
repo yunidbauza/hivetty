@@ -30,6 +30,7 @@ import type {
   AgentWriteRequest,
   AgentWriteResult,
 } from './agent-contract';
+import type { ChangedFilesEvent, ChangedFilesSnapshot } from './changed-files-contract';
 import type {
   AddProjectRequest,
   BrowseDirRequest,
@@ -90,16 +91,35 @@ import type {
   WriteFileRequest,
   WriteFileResult,
 } from './fs-contract';
-import type { GhResult, PrRecord, PrsSnapshot } from './github-contract';
+import type {
+  GhResult,
+  JobLog,
+  PrCommentRequest,
+  PrDetail,
+  PrRecord,
+  PrRef,
+  PrsSnapshot,
+  PrThreadRequest,
+  PrTimeline,
+  PrViewedRequest,
+  PrRuns,
+  PrRunsRequest,
+  RunJob,
+  RunRef,
+} from './github-contract';
 import type {
   JiraComment,
+  JiraCommentPage,
   JiraIdentity,
   JiraIssue,
+  JiraIssueDetail,
   JiraLink,
   JiraResult,
   JiraSearchResult,
   JiraStatus,
   JiraTransition,
+  JiraUser,
+  JiraUsersRequest,
 } from './jira-contract';
 import type {
   LedgerAnswerRequest,
@@ -409,6 +429,11 @@ export const CH = {
    */
   remoteForget: 'remote:forget',
   /**
+   * Dial the dropped server now instead of waiting out the backoff (HIVE-211, Try now).
+   * Process-local: it is about this client's own reconnect loop, and it has to answer with the socket down.
+   */
+  remoteDialNow: 'remote:dial-now',
+  /**
    * What this window's attachment is doing right now (HIVE-150).
    *
    * A **push**, for the reason {@link CH.slackSocketStatus} is one: the socket
@@ -454,6 +479,8 @@ export const CH = {
    */
   jiraSearch: 'jira:search',
   jiraIssue: 'jira:issue',
+  /** The description and the parent (HIVE-174's `detail()`), for the ticket page (HIVE-203). */
+  jiraDetail: 'jira:detail',
   /**
    * Transitions (HIVE-70) — the epic's first **write** to Jira.
    *
@@ -473,6 +500,8 @@ export const CH = {
   jiraComments: 'jira:comments',
   jiraLinks: 'jira:links',
   jiraAddComment: 'jira:add-comment',
+  /** People to mention (HIVE-216): the `@` picker's search. A read; one bounded query string. */
+  jiraUsers: 'jira:users',
   /**
    * Slack's MCP server (HIVE-123).
    *
@@ -569,6 +598,43 @@ export const CH = {
    * *which of the user's own projects* to look in, and what to look for.
    */
   githubSearchPrs: 'github:search-prs',
+  /**
+   * One PR's page (HIVE-205): its body, conversation, threads and checks.
+   *
+   * **The first `github:` channel that names a repository**, so the invariant
+   * above is restated once more rather than quietly dropped. The payload is an
+   * owner, a repository and a number; main looks the repository up among the
+   * configured projects and refuses one it does not map, and what reaches the
+   * argv is the resolver's spelling inside a constant document's bound
+   * variables. A renderer can still reach only the user's own projects.
+   */
+  githubPrDetail: 'github:pr-detail',
+  /**
+   * A PR-level comment (HIVE-205), under {@link CH.githubPrDetail}'s scope
+   * check. The PR's node id is read from GitHub by main, never taken from the
+   * renderer, so a write can only land on a PR the check admitted.
+   */
+  githubPrComment: 'github:pr-comment',
+  /** One PR's unified diff (HIVE-207), under {@link CH.githubPrDetail}'s scope check. `gh pr diff`, argv only. */
+  githubPrDiff: 'github:pr-diff',
+  /** One PR's history for the Timeline tab (HIVE-208), under {@link CH.githubPrDetail}'s scope check. Constant GraphQL, bound variables. */
+  githubPrTimeline: 'github:pr-timeline',
+  /**
+   * Reply to, resolve or unresolve one review thread (HIVE-207), under the
+   * same scope check. Main proves the thread is on the scoped PR before writing.
+   */
+  githubPrThread: 'github:pr-thread',
+  /** Mark or unmark a file viewed (HIVE-207). The PR's node id is read by main, never the renderer's. */
+  githubPrViewed: 'github:pr-viewed',
+  /**
+   * The Checks tab (HIVE-206): the head branch's runs and the checkout's
+   * workflow graph, one run's jobs, one job's failed log, and re-run failed.
+   * Each names a repository, so each passes main's scope check first.
+   */
+  githubPrRuns: 'github:pr-runs',
+  githubRunJobs: 'github:run-jobs',
+  githubJobLog: 'github:job-log',
+  githubRerunFailed: 'github:rerun-failed',
   notificationsActivate: 'notifications:activate', // main → renderer
   /**
    * A notification was raised (HIVE-75). main → renderer.
@@ -742,6 +808,10 @@ export const CH = {
   plansList: 'plans:list',
   /** Push: one session's plan changed, or went (`plan: null`). main → renderer. */
   planChanged: 'plan:changed',
+  /** Every session's changed files (HIVE-201). Boot hydration and the attach snapshot. */
+  changedFilesList: 'changed-files:list',
+  /** Push: one session's changed files, whole (`files: []` = none). main → renderer. */
+  changedFilesChanged: 'changed-files:changed',
   /** What the app knows about a newer version of itself. */
   updatesStatus: 'updates:status',
   /**
@@ -1186,6 +1256,7 @@ export const EVENT_CHANNELS = [
   CH.fsChanged,
   CH.ledgerChanged,
   CH.planChanged,
+  CH.changedFilesChanged,
   CH.agentsChanged,
   CH.agentsStatus,
   CH.agentsLines,
@@ -1518,8 +1589,11 @@ export type NotificationActivateEvent =
    * name for an agent, which the renderer tells apart with `isAgentId`.
    */
   | { type: 'entity'; entityId: string }
-  /** An ask was clicked (HIVE-118). Its card lives in the inbox. */
-  | { type: 'ask' };
+  /**
+   * An ask was clicked (HIVE-118). Its card lives in the inbox; `thread` names
+   * the ask, so the drawer can open on it (HIVE-214, consumed by HIVE-198).
+   */
+  | { type: 'ask'; thread: string };
 
 /**
  * What an attachment is doing, for {@link CH.remoteLinkStatus} (HIVE-150).
@@ -1803,6 +1877,13 @@ export interface AppInfo {
    * answered by this process in either mode.
    */
   serving: boolean;
+  /**
+   * Whether this launch showed the splash (`splashEnabled`). What's new (1.0)
+   * opens only after one, so a launch without it — the Playwright suite's
+   * `HIVE_E2E` — never has a card over its specs. Optional so an older peer's
+   * answer still reads; absent counts as shown.
+   */
+  splash?: boolean;
   /**
    * Per-session flow-control counters (story 093).
    *
@@ -2216,6 +2297,8 @@ export interface HiveBridge {
     pair(request: RemotePairRequest): Promise<{ paired: true } | { error: string }>;
     /** Discard the credential {@link HiveBridge.remote.pair} stored. Idempotent. */
     forget(): Promise<void>;
+    /** Dial the dropped server now, restarting the backoff (Try now, HIVE-211). A no-op unless reconnecting. */
+    dialNow(): Promise<void>;
     /**
      * What this window's attachment is doing right now (HIVE-150).
      *
@@ -2483,6 +2566,26 @@ export interface HiveBridge {
      * There is no third, wider option — see {@link CH.githubSearchPrs}.
      */
     searchPrs(term: string, projectId?: string): Promise<GhResult<PrRecord[]>>;
+    /** One PR's page (HIVE-205). Refused unless a configured project maps the repository. */
+    prDetail(request: PrRef): Promise<GhResult<PrDetail>>;
+    /** A PR-level comment (HIVE-205), under the same scope. */
+    prComment(request: PrCommentRequest): Promise<GhResult<true>>;
+    /** One PR's unified diff (HIVE-207), under the same scope. */
+    prDiff(request: PrRef): Promise<GhResult<string>>;
+    /** One PR's history for the Timeline tab (HIVE-208), under the same scope. */
+    prTimeline(request: PrRef): Promise<GhResult<PrTimeline>>;
+    /** Reply to, resolve or unresolve a review thread (HIVE-207), under the same scope. */
+    prThread(request: PrThreadRequest): Promise<GhResult<true>>;
+    /** Mark or unmark a file viewed (HIVE-207), under the same scope. */
+    prViewed(request: PrViewedRequest): Promise<GhResult<true>>;
+    /** The head branch's runs and the workflow graph (HIVE-206). Refused unless a configured project maps the repository. */
+    prRuns(request: PrRunsRequest): Promise<GhResult<PrRuns>>;
+    /** One run's jobs and steps (HIVE-206), under the same scope. */
+    runJobs(request: RunRef): Promise<GhResult<RunJob[]>>;
+    /** One job's failed log, cut to the failure (HIVE-206), under the same scope. */
+    jobLog(request: RunRef): Promise<GhResult<JobLog>>;
+    /** Re-run a run's failed jobs (HIVE-206), under the same scope. */
+    rerunFailed(request: RunRef): Promise<GhResult<true>>;
   };
   /**
    * Jira (HIVE-67).
@@ -2515,6 +2618,8 @@ export interface HiveBridge {
     search(request: JiraSearchRequest): Promise<JiraResult<JiraSearchResult>>;
     /** Read one issue by key (HIVE-68). The key is pattern-matched in main. */
     issue(request: JiraIssueRequest): Promise<JiraResult<JiraIssue>>;
+    /** One issue's description and parent (HIVE-203). Read-only, like `issue`. */
+    detail(request: JiraIssueRequest): Promise<JiraResult<JiraIssueDetail>>;
     /**
      * What this issue can become right now (HIVE-70).
      *
@@ -2541,10 +2646,10 @@ export interface HiveBridge {
     applyTransition(
       request: ApplyJiraTransitionRequest,
     ): Promise<JiraResult<JiraIssue>>;
-    /** An issue's conversation, oldest first (HIVE-71). Rendered, not raw ADF. */
+    /** A page of an issue's conversation, oldest first, with the thread's total (HIVE-71, HIVE-203). Rendered, not raw ADF. */
     comments(
       request: JiraConversationRequest,
-    ): Promise<JiraResult<JiraComment[]>>;
+    ): Promise<JiraResult<JiraCommentPage>>;
     /** Remote links and Jira-to-Jira links, merged, with direction (HIVE-71). */
     links(request: JiraConversationRequest): Promise<JiraResult<JiraLink[]>>;
     /**
@@ -2557,6 +2662,8 @@ export interface HiveBridge {
     addComment(
       request: AddJiraCommentRequest,
     ): Promise<JiraResult<JiraComment>>;
+    /** Active people on the site matching a query, up to eight (HIVE-216). The query is guarded in main. */
+    users(request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>>;
   };
   /**
    * Slack — the MCP server (HIVE-123) and socket mode (HIVE-124).
@@ -2699,6 +2806,11 @@ export interface HiveBridge {
   plans: {
     list: () => Promise<PlansSnapshot>;
     onChanged: (callback: (event: PlanChangedEvent) => void) => () => void;
+  };
+  /** Changed files (HIVE-201): main reads the transcript; the page only mirrors. */
+  changedFiles: {
+    list: () => Promise<ChangedFilesSnapshot>;
+    onChanged: (callback: (event: ChangedFilesEvent) => void) => () => void;
   };
   /**
    * Agent definitions on disk (HIVE-114).

@@ -7,6 +7,7 @@ import {
   TERMINAL_SURFACE_KEYS,
   THEME_MODES,
   UI_KEYS,
+  UI_OPTIONAL_KEYS,
   type HiveTheme,
   type SyntaxColors,
   type TerminalColors,
@@ -125,10 +126,10 @@ function colourComplaint(value: unknown): string {
   if (typeof value === 'string') {
     const family = ANY_FUNCTION.exec(value.trim())?.[1].toLowerCase();
     if (family !== undefined && !SUPPORTED_FUNCTIONS.has(family)) {
-      return `uses ${family}(), which the Hive does not read. Use ${ACCEPTED_FORMS}.`;
+      return `uses ${family}(), which Hive TTY does not read. Use ${ACCEPTED_FORMS}.`;
     }
   }
-  return 'is not a colour the Hive can read.';
+  return 'is not a colour Hive TTY can read.';
 }
 
 const MODE_NAMES = THEME_MODES;
@@ -142,10 +143,12 @@ const MODE_NAMES = THEME_MODES;
  * must not be *unknown* either, or importing a file this app exported would
  * warn about two colours and silently drop them. `surfacesOf` in `ansi.ts`
  * derives them from `bg` when they are absent, so omitting them costs a theme
- * nothing but the chance to choose.
+ * nothing but the chance to choose. HIVE-199's creature colours, `creep` and
+ * `chitin`, are optional ui keys for the same reason; `swarmPaletteOf` derives
+ * them from `bg`, `brand` and `ink`.
  */
 const GROUPS = [
-  { name: 'ui', keys: UI_KEYS, optional: [] as readonly string[] },
+  { name: 'ui', keys: UI_KEYS, optional: UI_OPTIONAL_KEYS as readonly string[] },
   { name: 'syntax', keys: SYNTAX_KEYS, optional: [] as readonly string[] },
   {
     name: 'terminal',
@@ -270,7 +273,7 @@ export function importTheme(raw: string, fileName: string): ImportResult {
   if (parsed.hiveThemeVersion !== 1) {
     return fail(
       fileName,
-      `hiveThemeVersion is ${JSON.stringify(parsed.hiveThemeVersion)}, but the Hive only reads version 1 theme files. Export a compatible theme, or wait for a newer Hive.`,
+      `hiveThemeVersion is ${JSON.stringify(parsed.hiveThemeVersion)}, but Hive TTY only reads version 1 theme files. Export a compatible theme, or wait for a newer Hive TTY.`,
     );
   }
 
@@ -382,7 +385,7 @@ export function importTheme(raw: string, fileName: string): ImportResult {
       if (terminal.bg !== ui.termBg) {
         return fail(
           fileName,
-          `modes.${mode}.terminal.bg is ${terminal.bg} but modes.${mode}.ui.termBg is ${ui.termBg}. xterm paints its own background and the surrounding chrome paints the other — if they disagree, a visible seam appears at the terminal's edge. Make them match, or drop either one and the Hive will derive it from the one you keep.`,
+          `modes.${mode}.terminal.bg is ${terminal.bg} but modes.${mode}.ui.termBg is ${ui.termBg}. xterm paints its own background and the surrounding chrome paints the other — if they disagree, a visible seam appears at the terminal's edge. Make them match, or drop either one and Hive TTY will derive it from the one you keep.`,
         );
       }
     } else if (fileHadTerminalBg) {
@@ -482,6 +485,13 @@ export function importTheme(raw: string, fileName: string): ImportResult {
       ui.dangerSolid,
       4.5,
     );
+    /**
+     * The plan glyph's done check: `text-panel` on `bg-green`
+     * (`plan-glyph.tsx`). A glyph rather than text, so WCAG 1.4.11's 3:1 for a
+     * graphic. Every built-in clears it; an imported theme with a pale green
+     * would draw a check nobody can see, and nothing said so.
+     */
+    checkContrast(notes, mode, 'panel', ui.panel, 'green', ui.green, 3);
   }
 
   const theme: HiveTheme = {
@@ -530,6 +540,10 @@ export function isHiveTheme(value: unknown): value is HiveTheme {
       for (const key of group.keys) {
         if (!isColour(groupValue[key])) return false;
       }
+      // Optional keys may be absent, never malformed: apply.ts paints them too.
+      for (const key of group.optional) {
+        if (key in groupValue && !isColour(groupValue[key])) return false;
+      }
     }
   }
 
@@ -548,6 +562,6 @@ function checkContrast(
   const ratio = contrastRatio(fg, bg);
   if (ratio === null || ratio >= threshold) return;
   notes.push(
-    `modes.${mode}: ${fgName} on ${bgName} is only ${ratio.toFixed(1)}:1 — below the ${threshold}:1 the Hive aims for.`,
+    `modes.${mode}: ${fgName} on ${bgName} is only ${ratio.toFixed(1)}:1 — below the ${threshold}:1 Hive TTY aims for.`,
   );
 }

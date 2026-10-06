@@ -69,7 +69,15 @@ import type {
   WriteFileRequest,
 } from './fs-contract';
 import { MAX_FILE_BYTES, MAX_RESOLVE_CANDIDATES } from './fs-contract';
-import type { PrLookup } from './github-contract';
+import type {
+  PrCommentRequest,
+  PrLookup,
+  PrRef,
+  PrRunsRequest,
+  PrThreadRequest,
+  PrViewedRequest,
+  RunRef,
+} from './github-contract';
 import type {
   AckRequest,
   PromptReport,
@@ -78,7 +86,7 @@ import type {
   SpawnTerminalRequest,
   WriteRequest,
 } from './ipc-contract';
-import { ISSUE_KEY_PATTERN, type JiraTransitionByName } from './jira-contract';
+import { ISSUE_KEY_PATTERN, type JiraMention, type JiraTransitionByName, type JiraUsersRequest } from './jira-contract';
 import {
   LEDGER_KINDS,
   type LedgerAnswerRequest,
@@ -120,6 +128,7 @@ import type {
   SkillRenameRequest,
   SkillWriteRequest,
 } from './skills-contract';
+import { ticketWorkflowOf, type TicketWorkflow } from './ticket-workflow';
 
 /**
  * Payload guards (story 082).
@@ -1310,6 +1319,12 @@ export function assertJiraToken(value: unknown, label: string): string {
   return token;
 }
 
+/** A ticket workflow, or a throw naming what is wrong with it. */
+function assertTicketWorkflow(value: unknown): TicketWorkflow {
+  const workflow = ticketWorkflowOf(value);
+  return typeof workflow === 'string' ? fail(`setJira.workflow: ${workflow}`) : workflow;
+}
+
 /**
  * The Jira connection settings (HIVE-67).
  *
@@ -1320,7 +1335,7 @@ export function assertJiraToken(value: unknown, label: string): string {
  * the config write path.
  */
 export function parseSetJiraRequest(input: unknown): SetJiraRequest {
-  const raw = assertShape(input, [], 'setJira', ['site', 'email', 'jql']);
+  const raw = assertShape(input, [], 'setJira', ['site', 'email', 'jql', 'workflow']);
 
   const request: SetJiraRequest = {
     ...(raw.site !== undefined
@@ -1342,6 +1357,7 @@ export function parseSetJiraRequest(input: unknown): SetJiraRequest {
     ...(raw.jql !== undefined
       ? { jql: raw.jql === null ? null : assertText(raw.jql, 'setJira.jql') }
       : {}),
+    ...(raw.workflow !== undefined ? { workflow: raw.workflow === null ? null : assertTicketWorkflow(raw.workflow) } : {}),
   };
 
   if (Object.keys(request).length === 0) {
@@ -1848,6 +1864,121 @@ export function parseSearchPrsRequest(input: unknown): {
   };
 }
 
+/** A GitHub owner and repository name: `REPO_SLUG`'s two halves, below. */
+const GH_OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const GH_REPO = /^(?!\.\.?$)[A-Za-z0-9_.-]{1,100}$/;
+
+/** GitHub's own limit on a comment body, in characters. */
+const MAX_PR_COMMENT = 65_536;
+
+function assertRepo(raw: Record<string, unknown>, label: string): { owner: string; repo: string } {
+  const owner = assertString(raw.owner, `${label}.owner`);
+  if (!GH_OWNER.test(owner)) return fail(`${label}.owner: not a GitHub owner`);
+  const repo = assertString(raw.repo, `${label}.repo`);
+  if (!GH_REPO.test(repo)) return fail(`${label}.repo: not a GitHub repository name`);
+  return { owner, repo };
+}
+
+function assertWholeId(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    return fail(`${label}: expected a positive whole number`);
+  }
+  return value;
+}
+
+function assertPrRef(raw: Record<string, unknown>, label: string): PrRef {
+  return { ...assertRepo(raw, label), n: assertWholeId(raw.n, `${label}.n`) };
+}
+
+/**
+ * `github:pr-runs` (HIVE-206): a configured repository and a head branch. The
+ * branch reaches `gh` as one `--branch=<b>` token, so it cannot become a flag;
+ * this refuses a leading `-`, whitespace and control characters anyway.
+ */
+export function parsePrRunsRequest(input: unknown): PrRunsRequest {
+  const raw = assertShape(input, ['owner', 'repo', 'branch'], 'prRuns');
+  const branch = assertString(raw.branch, 'prRuns.branch');
+  if (branch === '' || branch.length > 255 || branch.startsWith('-') || /\s/.test(branch) || hasControlCharactersOutsideWhitespace(branch)) {
+    return fail('prRuns.branch: not a branch name');
+  }
+  return { ...assertRepo(raw, 'prRuns'), branch };
+}
+
+/** `github:run-jobs`, `github:job-log`, `github:rerun-failed` (HIVE-206): a run or job id in a repository. */
+export function parseRunRef(input: unknown, label: string): RunRef {
+  const raw = assertShape(input, ['owner', 'repo', 'id'], label);
+  return { ...assertRepo(raw, label), id: assertWholeId(raw.id, `${label}.id`) };
+}
+
+/**
+ * `github:pr-detail` (HIVE-205): one PR by repository and number.
+ *
+ * The first `github:` payload that names a repository. The charset check here
+ * refuses nonsense with a sentence; what keeps the name to the user's own
+ * projects is main's scope check (`integrations/github/index.ts`), which looks
+ * it up among the configured repositories and hands `gh` the resolver's
+ * spelling. The number must be a positive safe integer because it travels with
+ * `-F`, the flag that types its value.
+ */
+export function parsePrDetailRequest(input: unknown): PrRef {
+  return assertPrRef(assertShape(input, ['owner', 'repo', 'n'], 'prDetail'), 'prDetail');
+}
+
+/** A markdown body GitHub will take: not blank, at its limit, no control characters but tab, newline and CR. */
+function assertPrBody(value: unknown, label: string): string {
+  const body = assertString(value, label);
+  if (body.trim() === '') return fail(`${label}: must not be empty`);
+  if (body.length > MAX_PR_COMMENT) return fail(`${label}: too long`);
+  if (hasControlCharactersOutsideWhitespace(body)) return fail(`${label}: control characters are not allowed`);
+  return body;
+}
+
+/**
+ * `github:pr-comment` (HIVE-205): the same PR, and a markdown body. Checked as
+ * `parseAddJiraCommentRequest` checks its body — not blank, bounded, no control
+ * characters but tab, newline and carriage return — at GitHub's own limit.
+ */
+export function parsePrCommentRequest(input: unknown): PrCommentRequest {
+  const raw = assertShape(input, ['owner', 'repo', 'n', 'body'], 'prComment');
+  return { ...assertPrRef(raw, 'prComment'), body: assertPrBody(raw.body, 'prComment.body') };
+}
+
+/** A GitHub node id: base64-ish, bounded. */
+const GH_NODE_ID = /^[A-Za-z0-9_=-]{1,200}$/;
+/** Longer than any path git will hold in a PR. */
+const MAX_PR_PATH = 4096;
+
+/** `github:pr-diff` (HIVE-207): one PR, as `github:pr-detail`. */
+export function parsePrDiffRequest(input: unknown): PrRef {
+  return assertPrRef(assertShape(input, ['owner', 'repo', 'n'], 'prDiff'), 'prDiff');
+}
+
+/**
+ * `github:pr-thread` (HIVE-207): a reply (with its body) or a resolve or
+ * unresolve (with none) on one review thread. Main proves the thread is on
+ * this PR before writing; this only refuses nonsense.
+ */
+export function parsePrThreadRequest(input: unknown): PrThreadRequest {
+  const raw = assertShape(input, ['owner', 'repo', 'n', 'threadId', 'op'], 'prThread', ['body']);
+  const ref = assertPrRef(raw, 'prThread');
+  const threadId = assertString(raw.threadId, 'prThread.threadId');
+  if (!GH_NODE_ID.test(threadId)) return fail('prThread.threadId: not a GitHub node id');
+  if (raw.op === 'reply') return { ...ref, threadId, op: 'reply', body: assertPrBody(raw.body, 'prThread.body') };
+  if (raw.op !== 'resolve' && raw.op !== 'unresolve') return fail('prThread.op: expected reply, resolve or unresolve');
+  if (raw.body !== undefined) return fail('prThread.body: only a reply has a body');
+  return { ...ref, threadId, op: raw.op };
+}
+
+/** `github:pr-viewed` (HIVE-207): mark or unmark one path viewed. */
+export function parsePrViewedRequest(input: unknown): PrViewedRequest {
+  const raw = assertShape(input, ['owner', 'repo', 'n', 'path', 'viewed'], 'prViewed');
+  const path = assertString(raw.path, 'prViewed.path');
+  if (path === '' || path.length > MAX_PR_PATH) return fail('prViewed.path: expected 1 to 4096 characters');
+  if (hasControlCharacters(path)) return fail('prViewed.path: control characters are not allowed');
+  if (typeof raw.viewed !== 'boolean') return fail('prViewed.viewed: expected a boolean');
+  return { ...assertPrRef(raw, 'prViewed'), path, viewed: raw.viewed };
+}
+
 export function parseJiraIssueRequest(input: unknown): JiraIssueRequest {
   const raw = assertShape(input, ['key'], 'jiraIssue');
   return { key: assertJiraIssueKey(raw.key, 'jiraIssue.key') };
@@ -1885,8 +2016,13 @@ export function parseJiraTransitionsRequest(
 export function parseJiraConversationRequest(
   input: unknown,
 ): JiraConversationRequest {
-  const raw = assertShape(input, ['key'], 'jiraConversation');
-  return { key: assertJiraIssueKey(raw.key, 'jiraConversation.key') };
+  const raw = assertShape(input, ['key'], 'jiraConversation', ['newest']);
+  const request: JiraConversationRequest = { key: assertJiraIssueKey(raw.key, 'jiraConversation.key') };
+  if (raw.newest !== undefined) {
+    if (raw.newest !== true) return fail('jiraConversation.newest must be true when present');
+    request.newest = true;
+  }
+  return request;
 }
 
 /**
@@ -1905,13 +2041,41 @@ export function parseJiraConversationRequest(
  */
 const MAX_COMMENT = 32_768;
 
+const MAX_MENTIONS = 10;
+const MAX_MENTION_NAME = 128;
+/** Atlassian account ids: `712020:9f3c-…` or a 24-hex legacy id. Letters, digits, `:` and `-`. */
+const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9:-]{1,128}$/;
+
+/** `mentions` (HIVE-216): bounded, each id pattern-matched, each name printable; duplicates dropped. */
+function assertMentions(value: unknown, label: string): JiraMention[] {
+  if (!Array.isArray(value)) return fail(`${label}: expected an array, got ${describe(value)}`);
+  if (value.length > MAX_MENTIONS) return fail(`${label}: at most ${MAX_MENTIONS}`);
+  const seen = new Set<string>();
+  const mentions: JiraMention[] = [];
+  for (const [index, entry] of value.entries()) {
+    const raw = assertShape(entry, ['accountId', 'name'], `${label}[${index}]`);
+    const accountId = assertString(raw.accountId, `${label}[${index}].accountId`);
+    if (!ACCOUNT_ID_PATTERN.test(accountId)) return fail(`${label}[${index}].accountId: not an account id`);
+    const name = assertString(raw.name, `${label}[${index}].name`);
+    if (name.trim() === '' || name.length > MAX_MENTION_NAME || hasControlCharacters(name)) {
+      return fail(`${label}[${index}].name: must be 1-${MAX_MENTION_NAME} printable characters`);
+    }
+    if (seen.has(accountId)) continue;
+    seen.add(accountId);
+    mentions.push({ accountId, name });
+  }
+  return mentions;
+}
+
 export function parseAddJiraCommentRequest(
   input: unknown,
 ): AddJiraCommentRequest {
-  const raw = assertShape(input, ['key', 'markdown'], 'addJiraComment');
+  const raw = assertShape(input, ['key', 'markdown'], 'addJiraComment', ['mentions']);
   const markdown = assertString(raw.markdown, 'addJiraComment.markdown');
+  const mentions = raw.mentions === undefined ? [] : assertMentions(raw.mentions, 'addJiraComment.mentions');
 
-  if (markdown.trim() === '') {
+  // A mention-only comment is a comment (HIVE-216); an empty one with nobody named is not.
+  if (markdown.trim() === '' && mentions.length === 0) {
     return fail('addJiraComment.markdown: must not be empty');
   }
   if (markdown.length > MAX_COMMENT) {
@@ -1926,7 +2090,20 @@ export function parseAddJiraCommentRequest(
   return {
     key: assertJiraIssueKey(raw.key, 'addJiraComment.key'),
     markdown,
+    ...(mentions.length === 0 ? {} : { mentions }),
   };
+}
+
+const MAX_USER_QUERY = 64;
+
+/** `{ query }` for the `@` picker and `jira_users` (HIVE-216): one URL-encoded parameter, bounded and printable. */
+export function parseJiraUsersRequest(input: unknown): JiraUsersRequest {
+  const raw = assertShape(input, ['query'], 'jiraUsers');
+  const query = assertString(raw.query, 'jiraUsers.query').trim();
+  if (query === '') return fail('jiraUsers.query: must not be empty');
+  if (query.length > MAX_USER_QUERY) return fail('jiraUsers.query: too long');
+  if (hasControlCharacters(query)) return fail('jiraUsers.query: control characters are not allowed');
+  return { query };
 }
 
 const MAX_STATUS_NAME = 64;
@@ -2754,6 +2931,9 @@ const optionalMeta = (
   return asRecord(value, `${label}.meta`);
 };
 
+/** A ticket key is a handful of characters; this only bounds the filter (HIVE-203). */
+const LEDGER_TICKET_MAX = 64;
+
 export function parseLedgerReadQuery(input: unknown): LedgerReadQuery {
   const source = asRecord(input, 'ledger query');
   const query: LedgerReadQuery = {};
@@ -2768,6 +2948,13 @@ export function parseLedgerReadQuery(input: unknown): LedgerReadQuery {
   if (thread !== undefined) query.thread = thread;
   const since = optionalString(source, 'since', 'ledger query');
   if (since !== undefined) query.since = since;
+  const ticket = optionalString(source, 'ticket', 'ledger query');
+  if (ticket !== undefined) {
+    if (ticket.length > LEDGER_TICKET_MAX) {
+      throw new TypeError(`ledger query.ticket must be at most ${LEDGER_TICKET_MAX} characters`);
+    }
+    query.ticket = ticket;
+  }
 
   const limit = source.limit;
   if (limit !== undefined) {

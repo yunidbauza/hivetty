@@ -199,6 +199,8 @@ describe('registerIpc', () => {
       // where a call the dead link swallowed is counted.
       localRemotePaired: expect.any(Function),
       onLinkLoss: expect.any(Function),
+      // HIVE-211: Try now restarts this process's own reconnect loop.
+      localDialNow: expect.any(Function),
     });
   });
 
@@ -224,6 +226,8 @@ describe('registerIpc', () => {
       // where a call the dead link swallowed is counted.
       localRemotePaired: expect.any(Function),
       onLinkLoss: expect.any(Function),
+      // HIVE-211: Try now restarts this process's own reconnect loop.
+      localDialNow: expect.any(Function),
     });
   });
 

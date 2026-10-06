@@ -15,6 +15,7 @@ import {
   JIRA_COMMENT_TOOL,
   JIRA_GET_TOOL,
   JIRA_TRANSITION_TOOL,
+  JIRA_USERS_TOOL,
   PR_TOOL,
   PROJECT_AUTO_MERGE_TOOL,
   PROJECTS_TOOL,
@@ -291,7 +292,7 @@ describe('PROJECTS_TOOL and PR_TOOL (HIVE-173)', () => {
 
 describe('the Jira tools (HIVE-174)', () => {
   it('are named for the short mcp__hive__ form, outside the ledger vocabulary', () => {
-    for (const tool of [JIRA_GET_TOOL, JIRA_TRANSITION_TOOL, JIRA_COMMENT_TOOL]) {
+    for (const tool of [JIRA_GET_TOOL, JIRA_TRANSITION_TOOL, JIRA_COMMENT_TOOL, JIRA_USERS_TOOL]) {
       expect(tool.name).toMatch(/^jira_/);
       expect(LEDGER_TOOL_NAMES).not.toContain(tool.name);
     }
@@ -322,6 +323,18 @@ describe('the Jira tools (HIVE-174)', () => {
   it('tell the model the CLI is the fallback, and that a ticket never moves backwards', () => {
     expect(JIRA_GET_TOOL.description).toMatch(/jira-writer/);
     expect(JIRA_TRANSITION_TOOL.description).toMatch(/would move backwards/i);
+  });
+
+  it('jira_users is a read: it stands, like jira_get (HIVE-216)', () => {
+    expect(standing(`mcp__hive__${JIRA_USERS_TOOL.name}`)).toBe(true);
+    expect(HIVE_CONSENT_TOOLS).not.toContain(`mcp__hive__${JIRA_USERS_TOOL.name}`);
+    expect(JIRA_USERS_TOOL.inputSchema.required).toEqual(['query']);
+  });
+
+  it('jira_comment takes mentions and says where account ids come from (HIVE-216)', () => {
+    expect(JIRA_COMMENT_TOOL.inputSchema.properties).toHaveProperty('mentions');
+    expect(JIRA_COMMENT_TOOL.inputSchema.required).toEqual(['key', 'markdown']);
+    expect(JIRA_COMMENT_TOOL.description).toMatch(/jira_users/);
   });
 });
 

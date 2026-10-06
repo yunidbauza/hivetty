@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import { openConsole } from '../fixtures/places';
+
 /**
  * The overmind prompt grows as it fills, and stops.
  *
@@ -25,7 +27,8 @@ const heightOf = async (field: Locator): Promise<number> => {
 
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await openConsole(page);
 });
 
 test('Shift+Enter adds a line and the row grows to match', async ({ page }) => {

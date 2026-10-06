@@ -8,7 +8,7 @@ carrying all of it every turn.
 
 ## Project overview
 
-The Hive is a **command center for multiple agentic terminal sessions** running on
+Hive TTY is a **command center for multiple agentic terminal sessions** running on
 a single machine. An orchestrator ("Concierge"-style coordinator, called *maestro*
 in the console) routes messages between the user and sessions, surfaces questions
 and permission requests as an inbox, tracks PRs and tickets, and spawns new
@@ -18,7 +18,7 @@ terminal at the right moment.
 
 Current phase: terminals are **real PTYs**, projects come from a config file,
 tickets from **Jira**, PRs from `gh`, and notifications from Claude Code's hooks.
-The right rail's third tab is a **project explorer** over the active session's
+The session panel's Files tab is a **project explorer** over the active session's
 repository, opening files into a CodeMirror editor on the centre stage. Full
 context and scope: the **HIVE project in Jira**, the backlog.
 
@@ -50,7 +50,7 @@ done.** Neither is optional, and no rule may be disabled inline to make a task p
 
 ## Working a ticket
 
-The workflow is the Hive's own (Epic HIVE-161):
+The workflow is Hive TTY's own (Epic HIVE-161):
 `hive:work-on` for a ticket or `hive:goal-on` for a request, then `hive:brainstorm`, `hive:plan` and `hive:execute`
 in the **builder** agent when the machine has one (inline otherwise), `hive:verify`; the **shipper** runs `hive:ship`.
 
@@ -134,7 +134,8 @@ The renderer reaches it via `@shared`, **type-only** for anything with behaviour
 it, or main-process code lands in the renderer bundle — that compile-time contract.
 
 `src/components/layout/` is the **composition root** and is exempt from the
-`features/` ban: the rails and the center stage exist to mount feature panels.
+`features/` ban: the list panel, the stage and the session panel exist to mount
+feature panels.
 The exemption stops there — `ui/`, `terminal/` and `editor/` stay fully fenced,
 expressed by listing them in `FENCED_COMPONENT_DIRS`, because `except` filters
 the *imported* module and can never exempt the importing file. A **new**
@@ -185,7 +186,7 @@ keystroke from re-rendering thirteen live terminals.
 
 - `hive-store.ts` — domain: entities, tickets, PRs, notifications, transcript,
   and the ledger tail (a capped mirror of main's log; it merges, never replaces).
-- `ui-store.ts` — view state: tabs, selection, picker, rails, tree expansion.
+- `ui-store.ts` — view state: tabs, selection, picker, panels, tree expansion.
 - `appearance-store.ts` — theme, terminal and editor typography, density.
 - `editor-store.ts` — open file buffers: text, dirty, stale, conflict.
 

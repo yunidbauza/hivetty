@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createSurfaceRegistry,
+  deviceNameOf,
   type SurfaceId,
 } from '../../../../electron/main/ipc/surfaces';
 import type { ServerFrame } from '../../../../electron/shared/remote-contract';
@@ -352,5 +353,15 @@ describe('createSurfaceRegistry', () => {
     const b: SurfaceId = surfaces.trackSocket(fakeSocket());
 
     expect(surfaces.all().map((surface) => surface.id).sort()).toEqual([a, b].sort());
+  });
+});
+
+describe('deviceNameOf (HIVE-218)', () => {
+  it('reads a socket surface name and ignores anything else', () => {
+    expect(deviceNameOf({ deviceName: 'MacBook', on: () => undefined })).toBe('MacBook');
+    expect(deviceNameOf({ on: () => undefined })).toBeUndefined();
+    expect(deviceNameOf({ deviceName: '' })).toBeUndefined();
+    expect(deviceNameOf({ deviceName: 7 })).toBeUndefined();
+    expect(deviceNameOf(null)).toBeUndefined();
   });
 });

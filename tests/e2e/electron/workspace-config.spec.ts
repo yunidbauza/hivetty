@@ -3,6 +3,8 @@ import { join } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { goToOvermind, openProject, overmindNewSession } from '../fixtures/places';
+
 import { launchHive } from './fixtures/hive-app';
 
 /**
@@ -33,7 +35,7 @@ async function launchWithConfig(
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
   return { app, page, configPath };
 }
 
@@ -73,25 +75,29 @@ test('a valid mapping makes its project spawnable and an unresolvable one unmapp
   );
 
   try {
-    // The left rail's projects panel is the default tab.
-    const mapped = page.getByRole('button', { name: /^nova-web/ });
+    // The Sessions list draws each project's row; it starts folded.
+    const list = await openProject(page, 'nova-web');
+    const mapped = list.getByRole('button', { name: /^nova-web/ });
     await expect(mapped).toBeVisible();
     await expect(mapped).not.toContainText('unmapped');
 
-    // Declared, but its path is not there — so the rail says so.
+    // Declared, but its path is not there — so the list says so.
     await expect(
-      page.getByRole('button', { name: /^referral-api/ }),
+      list.getByRole('button', { name: /^referral-api/ }),
     ).toContainText('unmapped');
 
     // And the picker refuses the ones it cannot open. `exact` matters: a
     // pinned pill's accessible name is the bare id, while the search row below
     // it also carries a count ("nova-web 3 active").
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
+    // In the picker: it is not modal, so the Sessions rail's rows stay on the page under the same names.
+    const picker = page.getByRole('dialog', { name: 'Start a new session' });
     await expect(
-      page.getByRole('button', { name: 'nova-web', exact: true }),
+      picker.getByRole('button', { name: 'nova-web', exact: true }),
     ).toBeEnabled();
     await expect(
-      page.getByRole('button', { name: 'referral-api', exact: true }),
+      picker.getByRole('button', { name: 'referral-api', exact: true }),
     ).toBeDisabled();
   } finally {
     await app.close();
@@ -110,10 +116,12 @@ test('an invalid entry surfaces its reason without blocking launch', async ({}, 
   try {
     // The app launched — that is half the assertion, and the half that matters
     // most: one mistyped path must never stop the app starting.
-    await expect(page.locator('header')).toContainText('The Hive');
+    await expect(page.getByRole('navigation', { name: 'Places' })).toBeVisible();
 
-    const row = page.getByRole('button', { name: /^nova-web/ });
+    const row = (await openProject(page, 'nova-web')).getByRole('button', { name: /^nova-web/ });
     await expect(row).toContainText('unmapped');
+    // Off the row first: hovered, a row hides its tags so its actions can show.
+    await page.mouse.move(0, 0);
     // The status reason travels all the way to the tooltip, verbatim.
     await expect(row.getByTitle(/missing/)).toBeVisible();
   } finally {
@@ -128,19 +136,19 @@ test('a malformed file still launches the app, with nothing spawnable', async ({
   );
 
   try {
-    await expect(page.locator('header')).toContainText('The Hive');
+    await expect(page.getByRole('navigation', { name: 'Places' })).toBeVisible();
 
     /**
-     * An unreadable config declares nothing, so the rail lists nothing — and
-     * says why rather than sitting blank.
+     * An unreadable config declares nothing, so there is no Sessions list —
+     * and Home says why rather than sitting blank.
      *
      * It used to assert `nova-web` was present and marked `unmapped`, because
      * five projects were seeded into the store and the rail merged them in
      * whatever the config said. That merge is what made a broken config look
      * like a working app with five repositories in it.
      */
-    await expect(page.getByText('Settings → Projects')).toBeVisible();
-    await expect(page.getByRole('button', { name: /^nova-web/ })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'An empty hive' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Sessions list' })).toHaveCount(0);
   } finally {
     await app.close();
   }
@@ -167,7 +175,8 @@ test('a first run writes a template and offers a way to add a project', async ({
     expect(written.version).toBe(2);
     expect(written.projects).toEqual([]);
 
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
 
     /**
      * Story 090 printed `configPath` here and story 101 replaced it with a
@@ -204,7 +213,7 @@ test('HIVE_CONFIG_PATH wins over ~/.hive/config.json', async ({}, testInfo) => {
 
   try {
     await expect(
-      page.getByRole('button', { name: /^nova-web/ }),
+      (await openProject(page, 'nova-web')).getByRole('button', { name: /^nova-web/ }),
     ).not.toContainText('unmapped');
   } finally {
     await app.close();

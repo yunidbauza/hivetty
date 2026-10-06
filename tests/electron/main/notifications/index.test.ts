@@ -169,6 +169,8 @@ describe('the Notification hook', () => {
     notifier().observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
 
     expect(raised().kind).toBe('session.input_needed');
+    // It replaces the session's idle row, so it delivers at least as that row would.
+    expect(raised().deliverAsWell).toBe('session.idle');
     expect(raised().title).toBe('is waiting on you');
     expect(raised().action).toEqual({ type: 'session', entityId: 'lead-form' });
   });
@@ -1019,6 +1021,38 @@ describe('session.idle', () => {
     expect(raise).not.toHaveBeenCalled();
   });
 
+  it('holds it while an agent the session asked is on the job, and says it after', () => {
+    let delegated = true;
+    const n = createNotifier({
+      hub,
+      isForeground: () => false,
+      isForegroundEverywhere: () => false,
+      isDelegated: (id) => delegated && id === 'sess-05',
+    });
+
+    n.observe(CH.sessionStatus, prompt('sess-05'));
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    expect(idleKinds()).toEqual([]);
+
+    // The shipper's closing note wakes the session; its Stop is the one that says so.
+    delegated = false;
+    n.observe(CH.sessionStatus, stop('sess-05'));
+    expect(idleKinds()).toEqual(['session.idle']);
+  });
+
+  it('does not say a delegated session ran out of instructions', () => {
+    const n = createNotifier({
+      hub,
+      isForeground: () => false,
+      isForegroundEverywhere: () => false,
+      isDelegated: () => true,
+    });
+
+    n.observe(CH.sessionStatus, { entityId: 'sess-05', status: 'waiting', event: 'Notification', notificationType: 'idle_prompt' });
+
+    expect(raise).not.toHaveBeenCalled();
+  });
+
   /**
    * Measured (`tests/live/hook-conformance`): `Stop` idle/agents ->
    * `SubagentStop` idle -> internal `UserPromptSubmit` -> `Stop` idle. The
@@ -1205,10 +1239,11 @@ describe('session.idle foreground gating', () => {
   const stop = { entityId: 'sess-08', status: 'idle', event: 'Stop' };
 
   /**
-   * The nudge a minute later is the same fact again, and it is inbox-only
-   * where the moment toasts. The first pending row stays the one promoted.
+   * The nudge a minute later is the same fact again and supersedes the idle
+   * row (one row per session), so the nudge is the one row left to promote and
+   * the dismissed idle row is never promoted.
    */
-  it('does not let a later gated input_needed evict the gated idle row', () => {
+  it('lets a later gated input_needed replace the gated idle row as the one pending', () => {
     const promote = gatedHub();
     const n = createNotifier({ hub, isForeground: () => false, isForegroundEverywhere: () => false });
 
@@ -1224,7 +1259,7 @@ describe('session.idle foreground gating', () => {
     n.reevaluateForeground();
 
     expect(promote).toHaveBeenCalledTimes(1);
-    expect(promote).toHaveBeenCalledWith('raised-idle');
+    expect(promote).toHaveBeenCalledWith('raised-nudge');
   });
 
   /** A toast saying "is yours again" about a session back at work would be a lie. */
@@ -1491,6 +1526,25 @@ describe('a row dismisses itself once it has been acted on', () => {
       expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.blocked']);
     });
 
+    /**
+     * Idle and input-needed rows count on the pill and the dock now, and Clear
+     * all keeps them, so one about a session that is gone would stay counted
+     * forever: the row's click opens nothing.
+     */
+    it.each([
+      ['finished', () => ({ entityId: 'sess-05' }), CH.sessionFinished],
+      ['terminated', () => ({ entityId: 'sess-05', status: 'terminated' }), CH.sessionStatus],
+    ])('sweeps the yours-again rows of a session that %s', (_name, payload, channel) => {
+      const n = withSweeps();
+
+      n.observe(channel, payload());
+
+      expect(dismissForSession).toHaveBeenCalledWith('sess-05', [
+        'session.idle',
+        'session.input_needed',
+      ]);
+    });
+
     it('sweeps nothing while the session is still blocked', () => {
       const n = withSweeps();
 
@@ -1519,7 +1573,8 @@ describe('a row dismisses itself once it has been acted on', () => {
         event: 'Stop',
       });
 
-      expect(dismissForSession).toHaveBeenCalledTimes(1);
+      const answered = dismissForSession.mock.calls.filter(([, kinds]) => kinds[0] === 'session.blocked');
+      expect(answered).toHaveLength(1);
     });
 
     /**
@@ -1584,11 +1639,11 @@ describe('a row dismisses itself once it has been acted on', () => {
         event: 'PostToolUse',
       });
 
-      expect(dismissForSession).toHaveBeenCalledTimes(1);
-      expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.blocked']);
+      const answered = dismissForSession.mock.calls.filter(([, kinds]) => kinds[0] === 'session.blocked');
+      expect(answered).toEqual([['sess-05', ['session.blocked']]]);
     });
 
-    /** Nothing blocked, nothing to sweep — the buffer is never scanned. */
+    /** Nothing blocked, nothing to sweep for an answer (the resume sweep is another rule). */
     it('never asks about a session that has not blocked', () => {
       const n = withSweeps();
 
@@ -1603,7 +1658,144 @@ describe('a row dismisses itself once it has been acted on', () => {
         event: 'Stop',
       });
 
-      expect(dismissForSession).not.toHaveBeenCalled();
+      expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.blocked']);
     });
+  });
+});
+
+/**
+ * One row, and one count, per session: `session.input_needed` supersedes the
+ * `session.idle` row of the same stretch, and the session working again drops
+ * both on every device (the rows are dropped in the hub, which announces the
+ * dismissal to every window and every attached client).
+ */
+describe('one yours-again row per session', () => {
+  let dismissForSession: Mock<(entityId: string, kinds: readonly string[]) => void>;
+  let delegated: boolean;
+
+  const withHub = () => {
+    dismissForSession = vi.fn();
+    delegated = false;
+    hub = {
+      raise: raise.mockReturnValue({ id: 'raised', unread: true }),
+      list: () => [],
+      markRead: () => undefined,
+      clear: () => undefined,
+      promote: vi.fn(() => true),
+      dismissForeground: () => undefined,
+      dismissForSession,
+    } as unknown as NotificationHub;
+    return createNotifier({
+      hub,
+      isForeground: () => false,
+      isForegroundEverywhere: () => false,
+      isDelegated: () => delegated,
+    });
+  };
+  const prompt = { entityId: 'sess-05', status: 'working', event: 'UserPromptSubmit' };
+  const stop = { entityId: 'sess-05', status: 'idle', event: 'Stop' };
+  const nudge = {
+    entityId: 'sess-05',
+    status: 'waiting',
+    event: 'Notification',
+    notificationType: 'idle_prompt',
+  };
+  const arrival = ['session.idle', 'session.input_needed'];
+  const raisedKinds = () => raise.mock.calls.map((call) => (call[0] as { kind: string }).kind);
+
+  it('drops the session.idle row when session.input_needed raises', () => {
+    const n = withHub();
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    expect(raisedKinds()).toEqual(['session.idle']);
+    expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.idle']);
+
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(raisedKinds()).toEqual(['session.idle', 'session.input_needed']);
+    expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.idle']);
+  });
+
+  it('supersedes after the raise, so the session is never without a row', () => {
+    const n = withHub();
+    const order: string[] = [];
+    raise.mockImplementation((input: { kind: string }) => {
+      order.push(`raise ${input.kind}`);
+      return { id: 'raised', unread: true };
+    });
+    dismissForSession.mockImplementation((_id, kinds) => order.push(`dismiss ${kinds.join()}`));
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    order.length = 0;
+
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(order).toEqual(['raise session.input_needed', 'dismiss session.idle']);
+  });
+
+  it('does not supersede when the input_needed raise is refused (kind switched off)', () => {
+    const n = withHub();
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    raise.mockReturnValue(null);
+
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.idle']);
+  });
+
+  it('a delegated session raises neither row, so there is nothing to supersede', () => {
+    const n = withHub();
+    delegated = true;
+
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(raise).not.toHaveBeenCalled();
+    expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.idle']);
+  });
+
+  it('an idle row raised before the hold is kept, not swept, by the suppressed nudge', () => {
+    const n = withHub();
+    n.observe(CH.sessionStatus, prompt);
+    n.observe(CH.sessionStatus, stop);
+    delegated = true;
+
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(raisedKinds()).toEqual(['session.idle']);
+    expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.idle']);
+  });
+
+  it.each([
+    ['UserPromptSubmit', { entityId: 'sess-05', status: 'working', event: 'UserPromptSubmit' }],
+    ['a working status', { entityId: 'sess-05', status: 'working', event: 'PostToolUse' }],
+    ['a working status with no event', { entityId: 'sess-05', status: 'working' }],
+  ])('drops both yours-again rows when the session resumes (%s)', (_name, payload) => {
+    const n = withHub();
+
+    n.observe(CH.sessionStatus, payload);
+
+    expect(dismissForSession).toHaveBeenCalledWith('sess-05', arrival);
+  });
+
+  it('does not sweep on a status that is not working', () => {
+    const n = withHub();
+
+    n.observe(CH.sessionStatus, stop);
+    n.observe(CH.sessionStatus, nudge);
+
+    expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', arrival);
+  });
+
+  it('sweeps on resume even when the session is delegated, and only that session', () => {
+    const n = withHub();
+    delegated = true;
+
+    n.observe(CH.sessionStatus, prompt);
+
+    expect(dismissForSession).toHaveBeenCalledTimes(1);
+    expect(dismissForSession).toHaveBeenCalledWith('sess-05', arrival);
   });
 });

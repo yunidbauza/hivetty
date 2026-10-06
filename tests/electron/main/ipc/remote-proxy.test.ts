@@ -64,7 +64,7 @@ vi.mock('../../../../electron/main/notifications/activate-here', () => ({
  *
  * The three channel lists below are derived from `FRAME_KIND` — the same
  * table `registerRemoteProxy` itself walks — but the counts asserted against
- * them (110, 6, 27, 116) are literals, not read back off the derived lists.
+ * them (124, 6, 29, 130) are literals, not read back off the derived lists.
  * `tests/shared/remote-contract.test.ts:82,125` pins the same four numbers
  * independently. A channel added to the contract without a home in this file
  * fails a count here, which is the point: a self-referential assertion could
@@ -222,7 +222,7 @@ afterEach(() => {
 
 describe('registerRemoteProxy', () => {
   it('binds every call channel to the client', () => {
-    expect(callChannels.length).toBe(110);
+    expect(callChannels.length).toBe(124);
 
     registerRemoteProxy({ client: fakeClient(), broadcaster: fakeBroadcaster() });
 
@@ -239,7 +239,7 @@ describe('registerRemoteProxy', () => {
   });
 
   it('binds no handler for an event channel', () => {
-    expect(eventChannels.length).toBe(28);
+    expect(eventChannels.length).toBe(29);
 
     registerRemoteProxy({ client: fakeClient(), broadcaster: fakeBroadcaster() });
 
@@ -345,7 +345,7 @@ describe('registerRemoteProxy', () => {
    * the very first one that isn't `pty:data`.
    */
   it('pumps a client event into the broadcaster on the same channel', () => {
-    expect(eventChannels.length).toBe(28);
+    expect(eventChannels.length).toBe(29);
 
     const client = fakeClient();
     const broadcaster = fakeBroadcaster();
@@ -532,7 +532,7 @@ describe('registerRemoteProxy', () => {
   it('records every binding, so the mode can be switched back', () => {
     registerRemoteProxy({ client: fakeClient(), broadcaster: fakeBroadcaster() });
 
-    expect(remoteProxyBindingsSize()).toBe(116);
+    expect(remoteProxyBindingsSize()).toBe(130);
   });
 
   /**
@@ -546,8 +546,8 @@ describe('registerRemoteProxy', () => {
    * `remote:forget` (HIVE-153).
    */
   describe('PROCESS_LOCAL channels (HIVE-144 Rulings 24 and 28, HIVE-153, HIVE-149, HIVE-151)', () => {
-    it('names exactly nine channels', () => {
-      expect(PROCESS_LOCAL.length).toBe(9);
+    it('names exactly ten channels', () => {
+      expect(PROCESS_LOCAL.length).toBe(10);
       expect([...PROCESS_LOCAL].sort()).toEqual(
         [
           'app:info',
@@ -555,6 +555,7 @@ describe('registerRemoteProxy', () => {
           'config:set-remote',
           'notifications:badge',
           'notifications:delivery',
+          'remote:dial-now',
           'remote:forget',
           'remote:pair',
           'updates:check',
@@ -591,6 +592,29 @@ describe('registerRemoteProxy', () => {
         await invoke(channel, trustedEvent, { deviceId: 'laptop', token: 'sekret' });
       }
 
+      expect(client.call).not.toHaveBeenCalled();
+    });
+
+    /*
+      HIVE-211. Try now restarts this process's reconnect loop, and the moment
+      it matters is the moment the socket is down, so it never reaches it.
+    */
+    it('answers remote:dial-now from localDialNow, never client.call', async () => {
+      const client = fakeClient();
+      const localDialNow = vi.fn();
+      registerRemoteProxy({ client, broadcaster: fakeBroadcaster(), localDialNow });
+
+      await expect(invoke('remote:dial-now', trustedEvent, undefined)).resolves.toBeUndefined();
+
+      expect(localDialNow).toHaveBeenCalledTimes(1);
+      expect(client.call).not.toHaveBeenCalled();
+    });
+
+    it('does nothing on remote:dial-now when no localDialNow is supplied', async () => {
+      const client = fakeClient();
+      registerRemoteProxy({ client, broadcaster: fakeBroadcaster() });
+
+      await expect(invoke('remote:dial-now', trustedEvent, undefined)).resolves.toBeUndefined();
       expect(client.call).not.toHaveBeenCalled();
     });
 
@@ -1034,9 +1058,22 @@ describe('registerRemoteProxy', () => {
       expect(countsAsAction(CH.configGet, 'call')).toBe(false);
       expect(countsAsAction(CH.jiraSearch, 'call')).toBe(false);
       expect(countsAsAction(CH.githubPrs, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubPrDetail, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubPrComment, 'call')).toBe(true);
+      expect(countsAsAction(CH.githubPrDiff, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubPrTimeline, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubPrThread, 'call')).toBe(true);
+      expect(countsAsAction(CH.githubPrViewed, 'call')).toBe(true);
       expect(countsAsAction(CH.ptyWrite, 'notify')).toBe(true);
       expect(countsAsAction(CH.ptyAck, 'notify')).toBe(false);
       expect(countsAsAction(CH.ptyResize, 'notify')).toBe(false);
+    });
+
+    it('counts the Checks tab’s polls as background and its log read and re-run as actions (HIVE-206)', () => {
+      expect(countsAsAction(CH.githubPrRuns, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubRunJobs, 'call')).toBe(false);
+      expect(countsAsAction(CH.githubJobLog, 'call')).toBe(true);
+      expect(countsAsAction(CH.githubRerunFailed, 'call')).toBe(true);
     });
 
     it('does not count a read the closed link rejected', async () => {
@@ -1101,12 +1138,12 @@ describe('registerRemoteProxy', () => {
 
     resetRemoteProxy();
 
-    // 116 (110 call + 6 notify), the same literal `records every binding`
+    // 130 (124 call + 6 notify), the same literal `records every binding`
     // pins — not `callChannels.length + notifyChannels.length`, which would
     // recompute its own expectation from the same source the code under test
     // reads and could never catch a channel silently lost between the two.
-    expect(removeHandler).toHaveBeenCalledTimes(116);
-    expect(removeAllListeners).toHaveBeenCalledTimes(116);
+    expect(removeHandler).toHaveBeenCalledTimes(130);
+    expect(removeAllListeners).toHaveBeenCalledTimes(130);
     expect(remoteProxyBindingsSize()).toBe(0);
 
     client.emit('pty:data', { seq: 2 });

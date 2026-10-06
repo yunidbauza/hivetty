@@ -1,7 +1,7 @@
 import { useState } from 'react';
 
 import { TextField } from '@components/ui/text-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { setJiraConnection } from '@lib/project-config';
 import {
   JIRA_SITE_ENV,
@@ -81,7 +81,7 @@ export function JiraConnectionGroup({
       title="Site"
       description="Which Atlassian instance, and as whom."
     >
-      <div className="flex flex-col gap-3 rounded-[7px] border border-border-soft p-3">
+      <div className="flex flex-col gap-3 rounded-lg border border-border-soft p-3">
         <TextField
           label="Site"
           value={site}

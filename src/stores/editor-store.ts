@@ -128,6 +128,13 @@ interface OpenFile {
   pendingCursor: { line: number; col: number } | null;
 }
 
+/** An `AGENT.md` buffer and the text on disk it was read from (HIVE-204). */
+export interface AgentDraft {
+  text: string;
+  /** What the file held at the last read or save; `null` for an agent never saved. */
+  saved: string | null;
+}
+
 interface EditorState {
   openFiles: OpenFile[];
   /** The file on screen, or `null` when the terminal is. */
@@ -168,6 +175,20 @@ interface EditorState {
     paths: readonly string[],
     rootKey: string,
   ) => void;
+  /**
+   * `AGENT.md` buffers by agent name, `''` for the new agent (HIVE-204).
+   *
+   * Held here, not in the page, so leaving the page — another agent, another
+   * place — loses nothing and asks nothing; Revert is the only discard. Not
+   * persisted, like everything in this store.
+   */
+  agentDrafts: Record<string, AgentDraft>;
+  /** The file as read or saved: moves the baseline, and the text too unless the draft is dirty. */
+  loadAgentDraft: (key: string, saved: string) => void;
+  editAgentDraft: (key: string, text: string) => void;
+  /** A Save that created or renamed the agent: the draft follows it to its name. */
+  moveAgentDraft: (from: string, to: string) => void;
+  dropAgentDraft: (key: string) => void;
   reset: () => void;
 }
 
@@ -225,6 +246,7 @@ const blank = (
 const initialEditorState = {
   openFiles: [] as OpenFile[],
   activeKey: null as string | null,
+  agentDrafts: {} as Record<string, AgentDraft>,
 };
 
 export const useEditorStore = create<EditorState>()((set, get) => {
@@ -549,6 +571,32 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       }
     },
 
+    loadAgentDraft: (key, saved) =>
+      set((state) => {
+        const current = state.agentDrafts[key];
+        const dirty = current !== undefined && current.text !== current.saved;
+        return {
+          agentDrafts: { ...state.agentDrafts, [key]: { text: dirty ? current.text : saved, saved } },
+        };
+      }),
+
+    editAgentDraft: (key, text) =>
+      set((state) => ({
+        agentDrafts: { ...state.agentDrafts, [key]: { text, saved: state.agentDrafts[key]?.saved ?? null } },
+      })),
+
+    moveAgentDraft: (from, to) =>
+      set((state) => {
+        const { [from]: moved, ...rest } = state.agentDrafts;
+        return moved === undefined ? {} : { agentDrafts: { ...rest, [to]: moved } };
+      }),
+
+    dropAgentDraft: (key) =>
+      set((state) => {
+        const { [key]: _dropped, ...rest } = state.agentDrafts;
+        return { agentDrafts: rest };
+      }),
+
     reset: () => set(initialEditorState),
   };
 });
@@ -600,6 +648,13 @@ interface EditorTab {
  */
 const TAB_FIELD_SEPARATOR = '\u0000';
 
+const agentDraftActionsSelector = (state: EditorState) => ({
+  loadAgentDraft: state.loadAgentDraft,
+  editAgentDraft: state.editAgentDraft,
+  moveAgentDraft: state.moveAgentDraft,
+  dropAgentDraft: state.dropAgentDraft,
+});
+
 const tabFieldsSelector = (state: EditorState): string[] =>
   state.openFiles.map((file) =>
     [file.key, file.name, file.relPath, file.dirty ? '1' : '0'].join(
@@ -645,3 +700,17 @@ export const useEditorActions = () =>
  * app, and selecting a stable action does not re-render on buffer changes.
  */
 export const useReconcileFiles = () => useEditorStore((state) => state.reconcile);
+
+/**
+ * One agent's draft with its derived `dirty`, or `undefined` before it is read
+ * or seeded (HIVE-204). One subscription to the record entry, derived in a memo.
+ */
+export const useAgentDraft = (key: string): (AgentDraft & { dirty: boolean }) | undefined => {
+  const draft = useEditorStore((state) => state.agentDrafts[key]);
+  return useMemo(
+    () => (draft === undefined ? undefined : { ...draft, dirty: draft.text !== draft.saved }),
+    [draft],
+  );
+};
+
+export const useAgentDraftActions = () => useEditorStore(useShallow(agentDraftActionsSelector));

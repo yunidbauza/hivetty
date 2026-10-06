@@ -1,6 +1,7 @@
 import { Plus, Trash } from '@phosphor-icons/react';
 import { useState } from 'react';
 
+import { Button } from '@components/ui/button';
 import { unsafeEnvReason } from '@shared/config-contract';
 
 /**
@@ -108,7 +109,7 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
   return (
     <div className="flex flex-col gap-2">
       {rows.length === 0 ? (
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           No variables. Sessions in this project inherit your environment.
         </p>
       ) : null}
@@ -122,7 +123,7 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
             placeholder="NAME"
             disabled={disabled}
             onChange={(event) => update(index, { key: event.target.value })}
-            className="w-[168px] rounded-[6px] border border-border bg-panel-2 px-2.5 py-1.5 font-mono text-[12px] text-ink outline-none placeholder:text-subtle focus-visible:ring-1 focus-visible:ring-brand"
+            className="w-[168px] rounded-md border border-border bg-panel-2 px-2.5 py-1.5 tabular-nums text-control text-ink outline-none placeholder:text-subtle focus-visible:ring-1 focus-visible:ring-brand"
           />
           <input
             type="text"
@@ -131,7 +132,7 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
             placeholder="value"
             disabled={disabled}
             onChange={(event) => update(index, { value: event.target.value })}
-            className="min-w-0 flex-1 rounded-[6px] border border-border bg-panel-2 px-2.5 py-1.5 font-mono text-[12px] text-ink outline-none placeholder:text-subtle focus-visible:ring-1 focus-visible:ring-brand"
+            className="min-w-0 flex-1 rounded-md border border-border bg-panel-2 px-2.5 py-1.5 tabular-nums text-control text-ink outline-none placeholder:text-subtle focus-visible:ring-1 focus-visible:ring-brand"
           />
           <button
             type="button"
@@ -140,7 +141,7 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
             onClick={() =>
               setRows((current) => current.filter((_, at) => at !== index))
             }
-            className="rounded p-1.5 text-subtle hover:bg-hover hover:text-red"
+            className="rounded-full p-1.5 text-subtle hover:bg-hover hover:text-red"
           >
             <Trash size={13} />
           </button>
@@ -150,7 +151,7 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
       {errors.map((error) => (
         <p
           key={error}
-          className="rounded-[5px] border border-red px-2.5 py-1.5 text-[11.5px] text-red"
+          className="rounded-md border border-red px-2.5 py-1.5 text-ui-sm text-red"
         >
           {error}
         </p>
@@ -161,23 +162,23 @@ export function EnvEditor({ value, onSave, disabled = false }: EnvEditorProps) {
           type="button"
           disabled={disabled}
           onClick={() => setRows((current) => [...current, makeRow()])}
-          className="flex items-center gap-1.5 rounded-[6px] border border-border px-2.5 py-1 text-[12px] text-muted hover:bg-hover hover:text-ink"
+          className="flex items-center gap-1.5 rounded-full border border-edge px-3 py-1 text-control font-semibold text-ink hover:bg-hover"
         >
           <Plus size={12} weight="bold" />
           Add variable
         </button>
 
-        <button
-          type="button"
+        <Button
+          variant="primary"
+          size="sm"
           // Blocked on a real error, never on "nothing changed": comparing
           // against the saved map would make the button lie after an
           // out-of-band edit to the config file.
           disabled={disabled || errors.length > 0}
           onClick={save}
-          className="rounded-[6px] bg-brand-fill px-2.5 py-1 text-[12px] text-on-brand hover:bg-brand-fill-hover disabled:opacity-50"
         >
           Save variables
-        </button>
+        </Button>
       </div>
     </div>
   );

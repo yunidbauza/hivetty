@@ -342,11 +342,11 @@ describe('buildTrayTemplate', () => {
     ).toBeDefined();
   });
 
-  it('Open The Hive calls onOpenConsole', () => {
+  it('Open Hive TTY calls onOpenConsole', () => {
     const deps = makeDeps();
     const template = buildTrayTemplate(deps) as MenuItem[];
 
-    template.find((item) => item.label === 'Open The Hive')?.click?.();
+    template.find((item) => item.label === 'Open Hive TTY')?.click?.();
 
     expect(deps.onOpenConsole).toHaveBeenCalledTimes(1);
   });
@@ -406,7 +406,7 @@ describe('createServerTray', () => {
 
     expect(FakeTray.instances).toHaveLength(1);
     const tray = FakeTray.instances[0]!;
-    expect(tray.toolTip).toBe('The Hive · serving');
+    expect(tray.toolTip).toBe('Hive TTY · serving');
 
     tray.handlers.get('click')?.();
     expect(tray.popUpContextMenu).toHaveBeenCalledTimes(1);

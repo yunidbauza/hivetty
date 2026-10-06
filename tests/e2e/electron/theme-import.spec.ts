@@ -90,7 +90,7 @@ test('an imported theme survives a reload, on the first painted frame', async ({
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     await openSettings(page);
     await importNordTheme(page);
@@ -189,7 +189,7 @@ test('an imported theme survives a reload, on the first painted frame', async ({
 
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     const probe = await page.evaluate(
       () =>
@@ -258,7 +258,7 @@ test('activating a theme recolours a live terminal without clearing scrollback',
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     const id = await startSession(page, PROJECT);
     const terminal = page.locator(`[data-terminal-id="${id}"]`);

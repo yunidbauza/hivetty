@@ -23,6 +23,15 @@ describe('ThemeCard', () => {
     );
   });
 
+  it('draws the seam from the swatch’s own inks, not a fixed white', () => {
+    const { container } = render(<ThemeCard {...base} id="hive" isActive isBuiltIn />);
+    const seam = container.querySelector<HTMLElement>('.pointer-events-none.absolute.inset-0');
+    const background = seam?.style.background ?? '';
+    expect(background).toContain('color-mix(in srgb,');
+    expect(background).not.toContain('rgba(');
+    expect(background).not.toContain('255,255,255');
+  });
+
   it('names the author, or says it ships with the app', () => {
     render(<ThemeCard {...base} id="hive" isActive isBuiltIn />);
     expect(screen.getByText('Built in')).toBeInTheDocument();

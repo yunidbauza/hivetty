@@ -39,9 +39,10 @@ describe('splash tokens', () => {
   const app = readTokens('src/styles/tokens.css');
   const splash = readTokens('src/splash/splash-tokens.css');
 
-  it('copies at least the colours the chamber paints with', () => {
-    // A guard against the file being emptied and the suite still passing.
-    expect(splash.size).toBeGreaterThanOrEqual(13);
+  it('copies at least the colours the chamber and the globe paint with', () => {
+    // A guard against the file being emptied and the suite still passing. The
+    // globe (HIVE-212) builds a whole SwarmPalette, so it needs eighteen.
+    expect(splash.size).toBeGreaterThanOrEqual(18);
   });
 
   it.each([...splash.keys()])('%s matches src/styles/tokens.css', (name) => {

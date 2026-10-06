@@ -24,13 +24,14 @@ interface NewTerminalLinkProps {
  * every existing locator worse before it made anything better. `Terminal in
  * <project>` contains the visible text, which is what Label in Name asks.
  *
- * ## `terminal · host` for a container project
+ * ## `· host` for a container project
  *
  * A container project's sessions run through `docker exec`, and everything
  * container-shaped hangs off `claudeCommand`; there is no shell command to run
  * in the container yet. So the terminal is host-only and says so — the trap is
  * adjacency, where an unlabelled terminal beside containerised sessions reads
- * as the container and lands on the Mac.
+ * as the container and lands on the Mac. The glyph has no text to say it in,
+ * so the name and the title do.
  */
 export function NewTerminalLink({
   projectId,
@@ -58,11 +59,10 @@ export function NewTerminalLink({
       */
       disabled={!access.spawnable}
       title={title}
-      aria-label={`Terminal in ${projectName}`}
-      className="flex items-center gap-1.5 rounded-lg py-[3px] pr-2.5 pl-2 text-left font-mono text-[11.5px] text-subtle hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-subtle"
+      aria-label={`Terminal in ${projectName}${containerised ? ' · host' : ''}`}
+      className="rounded-full p-1 text-muted hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-transparent"
     >
-      <TerminalGlyph size={10} weight="bold" aria-hidden="true" className="shrink-0" />
-      {containerised ? 'terminal · host' : 'terminal'}
+      <TerminalGlyph size={13} weight="bold" aria-hidden="true" />
     </button>
   );
 }

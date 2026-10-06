@@ -9,7 +9,7 @@ import { useUiStore } from '@stores/ui-store';
 import { seedDemoFleet, seedDemoProjectConfig } from '@tests/support/demo-fleet';
 
 /**
- * The rail-collapse chords, from everywhere the terminal is not (this story).
+ * The panel chords, from everywhere the terminal is not (this story).
  *
  * `tests/lib/terminal/keymap.test.ts` proves `isRailChord`'s own platform
  * matrix; what is only provable here is that the hook actually wires a
@@ -34,19 +34,17 @@ describe('useAppChords', () => {
     vi.unstubAllGlobals();
   });
 
-  it('toggles the left rail on a window keydown', () => {
+  it('the left chord toggles the list panel (HIVE-213)', () => {
     renderHook(() => useAppChords());
 
     act(() => {
-      window.dispatchEvent(
-        new KeyboardEvent('keydown', { key: 'b', metaKey: true, bubbles: true }),
-      );
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true, bubbles: true }));
     });
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(true);
+    expect(useUiStore.getState().panelOpen).toBe(false);
   });
 
-  it('toggles the right rail on the alt variant', () => {
+  it('the right chord toggles the session panel (HIVE-213)', () => {
     renderHook(() => useAppChords());
 
     act(() => {
@@ -55,25 +53,20 @@ describe('useAppChords', () => {
       );
     });
 
-    expect(useAppearanceStore.getState().railCollapsedRight).toBe(true);
+    expect(useAppearanceStore.getState().sessionPanelOpen).toBe(false);
   });
 
-  it('toggles the left rail on the non-mac chord', () => {
+  it('the non-mac left chord toggles the list panel', () => {
     vi.stubGlobal('navigator', { userAgentData: { platform: 'Windows' } });
     renderHook(() => useAppChords());
 
     act(() => {
       window.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'b',
-          ctrlKey: true,
-          shiftKey: true,
-          bubbles: true,
-        }),
+        new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, shiftKey: true, bubbles: true }),
       );
     });
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(true);
+    expect(useUiStore.getState().panelOpen).toBe(false);
   });
 
   it('ignores a keydown originating inside a terminal', () => {
@@ -91,7 +84,7 @@ describe('useAppChords', () => {
       );
     });
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(false);
+    expect(useUiStore.getState().panelOpen).toBe(true);
   });
 
   it('toggles once on a terminal chord event', () => {
@@ -105,7 +98,7 @@ describe('useAppChords', () => {
       );
     });
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(true);
+    expect(useUiStore.getState().panelOpen).toBe(false);
   });
 
   it('ignores a back chord', () => {
@@ -119,7 +112,7 @@ describe('useAppChords', () => {
       );
     });
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(false);
+    expect(useUiStore.getState().panelOpen).toBe(true);
   });
 
   it('stops listening when it unmounts', () => {
@@ -136,7 +129,7 @@ describe('useAppChords', () => {
       }),
     );
 
-    expect(useAppearanceStore.getState().railCollapsedLeft).toBe(false);
+    expect(useUiStore.getState().panelOpen).toBe(true);
   });
 
   describe('terminal-here', () => {

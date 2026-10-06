@@ -38,9 +38,14 @@ type AgentInput =
  * respelled there cannot leave this box quietly refusing to answer. Both forms
  * are accepted because `ledger.answer` resolves either in main, and this
  * grammar must not be the thing that decides which are legal.
+ *
+ * The ref is case-blind: `answer A12 yes` is the same line as `answer a12 yes`,
+ * and the ref reaches the ledger lowercase, as it was minted. The verb is not,
+ * as in the console (`parse-command.ts`).
  */
 const THREAD = new RegExp(
   `^(?:${LEDGER_REF_PREFIX}\\d+|\\d{8}-\\d{6}-\\d{4})$`,
+  'i',
 );
 
 export function parseAgentInput(raw: string): AgentInput {
@@ -56,7 +61,8 @@ export function parseAgentInput(raw: string): AgentInput {
     const [, thread, body] = match;
 
     if (thread !== undefined && body !== undefined && THREAD.test(thread)) {
-      return { kind: 'answer', thread, body };
+      // Refs are minted lowercase; a canonical id has no letters to fold.
+      return { kind: 'answer', thread: thread.toLowerCase(), body };
     }
   }
 

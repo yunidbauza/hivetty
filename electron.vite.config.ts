@@ -128,20 +128,31 @@ export default defineConfig({
      * directory, and get all four by being another input rather than another
      * config.
      *
-     * The splash shares no code with the app. Rollup will still hoist anything
-     * they both import into a common chunk, which is exactly why `splash.ts`
-     * imports nothing from `src/` outside its own directory: a shared chunk
-     * between the two would put the app's module graph in front of the very
-     * window that exists to cover the app's loading time.
+     * The splash shares almost no code with the app. Rollup will still hoist
+     * anything they both import into a common chunk, which is exactly why
+     * `splash.ts` imports from `src/` outside its own directory only the four
+     * pure `lib/` modules the globe draws with (HIVE-212): the chunk they share
+     * with the app holds those and nothing behind them, so the app's module
+     * graph never stands in front of the window that exists to cover its
+     * loading time.
      *
      * **`about.html` is deliberately not held to that rule**, and the
      * difference is timing rather than taste. The splash must paint before the
      * app's bundle exists; the About panel opens on demand, long after it does,
      * so a chunk it shares with the app costs nothing. That is what lets it
-     * reuse the splash's creature and the app's phrase pools instead of
+     * reuse the splash's globe and the app's phrase pools instead of
      * carrying a second copy of either.
      */
     build: {
+      /**
+       * Minified, with maps beside it (HIVE-225). electron-vite defaults every
+       * target to `minify: false`, so the packaged renderer shipped 4.9 MB of
+       * readable JS, twice what the web build ships, parsed and compiled on
+       * every cold start. The maps are separate files and are not loaded
+       * unless DevTools asks for them.
+       */
+      minify: true,
+      sourcemap: true,
       rollupOptions: {
         input: {
           index: 'index.html',

@@ -3,7 +3,6 @@ import { join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
 
-import { selectRailTab } from '../fixtures/rail-tabs';
 import {
   launchHive,
   startSession,
@@ -89,7 +88,7 @@ async function launch(outputPath: (name: string) => string, repo: string) {
   });
   const page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   /**
    * A session first — the explorer follows the one on screen (HIVE-93).
@@ -105,7 +104,7 @@ async function launch(outputPath: (name: string) => string, repo: string) {
    */
   await startSession(page, 'fixture');
 
-  await selectRailTab(page.getByRole('tab', { name: 'Explorer' }));
+  await page.getByRole('complementary', { name: 'Session panel' }).getByRole('tab', { name: /^Files/ }).click();
   return { app, page };
 }
 
@@ -342,7 +341,7 @@ test('the split placement setting puts the terminal and the editor side by side'
     await page.getByRole('button', { name: 'Settings' }).click();
     /*
       `exact`, because an accessible name matches as a substring by default and
-      the left rail is full of names nobody chose: a session row reads
+      the Sessions list is full of names nobody chose: a session row reads
       `sess-01 working <branch>`, so this resolved to two elements the moment
       the work happened on a branch with "editor" in it. The settings nav item
       is the only control actually called `Editor`.
@@ -367,18 +366,15 @@ test('the split placement setting puts the terminal and the editor side by side'
 });
 
 /**
- * The tree follows the session, and shows nothing when there is none (HIVE-93).
+ * The tree follows the session (HIVE-93).
  *
  * Driven in a real window because this is a *navigation* property: the panel has
  * to stop showing a repository the moment the stage stops showing a session in
- * it, and the unit test can only prove the hook's answer. What it could not
- * prove is that leaving the session actually re-renders the panel.
- *
- * The state used to be unreachable: the explorer fell back to the last-visited
- * project and then to the first mapped one, so every row in it opened a file from
- * a repository nothing on screen was working in.
+ * it, and the unit test can only prove the hook's answer. Round two mounts the
+ * session panel only over a session, so there is no tree left to empty: leaving
+ * the session takes the panel, and the tree with it.
  */
-test('the explorer empties when the overmind tab is showing', async ({}, testInfo) => {
+test('the session panel goes when the Overmind is showing', async ({}, testInfo) => {
   const repo = testInfo.outputPath('repo');
   const { app, page } = await launch((name) => testInfo.outputPath(name), repo);
 
@@ -390,50 +386,8 @@ test('the explorer empties when the overmind tab is showing', async ({}, testInf
 
     await page.getByRole('button', { name: 'Back to overmind' }).click();
 
-    // And now it is not — with a sentence naming the way back, rather than a
-    // blank column or a stale tree.
-    await expect(tree.getByText('README.md')).toHaveCount(0);
-    await expect(tree.getByText(/No session open/i)).toBeVisible();
-    /*
-      Specifically NOT the setup message: projects are mapped, so sending the
-      user to Settings would blame them for something that is not broken.
-    */
-    await expect(tree.getByText(/No projects mapped/i)).toHaveCount(0);
-  } finally {
-    await app.close();
-  }
-});
-
-/**
- * The bell shows the inbox instead of marking it read (HIVE-93).
- *
- * Here rather than in the web project because the rail's INBOX tab is what has
- * to become active, and that is a real click on real chrome — the unit test can
- * assert the store call, not that the tab the user sees changes.
- */
-test('the header bell reveals the Inbox tab', async ({}, testInfo) => {
-  const repo = testInfo.outputPath('repo');
-  const { app, page } = await launch((name) => testInfo.outputPath(name), repo);
-
-  try {
-    // `launch` leaves the Explorer tab selected, so the inbox is genuinely not
-    // the current tab when the bell is clicked.
-    await expect(page.getByRole('tab', { name: /^Explorer/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-
-    await page.getByRole('button', { name: /^Inbox —/ }).click();
-
-    await expect(page.getByRole('tab', { name: /^Inbox/ })).toHaveAttribute(
-      'aria-selected',
-      'true',
-    );
-    // Nothing to read on a fresh launch, and the label says so rather than
-    // offering to mark anything.
-    await expect(
-      page.getByRole('button', { name: 'Inbox — nothing unread' }),
-    ).toBeVisible();
+    await expect(page.getByRole('complementary', { name: 'Session panel' })).toHaveCount(0);
+    await expect(tree).toHaveCount(0);
   } finally {
     await app.close();
   }

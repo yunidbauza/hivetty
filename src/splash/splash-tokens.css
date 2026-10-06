@@ -5,7 +5,7 @@
  * `src/styles/tokens.css` opens with `@import 'tailwindcss'`. Importing it here
  * would pull the whole framework — preflight, the theme layer, every generated
  * utility — into a document whose entire job is to paint before the app can.
- * The splash uses thirteen colours and no utilities; it should not wait for
+ * The splash uses eighteen colours and no utilities; it should not wait for
  * three thousand it will never name.
  *
  * So the values are copied, exactly as `ansi.ts` copies the terminal's light
@@ -27,17 +27,34 @@
   --cc-border: #273159;
   --cc-border-soft: #1e2747;
   --cc-ink: #e9effc;
-  --cc-muted: #98a3cc;
+  --cc-muted: #9faad0;
   --cc-brand: #8fa7f2;
   --cc-green: #74b79c;
   --cc-amber: #ffac47;
-  --cc-term-head: #4d5a86;
-  --cc-brand-fill: #5e76d0;
+  --cc-term-head: #8590b0;
+  --cc-brand-fill: #5470cb;
   --cc-brand-fill-strong: #334fa9;
+
+  /* The comb globe's (HIVE-212): the rest of a SwarmPalette. The carapace and
+     the creep's clear stop are derived from these in `stage.ts`, as
+     `swarmPaletteOf` derives them for Home. */
+  --cc-panel-2: #121731;
+  --cc-subtle: #8d97b8;
+  --cc-red: #ff8d85;
+  --cc-creep: #5b3d8f;
+  --cc-chitin: #b9a7f0;
+  /* The Brood's tissue ramp (HIVE-221), for the globe's mutalisks. */
+  --cc-tissue-deep: #171b32;
+  --cc-tissue: #353556;
+  --cc-tissue-lit: #c3b5f2;
+  --cc-glow-core: #e2ffee;
+  --cc-ground: #141128;
+  /* Only for the mutalisk's glints, `accentsOf`'s brightest colour. */
+  --cc-on-brand: #ffffff;
 
   /**
    * The one face the app uses, copied from `--font-mono` in `tokens.css` and
-   * checked by the same test. A system stack, so nothing is fetched.
+   * checked by the same test. Bundled (`styles/fonts.ts`), so nothing is fetched.
    */
-  --font-mono: ui-monospace, Menlo, 'SF Mono', monospace;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, 'SF Mono', monospace;
 }

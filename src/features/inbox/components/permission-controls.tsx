@@ -64,14 +64,14 @@ export function PermissionControls({
       />
 
       {selected === undefined ? null : (
-        <span className="text-[10px] text-subtle">{selected.caption}</span>
+        <span className="text-micro text-subtle">{selected.caption}</span>
       )}
 
       <div className="flex flex-wrap gap-1.5">
         <Button
           size="sm"
           variant="primary"
-          disabled={sending}
+          pending={sending}
           onClick={() => onAnswer(scope)}
         >
           Allow
@@ -79,7 +79,7 @@ export function PermissionControls({
         <Button
           size="sm"
           variant="danger"
-          disabled={sending}
+          pending={sending}
           onClick={() => onAnswer('deny')}
         >
           Deny

@@ -92,11 +92,12 @@ export function buildMenuTemplate({
             aboutItem,
             ...updateItem,
             { type: 'separator' },
-            { role: 'hide' },
+            // Labelled, because a role names itself after app.getName(), the identity.
+            { role: 'hide', label: `Hide ${appName}` },
             { role: 'hideOthers' },
             { role: 'unhide' },
             { type: 'separator' },
-            { role: 'quit' },
+            { role: 'quit', label: `Quit ${appName}` },
           ],
         },
       ]

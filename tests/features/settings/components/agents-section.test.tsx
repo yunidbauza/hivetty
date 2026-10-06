@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,12 +6,8 @@ import { resetAgents } from '@/lib/agents';
 import { resetShippedState } from '@/lib/shipped';
 
 import { AgentsSection } from '@features/settings/components/agents-section';
-import {
-  setSurfaceText,
-  surfaceText,
-} from '@tests/support/editor-surface';
-
-import { AGENT_NAME_POOL } from '@/lib/agents';
+import { useEditorStore } from '@stores/editor-store';
+import { useUiStore } from '@stores/ui-store';
 
 import type { AgentSummary } from '@shared/agent-contract';
 
@@ -60,6 +56,8 @@ beforeEach(() => {
   delete (window as unknown as { hive?: unknown }).hive;
   resetAgents();
   resetShippedState();
+  useEditorStore.getState().reset();
+  useUiStore.getState().reset();
   vi.restoreAllMocks();
 });
 
@@ -79,6 +77,10 @@ describe('AgentsSection', () => {
     await screen.findByRole('button', { name: '+ New agent' });
 
     expect(screen.getByText(/Agents folder: \/root\/agents/)).toBeInTheDocument();
+    const creature = document.querySelector('[data-creature]');
+    expect(creature).toHaveAttribute('data-creature', 'mutalisk');
+    expect(creature).toHaveStyle({ height: '120px' });
+    expect(creature).toHaveClass('mb-9');
   });
 
   it('lists an agent with its state', async () => {
@@ -87,6 +89,14 @@ describe('AgentsSection', () => {
 
     expect(await screen.findByText('slack-watcher')).toBeInTheDocument();
     expect(screen.getByText('sleeping')).toBeInTheDocument();
+  });
+
+  it('stacks its list above the editor below a 520px section (HIVE-225)', async () => {
+    stub([agent('slack-watcher')]);
+    render(<AgentsSection />);
+    const grid = (await screen.findByText('slack-watcher')).closest('.grid');
+    expect(grid).toHaveClass('@min-[520px]:grid-cols-[190px_minmax(0,1fr)]', 'grid-rows-[minmax(0,10rem)_minmax(0,1fr)]');
+    expect(grid?.parentElement).toHaveClass('@container');
   });
 
   it('names the agents folder', async () => {
@@ -118,19 +128,11 @@ describe('AgentsSection', () => {
 
       await userEvent.click(target);
 
-      expect(
-        await screen.findByRole('tab', { name: 'Source' }),
-      ).toBeInTheDocument();
+      expect(await screen.findByText('/root/agents/broken/AGENT.md')).toBeInTheDocument();
+      expect(useUiStore.getState().agentPage).toBeNull();
     });
   });
 
-  /*
-    A skill row is one word; an agent row is four things — its glyph, a
-    monospace name, its status, and an `edited` flag. At the 150px this pane
-    inherited from `skills-section.tsx` the middle two collided, and the glyph
-    was not drawn at all even though `AgentSummary` has carried `icon` since
-    HIVE-114.
-  */
   describe('the list', () => {
     it('draws each agent with its own icon before the name', async () => {
       stub([agent('slack-watcher', { icon: 'ph-slack-logo' })]);
@@ -141,22 +143,10 @@ describe('AgentsSection', () => {
       expect(target.querySelector('svg')).not.toBeNull();
     });
 
-    it('gives the list room for a name beside its status', async () => {
-      stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      const target = await screen.findByRole('button', { name: /slack-watcher/ });
-
-      expect(target.parentElement?.parentElement).toHaveClass(
-        'grid-cols-[190px_minmax(0,1fr)]',
-      );
-    });
-
     /*
       The Slack-watcher template (HIVE-123) is gone. It demonstrated the epic
       while agents were new; what it does now is offer a second "+ New agent"
-      whose output the user has to read and then edit anyway, in the one place
-      where the list of *their* agents should be the only thing on screen.
+      whose output the user has to read and then edit anyway.
     */
     it('offers nothing but New agent, in both states', async () => {
       stub([]);
@@ -168,457 +158,87 @@ describe('AgentsSection', () => {
         screen.queryByRole('button', { name: /Slack watcher/ }),
       ).not.toBeInTheDocument();
     });
-  });
 
-  describe('opening and editing', () => {
-    it('loads the source into the editor', async () => {
+    it('says what to do while nothing is open', async () => {
       stub([agent('slack-watcher')]);
       render(<AgentsSection />);
 
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-
-      expect(surfaceText('Agent source')).toBe(GOOD);
-    });
-
-    it('marks the row edited once the buffer diverges', async () => {
-      stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-      await userEvent.type(
-        screen.getByRole('textbox', { name: 'Agent source' }),
-        'x',
-      );
-
-      expect(await screen.findByText('edited')).toBeInTheDocument();
-    });
-
-    /*
-      The template used to open with a blank `name:` and a red box telling the
-      user to write one in the Source tab — the form had no name control at all,
-      so the refusal was unanswerable from the form it appeared in. It opens
-      named and editable instead.
-    */
-    it('starts a new agent already named, with no refusal to clear', async () => {
-      stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(
-        await screen.findByRole('button', { name: '+ New agent' }),
-      );
-
-      const name = await screen.findByRole('textbox', { name: 'name' });
-
-      expect(AGENT_NAME_POOL).toContain((name as HTMLInputElement).value);
-      expect(
-        screen.queryByText('Give the agent a name in its frontmatter.'),
-      ).not.toBeInTheDocument();
-    });
-
-    it('never seeds a name the fleet already holds', async () => {
-      // Everything but the last roster name is taken, so only one is free.
-      stub(AGENT_NAME_POOL.slice(0, -1).map((name) => agent(name)));
-      render(<AgentsSection />);
-
-      await userEvent.click(
-        await screen.findAllByRole('button', { name: '+ New agent' }).then((all) => all[0] as HTMLElement),
-      );
-
-      expect(await screen.findByRole('textbox', { name: 'name' })).toHaveValue(
-        AGENT_NAME_POOL.at(-1) as string,
-      );
-    });
-
-    /*
-      `taken` excludes the currently open agent so its own name does not read as
-      a duplicate of itself. Seeding the template from that same list could draw
-      the open agent's name, producing a brand-new agent that arrives already
-      refused — the exact state the name field exists to make unreachable.
-    */
-    it('never seeds the name of the agent that was open', async () => {
-      // Only one roster name is free, and the other ten are all held — one of
-      // them by the agent being viewed when New agent is clicked.
-      const held = AGENT_NAME_POOL.slice(0, -1);
-
-      stub(held.map((name) => agent(name)));
-      render(<AgentsSection />);
-
-      await userEvent.click(
-        await screen.findByRole('button', { name: new RegExp(held[0] as string) }),
-      );
-      await userEvent.click(
-        screen.getByRole('button', { name: '+ New agent' }),
-      );
-
-      expect(await screen.findByRole('textbox', { name: 'name' })).toHaveValue(
-        AGENT_NAME_POOL.at(-1) as string,
-      );
-      expect(
-        screen.queryByText(/You already have an agent called/),
-      ).not.toBeInTheDocument();
-    });
-
-    /*
-      Two new agents in a row must not collide. The second is seeded from a
-      fleet that now contains the first, which is the whole reason the template
-      is a function of `taken` rather than a constant.
-    */
-    it('gives two consecutive new agents distinct names', async () => {
-      stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(
-        await screen.findByRole('button', { name: '+ New agent' }),
-      );
-      const firstName = (
-        (await screen.findByRole('textbox', { name: 'name' })) as HTMLInputElement
-      ).value;
-
-      // The first one is saved, so the fleet now holds it. Remount against
-      // that fleet, which is what the pane sees on the next visit.
-      cleanup();
-      resetAgents();
-      stub([agent('slack-watcher'), agent(firstName)]);
-      render(<AgentsSection />);
-
-      await userEvent.click(
-        await screen.findByRole('button', { name: '+ New agent' }),
-      );
-
-      expect(
-        await screen.findByRole('textbox', { name: 'name' }),
-      ).not.toHaveValue(firstName);
-    });
-  });
-
-  describe('saving', () => {
-    it('writes the buffer under the name its frontmatter declares', async () => {
-      const bridge = stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      await waitFor(() =>
-        expect(bridge.write).toHaveBeenCalledWith({
-          name: 'slack-watcher',
-          source: GOOD,
-        }),
-      );
-    });
-
-    it('shows a refusal beside the field it names, and does not claim success', async () => {
-      const bridge = stub([agent('slack-watcher')], {
-        write: vi.fn(async () => ({
-          ok: false,
-          problems: [
-            { field: 'wake.every', reason: 'Cannot be faster than 1m.' },
-          ],
-        })),
-      });
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      expect(
-        await screen.findByText('Cannot be faster than 1m.'),
-      ).toBeInTheDocument();
-    });
-
-    it('renames in one call, carrying the buffer being saved', async () => {
-      /*
-        The buffer travels with the move, so the definition validated is the
-        one about to be written. Moving first and writing after validated the
-        *stale* file — which refused a rename that also fixed a broken key,
-        with problems the user had already resolved.
-      */
-      const bridge = stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-
-      const renamed = GOOD.replace('slack-watcher', 'slack-bot');
-      setSurfaceText('Agent source', renamed);
-      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      await waitFor(() =>
-        expect(bridge.rename).toHaveBeenCalledWith({
-          from: 'slack-watcher',
-          to: 'slack-bot',
-          source: renamed,
-        }),
-      );
-      // One call, not a move followed by a write.
-      expect(bridge.write).not.toHaveBeenCalled();
-    });
-
-    it('does not write when the rename is refused', async () => {
-      const bridge = stub([agent('slack-watcher')], {
-        rename: vi.fn(async () => ({
-          ok: false,
-          problems: [{ field: 'name', reason: 'slack-bot already exists.' }],
-        })),
-      });
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-
-      setSurfaceText('Agent source', GOOD.replace('slack-watcher', 'slack-bot'));
-      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      expect(
-        await screen.findByText('slack-bot already exists.'),
-      ).toBeInTheDocument();
-      expect(bridge.write).not.toHaveBeenCalled();
-    });
-
-    it('refuses a name that collides with another agent', async () => {
-      const bridge = stub([agent('slack-watcher'), agent('taken')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-
-      setSurfaceText('Agent source', GOOD.replace('slack-watcher', 'taken'));
-
-      expect(
-        await screen.findByText('You already have an agent called taken.'),
-      ).toBeInTheDocument();
-    });
-
-    it('refuses a reserved name before asking main', async () => {
-      const bridge = stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-
-      setSurfaceText('Agent source', GOOD.replace('slack-watcher', 'overmind'));
-      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-
-      expect(
-        await screen.findByText('"overmind" is reserved by The Hive.'),
-      ).toBeInTheDocument();
-      expect(bridge.write).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('discarding and deleting', () => {
-    it('asks before abandoning an unsaved edit', async () => {
-      const bridge = stub([agent('slack-watcher'), agent('other')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-      await userEvent.type(
-        screen.getByRole('textbox', { name: 'Agent source' }),
-        'x',
-      );
-      await userEvent.click(row('other'));
-
-      expect(
-        await screen.findByText('Discard changes to slack-watcher?'),
-      ).toBeInTheDocument();
-    });
-
-    it('asks before deleting, then removes the folder', async () => {
-      const bridge = stub([agent('slack-watcher')]);
-      render(<AgentsSection />);
-
-      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
-
-      expect(await screen.findByText('Delete slack-watcher?')).toBeInTheDocument();
-
-      const confirm = screen.getByRole('alertdialog', {
-        name: 'Delete slack-watcher?',
-      });
-
-      // The editor's footer steps aside: the confirm's two are the only answers.
-      expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1);
-      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
-      expect(screen.queryByRole('button', { name: /Run now/ })).toBeNull();
-
-      await userEvent.click(
-        within(confirm).getByRole('button', { name: 'Keep editing' }),
-      );
-      expect(screen.getByRole('button', { name: 'Save' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Run now/ })).toBeInTheDocument();
-
-      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
-      await userEvent.click(
-        within(
-          screen.getByRole('alertdialog', { name: 'Delete slack-watcher?' }),
-        ).getByRole('button', { name: 'Delete' }),
-      );
-
-      await waitFor(() =>
-        expect(bridge.remove).toHaveBeenCalledWith({ name: 'slack-watcher' }),
-      );
+      expect(await screen.findByText('Select an agent, or write a new one.')).toBeInTheDocument();
+      expect(screen.queryByRole('tab', { name: 'Source' })).toBeNull();
     });
   });
 
   /*
-    The waker landed in HIVE-117 and this button did not notice: it carried a
-    literal `disabled` and a title reading "Agents do not run yet", on the one
-    screen where a user has just finished configuring the agent.
+    Settings edits in place again, with Form | Source tabs: the agent page shows
+    the same editor side by side, and both share the editor-store draft.
   */
-  describe('running from the editor', () => {
-    const open = async (over: Record<string, unknown> = {}) => {
-      const bridge = stub([agent('slack-watcher')], over);
+  describe('editing in place', () => {
+    it('opens an agent beside the list, with Settings still open and no page', async () => {
+      stub([agent('slack-watcher')]);
+      useUiStore.getState().openSettings('agents');
       render(<AgentsSection />);
 
-      await userEvent.click(
-        await screen.findByRole('button', { name: /slack-watcher/ }),
-      );
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
+      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
 
-      return bridge;
-    };
-
-    it('wakes the open agent by name', async () => {
-      const run = vi.fn(async () => ({ started: true, run: 'r1' }));
-      await open({ run });
-
-      await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
-
-      await waitFor(() =>
-        expect(run).toHaveBeenCalledWith({ name: 'slack-watcher' }),
-      );
+      expect(await screen.findByText('/root/agents/slack-watcher/AGENT.md')).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Form' })).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Source' })).toBeInTheDocument();
+      expect(row('slack-watcher')).toHaveAttribute('aria-current', 'true');
+      expect(useUiStore.getState().settings).toBe(true);
+      expect(useUiStore.getState().agentPage).toBeNull();
     });
 
-    /*
-      The refusals only main knows — already working, paused, runtime down.
-    */
-    it('says why a refused run did not happen', async () => {
-      const run = vi.fn(async () => ({ started: false, refused: 'paused' }));
-      await open({ run });
-
-      await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
-
-      expect(
-        await screen.findByText(/slack-watcher is paused/),
-      ).toBeInTheDocument();
-    });
-
-    it('says a busy agent queued the run rather than refusing it', async () => {
-      // HIVE-126's third arm, on the pane's own Run now. Same channel as the
-      // console verb, so the same sentence.
-      const run = vi.fn(async () => ({
-        started: false,
-        queued: true,
-        behind: 'working',
-      }));
-      await open({ run });
-
-      await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
-
-      expect(
-        await screen.findByText(/queued for slack-watcher/),
-      ).toBeInTheDocument();
-    });
-
-    /**
-     * A refusal must not disable the control that produced it.
-     *
-     * This reported through `problems` first, which is simultaneously why Save
-     * refuses and the third gate in the editor's `cannotRun` — so the message
-     * "slack-watcher is working" disabled Run now and relabelled it "this
-     * definition cannot be read", which was false: the definition parsed, which
-     * is why the call reached main at all. Escaping needed a reselect or a
-     * no-op Save.
-     *
-     * Every refusal on this path is transient. `working` ends, `paused` is one
-     * click away, and `unknown` is the runtime still coming up — the case where
-     * retrying is *most* likely to work.
-     */
-    it('stays clickable after a refusal, so the retry is one click', async () => {
-      const run = vi
-        .fn()
-        .mockResolvedValueOnce({ started: false, refused: 'working' })
-        .mockResolvedValueOnce({ started: true, run: 'r2' });
-
-      await open({ run });
-
-      const button = screen.getByRole('button', { name: 'Run now' });
-
-      await userEvent.click(button);
-      expect(
-        await screen.findByText(/slack-watcher is working/),
-      ).toBeInTheDocument();
-
-      expect(button).toBeEnabled();
-      expect(button).not.toHaveAttribute(
-        'title',
-        expect.stringMatching(/cannot be read/i),
-      );
-
-      await userEvent.click(button);
-
-      expect(run).toHaveBeenCalledTimes(2);
-      expect(await screen.findByText('woke slack-watcher')).toBeInTheDocument();
-    });
-
-    /*
-      Cleared when the pane changes what it is looking at, so a message about
-      one agent is never read as being about the next.
-    */
-    it('drops the notice when another agent is opened', async () => {
-      const run = vi.fn(async () => ({ started: false, refused: 'paused' }));
-      const bridge = stub([agent('slack-watcher'), agent('other')], { run });
+    it('New agent writes a never-saved agent in Settings', async () => {
+      stub([agent('slack-watcher')]);
       render(<AgentsSection />);
 
-      await userEvent.click(
-        await screen.findByRole('button', { name: /slack-watcher/ }),
-      );
-      await waitFor(() => expect(bridge.read).toHaveBeenCalled());
-      await userEvent.click(screen.getByRole('button', { name: 'Run now' }));
-      await screen.findByText(/slack-watcher is paused/);
+      await userEvent.click(await screen.findByRole('button', { name: '+ New agent' }));
 
-      await userEvent.click(row('other'));
-
-      await waitFor(() =>
-        expect(screen.queryByText(/slack-watcher is paused/)).toBeNull(),
-      );
+      expect(await screen.findByText('not saved yet')).toBeInTheDocument();
+      expect(useUiStore.getState().agentPage).toBeNull();
     });
 
-    /*
-      A wake reads AGENT.md off disk, so running with unsaved edits would
-      execute the previous version while the screen shows the new one.
-    */
-    it('refuses while the buffer is unsaved, and says so', async () => {
-      const run = vi.fn(async () => ({ started: true, run: 'r1' }));
-      await open({ run });
+    it('remounts for New agent even from an agent named new', async () => {
+      stub([agent('new')]);
+      render(<AgentsSection />);
 
+      await userEvent.click(await screen.findByRole('button', { name: /^new/ }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Source' }));
-      await userEvent.type(
-        screen.getByRole('textbox', { name: 'Agent source' }),
-        'x',
+      await userEvent.click(screen.getByRole('button', { name: '+ New agent' }));
+
+      // A fresh editor opens on Form; one reused from the agent named new would stay on Source.
+      expect(await screen.findByText('not saved yet')).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Form' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('New agent from the empty state does the same', async () => {
+      stub([]);
+      render(<AgentsSection />);
+
+      await userEvent.click(await screen.findByRole('button', { name: '+ New agent' }));
+
+      expect(await screen.findByText('not saved yet')).toBeInTheDocument();
+      expect(screen.getByRole('tab', { name: 'Source' })).toBeInTheDocument();
+      expect(useUiStore.getState().agentPage).toBeNull();
+    });
+
+    it('goes back to the placeholder after a delete', async () => {
+      const bridge = stub([agent('slack-watcher')]);
+      render(<AgentsSection />);
+
+      await userEvent.click(await screen.findByRole('button', { name: /slack-watcher/ }));
+      await waitFor(() => expect(useEditorStore.getState().agentDrafts['slack-watcher']).toBeDefined());
+      await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+      await userEvent.click(
+        within(screen.getByRole('alertdialog', { name: 'Delete slack-watcher?' })).getByRole('button', {
+          name: 'Delete',
+        }),
       );
 
-      const button = screen.getByRole('button', { name: 'Run now' });
-
-      expect(button).toBeDisabled();
-      expect(button).toHaveAttribute('title', expect.stringMatching(/save first/i));
-
-      await userEvent.click(button);
-      expect(run).not.toHaveBeenCalled();
+      await waitFor(() => expect(bridge.remove).toHaveBeenCalledWith({ name: 'slack-watcher' }));
+      expect(await screen.findByText('Select an agent, or write a new one.')).toBeInTheDocument();
     });
   });
-
 });
 
 describe('AgentsSection — shipped agents the user changed', () => {
@@ -629,71 +249,16 @@ describe('AgentsSection — shipped agents the user changed', () => {
     held: true,
   });
 
-  const withShipped = (over: Record<string, unknown> = {}) => {
-    const agents = stub([agent('slack-watcher'), agent('pr-patrol')]);
-    const shipped = {
-      status: vi.fn(async () => [changed]),
-      reset: vi.fn(async () => []),
-      takePrompt: vi.fn(async () => []),
-      keepMine: vi.fn(async () => []),
-      ...over,
-    };
-    (window as unknown as { hive: Record<string, unknown> }).hive.shipped = shipped;
-
-    return { agents, shipped };
-  };
-
   it('marks only the changed agent in the list', async () => {
-    withShipped();
+    stub([agent('slack-watcher'), agent('pr-patrol')]);
+    (window as unknown as { hive: Record<string, unknown> }).hive.shipped = {
+      status: vi.fn(async () => [changed]),
+    };
     render(<AgentsSection />);
 
     const dot = await screen.findByLabelText('A newer shipped prompt is waiting');
 
     expect(within(row('slack-watcher')).getByLabelText('A newer shipped prompt is waiting')).toBe(dot);
     expect(within(row('pr-patrol')).queryByRole('img')).toBeNull();
-  });
-
-  it('opens with the strip and the held banner, and resets after confirming, then re-reads the file', async () => {
-    const { agents, shipped } = withShipped();
-    render(<AgentsSection />);
-    await screen.findByLabelText('A newer shipped prompt is waiting');
-
-    await userEvent.click(row('slack-watcher'));
-    await screen.findByText(/1 setting differs from shipped: limits\.parallel\./);
-    expect(screen.getByText(/Update held\./)).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Reset to shipped' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Reset' }));
-
-    await waitFor(() => expect(shipped.reset).toHaveBeenCalledWith({ kind: 'agents', name: 'slack-watcher' }));
-    await waitFor(() => expect(agents.read).toHaveBeenCalledTimes(2));
-  });
-
-  it('takes the shipped prompt from the banner, and says so when main refuses', async () => {
-    const { shipped } = withShipped({
-      takePrompt: vi.fn(async () => {
-        throw new Error('slack-watcher is a symlink in ~/.hive');
-      }),
-    });
-    render(<AgentsSection />);
-    await screen.findByLabelText('A newer shipped prompt is waiting');
-    await userEvent.click(row('slack-watcher'));
-
-    await userEvent.click(await screen.findByRole('button', { name: 'Take shipped prompt' }));
-
-    expect(shipped.takePrompt).toHaveBeenCalledWith({ kind: 'agents', name: 'slack-watcher' });
-    expect(await screen.findByText(/is a symlink/)).toBeInTheDocument();
-  });
-
-  it('keeps mine from the banner', async () => {
-    const { shipped } = withShipped();
-    render(<AgentsSection />);
-    await screen.findByLabelText('A newer shipped prompt is waiting');
-    await userEvent.click(row('slack-watcher'));
-
-    const banner = (await screen.findByText(/Update held\./)).closest('div') as HTMLElement;
-    await userEvent.click(within(banner).getByRole('button', { name: 'Keep mine' }));
-
-    expect(shipped.keepMine).toHaveBeenCalledWith({ kind: 'agents', name: 'slack-watcher' });
   });
 });

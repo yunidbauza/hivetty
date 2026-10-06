@@ -77,7 +77,7 @@ test('reports the config path and this build’s versions', async ({}, testInfo)
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -108,7 +108,7 @@ test('reload re-reads a file edited underneath the running app', async ({}, test
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -155,7 +155,7 @@ test('reload regenerates the skills plugin and names what needs a restart', asyn
   const userDataDir = testInfo.outputPath('user-data');
   const app = await launchHive({ userDataDir, configPath });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -197,7 +197,7 @@ test('reset writes the template and empties the project list', async ({}, testIn
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   // Prove there is something to lose before losing it.
   expect((read(configPath).projects as unknown[]).length).toBe(1);
@@ -218,7 +218,7 @@ test('reset writes the template and empties the project list', async ({}, testIn
 
   const written = read(configPath);
   // Still the *commented* template, not a bare `{ projects: [] }`.
-  expect(written['//']).toContain('The Hive');
+  expect(written['//']).toContain('Hive TTY');
   expect(written.version).toBe(2);
   // The one write that discards what it did not put there.
   expect(written['//mine']).toBeUndefined();
@@ -242,7 +242,7 @@ test('cancelling the confirmation leaves the file alone', async ({}, testInfo) =
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -270,7 +270,7 @@ test('the Containers group shows the resolved host alias', async ({}, testInfo) 
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -301,7 +301,7 @@ test('typing an alias writes it to the file and preserves the rest', async ({}, 
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -340,7 +340,7 @@ test('the off-loopback bind is off, and its fields are hidden, by default', asyn
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -351,8 +351,8 @@ test('the off-loopback bind is off, and its fields are hidden, by default', asyn
   await expect(page.getByLabel(/^port$/i)).toBeHidden();
   await expect(page.getByLabel(/allowed origins/i)).toBeHidden();
 
-  // Nothing is claimed in the header, because nothing is exposed.
-  await expect(page.getByTestId('header-chips').getByText('127.0.0.1')).toHaveCount(0);
+  // Nothing is claimed at the bar's foot, because nothing is exposed.
+  await expect(page.getByTestId('connection-item')).not.toHaveText('Exposed');
 
   await app.close();
 });
@@ -375,7 +375,7 @@ test('turning the bind switch on reveals the fields and writes an address', asyn
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -398,12 +398,12 @@ test('turning the bind switch on reveals the fields and writes an address', asyn
 });
 
 /**
- * The header chip, on a config that seeds `receiver.bind.host` already
- * non-loopback — proving the chip end to end from a *file* rather than from
+ * The connection item, on a config that seeds `receiver.bind.host` already
+ * non-loopback — proving the item end to end from a *file* rather than from
  * whatever state the switch test above left behind, since each spec launches
  * its own app against its own seed.
  */
-test('the header names the address when the app starts exposed', async ({}, testInfo) => {
+test('the connection item names the address when the app starts exposed', async ({}, testInfo) => {
   const configPath = testInfo.outputPath('hive-config.json');
   writeFileSync(
     configPath,
@@ -427,9 +427,13 @@ test('the header names the address when the app starts exposed', async ({}, test
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
-  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+  const item = page.getByTestId('connection-item');
+  await expect(item).toHaveText('Exposed');
+  await item.click();
+  await expect(page.getByRole('dialog', { name: 'Connection' })).toContainText('0.0.0.0');
+  await page.keyboard.press('Escape');
 
   await app.close();
 });
@@ -441,12 +445,12 @@ test('the header names the address when the app starts exposed', async ({}, test
  * at next launch" already says. Toggling the settings switch off rewrites the
  * config file and its in-memory snapshot to loopback *instantly*, but the
  * socket this app bound wide at launch keeps listening until the app actually
- * restarts. A chip sourced from that snapshot would vanish the instant the
- * switch is toggled and read as safe; it would not be. So the chip must
+ * restarts. An item sourced from that snapshot would vanish the instant the
+ * switch is toggled and read as safe; it would not be. So the connection item must
  * survive exactly this sequence, still naming the address, because the
  * process is still reachable off loopback for the rest of this run.
  */
-test('the chip survives the switch going loopback — it reports the running bind, not the file (HIVE-134)', async ({}, testInfo) => {
+test('the connection item survives the switch going loopback — it reports the running bind, not the file (HIVE-134)', async ({}, testInfo) => {
   const configPath = testInfo.outputPath('hive-config.json');
   writeFileSync(
     configPath,
@@ -467,24 +471,31 @@ test('the chip survives the switch going loopback — it reports the running bin
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
-  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+  const item = page.getByTestId('connection-item');
+  await expect(item).toHaveText('Exposed');
+  await item.click();
+  await expect(page.getByRole('dialog', { name: 'Connection' })).toContainText('0.0.0.0');
+  await page.keyboard.press('Escape');
 
   await openAdvanced(page);
   await page.getByRole('switch', { name: /off loopback/i }).click();
 
   // The file, proving the toggle really did rewrite it to loopback — the
-  // half of the story a config-derived chip would have reacted to.
+  // half of the story a config-derived item would have reacted to.
   await expect
     .poll(() => (read(configPath).receiver as Record<string, unknown> | undefined)
       ?.bind as Record<string, unknown> | undefined)
     .toMatchObject({ host: '127.0.0.1' });
 
-  // The chip, proving it did not react to that write: the socket this
-  // session opened at boot is still bound to `0.0.0.0` and still reachable,
-  // and the header still has to say so.
-  await expect(page.getByTestId('header-chips').getByText('0.0.0.0')).toBeVisible();
+  // The connection item, proving it did not react to that write: the socket
+  // this session opened at boot is still bound to `0.0.0.0` and still
+  // reachable, and the connection item still has to say so.
+  await expect(item).toHaveText('Exposed');
+  await item.click();
+  await expect(page.getByRole('dialog', { name: 'Connection' })).toContainText('0.0.0.0');
+  await page.keyboard.press('Escape');
 
   await app.close();
 });
@@ -503,7 +514,7 @@ test('the Server mode group renders between Containers and Reset', async ({}, te
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -533,7 +544,7 @@ test('the Serve this machine switch is off, and its fields are hidden, by defaul
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -558,7 +569,7 @@ test('turning server mode on reveals the bind fields and writes enabled: true', 
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -587,7 +598,7 @@ test('the Attach to a server switch is off, and its fields are hidden, by defaul
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 
@@ -621,7 +632,7 @@ test('the attach address field refuses a public address, and writes nothing', as
     configPath,
   });
   const page = await app.firstWindow();
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   await openAdvanced(page);
 

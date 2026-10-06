@@ -26,7 +26,7 @@ export function Chip({ children, tone, title, className }: ChipProps) {
     <span
       title={title}
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-chip px-3 py-1 font-mono text-[11.5px]',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-chip px-3 py-1 tabular-nums text-ui-sm',
         tone ? TONE_TEXT[tone] : 'text-muted',
         className,
       )}

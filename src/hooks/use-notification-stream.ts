@@ -1,11 +1,16 @@
 import { useEffect } from 'react';
 
+import { laneOf } from '@shared/notification-lanes';
 import {
   useApplyDismiss,
   useApplyRead,
   useHydrateNotifs,
   usePushNotif,
 } from '@stores/hive-store';
+import { useInboxActions } from '@stores/ui-store';
+
+/** The keyboard is in a terminal: the test `use-app-chords.ts` uses, on the focused element. */
+const inTerminal = (): boolean => document.activeElement?.closest('[data-terminal-id]') != null;
 
 /**
  * Keep the inbox in step with the hub in main (HIVE-75).
@@ -40,12 +45,18 @@ import {
  * the **desktop toast** now dismisses rather than merely marks read, so the
  * `onDismissed` subscription below is what takes the row out of the inbox
  * without the user having to see it there until the next reload.
+ *
+ * Live arrivals rise (HIVE-198). A Summons row that arrives on the channel
+ * joins the arrival queue, as a card over the pill, or as a single pulse of
+ * the pill when the keyboard is in a terminal. The boot and reattach
+ * snapshots hydrate and never reach `onNew`, so nothing old ever rises.
  */
 export function useNotificationStream(): void {
   const pushNotif = usePushNotif();
   const hydrate = useHydrateNotifs();
   const applyRead = useApplyRead();
   const applyDismiss = useApplyDismiss();
+  const { pushArrival } = useInboxActions();
 
   useEffect(() => {
     // No bridge is the browser demo, where nothing produces notifications.
@@ -64,6 +75,9 @@ export function useNotificationStream(): void {
      */
     const unsubscribe = bridge.notifications.onNew((notification) => {
       pushNotif(notification);
+      // What is drawn is filtered again at render by `useSummons(onStage)`, so
+      // the on-stage session and an answered ask never show though pushed here.
+      if (laneOf(notification.kind) === 'summons') pushArrival(notification.id, inTerminal());
     });
 
     const unsubscribeRead = bridge.notifications.onRead(({ id, unread }) => {
@@ -104,5 +118,5 @@ export function useNotificationStream(): void {
       unsubscribeRead();
       unsubscribeDismissed();
     };
-  }, [applyDismiss, applyRead, hydrate, pushNotif]);
+  }, [applyDismiss, applyRead, hydrate, pushArrival, pushNotif]);
 }

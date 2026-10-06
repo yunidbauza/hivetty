@@ -91,7 +91,8 @@ interface Presenter {
   broadcast: (notification: unknown) => void;
   announceRead: (id: string, unread: number) => void;
   announceDismissed: (id: string) => void;
-  announceUnread: (count: number) => void;
+  announceBadge: (count: number) => void;
+  closedAsks: () => ReadonlySet<string>;
 }
 
 let presenter: Presenter | undefined;
@@ -166,6 +167,11 @@ describe('the notification hub’s presenters (HIVE-75)', () => {
     expect(presenter).toBeDefined();
   });
 
+  /** HIVE-214: the hub learns which asks are closed from main's own ledger. */
+  it('hands the hub a closed-ask reader that answers before the ledger has entries', () => {
+    expect(presenter!.closedAsks()).toBeInstanceOf(Set);
+  });
+
   it('reaches every surface with a raised notification', () => {
     presenter!.broadcast({ id: 'n1' });
 
@@ -228,7 +234,7 @@ describe('the hub’s unread count on the dock (HIVE-159)', () => {
   });
 
   it('badges this dock on a standalone app', () => {
-    presenter!.announceUnread(3);
+    presenter!.announceBadge(3);
 
     expect(app.dock?.setBadge).toHaveBeenCalledWith('3');
   });
@@ -236,7 +242,7 @@ describe('the hub’s unread count on the dock (HIVE-159)', () => {
   it('does not badge the dock of a serving machine', () => {
     setServerMode(true);
 
-    presenter!.announceUnread(3);
+    presenter!.announceBadge(3);
 
     expect(app.dock?.setBadge).not.toHaveBeenCalled();
   });

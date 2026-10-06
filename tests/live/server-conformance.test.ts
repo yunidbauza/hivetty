@@ -944,8 +944,8 @@ interface RendererDriver {
  * registry `registerIpcHandlers` fills. That surface is deliberately **not**
  * `ipcMain`, and the whole of HIVE-144 lives on `ipcMain`: `config:set-remote`
  * unbinds the channel it is answering on there, `registerRemoteProxy` rebinds
- * those same channel names against a socket there, and Ruling 24's three
- * `PROCESS_LOCAL` channels are the ones that keep answering locally *there*
+ * those same channel names against a socket there, and the `PROCESS_LOCAL`
+ * channels (three at Ruling 24, ten since HIVE-211) keep answering locally *there*
  * while everything beside them is proxied. A `ws` client cannot see any of it.
  * The renderer is the only caller that can, because it is the only caller
  * `ipcMain` has — which is precisely why "a second app attaches" was left as a
@@ -2115,6 +2115,40 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       expect(payload.projects.map((project) => project.id)).toContain(seededProjectId);
     }, 30_000);
 
+    it('10b. answers changed-files:list over an attached socket (HIVE-201)', async () => {
+      const client = await attached();
+      const result = await client.call(CH.changedFilesList, undefined);
+
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { sessions: expect.any(Array) },
+      });
+    }, 30_000);
+
+    it('10c. answers jira:detail over an attached socket (HIVE-202)', async () => {
+      const client = await attached();
+      const result = await client.call(CH.jiraDetail, { key: 'HIVE-1' });
+
+      // The served app has no Jira configured: what is proved is that the read
+      // crosses the socket and answers with a JiraResult, not what Jira says.
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { ok: false },
+      });
+    }, 30_000);
+
+    it('10d. answers jira:users over an attached socket (HIVE-216)', async () => {
+      const client = await attached();
+      const result = await client.call(CH.jiraUsers, { query: 'da' });
+
+      // No Jira configured on the served app: what is proved is that the read
+      // crosses the socket and answers with a JiraResult.
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { ok: false },
+      });
+    }, 30_000);
+
     it('11. answers github:prs over an attached socket', async () => {
       const client = await attached();
       const result = await client.call(CH.githubPrs, undefined);
@@ -2124,6 +2158,55 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       // answers, not what it answers. `GhResult` is a result either way — the
       // handler reports a missing `gh` as a value, never as a throw.
       expect(result.kind).toBe('result');
+    }, 60_000);
+
+    it('11b. answers github:pr-detail over an attached socket (HIVE-205)', async () => {
+      const client = await attached();
+      const result = await client.call(CH.githubPrDetail, { owner: 'hive-conformance', repo: 'nowhere', n: 1 });
+
+      // No configured project maps this repository (and `gh` may be absent):
+      // what is proved is that the execute-graded read crosses the socket and
+      // answers with a GhResult refusal, never a throw.
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { ok: false },
+      });
+    }, 60_000);
+
+    it('11c. answers github:pr-comment over an attached socket (HIVE-205)', async () => {
+      const client = await attached();
+      const result = await client.call(CH.githubPrComment, {
+        owner: 'hive-conformance',
+        repo: 'nowhere',
+        n: 1,
+        body: 'never posted: the scope check refuses an unmapped repository first',
+      });
+
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { ok: false },
+      });
+    }, 60_000);
+
+    it.each([
+      ['11d', CH.githubPrRuns, { owner: 'hive-conformance', repo: 'nowhere', branch: 'main' }],
+      ['11e', CH.githubRunJobs, { owner: 'hive-conformance', repo: 'nowhere', id: 1 }],
+      ['11f', CH.githubJobLog, { owner: 'hive-conformance', repo: 'nowhere', id: 1 }],
+      ['11g', CH.githubRerunFailed, { owner: 'hive-conformance', repo: 'nowhere', id: 1 }],
+      ['11h', CH.githubPrDiff, { owner: 'hive-conformance', repo: 'nowhere', n: 1 }],
+      ['11i', CH.githubPrThread, { owner: 'hive-conformance', repo: 'nowhere', n: 1, threadId: 'PRRT_never', op: 'resolve' }],
+      ['11j', CH.githubPrViewed, { owner: 'hive-conformance', repo: 'nowhere', n: 1, path: 'never.ts', viewed: true }],
+      ['11k', CH.githubPrTimeline, { owner: 'hive-conformance', repo: 'nowhere', n: 1 }],
+    ] as const)('%s. answers %s over an attached socket (HIVE-206, HIVE-207, HIVE-208)', async (_n, channel, payload) => {
+      const client = await attached();
+      const result = await client.call(channel, payload);
+
+      // Unmapped (and `gh` may be absent): the execute-graded call crosses the
+      // socket and answers with a GhResult refusal, never a throw.
+      expect(result, `served app's stderr so far:\n${appRecord?.stderr || '(empty)'}`).toMatchObject({
+        kind: 'result',
+        payload: { ok: false },
+      });
     }, 60_000);
 
     it('12. carries the EOUTSIDE code itself, not a flattened message', async () => {
@@ -2267,6 +2350,19 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       } finally {
         rmSync(credentialFile, { force: true });
       }
+    }, 30_000);
+
+    /**
+     * 29b. Try now, hand-built (HIVE-211). The proxy answers `remote:dial-now`
+     * from the asking machine's own reconnect loop, so no shipped client sends
+     * it; a server has no loop of a peer's to restart, and refuses it.
+     */
+    it('29b. refuses a hand-built remote:dial-now', async () => {
+      const client = await attached();
+      const result = await client.call(CH.remoteDialNow, undefined);
+
+      expect(result).toMatchObject({ kind: 'error', code: 'remote-refused' });
+      expect((result as ErrorFrame).message).toMatch(/own reconnect loop/);
     }, 30_000);
 
     it('15. delivers ledger:changed and agents:changed to the attached client', async () => {
@@ -2748,7 +2844,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       for (const key of keys) expect(SNAPSHOT_CHANNELS).toContain(key);
 
       /*
-        Five of the seven asserted individually rather than by count, so a
+        Six of the eight asserted individually rather than by count, so a
         failure names which one went missing. `github:prs` is deliberately not
         among them: it shells out to a real `gh` and races
         `SNAPSHOT_READ_BUDGET_MS`, and Ruling 15 says a read that misses that
@@ -2761,6 +2857,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         CH.agentsList,
         CH.ledgerList,
         CH.notificationsList,
+        CH.changedFilesList,
       ]) {
         expect(keys, `snapshot was missing ${channel}`).toContain(channel);
       }
@@ -3651,7 +3748,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       })()`;
       const addressField = `${FIELD('Server address')} !== null`;
 
-      await ui.evaluate(`document.querySelector('button[aria-label="Settings"]').click()`);
+      await ui.evaluate(`[...document.querySelectorAll('nav[aria-label="Places"] button')].find((b) => b.textContent.trim() === 'Settings').click()`);
       await untilUi(
         `[...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Advanced')`,
         'the Settings overlay to offer an Advanced section',
@@ -3742,7 +3839,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         `[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Reload').click()`,
       );
       await untilUi(
-        `/Reloaded — 1 project\\./.test(document.body.innerText)`,
+        `/Reloaded — 1 project[.;]/.test(document.body.innerText)`,
         "a Reload answered by the server, which is what puts this window in a boot-attached client's state",
       );
 
@@ -3756,15 +3853,10 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       expect(attachedText).toContain(hostname());
 
       /*
-        The header chip, read off the page rather than a component test
-        (HIVE-140 audit, gap 4): HIVE-144's acceptance asked for it present
-        while attached and absent in local mode, in a real window.
+        HIVE-196: round two has no header; the bar's foot names the server.
       */
-      const HEADER_CHIPS = `document.querySelector('[data-testid="header-chips"]')?.innerText ?? ''`;
-      await untilUi(
-        `(${HEADER_CHIPS}).includes('attached · ${hostname()}')`,
-        'the header chip to name the attached server',
-      );
+      const CONNECTION = `document.querySelector('[data-testid="connection-item"]')?.innerText ?? ''`;
+      await untilUi(`(${CONNECTION}).includes('${hostname()}')`, 'the connection item to name the attached server');
 
       /*
         **The address field is present and correct here, and HIVE-149 is what
@@ -3838,11 +3930,9 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         60_000,
       );
       expect(await ui.evaluate<string | null>(`${SWITCH}.getAttribute('aria-checked')`)).toBe('false');
-      // And the chip goes with the socket: nothing in the header claims a link.
-      // Every state of the chip names the server, so the name's absence is the
-      // test, not the word "attached": a "disconnected" chip left standing after
-      // a deliberate detach is the regression this guards.
-      await untilUi(`!(${HEADER_CHIPS}).includes('· ${hostname()}')`, 'the header chip to go once detached');
+      // And the link goes with the socket: the connection item reads Local, not
+      // a "disconnected" name left standing after a deliberate detach.
+      await untilUi(`(${CONNECTION}).trim() === 'Local'`, 'the connection item to read Local once detached');
 
       const info = await ui.evaluate<AppInfo>('window.hive.appInfo()');
       expect(info.attachedServerName).toBeNull();
@@ -3958,7 +4048,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         transition it exists to observe.
       */
       await renderer.evaluate(
-        'window.__link = null; window.hive.remote.onLinkStatus((status) => { window.__link = status; }); true',
+        'window.__link = null; window.__links = []; window.hive.remote.onLinkStatus((status) => { window.__link = status; window.__links.push(status); }); true',
       );
 
       /*
@@ -4012,6 +4102,28 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       expect(linkWhileUp.attachedServerName).not.toBeNull();
 
       /*
+        HIVE-211: the reconnect line is drawn on round two's stage, the
+        default layout (HIVE-213).
+      */
+      const ui = renderer;
+      const until = (expression: string, what: string, timeoutMs = 30_000): Promise<void> =>
+        waitForAsync(
+          async () => {
+            try {
+              return await ui.evaluate<boolean>(expression);
+            } catch {
+              return false;
+            }
+          },
+          what,
+          timeoutMs,
+        );
+      const BUTTON = (text: string, scope = 'document'): string =>
+        `[...${scope}.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(text)})`;
+      const LINE = `[...document.querySelectorAll('[role="status"]')].find((s) => s.innerText.includes('Lost the Hive on'))`;
+      const serverName = linkWhileUp.attachedServerName ?? '';
+
+      /*
         The drop itself: the server process is killed outright. No close frame,
         no detach — the shape a rebooting mini or a tailnet going down actually
         has, and the one HIVE-144 left unhandled.
@@ -4036,6 +4148,33 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         'the client to report it is reconnecting, not attached',
         60_000,
       );
+
+      // HIVE-211: across the top of the stage, naming the server, counting down.
+      await until(
+        `(${LINE})?.innerText.includes(${JSON.stringify(`Lost the Hive on ${serverName}.`)}) === true && (${LINE}).innerText.includes('Reconnecting in')`,
+        'the reconnect line to name the lost server and count down',
+      );
+
+      /*
+        Try now, against a backoff parked at least four seconds out: the third
+        step. A restart is the only thing that emits attempt 1 again, so a status
+        with attempt 1 after the click is the dial happening at once rather than
+        at the pending step. The server is still down, so that dial fails and
+        the schedule carries on from there.
+      */
+      await until('(window.__link?.attempt ?? 0) >= 3', 'the backoff to reach its third step', 30_000);
+      const clickedAt = await ui.evaluate<number>(
+        `(() => { window.__linksAtTry = window.__links.length; ${BUTTON('Try now')}.click(); return Date.now(); })()`,
+      );
+      await until(
+        `window.__links.slice(window.__linksAtTry).some((s) => s.state === 'reconnecting' && s.attempt === 1)`,
+        'Try now to restart the backoff and dial at once',
+        3_000,
+      );
+      const restarted = await ui.evaluate<RemoteLinkStatus>(
+        `window.__links.slice(window.__linksAtTry).find((s) => s.state === 'reconnecting' && s.attempt === 1)`,
+      );
+      expect(Math.abs((restarted.nextAttemptAt ?? 0) - clickedAt)).toBeLessThan(1_000);
 
       /*
         The server comes back on the same port, from the same config — which by
@@ -4084,6 +4223,9 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
       */
       const config = await renderer.evaluate<ConfigSnapshot>('window.hive.config.get()');
       expect(config.projects.map((project) => project.id)).toEqual([servedProjectId]);
+
+      // HIVE-211: and the line is gone with the outage.
+      await until(`${LINE} === undefined`, 'the reconnect line to go once reattached');
     }, 300_000);
 
     /**
@@ -4379,6 +4521,13 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
           `document.querySelector('button[aria-label="Close settings"]')?.click(); true`,
         );
         expect(await pinFocus(), 'B’s window pinned as in front').toBe(true);
+        // Round two boots on Home (HIVE-213): the row is in the Sessions list, under a folded project.
+        await view.evaluate(
+          `[...document.querySelectorAll('nav[aria-label="Places"] button')].find((b) => b.textContent.trim().startsWith('Sessions')).click(); true`,
+        );
+        await view.evaluate(
+          `[...document.querySelectorAll('button[aria-label^="Unfold "]')].forEach((b) => b.click()); true`,
+        );
         const staged = waitForAsync(
           () =>
             view.evaluate<boolean>(`(() => {
@@ -4545,7 +4694,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
           );
         }
 
-        await ui.evaluate(`document.querySelector('button[aria-label="Settings"]').click()`);
+        await ui.evaluate(`[...document.querySelectorAll('nav[aria-label="Places"] button')].find((b) => b.textContent.trim() === 'Settings').click()`);
         await until(hasButton('Advanced'), 'the Settings overlay');
         // A bridge-driven attach does not hydrate the store; Reload is the
         // control that does, answered by the server (see 21h).

@@ -2,6 +2,7 @@ import { Brain } from '@phosphor-icons/react';
 
 import {
   chipLabel,
+  chipParts,
   clockLabel,
   dayClockLabel,
   pctLabel,
@@ -17,6 +18,8 @@ interface StatProps {
   pct: number;
   /** The word beside the number — `ctx`, or a reset time for the two limits. */
   detail: string;
+  /** The narrow header's detail (HIVE-213): `5h` / `wk`, so the two limits stay told apart. */
+  short?: string;
   /** Names the quantity for assistive tech; never abbreviated. */
   label: string;
 }
@@ -31,12 +34,28 @@ interface StatProps {
  * exists must take its divider with it — a border left behind by an absent stat
  * is a hairline against nothing.
  */
-function Stat({ pct, detail, label }: StatProps) {
+function Stat({ pct, detail, short, label }: StatProps) {
   return (
     <span className="flex shrink-0 items-center gap-1 border-l border-border pl-2">
       <GaugeRing pct={pct} label={label} />
       <span className={TONE_TEXT[gaugeTone(pct)]}>{pctLabel(pct)}</span>
-      <span className="text-subtle">{detail}</span>
+      {short === undefined ? (
+        <span data-detail="only" className="text-subtle @max-[620px]:hidden">
+          {detail}
+        </span>
+      ) : (
+        <>
+          <span data-detail="long" className="text-subtle @max-[880px]:hidden">
+            {detail}
+          </span>
+          <span
+            data-detail="short"
+            className="hidden text-subtle @max-[880px]:inline @max-[620px]:hidden"
+          >
+            {short}
+          </span>
+        </>
+      )}
     </span>
   );
 }
@@ -115,19 +134,31 @@ function Stat({ pct, detail, label }: StatProps) {
  * all rather than assumed away — the tooltip drops it too, so nothing on screen
  * half-reports a window.
  *
- * ## Width, and what actually happens when the header narrows
+ * ## Width, and what gives way
  *
- * The fleet counts give first: they drop to bare numbers so this chip keeps its
- * stats (`status-counts.tsx`). Only past that does the deficit land here, and
- * `overflow-hidden` on the row lets the *stats* fall off the end rather than
- * forcing the header to scroll.
+ * The chip sizes to its content. The session header is a size container and
+ * gives way in order as the stage narrows (HIVE-213, HIVE-220; widths are the
+ * header's):
  *
- * It **clips rather than ellipsises**, and that is deliberate rather than a
- * `truncate` that failed. `text-overflow` acts on inline content; every child
- * of this row is a flex item, so an ellipsis has nothing to attach to and
- * `truncate` here would silently do nothing but hide the overflow. Clipping at a
- * hairline separator reads as "there is more", which is the honest signal — and
- * the full string, every label spelled out, stays in the `title`.
+ * 1. the title truncates;
+ * 2. ≤ 880px, the resets give way to `5h` / `wk` (both spans render; the
+ *    container picks one);
+ * 3. ≤ 720px, the header's status word hides (its dot keeps it as a title);
+ *    measured, the row needs ~705px with the word and this label (HIVE-219;
+ *    retuned to 720px for the rails' grip gutters, #71);
+ * 4. ≤ 700px, the label shortens to the model name, window and effort left to
+ *    the tooltip;
+ * 5. ≤ 620px, the detail words go: each stat is its ring and percentage;
+ * 6. ≤ 560px, the label goes: the brain icon alone;
+ * 7. ≤ 500px, the title column's floor drops from 140px to 96px.
+ *
+ * Each breakpoint sits above the width its row needs with the steps before it
+ * (690, 603, 541, 475px), so the header at 1200px with both panels open (452px, the rails' grip gutters included)
+ * fits with the icon alone and room to spare.
+ *
+ * The three percentages never go. The full string, model, window, effort and
+ * both resets included, stays in `title` at every step. The header's model slot
+ * clips at its end only if these steps ever miss, so the menu stays reachable.
  *
  * The separators are hairline borders rather than `│` glyphs so they do not
  * change width with the font.
@@ -142,6 +173,7 @@ export function ModelChip() {
   const fiveHour = pctOrNull(metrics?.fiveHourPct);
   const sevenDay = pctOrNull(metrics?.sevenDayPct);
 
+  const parts = chipParts(metrics, entity.model, entity.effort);
   const label = chipLabel(metrics, entity.model, entity.effort);
   const fiveHourReset = clockLabel(metrics?.fiveHourResetsAt);
   const sevenDayReset = dayClockLabel(metrics?.sevenDayResetsAt);
@@ -172,7 +204,7 @@ export function ModelChip() {
     <span
       title={title}
       /*
-        A stable handle for the layout specs, like `status-counts` already has.
+        A stable handle for the layout specs.
         The Electron suite used to find this element by `getByTitle(/\(1M\)/)`,
         which stopped working the moment the window suffix became *derived* from
         `metrics.contextWindow`: that suite stubs `claude` out entirely
@@ -186,24 +218,25 @@ export function ModelChip() {
       /*
         Plain text, not a pill.
 
-        This used to be a `Chip` — `rounded-full bg-chip px-3 py-1` — which gave
-        the header two competing surfaces: a filled capsule on the left and the
-        fleet counts sitting as bare text on the right, both of them mono, muted
-        and reporting the same *kind* of thing. The fill implied the metrics were
-        a distinct object you could act on. They are a readout, exactly as the
-        counts are, so they now render like one and the header reads as one line
-        of status text broken by the centre.
-
-        The type matches `status-counts.tsx` (`font-mono text-xs text-muted`)
-        rather than the chip's `text-[11.5px]`: with no capsule to set them
-        apart, two mono sizes half a pixel apart across one 56px row is a
-        misalignment, not a distinction.
+        This used to be a `Chip` — `rounded-full bg-chip px-3 py-1`. The fill
+        implied the metrics were a distinct object you could act on. They are a
+        readout, so they render like one: `tabular-nums text-xs text-muted` rather
+        than the chip's `text-ui-sm`.
       */
-      className="flex min-w-0 items-center gap-1.5 whitespace-nowrap font-mono text-xs text-muted"
+      className="flex items-center gap-1.5 whitespace-nowrap tabular-nums text-xs text-muted"
     >
       <Brain size={13} weight="regular" className="shrink-0 text-brand" />
-      <span className="flex min-w-0 items-center gap-2 overflow-hidden">
-        <span className="shrink-0">{label}</span>
+      <span className="flex items-center gap-2">
+        {/* Both render; the header's width picks one, or neither (HIVE-220). */}
+        <span data-label="full" className="shrink-0 @max-[700px]:hidden">
+          {label}
+        </span>
+        <span
+          data-label="model"
+          className="hidden shrink-0 @max-[700px]:inline @max-[560px]:hidden"
+        >
+          {parts.name}
+        </span>
 
         {context === null ? null : (
           <Stat pct={context} detail="ctx" label="context" />
@@ -213,6 +246,7 @@ export function ModelChip() {
           <Stat
             pct={fiveHour}
             label="session limit"
+            short="5h"
             /*
               The window's *name* when the percentage arrived without a reset,
               not a second em dash. The two travel together in every payload
@@ -227,6 +261,7 @@ export function ModelChip() {
           <Stat
             pct={sevenDay}
             label="weekly limit"
+            short="wk"
             detail={sevenDayReset === null ? 'week' : `↻ ${sevenDayReset}`}
           />
         )}

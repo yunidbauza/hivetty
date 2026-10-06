@@ -109,6 +109,13 @@ describe('SkillBundle', () => {
     ).toHaveTextContent('too large');
   });
 
+  it('dims an excluded row’s icon, and its name by text token (HIVE-225)', () => {
+    render(<SkillBundle {...props} skill={skill(manifest)} />);
+    const name = screen.getByText('big.bin');
+    expect(name).toHaveClass('text-subtle');
+    expect(name.closest('.opacity-55')).toBeNull();
+  });
+
   it('selects a folder as it opens it', () => {
     const onSelectDir = vi.fn();
     render(

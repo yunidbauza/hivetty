@@ -229,7 +229,7 @@ test('bare ← at an empty Claude prompt returns to the overmind', async ({}, te
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
     await collectOutput(page);
     await startSession(page, PROJECT);
 
@@ -274,7 +274,7 @@ test('bare ← with a half-written message stays in the session', async ({}, tes
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
     await collectOutput(page);
     await startSession(page, PROJECT);
 

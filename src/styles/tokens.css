@@ -7,7 +7,7 @@
  * `data-theme` flip on <body> recolours the whole app.
  *
  * Components use the resulting utilities (`bg-panel`, `text-muted`,
- * `border-soft`). Raw hex literals in component code are banned.
+ * `border-border-soft`). Raw hex literals in component code are banned.
  *
  * The terminal text palette is deliberately NOT here — it never reaches CSS.
  * It lives in `src/lib/terminal/ansi.ts` and is consumed as JS by xterm's
@@ -35,11 +35,13 @@
   --cc-border: #273159;
   --cc-border-soft: #1e2747;
   --cc-ink: #e9effc;
-  --cc-muted: #98a3cc;
-  --cc-subtle: #6b779f;
+  --cc-muted: #9faad0;
+  --cc-subtle: #8d97b8;
   --cc-brand: #8fa7f2;
   --cc-green: #74b79c;
   --cc-amber: #ffac47;
+  /* Amber drawn as text. Dark already clears AA, so it is the amber itself. */
+  --cc-amber-text: var(--cc-amber);
   --cc-red: #ff8d85;
   --cc-chip: #1c2648;
   /**
@@ -71,7 +73,7 @@
    */
   --cc-term-row-hover: #161f45;
   --cc-term-row-active: #1a2450;
-  --cc-term-head: #4d5a86;
+  --cc-term-head: #8590b0;
   /* Unselected track and dot outline in the picker's steppers (story 044). */
   --cc-term-track: #3a4674;
 
@@ -84,25 +86,10 @@
    * (`var(--blue-600/700/800)`, which its light theme leaves alone). Reusing
    * `--cc-brand` here would repaint the logo tile pale blue in dark mode.
    */
-  --cc-brand-fill: #5e76d0;
+  --cc-brand-fill: #5470cb;
   --cc-brand-fill-hover: #4f6ac5;
   --cc-brand-fill-strong: #334fa9; /* Serenity — the signature brand blue */
   --cc-on-brand: #ffffff;
-
-  /**
-   * The diffused glow behind the header's hive mark (HIVE-100).
-   *
-   * The splash's `.bloom` at a smaller scale, and for the same reason: the hive
-   * sprite is a dark creature, so on `--cc-bg` it loses its silhouette to the
-   * ground it sits on. A pool of the signature blue behind it gives the outline
-   * something to be dark *against*.
-   *
-   * A token rather than a literal in the utility, because the strength has to
-   * differ per theme even though `--cc-brand-fill-strong` deliberately does
-   * not: on a near-white panel the same 55% reads as a blue smudge around the
-   * logo rather than as depth behind it.
-   */
-  --cc-bloom: color-mix(in srgb, var(--cc-brand-fill-strong) 72%, transparent);
 
   /* Notification badge fill, and darker than `--cc-red` so that the badge text
      above it clears AA. What that text *is* is `--cc-on-danger`, below — this
@@ -122,19 +109,34 @@
    */
   --cc-on-danger: #ffffff;
 
+  /* The creature (HIVE-199): the ground under a busy comb patch, and the
+     mutalisk's wings, bones and claws. Themeable, optional keys. */
+  --cc-creep: #5b3d8f;
+  --cc-chitin: #b9a7f0;
+  /* The Hatchery egg's shell (HIVE-221): a mix, not a hex, so an imported theme
+     derives it. Repeated in the light block: a custom property resolves where it
+     is declared, and light overrides `--cc-bg` on `body`, below `:root`. */
+  --cc-shell: color-mix(in srgb, var(--cc-bg) 91%, var(--cc-chitin));
+
+  /* The Brood's tissue ramp (HIVE-221): shadowed, mid and lit flesh, the glow's
+     core and the ground. Themeable, optional keys; the canvas reads them. */
+  --cc-tissue-deep: #171b32;
+  --cc-tissue: #353556;
+  --cc-tissue-lit: #c3b5f2;
+  --cc-glow-core: #e2ffee;
+  --cc-ground: #141128;
+
   /**
-   * Rail density (story 105) — the comfortable values, which are the numbers
-   * the rails have always used.
+   * Density (story 105) — the comfortable values.
    *
    * Spacing rather than colour, but the same mechanism and the same reason: one
-   * attribute write on <body> re-spaces both rails and every row inside them,
-   * and no component re-renders to do it. Density is a preference, so it has to
+   * attribute write on <body> re-spaces every list row and card, and no
+   * component re-renders to do it. Density is a preference, so it has to
    * survive a reload; a prop threaded through six panels would have to be read
    * from the store by each of them.
    *
-   * These are what actually read as "dense" — rail width, the gap under a
-   * rail's tab bar, the gap between items in a list, and the vertical padding
-   * of a bordered card.
+   * These are what actually read as "dense" — the gap between items in a
+   * list, and the vertical padding of a row and of a bordered card.
    *
    * There are two list scales because the panels already had two: work and the
    * activity feed sit at 10px, the inbox and PRs at 8px. Collapsing them to one
@@ -191,26 +193,12 @@
   --cc-code-active-line: #202b50;
   --cc-code-selection: #2b3768;
 
-  --cc-rail-w-left: 320px;
-  --cc-rail-w-right: 316px;
-  /**
-   * The same two widths, as they are when the rail is **open**.
-   *
-   * A collapsed rail paints the pair above at `RAIL_STRIP` — 44px — which is
-   * the truth for the rail and the wrong number for anything that merely wants
-   * to line up with where the rail's edge lives. `header.tsx` is the caller
-   * that cares: sizing its zones from the plain pair made the whole header
-   * reflow every time a rail was toggled, sliding the chips into the wordmark
-   * and the counts into the theme button.
-   *
-   * These must stay in lockstep with the pair above — `rail-width.test.ts`
-   * asserts it, the same way it already asserts both against `RAIL_MIN`.
-   * `applyRailWidths` overrides them inline only when a rail has been dragged
-   * off its default, so these values are what is painted the rest of the time.
-   */
-  --cc-rail-w-left-open: 320px;
-  --cc-rail-w-right-open: 316px;
-  --cc-rail-gap: 18px;
+  /* Round two's frame (HIVE-195): fixed, not density-dependent. */
+  --cc-bar-w: 64px;
+  --cc-list-w: 300px;
+  /* Round two's session panel (HIVE-201): open, and closed to its strip. */
+  --cc-session-panel-w: 320px;
+  --cc-session-strip-w: 46px;
   --cc-list-gap: 10px;
   --cc-list-gap-sm: 8px;
   --cc-row-py: 7px;
@@ -222,12 +210,6 @@
  * unmodified — the same arrangement `data-theme` uses for dark.
  */
 body[data-density='compact'] {
-  --cc-rail-w-left: 284px;
-  --cc-rail-w-right: 276px;
-  /** In lockstep with the pair above — see the `:root` block. */
-  --cc-rail-w-left-open: 284px;
-  --cc-rail-w-right-open: 276px;
-  --cc-rail-gap: 11px;
   --cc-list-gap: 6px;
   --cc-list-gap-sm: 5px;
   --cc-row-py: 4px;
@@ -243,20 +225,28 @@ body[data-theme='light'] {
   --cc-border: #d4dee3;
   --cc-border-soft: #edf2f4;
   --cc-ink: #2c2f34;
-  --cc-muted: #73767c;
-  --cc-subtle: #8e949c;
+  --cc-muted: #5a5d63;
+  --cc-subtle: #686d73;
   --cc-brand: #334fa9;
   --cc-green: #2e6b52;
   --cc-amber: #c77414;
-  --cc-red: #d3372f;
+  /* #c77414 as text is 3.5:1 on white; 35% ink takes it past 4.5:1 on every light ground in every
+     built-in theme, the terminal rows included (HIVE-210, HIVE-223). A mix, not a hex: an imported
+     theme derives it from its own colours. */
+  --cc-amber-text: color-mix(in srgb, var(--cc-amber) 65%, var(--cc-ink));
+  --cc-red: #cd332b;
   --cc-chip: #edf2f4;
   /* Light lifts by *deepening*: the chip already sits below a white panel, so
      its hover continues down rather than back up toward the panel. */
   --cc-chip-hover: #e2eaee;
-
-  /* The mark needs no rescuing from a light ground — it is already the darkest
-     thing on it. What is left is a hint of depth, not a halo. */
-  --cc-bloom: color-mix(in srgb, var(--cc-brand-fill-strong) 14%, transparent);
+  --cc-creep: #b7a3e6;
+  --cc-chitin: #6a54b0;
+  --cc-tissue-deep: #7a68b6;
+  --cc-tissue: #d4ccee;
+  --cc-tissue-lit: #fbf9ff;
+  --cc-glow-core: #96deb8;
+  --cc-ground: #eeeafa;
+  --cc-shell: color-mix(in srgb, var(--cc-bg) 91%, var(--cc-chitin));
 
   /**
    * The terminal surface, which **does** follow the theme.
@@ -289,7 +279,7 @@ body[data-theme='light'] {
    */
   --cc-term-row-hover: #eef4f9;
   --cc-term-row-active: #e4edf5;
-  --cc-term-head: #6b6e74;
+  --cc-term-head: #686b71;
   --cc-term-track: #d4dee3;
 
   /**
@@ -320,6 +310,12 @@ body[data-theme='light'] {
   --cc-code-selection: #cfe3f7;
 }
 
+/*
+ * Deliberately unbound: `--cc-shell`, `--cc-tissue*`, `--cc-glow-core` and
+ * `--cc-ground` are the creatures' and the splash's, read raw by canvas code
+ * (`src/splash/stage.ts`) and by inline `var()`; no component should paint
+ * with them, so they get no utility. A `bg-ground` would silently not exist.
+ */
 /**
  * `inline` matters: it makes the utilities emit `var(--cc-*)` rather than
  * resolving the value at build time, which is what lets the `data-theme`
@@ -331,6 +327,10 @@ body[data-theme='light'] {
   --color-panel-2: var(--cc-panel-2);
   --color-hover: var(--cc-hover);
   --color-active: var(--cc-active);
+  /* The one veil behind a modal or a cover (HIVE-225): the theme's own ground, so a theme repaints it. */
+  --color-scrim: color-mix(in srgb, var(--cc-bg) 70%, transparent);
+  /* A button's edge (the pill buttons): stronger than a hairline, mixed where it is used so light and imported themes derive their own. */
+  --color-edge: color-mix(in srgb, var(--cc-muted) 38%, var(--cc-border));
   --color-border: var(--cc-border);
   --color-border-soft: var(--cc-border-soft);
   --color-ink: var(--cc-ink);
@@ -339,6 +339,9 @@ body[data-theme='light'] {
   --color-brand: var(--cc-brand);
   --color-green: var(--cc-green);
   --color-amber: var(--cc-amber);
+  --color-amber-text: var(--cc-amber-text);
+  --color-creep: var(--cc-creep);
+  --color-chitin: var(--cc-chitin);
   --color-red: var(--cc-red);
   --color-chip: var(--cc-chip);
   --color-chip-hover: var(--cc-chip-hover);
@@ -354,6 +357,24 @@ body[data-theme='light'] {
   --color-on-brand: var(--cc-on-brand);
   --color-danger-solid: var(--cc-danger-solid);
   --color-on-danger: var(--cc-on-danger);
+  /**
+   * Status tints (HIVE-224): one map, mixed in srgb from the live tokens, so a
+   * theme recolours them. `soft` washes a line or a banner, `strong` fills a
+   * pill or a badge, `edge` is a tinted border or stroke. Data-viz fills,
+   * glows and gradients keep their own mix (DESIGN-SYSTEM.md, "Status → colour").
+   */
+  --color-green-soft: color-mix(in srgb, var(--cc-green) 10%, transparent);
+  --color-green-strong: color-mix(in srgb, var(--cc-green) 16%, transparent);
+  --color-green-edge: color-mix(in srgb, var(--cc-green) 50%, var(--cc-border));
+  --color-amber-soft: color-mix(in srgb, var(--cc-amber) 10%, transparent);
+  --color-amber-strong: color-mix(in srgb, var(--cc-amber) 16%, transparent);
+  --color-amber-edge: color-mix(in srgb, var(--cc-amber) 50%, var(--cc-border));
+  --color-red-soft: color-mix(in srgb, var(--cc-red) 10%, transparent);
+  --color-red-strong: color-mix(in srgb, var(--cc-red) 16%, transparent);
+  --color-red-edge: color-mix(in srgb, var(--cc-red) 50%, var(--cc-border));
+  --color-brand-soft: color-mix(in srgb, var(--cc-brand) 10%, transparent);
+  --color-brand-strong: color-mix(in srgb, var(--cc-brand) 16%, transparent);
+  --color-brand-edge: color-mix(in srgb, var(--cc-brand) 50%, var(--cc-border));
   /**
    * The code roles are bound here too, even though CodeMirror reaches them as
    * `var(--cc-code-*)` directly rather than through a utility. The editor's
@@ -373,16 +394,43 @@ body[data-theme='light'] {
   --color-code-active-line: var(--cc-code-active-line);
   --color-code-selection: var(--cc-code-selection);
 
-  --font-mono: ui-monospace, Menlo, 'SF Mono', monospace;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, 'SF Mono', monospace;
   /**
-   * The one non-mono face in the app: the picker's title (story 044) and
-   * anything else the concept sets in a serif. System stack rather than a
-   * webfont — this is a prototype, and a network round-trip for one heading is
-   * a poor trade.
+   * The type scale (HIVE-225): five steps, app-wide, nothing between them.
+   * Titles, names and reading text, controls, second lines, and micro labels.
+   * 11px is the floor for functional text. No `--text-*--line-height`: a size
+   * swap from an arbitrary `text-[Npx]` must not change line height.
    */
-  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
+  --text-ui-lg: 15px;
+  --text-ui: 13px;
+  --text-control: 12.5px;
+  --text-ui-sm: 11.5px;
+  --text-micro: 11px;
+  /**
+   * Words, beside the mono that machine strings keep (HIVE-204): the agent
+   * page's descriptions, form labels and footers, and the picker's title. IBM
+   * Plex Sans, bundled (`styles/fonts.ts`), with the system face behind it.
+   */
+  --font-sans: 'IBM Plex Sans Variable', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
   --animate-ccpulse: ccpulse 1.6s ease-in-out infinite;
+  --animate-ccflow: ccflow 1s linear infinite;
+  --animate-ccbreathe: ccbreathe 3.2s ease-in-out infinite;
   --animate-ccblink: ccblink 1s step-end infinite;
+  --animate-ccflap: ccflap 360ms ease-in-out 1;
+  --animate-cceggrock: cceggrock 7s ease-in-out infinite;
+  --animate-cceggglow: cceggglow 7s ease-in-out infinite;
+  --animate-cceggspeck: cceggspeck 7s ease-in-out infinite;
+  --animate-cceggocc: cceggocc 7s ease-in-out infinite;
+  --animate-cceggtwitch: cceggtwitch 7s ease-in-out infinite;
+  --animate-cceggheart: cceggheart 1.4s ease-in-out infinite;
+  --animate-cceggveinsil: cceggveinsil 7s ease-in-out infinite;
+  --animate-cceggveinpulse: cceggveinpulse 2.333333s ease-in-out infinite;
+  --animate-cceggcatch: cceggcatch 7s ease-in-out infinite;
+  --animate-ccspore: ccspore 7s ease-out infinite;
+  --animate-cccombrim: cccombrim 9s ease-in-out infinite;
+  --animate-cccombfail: cccombfail 9s linear infinite;
+  --animate-cccombicon: cccombicon 9s ease-in-out infinite;
+  --animate-cccreep: cccreep 7s ease-in-out infinite;
   /*
     An acted-on inbox card leaving the list (HIVE-93).
 
@@ -395,4 +443,6 @@ body[data-theme='light'] {
     `CARD_EXIT_MS`, so the two cannot drift.
   */
   --animate-ccslideout: ccslideout 220ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
+  /* The Hatchery's panel sliding in on the quiet → listed change (HIVE-205). */
+  --animate-ccslidein: ccslidein 220ms cubic-bezier(0.2, 0, 0, 1) both;
 }

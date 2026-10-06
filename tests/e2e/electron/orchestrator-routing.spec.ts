@@ -8,6 +8,8 @@ import {
   type Page,
 } from '@playwright/test';
 
+import { openConsole } from '../fixtures/places';
+
 import { launchHive } from './fixtures/hive-app';
 
 /**
@@ -139,7 +141,8 @@ test.beforeAll(async ({}, testInfo) => {
   });
   page = await app.firstWindow();
   await page.waitForLoadState('domcontentloaded');
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await openConsole(page);
 });
 
 test.afterAll(async () => {
@@ -168,13 +171,11 @@ async function run(command: string): Promise<void> {
  * Ensure the console is on screen.
  *
  * Idempotent, because these tests share one app and the previous one may have
- * left the console up already — the back button only exists on a session's meta
- * bar, so clicking unconditionally would hang waiting for a control that is
- * correctly absent.
+ * left the console up already: `openConsole` returns to the Overmind only from
+ * somewhere else, and shows the transcript only when it is folded.
  */
 async function backToOrchestrator(): Promise<void> {
-  const back = page.getByRole('button', { name: 'Back to overmind' });
-  if (await back.isVisible()) await back.click();
+  await openConsole(page);
   await expect(terminalRows('orch')).toBeVisible();
 }
 

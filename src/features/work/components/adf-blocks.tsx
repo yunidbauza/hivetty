@@ -21,12 +21,20 @@ import type { AdfBlock, AdfRun } from '@shared/jira-contract';
  */
 
 function Run({ run }: { run: AdfRun }) {
+  if (run.mention) {
+    return (
+      <span data-mention className="rounded bg-chip px-1 py-px font-medium text-brand">
+        {run.text}
+      </span>
+    );
+  }
+
   const className = cn(
     run.marks.includes('strong') && 'font-semibold text-ink',
     run.marks.includes('em') && 'italic',
     run.marks.includes('strike') && 'line-through',
     run.marks.includes('code') &&
-      'rounded-[3px] bg-chip px-1 py-px font-mono text-[11px]',
+      'rounded bg-chip px-1 py-px font-mono text-[0.9em]',
   );
 
   if (run.href !== undefined) {
@@ -67,12 +75,12 @@ function Runs({ runs }: { runs: AdfRun[] }) {
 
 function Block({ block }: { block: AdfBlock }) {
   if (block.kind === 'rule') {
-    return <hr className="my-1.5 border-border-soft" />;
+    return <hr className="border-border-soft" />;
   }
 
   if (block.kind === 'code') {
     return (
-      <pre className="overflow-x-auto rounded-[5px] bg-term-bg px-2 py-1.5 font-mono text-[11px] text-ink">
+      <pre className="overflow-x-auto rounded-md bg-term-bg px-2 py-1.5 font-mono text-[0.9em] text-ink">
         {block.runs.map((run) => run.text).join('')}
       </pre>
     );
@@ -80,7 +88,7 @@ function Block({ block }: { block: AdfBlock }) {
 
   if (block.kind === 'heading') {
     return (
-      <p className="text-[12.5px] font-semibold text-ink">
+      <p data-heading className="text-[1.08em] font-semibold text-ink">
         <Runs runs={block.runs} />
       </p>
     );
@@ -88,7 +96,7 @@ function Block({ block }: { block: AdfBlock }) {
 
   if (block.kind === 'quote') {
     return (
-      <p className="border-l-2 border-border pl-2 text-[12px] whitespace-pre-wrap text-muted">
+      <p className="border-l-2 border-border pl-2.5 whitespace-pre-wrap text-muted">
         <Runs runs={block.runs} />
       </p>
     );
@@ -96,14 +104,16 @@ function Block({ block }: { block: AdfBlock }) {
 
   if (block.kind === 'bullet' || block.kind === 'ordered') {
     return (
+      // The marker is its own column, so a wrapped line hangs under the text, not the bullet.
       <p
-        className="text-[12px] whitespace-pre-wrap text-muted"
-        style={{ paddingLeft: `${(block.depth ?? 0) * 12 + 10}px` }}
+        data-list
+        className="flex gap-[0.5em] whitespace-pre-wrap text-muted"
+        style={{ paddingLeft: `${String((block.depth ?? 0) * 1.25 + 0.75)}em` }}
       >
-        <span className="text-subtle">
-          {block.kind === 'bullet' ? '• ' : '– '}
+        <span aria-hidden className="text-subtle">{block.kind === 'bullet' ? '•' : '–'}</span>
+        <span className="min-w-0">
+          <Runs runs={block.runs} />
         </span>
-        <Runs runs={block.runs} />
       </p>
     );
   }
@@ -111,7 +121,7 @@ function Block({ block }: { block: AdfBlock }) {
   return (
     <p
       className={cn(
-        'text-[12px] whitespace-pre-wrap',
+        'whitespace-pre-wrap',
         // Slightly muted, so a node the app could not structure is visibly
         // different from one it could — without hiding it.
         block.kind === 'unknown' ? 'text-subtle' : 'text-muted',
@@ -122,17 +132,24 @@ function Block({ block }: { block: AdfBlock }) {
   );
 }
 
-export function AdfBlocks({ blocks }: { blocks: AdfBlock[] }) {
+/**
+ * Spacing in `em`, so it scales with whatever size the caller sets: paragraphs
+ * apart, list items close, a heading with room above and its body close below.
+ */
+const FLOW =
+  '[&>*+*]:mt-[0.75em] [&>[data-list]+[data-list]]:mt-[0.35em] [&>*+[data-heading]]:mt-[1.5em] [&>[data-heading]+*]:mt-[0.5em]';
+
+export function AdfBlocks({ blocks, className }: { blocks: AdfBlock[]; className?: string }) {
   if (blocks.length === 0) {
     return (
-      <p className="text-[12px] text-subtle">
+      <p className="text-control text-subtle">
         This comment has nothing this app can display.
       </p>
     );
   }
 
   return (
-    <div className="flex flex-col gap-1">
+    <div className={cn('text-control leading-relaxed', FLOW, className)}>
       {blocks.map((block, index) => (
         <Fragment key={index}>
           <Block block={block} />

@@ -1,4 +1,5 @@
 import {
+  GH_DETAIL_PAGE,
   GH_MERGED_PAGE,
   GH_OPEN_PAGE,
   GH_THREAD_PAGE,
@@ -247,3 +248,120 @@ export function buildSearchVariables(
     merged: `is:pr is:merged ${scope} ${safe} sort:updated-desc`,
   };
 }
+
+const PAGE = String(GH_DETAIL_PAGE);
+const PR_VARIABLES = 'query($owner: String!, $name: String!, $number: Int!) {';
+
+/**
+ * One PR's page (HIVE-205). A constant like {@link buildPrQuery}'s: the
+ * repository and the number travel as bound variables, never in the text.
+ *
+ * Comments, reviews and threads read the **newest** page (`last`), which
+ * GitHub still returns oldest first: past one page, the entries a reader opens
+ * the page for are the recent ones. A thread's own replies read from its start.
+ */
+export const PR_DETAIL_QUERY = [
+  PR_VARIABLES,
+  '  repository(owner: $owner, name: $name) {',
+  '    pullRequest(number: $number) {',
+  '      id number title url state isDraft body createdAt mergedAt',
+  '      baseRefName headRefName headRefOid additions deletions changedFiles',
+  '      author { login } reviewDecision mergeStateStatus',
+  `      comments(last: ${PAGE}) { nodes { author { login } body createdAt url } }`,
+  `      reviews(last: ${PAGE}) { nodes { author { login } state body submittedAt url } }`,
+  `      reviewRequests(first: ${PAGE}) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }`,
+  `      reviewThreads(last: ${PAGE}) { nodes { id isResolved isOutdated path line originalLine diffSide`,
+  `        comments(first: ${PAGE}) { nodes { author { login } body createdAt url diffHunk } } } }`,
+  `      files(first: ${PAGE}) { nodes { path additions deletions changeType viewerViewedState } }`,
+  `      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: ${PAGE}) { nodes {`,
+  '        __typename',
+  '        ... on CheckRun { name status conclusion startedAt completedAt detailsUrl databaseId checkSuite { app { slug } } }',
+  '        ... on StatusContext { context state targetUrl createdAt }',
+  '      } } } } } }',
+  '    }',
+  '  }',
+  '}',
+].join('\n');
+
+/**
+ * One PR's history for the Timeline tab (HIVE-208): its newest hundred
+ * timeline items, and for each commit its check suites, the CI bars. The
+ * Timeline makes no `gh run` reads, so the rate rule on runs holds.
+ */
+export const PR_TIMELINE_QUERY = [
+  PR_VARIABLES,
+  '  repository(owner: $owner, name: $name) {',
+  '    pullRequest(number: $number) {',
+  '      createdAt mergedAt isDraft',
+  '      timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, PULL_REQUEST_REVIEW, ISSUE_COMMENT, REVIEW_REQUESTED_EVENT, MERGED_EVENT]) { nodes {',
+  '        __typename',
+  '        ... on PullRequestCommit { url commit { oid committedDate',
+  '          checkSuites(first: 20) { nodes { status conclusion createdAt updatedAt',
+  '            workflowRun { runNumber url databaseId workflow { name } }',
+  '            checkRuns(first: 10, filterBy: { conclusions: [FAILURE, TIMED_OUT] }) { nodes { name } } } } } }',
+  '        ... on ReadyForReviewEvent { createdAt actor { login } }',
+  '        ... on ConvertToDraftEvent { createdAt actor { login } }',
+  '        ... on PullRequestReview { submittedAt author { login } state url }',
+  '        ... on IssueComment { createdAt author { login } url }',
+  '        ... on ReviewRequestedEvent { createdAt actor { login } }',
+  '        ... on MergedEvent { createdAt actor { login } }',
+  '      } }',
+  '    }',
+  '  }',
+  '}',
+].join('\n');
+
+/** The PR's node id, which `addComment` takes as its subject (HIVE-205). */
+export const PR_ID_QUERY = [
+  PR_VARIABLES,
+  '  repository(owner: $owner, name: $name) { pullRequest(number: $number) { id } }',
+  '}',
+].join('\n');
+
+/** A PR-level comment. The subject is the id {@link PR_ID_QUERY} read, never a renderer value. */
+export const PR_COMMENT_MUTATION = [
+  'mutation($subjectId: ID!, $body: String!) {',
+  '  addComment(input: { subjectId: $subjectId, body: $body }) { subject { id } }',
+  '}',
+].join('\n');
+
+/**
+ * Which PR a review thread is on (HIVE-207). A thread id comes from the
+ * renderer, so main proves it belongs to the scoped PR before writing to it.
+ */
+export const PR_THREAD_OWNER_QUERY = [
+  'query($id: ID!) {',
+  '  node(id: $id) { ... on PullRequestReviewThread { pullRequest { number repository { owner { login } name } } } }',
+  '}',
+].join('\n');
+
+export const THREAD_REPLY_MUTATION = [
+  'mutation($threadId: ID!, $body: String!) {',
+  '  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } }',
+  '}',
+].join('\n');
+
+export const THREAD_RESOLVE_MUTATION = [
+  'mutation($threadId: ID!) {',
+  '  resolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }',
+  '}',
+].join('\n');
+
+export const THREAD_UNRESOLVE_MUTATION = [
+  'mutation($threadId: ID!) {',
+  '  unresolveReviewThread(input: { threadId: $threadId }) { thread { id isResolved } }',
+  '}',
+].join('\n');
+
+/** Viewed is GitHub's own (HIVE-207): the PR id is read by main through PR_ID_QUERY. */
+export const FILE_VIEWED_MUTATION = [
+  'mutation($pullRequestId: ID!, $path: String!) {',
+  '  markFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) { pullRequest { id } }',
+  '}',
+].join('\n');
+
+export const FILE_UNVIEWED_MUTATION = [
+  'mutation($pullRequestId: ID!, $path: String!) {',
+  '  unmarkFileAsViewed(input: { pullRequestId: $pullRequestId, path: $path }) { pullRequest { id } }',
+  '}',
+].join('\n');

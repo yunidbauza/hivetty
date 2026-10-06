@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
+import { openConsole } from '../fixtures/places';
+
 /**
  * The ledger verbs on the browser target (HIVE-113).
  *
@@ -31,7 +33,8 @@ const run = async (page: Page, command: string): Promise<void> => {
 
 test.beforeEach(async ({ page }) => {
   await page.goto(APP_URL);
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
+  await openConsole(page);
   await expect(transcript(page)).toBeVisible();
 });
 

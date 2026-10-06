@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { ParsedCommand } from '@/types/command';
 import { QUIET_VERBS, USAGE } from '@/types/command';
 import type {
+  Agent,
   Effort,
   Entity,
   Model,
@@ -12,6 +13,7 @@ import type {
   Session,
   SessionStatus,
   Terminal,
+  TerminalStatus,
 } from '@/types/entity';
 import {
   branchLabel,
@@ -25,10 +27,10 @@ import {
   resolveEntityRef,
   terminalOf,
 } from '@/types/entity';
-import type { HiveNotification } from '@/types/notification';
-import type { Pr, SessionPr, TicketPr } from '@/types/pull-request';
+import type { HiveNotification, NotificationKind } from '@/types/notification';
+import type { Flap, FlapTone, HatcheryRow, Pr, SessionPr, TicketPr } from '@/types/pull-request';
 import type { TermLine } from '@/types/terminal';
-import type { Ticket } from '@/types/ticket';
+import type { Ticket, TicketDetail, TicketDetailWant, TicketProperties } from '@/types/ticket';
 
 import { isDesktop } from '@config/runtime';
 import {
@@ -37,10 +39,35 @@ import {
   describeWake,
   runsToday,
 } from '@lib/agents';
-import { readPullRequests, searchPullRequests } from '@lib/github';
-import { readJiraStatus, searchJiraIssues } from '@lib/jira';
+import { type ChecksGraph, foldPushes, jobState, layoutGraph, type Push } from '@lib/checks-graph';
+import { delegationTitle, delegationWord } from '@lib/delegation';
+import {
+  postPrComment,
+  readJobLog,
+  readPrDetail,
+  readPrDiff,
+  readPrRuns,
+  readPrTimeline,
+  readPullRequests,
+  readRunJobs,
+  rerunFailedJobs,
+  searchPullRequests,
+  writePrThread,
+  writePrViewed,
+} from '@lib/github';
+import {
+  readJiraComments,
+  readJiraDetail,
+  readJiraIssue,
+  readJiraLinks,
+  readJiraStatus,
+  readJiraTransitions,
+  searchJiraIssues,
+} from '@lib/jira';
 import { buildTicketSearchJql } from '@lib/jira-search';
 import { ledgerRows } from '@lib/ledger/console-rows';
+import { FLAP_RANK, flapTone, hatchStatus, sortHatchery } from '@lib/pr-hatch';
+import { buildTimeline, type TimelineModel } from '@lib/pr-timeline';
 import {
   projectConfigSnapshot,
   projectContainerised,
@@ -50,6 +77,7 @@ import {
   subscribeProjectConfig,
 } from '@lib/project-config';
 import { noteSessionPr, noteSessionTicket } from '@lib/session-history';
+import { type CellState, SWARM } from '@lib/swarm/comb';
 import { pickPhrase } from '@lib/swarm/phrases';
 import {
   closeChannel,
@@ -58,6 +86,23 @@ import {
   requestSpawnTerminal,
 } from '@lib/terminal/pty-transport';
 import { sendToSession } from '@lib/terminal/session-input';
+import {
+  groupTickets,
+  ticketRow,
+  type TicketGroup,
+  type TicketRowModel,
+} from '@lib/ticket-activity';
+import {
+  type Criteria,
+  epicLabel,
+  isBlocks,
+  parseCriteria,
+  SECOND_HOP_MAX_LINKS,
+  ticketLinksModel,
+  type TicketLinksModel,
+} from '@lib/ticket-links';
+import { parseTitleTags } from '@lib/ticket-tags';
+import { type DiffFile, parseUnifiedDiff } from '@lib/unified-diff';
 import { BRIDGE_ERROR } from '@lib/utils';
 import {
   SESSION_ID_PREFIX_PATTERN,
@@ -70,8 +115,24 @@ import {
   type LiveRunSummary,
   type RunSummary,
 } from '@shared/agent-contract';
+import type {
+  ChangedFile,
+  ChangedFilesEvent,
+  ChangedFilesSnapshot,
+} from '@shared/changed-files-contract';
 import type { ModeChange } from '@shared/config-contract';
-import type { GhResult, PrRecord, PrsSnapshot } from '@shared/github-contract';
+import type {
+  GhResult,
+  JobLog,
+  PrDetail,
+  PrFileViewed,
+  PrRecord,
+  PrsSnapshot,
+  PrTimeline,
+  RunJob,
+  WorkflowDef,
+  WorkflowRun,
+} from '@shared/github-contract';
 import type { IdleDetail } from '@shared/hook-contract';
 import {
   CH,
@@ -79,25 +140,48 @@ import {
   type RemoteLinkStatus,
   type SessionNameReport,
 } from '@shared/ipc-contract';
-import type { JiraIssue } from '@shared/jira-contract';
+import {
+  ISSUE_KEY_PATTERN,
+  nextTransition,
+  type JiraComment,
+  type JiraIssue,
+  type JiraTransition,
+} from '@shared/jira-contract';
 import {
   LEDGER_MEMORY_CAP,
+  OVERMIND,
   type LedgerEntry,
+  type LedgerKind,
   type LedgerReadQuery,
   type LedgerResult,
   type LedgerSnapshot,
+  type OpenAsk,
 } from '@shared/ledger-contract';
 import {
+  afterTarget,
   agentSiteFor,
+  asksMeAbout,
   buildProgressFor,
+  closedAskThreads,
+  delegatesOf,
+  holderPost,
+  isHeld,
   isShipping,
   matches,
+  mergeAsk,
+  mergeWaiting,
   openAsks,
+  prEvents,
+  prOpener,
+  reviewUrls,
+  shipStage,
+  shipTrack,
   thread,
-  type BuildProgress,
+  type Delegate,
+  type ShipTrack,
 } from '@shared/ledger-derive';
 import type { SessionMetrics } from '@shared/metrics-contract';
-import { NOTIFICATION_CAP } from '@shared/notification-contract';
+import { isSessionSummons, trimNotifications, waitsOnYou, type AskOpen } from '@shared/notification-lanes';
 import type { PlansSnapshot, SessionPlan } from '@shared/plan-contract';
 import {
   hiveNameFromTitle,
@@ -110,7 +194,9 @@ import type {
   SessionHistoryEntry,
   SessionPrRequest,
 } from '@shared/session-history-contract';
-import { useUiStore } from '@stores/ui-store';
+import { type AgentGroupKey, type TableFilter, useFleetView, useUiStore } from '@stores/ui-store';
+
+export type { AgentGroupKey } from '@stores/ui-store';
 
 /**
  * Domain state — what the system knows, as opposed to what the user is looking
@@ -179,7 +265,13 @@ export type TicketSource =
   /** Desktop with nothing configured. The panel explains rather than sits empty. */
   | { kind: 'unconfigured' }
   /** Desktop, at least one successful read. */
-  | { kind: 'live'; stale: boolean; capped: boolean }
+  | {
+      kind: 'live';
+      stale: boolean;
+      capped: boolean;
+      /** First failure of the current outage (HIVE-211); present only while stale. */
+      failedAt?: number;
+    }
   /** Desktop, and the first read failed. There is nothing to keep. */
   | { kind: 'failed'; message: string };
 
@@ -271,6 +363,9 @@ const NO_PR_SEARCH: PrSearchState = {
   error: null,
 };
 
+/** Why the PR sweep has nothing to read from (HIVE-211, D6). `null` is the browser preview. */
+export type GhSetupReason = 'not-installed' | 'unauthenticated' | 'no-repos' | null;
+
 export type PrSource =
   /** A read is in flight and there is nothing yet. The boot state. */
   | { kind: 'loading' }
@@ -280,10 +375,19 @@ export type PrSource =
    * Three ways to get here and the panel says which: no `gh` on this machine,
    * a `gh` that is not logged in, or no configured project that is a GitHub
    * repository. The browser demo lands here too.
+   *
+   * `reason` is which of those it was (HIVE-211, D6), so the stage can pick a
+   * title; `null` is the browser preview, which has no `gh` to be wrong about.
    */
-  | { kind: 'unconfigured'; message: string }
+  | { kind: 'unconfigured'; message: string; reason: GhSetupReason }
   /** At least one successful read. `repos` is how many were swept. */
-  | { kind: 'live'; stale: boolean; repos: number }
+  | {
+      kind: 'live';
+      stale: boolean;
+      repos: number;
+      /** First failure of the current outage (HIVE-211); present only while stale. */
+      failedAt?: number;
+    }
   /** The first read failed, and there is nothing to keep. */
   | { kind: 'failed'; message: string };
 
@@ -365,8 +469,28 @@ interface HiveState {
    * a project through `entity.project` — that string needs no table here.
    */
   tickets: Ticket[];
+  /**
+   * What has been read for each ticket a reader opened, keyed by issue key
+   * (HIVE-203, keyed by HIVE-202): the Work page and any number of Ticket tabs
+   * side by side. Holds at most TICKET_DETAIL_CAP, the newest last.
+   */
+  ticketDetails: Record<string, TicketDetail>;
+  /** What has been read for each PR a page or tab opened, keyed by {@link prKey} (HIVE-205). At most PR_DETAIL_CAP, the newest last. */
+  prDetails: Record<string, PrDetailEntry>;
+  /** Each open PR's diff, keyed by {@link prKey} (HIVE-207): its own slice, since loadPrDetail replaces a detail wholesale. */
+  prDiffs: Record<string, PrDiffEntry>;
+  /** The Checks tab's reads per PR, keyed by {@link prKey} (HIVE-206). At most PR_DETAIL_CAP, the newest last. */
+  prChecks: Record<string, PrChecksEntry>;
+  /** The Timeline tab's reads per PR, keyed by {@link prKey} (HIVE-208). At most PR_DETAIL_CAP, the newest last. */
+  prTimelines: Record<string, PrTimelineEntry>;
   /** Where {@link HiveState.tickets} came from (HIVE-69). */
   ticketSource: TicketSource;
+  /**
+   * When the last good ticket read landed (HIVE-211). Beside the source, not in
+   * it (D5): the sweep is once a minute and the source is kept referentially
+   * stable, so a time inside it would re-render every reader every minute.
+   */
+  ticketsReadAt: number | null;
   /**
    * The PRs GitHub reported, exactly as they crossed IPC.
    *
@@ -379,6 +503,8 @@ interface HiveState {
   prs: PrRecord[];
   /** Where {@link HiveState.prs} came from. */
   prSource: PrSource;
+  /** When the last good PR sweep landed (HIVE-211). Beside the source, as {@link HiveState.ticketsReadAt} is (D5). */
+  prsReadAt: number | null;
   notifs: HiveNotification[];
   /**
    * What this window's attachment is doing, or `null` when it has none
@@ -392,6 +518,12 @@ interface HiveState {
    */
   remoteLink: RemoteLinkStatus | null;
   /**
+   * How much of `remoteLink.lost` the user has cleared (HIVE-211; was
+   * ConnectionItem's local state). Main resets `lost` only when the window goes
+   * local, so this resets with it.
+   */
+  remoteLostAcked: number;
+  /**
    * The ledger's tail (HIVE-111).
    *
    * A mirror, not the source — main owns the log and this holds the newest
@@ -399,6 +531,13 @@ interface HiveState {
    * without a round trip. Older entries are still there; they are asked for.
    */
   ledger: LedgerEntry[];
+  /**
+   * Every ask thread this window has seen close (HIVE-214), accumulated as
+   * ledger entries arrive. The mirror above forgets a closing entry after
+   * {@link LEDGER_MEMORY_CAP} newer ones, and an answered ask's row can outlive
+   * that; this is what keeps the row closed. Only grows, until a reset.
+   */
+  closedAsks: ReadonlySet<string>;
   orchLines: TermLine[];
 
   /**
@@ -408,9 +547,9 @@ interface HiveState {
    * one the four-store split exists for. These arrive from Claude Code's status
    * line on every assistant message plus a 30-second timer, per live session —
    * easily the busiest write in the store. Putting them on `Entity` would give
-   * every session row in the left rail a new object identity on each tick, and
-   * a fleet of thirteen would repaint continuously to move a number that only
-   * the header's chip renders.
+   * every session row in the Sessions panel a new object identity on each tick,
+   * and a fleet of thirteen would repaint continuously to move a number that
+   * only one chip renders.
    *
    * Keyed by entity id, and **not pruned when a session ends**. That is a
    * deliberate non-decision rather than an oversight: the map is bounded by the
@@ -428,6 +567,8 @@ interface HiveState {
    * is.
    */
   plans: Record<string, SessionPlan>;
+  /** Each session's changed files, keyed by main's entity id (HIVE-201). Mirrors `changed-files:list`. */
+  changedFiles: Record<string, ChangedFile[]>;
 
   /** Replace the ticket list with real issues (HIVE-69). */
   hydrateTickets: (issues: JiraIssue[], capped: boolean) => void;
@@ -437,6 +578,44 @@ interface HiveState {
   reportTicketsUnconfigured: () => void;
   /** Replace one ticket after a transition moved it (HIVE-70). */
   updateTicket: (issue: JiraIssue) => void;
+  /**
+   * Read everything a reader of `key` shows (HIVE-203, HIVE-202): its detail,
+   * the newest comments, its transitions, the issue itself when the list does
+   * not hold it, and, by `want`, the page's ledger history. Each part merges as
+   * it lands.
+   */
+  loadTicketDetail: (key: string, want: TicketDetailWant) => Promise<void>;
+  /** Re-read a ticket already held; a key never loaded does nothing (HIVE-203, HIVE-202). */
+  refreshTicketDetail: (key: string, want: TicketDetailWant) => Promise<void>;
+  /** Read one PR's detail: the first read and every refresh (HIVE-205). */
+  loadPrDetail: (owner: string, repo: string, n: number) => Promise<void>;
+  /** Read one PR's Timeline: GitHub's history every call, the ledger's once (HIVE-208). */
+  loadPrTimeline: (owner: string, repo: string, n: number) => Promise<void>;
+  /** Comment on a PR, then re-read it; the answer says why a post failed (HIVE-205). */
+  commentOnPr: (owner: string, repo: string, n: number, body: string) => Promise<GhResult<true>>;
+  /** Read one PR's diff at a head sha: once per sha, again when it moves (HIVE-207). */
+  loadPrDiff: (owner: string, repo: string, n: number, sha: string | null) => Promise<void>;
+  /** Reply to a review thread, then re-read the PR either way (HIVE-207). */
+  replyToPrThread: (owner: string, repo: string, n: number, threadId: string, body: string) => Promise<GhResult<true>>;
+  /** Resolve or unresolve a review thread, then re-read the PR either way (HIVE-207). */
+  setPrThreadResolved: (owner: string, repo: string, n: number, threadId: string, resolved: boolean) => Promise<GhResult<true>>;
+  /** Mark or unmark a file viewed: shown at once, rolled back on a refusal, re-read either way (HIVE-207). */
+  setPrFileViewed: (owner: string, repo: string, n: number, path: string, viewed: boolean) => Promise<GhResult<true>>;
+  /** Read a PR's runs and workflows, then the jobs of the shown push (`sha`, else the newest) (HIVE-206). */
+  loadPrChecks: (owner: string, repo: string, n: number, branch: string, sha?: string) => Promise<void>;
+  /** Read a failed job's log once per job id; only a failed read reads again (HIVE-206). */
+  loadJobLog: (owner: string, repo: string, n: number, jobId: number) => Promise<void>;
+  /** Re-run a run's failed jobs, then re-read the checks; the answer says why a re-run was refused (HIVE-206). */
+  rerunFailed: (owner: string, repo: string, n: number, runId: number, branch: string, sha?: string) => Promise<GhResult<true>>;
+  /** A comment this app just posted, shown without a re-read (HIVE-203). */
+  appendTicketComment: (key: string, comment: JiraComment) => void;
+  /** Re-read what the open ticket can become, after its status moved (HIVE-203). */
+  reloadTicketTransitions: (key: string) => Promise<void>;
+  /**
+   * Install a re-read issue for a ticket the list does not hold (HIVE-203).
+   * A listed ticket is `updateTicket`'s; this leaves it alone.
+   */
+  setTicketDetailIssue: (issue: JiraIssue) => void;
   /** Read the configured query and install the answer (HIVE-69). */
   refreshTickets: () => Promise<void>;
 
@@ -445,7 +624,7 @@ interface HiveState {
   /** A sweep failed. Keeps the PRs it has and marks them stale. */
   reportPrFailure: (message: string) => void;
   /** There is nothing to read from, and that is not a failure. */
-  reportPrsUnconfigured: (message: string) => void;
+  reportPrsUnconfigured: (message: string, reason: GhSetupReason) => void;
   /** Sweep GitHub and install the answer. Never throws. */
   refreshPrs: () => Promise<void>;
 
@@ -538,7 +717,7 @@ interface HiveState {
    * a row says `running` with nothing running in it.
    */
   setTerminalForeground: (id: string, name: string | null) => void;
-  /** The shell died unasked. The row stays, with the reason on it. */
+  /** The shell died unasked. The row stays, with the reason on it; a session's current row keeps it as `lost`. */
   markTerminalLost: (id: string, reason: string) => void;
   /** The `exit` ending, and the close control on a lost one. Nothing is kept. */
   removeTerminal: (id: string) => void;
@@ -612,6 +791,8 @@ interface HiveState {
   pushNotif: (notif: HiveNotification) => void;
   /** Install the link status main just pushed, or `null` for none (HIVE-150). */
   setRemoteLink: (status: RemoteLinkStatus | null) => void;
+  /** Clear the lost count as it stands, wherever it shows (HIVE-211). */
+  acknowledgeLost: () => void;
   /**
    * Merge main's buffer into what is already here, newest first (HIVE-75).
    *
@@ -626,14 +807,21 @@ interface HiveState {
    * A union rather than a replacement, for the reason `hydrateNotifs` above
    * gives — and see the note at the implementation for why a dropped entry
    * here would never come back.
+   *
+   * `closed` is the snapshot's `closedAsks` (HIVE-198), merged into the
+   * closed set the same way.
    */
-  hydrateLedger: (entries: LedgerEntry[]) => void;
+  hydrateLedger: (entries: LedgerEntry[], closed?: readonly string[]) => void;
   /** One entry landed — append it to the tail. */
   ledgerAppend: (entry: LedgerEntry) => void;
   /** One session's plan changed; `null` means it has none any more (HIVE-179). */
   setPlan: (entityId: string, plan: SessionPlan | null) => void;
   /** Merge a `plans:list` snapshot by entity id, like {@link hydrateLedger}. */
   hydratePlans: (plans: SessionPlan[]) => void;
+  /** Replace one session's changed files; `[]` removes the entry (HIVE-201). */
+  setChangedFiles: (entityId: string, files: ChangedFile[]) => void;
+  /** Merge a `changed-files:list` snapshot by entity id, like {@link hydratePlans}. */
+  hydrateChangedFiles: (sessions: ChangedFilesEvent[]) => void;
   /**
    * Put last run's fleet back on the table (HIVE-87).
    *
@@ -864,16 +1052,17 @@ interface HiveState {
 }
 
 /**
- * Inbox cap, matching the hub's (HIVE-75).
- *
- * Eight was an honest bet for a seeded list that never grew. With real
- * producers it is too few: a busy afternoon would push an approval request off
- * the end before the user got back to their desk, which is the one outcome this
- * surface exists to prevent. The renderer's cap and `NOTIFICATION_CAP` in the
- * hub are the same number by intent — a shorter list here would silently
- * discard rows a hydration would then bring straight back.
+ * Is an ask still open (HIVE-214)? The hub asks main's ledger the same
+ * question through the same `closedAskThreads`.
  */
-const NOTIF_CAP = NOTIFICATION_CAP;
+const askOpenIn = (closed: ReadonlySet<string>): AskOpen => (thread) => !closed.has(thread);
+
+/** The closed set after these entries, the same set when none of them closes a thread. */
+const withClosed = (closed: ReadonlySet<string>, entries: readonly LedgerEntry[]): ReadonlySet<string> => {
+  const found = closedAskThreads(entries);
+  if ([...found].every((thread) => closed.has(thread))) return closed;
+  return new Set([...closed, ...found]);
+};
 
 /**
  * Console transcript cap (story 041). Oldest lines drop first.
@@ -910,7 +1099,7 @@ const EMPTY_LINES = Object.freeze([]) as unknown as TermLine[];
  *
  * A terminal cleared every twenty minutes for a working day is twenty rows of
  * history in a table whose job is showing what is *running*. Twenty is the same
- * bet `NOTIF_CAP` makes: enough to answer "what did I just finish?", few enough
+ * bet the inbox's cap makes: enough to answer "what did I just finish?", few enough
  * that the live rows stay above the fold.
  *
  * Only `done` rows are capped. A `terminated` row is a process that died and is
@@ -1154,10 +1343,11 @@ const DETAIL_WORD: Record<IdleDetail, string> = {
   script: 'scripts',
 };
 
-export function statusWord(status: SessionStatus, detail?: IdleDetail): string {
+export function statusWord(status: SessionStatus, detail?: IdleDetail, delegate?: string | null): string {
   if (status === 'idle' && detail !== undefined) {
     return `working (${DETAIL_WORD[detail]})`;
   }
+  if (status === 'idle' && delegate) return `idle (${delegate})`;
   return STATUS_WORD[status];
 }
 
@@ -1499,7 +1689,9 @@ function stampLifecycle(session: Session): Session {
   if (isEnded(session.status)) {
     if (session.endedAt === undefined) session.endedAt = Date.now();
   } else if (session.endedAt !== undefined) {
+    // Back from an ending: neither when it ended nor why still holds.
     delete session.endedAt;
+    delete session.lost;
   }
   return session;
 }
@@ -1758,6 +1950,9 @@ function toTicket(issue: JiraIssue): Ticket {
     status: issue.status,
     statusCategory: issue.statusCategory,
     title: issue.summary,
+    priority: issue.priority,
+    assignee: issue.assignee,
+    issueType: issue.issueType,
     url: issue.url,
   };
 }
@@ -1807,8 +2002,10 @@ const ATTACH_SNAPSHOT_HANDLERS: Partial<
   [CH.agentsList]: (value, store) =>
     store.hydrateAgents((value as AgentsSnapshot).agents),
   [CH.ledgerList]: (value, store) =>
-    store.hydrateLedger((value as LedgerSnapshot).entries),
+    store.hydrateLedger((value as LedgerSnapshot).entries, (value as LedgerSnapshot).closedAsks),
   [CH.plansList]: (value, store) => store.hydratePlans((value as PlansSnapshot).plans),
+  [CH.changedFilesList]: (value, store) =>
+    store.hydrateChangedFiles((value as ChangedFilesSnapshot).sessions),
   [CH.notificationsList]: (value, store) =>
     store.hydrateNotifs(value as HiveNotification[]),
   [CH.githubPrs]: (value, store) => {
@@ -1823,13 +2020,218 @@ const ATTACH_SNAPSHOT_HANDLERS: Partial<
   },
 };
 
+/** The store's own `set`, as the helpers outside the creator take it. */
+type SetHive = (
+  partial: Partial<HiveState> | ((state: HiveState) => Partial<HiveState> | HiveState),
+) => void;
+
+/** How many tickets' detail the store holds at once (HIVE-202). */
+export const TICKET_DETAIL_CAP = 16;
+
+/** How many PRs' detail the store holds at once (HIVE-205): the open page and HIVE-209's PR tabs. */
+export const PR_DETAIL_CAP = 8;
+
+/** A PR write with no bridge to make it (HIVE-205, HIVE-207). */
+const BRIDGE_REFUSAL = { ok: false as const, error: { kind: 'unknown' as const, message: BRIDGE_ERROR } };
+
+/** The `prDetails` key: `owner/repo#n`, lowercased as GitHub's names compare (HIVE-205). */
+export const prKey = (owner: string, repo: string, n: number): string => `${owner}/${repo}#${n}`.toLowerCase();
+
+/** One PR's detail as read (HIVE-205). A failed refresh keeps `detail` beside the `problem`. */
+export interface PrDetailEntry {
+  key: string;
+  detail?: PrDetail;
+  state: 'loading' | 'ok' | 'failed';
+  problem?: string;
+  readAt?: number;
+}
+
+/** One PR's Timeline as read (HIVE-208). A failed refresh keeps `timeline` and `history` beside the `problem`. */
+export interface PrTimelineEntry {
+  key: string;
+  state: 'loading' | 'ok' | 'failed';
+  problem?: string;
+  timeline?: PrTimeline;
+  /** The ledger from a day before the PR opened, read once. */
+  history?: LedgerEntry[];
+  readAt?: number;
+}
+
+/** `20261003-090507`: a ledger id's leading two segments, local time, as `electron/main/ledger/store.ts` writes them (HIVE-208). */
+export const ledgerIdAt = (ms: number): string => {
+  const at = new Date(ms);
+  const p = (v: number) => String(v).padStart(2, '0');
+  return `${at.getFullYear()}${p(at.getMonth() + 1)}${p(at.getDate())}-${p(at.getHours())}${p(at.getMinutes())}${p(at.getSeconds())}`;
+};
+
+/** One PR's diff text, read at a head sha (HIVE-207). A failed read keeps the last text beside the problem. */
+export interface PrDiffEntry {
+  key: string;
+  sha: string | null;
+  state: 'loading' | 'ok' | 'failed';
+  text?: string;
+  problem?: string;
+}
+
+/** One job's failed log, read once per job id (HIVE-206). */
+export interface PrLogEntry { state: 'loading' | 'ok' | 'failed'; log?: JobLog; problem?: string }
+
+/**
+ * One PR's Checks tab as read (HIVE-206). Its own slice rather than a field of
+ * {@link PrDetailEntry}: `loadPrDetail` replaces that entry whole every minute.
+ * `jobs` is by run id, `logs` by job id; a failed refresh keeps the rest.
+ */
+export interface PrChecksEntry {
+  key: string;
+  state: 'loading' | 'ok' | 'failed';
+  problem?: string;
+  runs?: WorkflowRun[];
+  workflows?: WorkflowDef[];
+  jobs: Record<number, RunJob[]>;
+  logs: Record<number, PrLogEntry>;
+}
+
+/**
+ * `map` with `key` moved to the newest end, and only the newest `cap` kept
+ * (TICKET_DETAIL_CAP unless told). Issue keys and PR keys are never
+ * integer-like, so insertion order is the object's key order.
+ */
+// ponytail: insertion-order cap; an LRU by view if a day of sessions ever outgrows sixteen.
+function touchDetail<T>(map: Record<string, T>, key: string, entry: T, cap = TICKET_DETAIL_CAP): Record<string, T> {
+  const { [key]: _old, ...rest } = map;
+  return Object.fromEntries(Object.entries({ ...rest, [key]: entry }).slice(-cap));
+}
+
+/**
+ * `details` without the PRs that were in the last sweep and are not in this
+ * one (HIVE-205); the same object when none left, so a quiet sweep writes
+ * nothing. A detail for a PR never swept (a search result) is the cap's.
+ */
+function dropLeftPrs<T>(
+  details: Record<string, T>,
+  before: readonly PrRecord[],
+  after: readonly PrRecord[],
+): Record<string, T> {
+  const keyOf = (pr: PrRecord) => prKey(pr.owner, pr.repo, pr.number);
+  const still = new Set(after.map(keyOf));
+  const gone = new Set(before.map(keyOf).filter((key) => !still.has(key) && key in details));
+  if (gone.size === 0) return details;
+  return Object.fromEntries(Object.entries(details).filter(([key]) => !gone.has(key)));
+}
+
+/**
+ * Read one ticket's parts and merge each as it lands (HIVE-203, keyed by HIVE-202).
+ *
+ * The parts merge separately so one failed read never blanks another: a
+ * comments outage leaves the description standing, and a read that fails
+ * keeps what the last one found with the problem beside it. An answer that
+ * arrives for a key evicted from the map meanwhile is dropped: every write
+ * re-reads the entry at write time and does nothing when it is gone.
+ */
+async function readTicketParts(
+  get: () => HiveState,
+  set: SetHive,
+  key: string,
+  read: { ledger: boolean; issue: boolean; links: boolean },
+): Promise<void> {
+  const open = () => get().ticketDetails[key] !== undefined;
+  const merge = (patch: Partial<TicketDetail>) => {
+    if (!open()) return;
+    set((state) => {
+      const entry = state.ticketDetails[key];
+      if (entry === undefined) return state;
+      return { ticketDetails: { ...state.ticketDetails, [key]: { ...entry, ...patch } } };
+    });
+  };
+  const problem = (part: keyof TicketDetail['problems'], message: string | undefined) => {
+    if (!open()) return;
+    set((state) => {
+      const entry = state.ticketDetails[key];
+      if (entry === undefined) return state;
+      const problems = { ...entry.problems };
+      if (message === undefined) delete problems[part];
+      else problems[part] = message;
+      return { ticketDetails: { ...state.ticketDetails, [key]: { ...entry, problems } } };
+    });
+  };
+
+  await Promise.all([
+    readJiraDetail({ key }).then(async (result) => {
+      if (result === null) return problem('detail', BRIDGE_ERROR);
+      if (!result.ok) return problem('detail', result.error.message);
+      merge({ detail: result.value, readAt: Date.now() });
+      problem('detail', undefined);
+      const epic = result.value.parent;
+      if (read.links && open() && epic?.issueType?.toLowerCase() === 'epic' && ISSUE_KEY_PATTERN.test(epic.key)) {
+        // The key is checked before it is put in the JQL: it came from a server.
+        const found = await searchJiraIssues({ jql: `parent = ${epic.key}` });
+        if (!found?.ok) return merge({ epicProgress: undefined });
+        const done = found.value.issues.filter((one) => one.statusCategory === 'done').length;
+        merge({ epicProgress: { done, total: found.value.issues.length, capped: found.value.capped } });
+      }
+    }),
+    readJiraComments({ key, newest: true }).then((result) => {
+      if (result === null) return problem('comments', BRIDGE_ERROR);
+      if (!result.ok) return problem('comments', result.error.message);
+      merge({ comments: result.value.comments, total: result.value.total, readAt: Date.now() });
+      problem('comments', undefined);
+    }),
+    readJiraTransitions({ key }).then((result) => {
+      if (result?.ok) merge({ transitions: result.value });
+    }),
+    read.issue
+      ? readJiraIssue({ key }).then((result) => {
+          if (result?.ok) merge({ issue: toTicket(result.value) });
+        })
+      : Promise.resolve(),
+    read.ledger
+      ? (window.hive?.ledger.list({ ticket: key }) ?? Promise.resolve(undefined))
+          .then((snapshot) => {
+            if (snapshot) merge({ history: snapshot.entries });
+          })
+          .catch(() => undefined)
+      : Promise.resolve(),
+    read.links
+      ? readJiraLinks({ key }).then(async (result) => {
+          if (result === null) return problem('links', BRIDGE_ERROR);
+          if (!result.ok) return problem('links', result.error.message);
+          problem('links', undefined);
+          const issues = result.value.filter((link) => link.kind === 'issue');
+          const blocked =
+            issues.length > SECOND_HOP_MAX_LINKS
+              ? []
+              : issues.flatMap((link) =>
+                  isBlocks(link) && link.direction !== 'inward' && link.key !== undefined ? [link.key] : [],
+                );
+          // No hop to read: an earlier one must not stay drawn (past the cap, or nothing blocked any more).
+          if (blocked.length === 0) return merge({ links: result.value, secondHop: undefined });
+          merge({ links: result.value });
+          if (!open()) return;
+          const hops = await Promise.all(
+            blocked.map(async (next) => {
+              const answer = await readJiraLinks({ key: next });
+              const onward = answer?.ok
+                ? answer.value.filter((link) => link.kind === 'issue' && isBlocks(link) && link.direction === 'outward')
+                : [];
+              return [next, onward] as const;
+            }),
+          );
+          merge({ secondHop: Object.fromEntries(hops) });
+        })
+      : Promise.resolve(),
+  ]);
+}
+
 export const useHiveStore = create<HiveState>()((set, get) => ({
   ...emptySeeds(),
   notifs: [],
   remoteLink: null,
+  remoteLostAcked: 0,
   ledger: [],
+  closedAsks: new Set<string>(),
   metrics: {},
   plans: {},
+  changedFiles: {},
   /**
    * Loading until the first read answers.
    *
@@ -1840,9 +2242,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * has no bridge to Jira.
    */
   ticketSource: { kind: 'loading' } as TicketSource,
+  ticketsReadAt: null as number | null,
+  ticketDetails: {} as Record<string, TicketDetail>,
+  prDetails: {} as Record<string, PrDetailEntry>,
+  prDiffs: {} as Record<string, PrDiffEntry>,
+  prChecks: {} as Record<string, PrChecksEntry>,
+  prTimelines: {} as Record<string, PrTimelineEntry>,
 
   /** Loading until the first sweep answers, for the same reason as above. */
   prSource: { kind: 'loading' } as PrSource,
+  prsReadAt: null as number | null,
   prSearch: NO_PR_SEARCH,
   ticketSearch: NO_TICKET_SEARCH,
 
@@ -1919,7 +2328,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * field* with "Ready for instructions", but story 043 wants that prompt in
        * the **transcript** (`· Ready — type below…`) — which is where the user
        * is actually looking. Putting a fake task on the entity would also make
-       * the meta bar and the rails claim a task that nobody set.
+       * the session header and the panels claim a task that nobody set.
        */
       task: task ?? '',
       /**
@@ -2057,7 +2466,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       });
     }
 
-    useUiStore.getState().openTab(id);
+    useUiStore.getState().openTab(id, 'sessions');
 
     return id;
   },
@@ -2125,7 +2534,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       });
     }
 
-    useUiStore.getState().openTab(id);
+    useUiStore.getState().openTab(id, 'sessions');
 
     return id;
   },
@@ -2217,6 +2626,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * the later message describes the consequence rather than the cause.
    */
   markTerminalLost: (id, reason) => {
+    // A session's pty: the reason goes on its current row, read when the ending lands.
+    const row = get().entities[currentSessionIn(get(), id)];
+    if (row !== undefined && isSession(row) && !isEnded(row.status) && row.lost === undefined) {
+      set((state) => ({ entities: { ...state.entities, [row.id]: { ...row, lost: reason } } }));
+      return;
+    }
     const current = get().entities[id];
     if (!current || !isTerminal(current) || current.ended !== undefined) return;
 
@@ -2268,7 +2683,9 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       resolve.
     */
     const ui = useUiStore.getState();
-    if (ui.activeTab === id) ui.backToOrch();
+    // `openTab('orch')`, not `backToOrch()`: the stage lost its tab, the user
+    // did not ask to go anywhere, so the place stays (HIVE-195).
+    if (ui.activeTab === id) ui.openTab('orch');
   },
 
   /**
@@ -2434,7 +2851,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         isEnded(entity.status)
       )
     ) {
-      useUiStore.getState().openTab(id);
+      const ui = useUiStore.getState();
+      // Round two's panel shows the opened entry under its project (HIVE-197).
+      if (entity !== undefined && !isAgent(entity)) ui.expandProject(entity.project);
+      ui.openTab(id, entity?.kind === 'agent' ? 'agents' : 'sessions');
       return true;
     }
 
@@ -2627,7 +3047,8 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
               stops aligning: one row's project would start three columns right
               of its neighbours'.
             */
-            `  ${entityLabel(entity).padEnd(16)}${statusWord(entity.status, entity.idleDetail).padEnd(18)}${entity.project} · ${branchLabel(entity)}`,
+            // `idle (` + a ten-character agent + `)` is 17, inside the 18 as well.
+            `  ${entityLabel(entity).padEnd(16)}${statusWord(entity.status, entity.idleDetail, delegationWord(delegatesFor(state, entity))).padEnd(18)}${entity.project} · ${branchLabel(entity)}`,
             statusColor(entity.status, entity.idleDetail),
           );
         }
@@ -3280,7 +3701,11 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * dismissing ids the hub no longer holds.
    */
   clearNotifs: () => {
-    set({ notifs: [] });
+    // Clear all keeps what waits on you, as the hub's `clearInbox` does (HIVE-214).
+    set((state) => {
+      const open = askOpenIn(state.closedAsks);
+      return { notifs: state.notifs.filter((notif) => waitsOnYou(notif, open)) };
+    });
     void window.hive?.notifications.clear();
   },
 
@@ -3295,12 +3720,17 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     set((state) =>
       state.notifs.some((existing) => existing.id === notif.id)
         ? state
-        : { notifs: [notif, ...state.notifs].slice(0, NOTIF_CAP) },
+        : { notifs: trimNotifications([notif, ...state.notifs], askOpenIn(state.closedAsks)) },
     ),
 
   setRemoteLink: (status) => {
-    set({ remoteLink: status });
+    set(status === null ? { remoteLink: null, remoteLostAcked: 0 } : { remoteLink: status });
   },
+
+  acknowledgeLost: () =>
+    set((state) =>
+      state.remoteLink === null ? state : { remoteLostAcked: state.remoteLink.lost },
+    ),
 
   applyRead: (id, unread) =>
     set((state) => ({
@@ -3313,12 +3743,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     })),
 
   applyDismiss: (id) =>
-    set((state) => ({
-      notifs:
-        id === null
-          ? []
-          : state.notifs.filter((notif) => notif.id !== id),
-    })),
+    set((state) => {
+      if (id !== null) return { notifs: state.notifs.filter((notif) => notif.id !== id) };
+      // The echo of a Clear all: the hub kept what waits on you, and so does this.
+      const open = askOpenIn(state.closedAsks);
+      return { notifs: state.notifs.filter((notif) => waitsOnYou(notif, open)) };
+    }),
 
   hydrateNotifs: (notifs) =>
     set((state) => {
@@ -3335,7 +3765,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ...notifs.filter((notif) => !seen.has(notif.id)),
       ].sort((a, b) => b.createdAt - a.createdAt);
 
-      return { notifs: merged.slice(0, NOTIF_CAP) };
+      return { notifs: trimNotifications(merged, askOpenIn(state.closedAsks)) };
     }),
 
   hydrateAgents: (summaries) =>
@@ -3359,7 +3789,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         the guard below let it become an entity, so a definition colliding with
         a live session left a name in the order with nothing behind it. Every
         selector that walks the order narrows with `isAgent` and skipped it, so
-        the lie stayed invisible — until `useAgentCount` turned the array's
+        the lie stayed invisible — until a count over `agentOrder` turned the array's
         length into a number on screen, and the badge started counting an agent
         the panel could not list.
       */
@@ -3524,7 +3954,25 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       plans: { ...state.plans, ...Object.fromEntries(plans.map((plan) => [plan.entityId, plan])) },
     })),
 
-  hydrateLedger: (entries) =>
+  setChangedFiles: (entityId, files) =>
+    set((state) => {
+      if (files.length === 0) {
+        if (!(entityId in state.changedFiles)) return state;
+        const { [entityId]: _gone, ...rest } = state.changedFiles;
+        return { ...state, changedFiles: rest };
+      }
+      return { ...state, changedFiles: { ...state.changedFiles, [entityId]: files } };
+    }),
+  hydrateChangedFiles: (sessions) =>
+    set((state) => ({
+      ...state,
+      changedFiles: {
+        ...state.changedFiles,
+        ...Object.fromEntries(sessions.map((session) => [session.entityId, session.files])),
+      },
+    })),
+
+  hydrateLedger: (entries, closed = []) =>
     set((state) => {
       /**
        * Union, not replacement — `hydrateNotifs`' reason, with one difference
@@ -3546,11 +3994,27 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ...entries.filter((entry) => !seen.has(entry.id)),
       ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
-      return { ledger: merged.slice(-LEDGER_MEMORY_CAP) };
+      return {
+        ledger: merged.slice(-LEDGER_MEMORY_CAP),
+        /*
+          The snapshot's own closed threads first (HIVE-198): a close older
+          than main's tail is in neither `entries` nor the mirror, and a
+          window opened after it would otherwise count the ask as open.
+        */
+        closedAsks: withClosed(
+          closed.every((thread) => state.closedAsks.has(thread))
+            ? state.closedAsks
+            : new Set([...state.closedAsks, ...closed]),
+          entries,
+        ),
+      };
     }),
 
   ledgerAppend: (entry) =>
-    set((state) => ({ ledger: [...state.ledger, entry].slice(-LEDGER_MEMORY_CAP) })),
+    set((state) => ({
+      ledger: [...state.ledger, entry].slice(-LEDGER_MEMORY_CAP),
+      closedAsks: withClosed(state.closedAsks, [entry]),
+    })),
 
   answerAsk: async (thread, body, meta) =>
     window.hive?.ledger.answer({
@@ -3782,7 +4246,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * prompt on the shell's own screen and waits. No `SessionStart` fires,
        * because Claude never gets that far, so the only way out was the
        * sixty-second timeout or a keystroke — and the user's first symptom was
-       * a hydralisk that would not go away, with the question hidden behind it.
+       * a mutalisk that would not go away, with the question hidden behind it.
        *
        * Nothing new observes this. Main's activity tracker already derives
        * `idle` from two seconds of pty silence, and a boot that has stopped
@@ -4479,7 +4943,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       resume: true,
     });
 
-    useUiStore.getState().openTab(id);
+    useUiStore.getState().openTab(id, 'sessions');
   },
 
   /**
@@ -4568,7 +5032,9 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       attention theft the fleet view exists to prevent.
     */
     const ui = useUiStore.getState();
-    if (ui.activeTab === target) ui.backToOrch();
+    // `openTab('orch')`, not `backToOrch()`: the stage lost its tab, the user
+    // did not ask to go anywhere, so the place stays (HIVE-195).
+    if (ui.activeTab === target) ui.openTab('orch');
   },
 
   clearSession: (id) => {
@@ -4789,6 +5255,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         ticketSource: settled
           ? source
           : { kind: 'live', stale: false, capped },
+        ticketsReadAt: Date.now(),
       };
     }),
 
@@ -4817,7 +5284,9 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (source.kind === 'live') {
         // `return state` rather than an empty patch: zippering an unchanged
         // partial still rebuilds the root object and wakes every listener.
-        return source.stale ? state : { ticketSource: { ...source, stale: true } };
+        return source.stale
+          ? state
+          : { ticketSource: { ...source, stale: true, failedAt: Date.now() } };
       }
 
       return source.kind === 'failed' && source.message === message
@@ -4870,14 +5339,280 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       if (at === -1) return state;
 
       const next = [...state.tickets];
-      next[at] = {
-        key: issue.key,
-        status: issue.status,
-        statusCategory: issue.statusCategory,
-        title: issue.summary,
-        url: issue.url,
-      };
+      next[at] = toTicket(issue);
       return { tickets: next };
+    }),
+
+  /**
+   * Read one ticket for a reader (HIVE-203, keyed by HIVE-202).
+   *
+   * The parts merge separately, each as its answer lands, so one failed read
+   * never blanks another: a comments outage leaves the description standing,
+   * and a reload that fails keeps what the last one read with the problem
+   * beside it. The entry is created (or kept) and made the newest, which may
+   * evict the oldest; an answer that arrives for an evicted key is dropped.
+   */
+  loadTicketDetail: async (key, want) => {
+    set((state) => ({
+      ticketDetails: touchDetail(state.ticketDetails, key, state.ticketDetails[key] ?? { key, problems: {} }),
+    }));
+    const inList = get().tickets.some((ticket) => ticket.key === key);
+    await readTicketParts(get, set, key, { ledger: want === 'page', issue: !inList, links: want === 'tab' });
+  },
+
+  /**
+   * A poller's call (HIVE-203, HIVE-202): detail, comments and transitions
+   * again. Not the ledger history — the tail carries what is appended after
+   * the open — and the issue only when the entry read one for itself. A key
+   * never loaded does nothing.
+   */
+  refreshTicketDetail: async (key, want) => {
+    const entry = get().ticketDetails[key];
+    if (entry === undefined) return;
+    set((state) => {
+      const current = state.ticketDetails[key];
+      return current === undefined ? state : { ticketDetails: touchDetail(state.ticketDetails, key, current) };
+    });
+    await readTicketParts(get, set, key, { ledger: false, issue: entry.issue !== undefined, links: want === 'tab' });
+  },
+
+  /**
+   * One PR's detail (HIVE-205). `loading` only before the first answer; a
+   * failure keeps what the last read found with the problem beside it. The
+   * entry is made the newest, which may evict the oldest, and an answer for a
+   * key gone meanwhile (evicted, a mode switch) is dropped.
+   */
+  loadPrDetail: async (owner, repo, n) => {
+    const key = prKey(owner, repo, n);
+    set((state) => ({
+      prDetails: touchDetail(state.prDetails, key, state.prDetails[key] ?? { key, state: 'loading' as const }, PR_DETAIL_CAP),
+    }));
+
+    const result = await readPrDetail({ owner, repo, n });
+
+    set((state) => {
+      const entry = state.prDetails[key];
+      if (entry === undefined) return state;
+      const next: PrDetailEntry =
+        result?.ok === true
+          ? { key, state: 'ok', detail: result.value, readAt: Date.now() }
+          : { ...entry, state: 'failed', problem: result === null ? BRIDGE_ERROR : result.error.message };
+      return { prDetails: { ...state.prDetails, [key]: next } };
+    });
+  },
+
+  /**
+   * One PR's Timeline (HIVE-208): GitHub's history every call, and the ledger
+   * from a day before the PR opened, once — the renderer's tail is capped at
+   * 500, and a long PR's early holds fall out of it. A day of slack covers a
+   * server-mode client in another zone; `prEvents` drops the extras.
+   */
+  loadPrTimeline: async (owner, repo, n) => {
+    const key = prKey(owner, repo, n);
+    set((state) => ({
+      prTimelines: touchDetail(state.prTimelines, key, state.prTimelines[key] ?? { key, state: 'loading' as const }, PR_DETAIL_CAP),
+    }));
+
+    const result = await readPrTimeline({ owner, repo, n });
+    set((state) => {
+      const entry = state.prTimelines[key];
+      if (entry === undefined) return state;
+      const next: PrTimelineEntry =
+        result?.ok === true
+          ? { key, state: 'ok', timeline: result.value, readAt: Date.now(), ...(entry.history === undefined ? {} : { history: entry.history }) }
+          : { ...entry, state: 'failed', problem: result === null ? BRIDGE_ERROR : result.error.message };
+      return { prTimelines: { ...state.prTimelines, [key]: next } };
+    });
+
+    const held = get().prTimelines[key];
+    if (result?.ok !== true || held === undefined || held.history !== undefined) return;
+    const since = ledgerIdAt(Date.parse(result.value.createdAt) - 86_400_000);
+    const snapshot = await (window.hive?.ledger.list({ since }) ?? Promise.resolve(undefined)).catch(() => undefined);
+    if (snapshot === undefined) return;
+    set((state) => {
+      const entry = state.prTimelines[key];
+      return entry === undefined ? state : { prTimelines: { ...state.prTimelines, [key]: { ...entry, history: snapshot.entries } } };
+    });
+  },
+
+  commentOnPr: async (owner, repo, n, body) => {
+    const result = await postPrComment({ owner, repo, n, body });
+    if (result === null) return BRIDGE_REFUSAL;
+    if (result.ok) await get().loadPrDetail(owner, repo, n);
+    return result;
+  },
+
+  /**
+   * One PR's diff at `sha` (HIVE-207). Nothing to do when it is already read,
+   * or being read, at that sha; a failure retries. Keeps the old text while it
+   * reads, and drops an answer for a sha that has since moved on.
+   */
+  loadPrDiff: async (owner, repo, n, sha) => {
+    const key = prKey(owner, repo, n);
+    const current = get().prDiffs[key];
+    if (current !== undefined && current.sha === sha && current.state !== 'failed') return;
+    set((state) => {
+      const { problem: _problem, ...kept } = state.prDiffs[key] ?? { key };
+      return {
+        prDiffs: touchDetail(state.prDiffs, key, { ...kept, key, sha, state: 'loading' as const }, PR_DETAIL_CAP),
+      };
+    });
+
+    const result = await readPrDiff({ owner, repo, n });
+
+    set((state) => {
+      const entry = state.prDiffs[key];
+      if (entry === undefined || entry.sha !== sha) return state;
+      const next: PrDiffEntry =
+        result?.ok === true
+          ? { key, sha, state: 'ok', text: result.value }
+          : { ...entry, state: 'failed', problem: result === null ? BRIDGE_ERROR : result.error.message };
+      return { prDiffs: { ...state.prDiffs, [key]: next } };
+    });
+  },
+
+  /** Reply to a review thread (HIVE-207); the reply shows on the reload, which runs either way. */
+  replyToPrThread: async (owner, repo, n, threadId, body) => {
+    const result = (await writePrThread({ owner, repo, n, threadId, op: 'reply', body })) ?? BRIDGE_REFUSAL;
+    await get().loadPrDetail(owner, repo, n);
+    return result;
+  },
+
+  /** Resolve or unresolve a review thread (HIVE-207); the chip flips on the reload. */
+  setPrThreadResolved: async (owner, repo, n, threadId, resolved) => {
+    const result =
+      (await writePrThread({ owner, repo, n, threadId, op: resolved ? 'resolve' : 'unresolve' })) ?? BRIDGE_REFUSAL;
+    await get().loadPrDetail(owner, repo, n);
+    return result;
+  },
+
+  /**
+   * Mark or unmark a file viewed (HIVE-207). Shown at once, rolled back to what
+   * it was if GitHub refuses, and read back from GitHub either way: the state
+   * lives there, never here.
+   */
+  // ponytail: a detail poll landing mid-write can show the old state for one round trip; a pending overlay if it shows.
+  setPrFileViewed: async (owner, repo, n, path, viewed) => {
+    const key = prKey(owner, repo, n);
+    const patch = (to: PrFileViewed) =>
+      set((state) => {
+        const entry = state.prDetails[key];
+        const detail = entry?.detail;
+        if (entry === undefined || detail === undefined) return state;
+        const files = detail.files.map((file) => (file.path === path ? { ...file, viewed: to } : file));
+        return { prDetails: { ...state.prDetails, [key]: { ...entry, detail: { ...detail, files } } } };
+      });
+    // Read before the patch below, so a refusal restores what was showing.
+    const before = get().prDetails[key]?.detail?.files.find((file) => file.path === path)?.viewed;
+
+    patch(viewed ? 'viewed' : 'unviewed');
+    const result = (await writePrViewed({ owner, repo, n, path, viewed })) ?? BRIDGE_REFUSAL;
+    if (!result.ok && before !== undefined) patch(before);
+    await get().loadPrDetail(owner, repo, n);
+    return result;
+  },
+
+  loadPrChecks: async (owner, repo, n, branch, sha) => {
+    const key = prKey(owner, repo, n);
+    set((state) => ({
+      prChecks: touchDetail(
+        state.prChecks,
+        key,
+        state.prChecks[key] ?? { key, state: 'loading' as const, jobs: {}, logs: {} },
+        PR_DETAIL_CAP,
+      ),
+    }));
+
+    const result = await readPrRuns({ owner, repo, branch });
+    if (result?.ok !== true) {
+      const problem = result === null ? BRIDGE_ERROR : result.error.message;
+      set((state) => {
+        const entry = state.prChecks[key];
+        if (entry === undefined) return state;
+        return { prChecks: { ...state.prChecks, [key]: { ...entry, state: 'failed', problem } } };
+      });
+      return;
+    }
+
+    const { runs, workflows } = result.value;
+    const pushes = foldPushes(runs);
+    const push = pushes.find((p) => p.sha === sha) ?? pushes.at(-1);
+    const read = await Promise.all(
+      (push?.runs ?? []).map(async (one) => ({ id: one.id, answer: await readRunJobs({ owner, repo, id: one.id }) })),
+    );
+
+    set((state) => {
+      const entry = state.prChecks[key];
+      if (entry === undefined) return state;
+      const jobs = { ...entry.jobs };
+      let problem: string | undefined;
+      for (const { id, answer } of read) {
+        if (answer?.ok === true) jobs[id] = answer.value;
+        else problem ??= answer === null ? BRIDGE_ERROR : answer.error.message;
+      }
+      const next: PrChecksEntry = { key, state: 'ok', runs, workflows, jobs, logs: entry.logs, ...(problem === undefined ? {} : { problem }) };
+      return { prChecks: { ...state.prChecks, [key]: next } };
+    });
+  },
+
+  loadJobLog: async (owner, repo, n, jobId) => {
+    const key = prKey(owner, repo, n);
+    const had = get().prChecks[key];
+    if (had === undefined) return;
+    const known = had.logs[jobId];
+    if (known !== undefined && known.state !== 'failed') return;
+
+    const write = (log: PrLogEntry) =>
+      set((state) => {
+        const entry = state.prChecks[key];
+        if (entry === undefined) return state;
+        return { prChecks: { ...state.prChecks, [key]: { ...entry, logs: { ...entry.logs, [jobId]: log } } } };
+      });
+
+    write({ state: 'loading' });
+    const result = await readJobLog({ owner, repo, id: jobId });
+    write(result?.ok === true ? { state: 'ok', log: result.value } : { state: 'failed', problem: result === null ? BRIDGE_ERROR : result.error.message });
+  },
+
+  rerunFailed: async (owner, repo, n, runId, branch, sha) => {
+    const result = await rerunFailedJobs({ owner, repo, id: runId });
+    if (result === null) return { ok: false, error: { kind: 'unknown', message: BRIDGE_ERROR } };
+    if (result.ok) await get().loadPrChecks(owner, repo, n, branch, sha);
+    return result;
+  },
+
+  appendTicketComment: (key, comment) =>
+    set((state) => {
+      const entry = state.ticketDetails[key];
+      if (entry === undefined) return state;
+      return {
+        ticketDetails: {
+          ...state.ticketDetails,
+          [key]: {
+            ...entry,
+            comments: [...(entry.comments ?? []), comment],
+            total: (entry.total ?? entry.comments?.length ?? 0) + 1,
+          },
+        },
+      };
+    }),
+
+  reloadTicketTransitions: async (key) => {
+    if (get().ticketDetails[key] === undefined) return;
+    const result = await readJiraTransitions({ key });
+    if (!result?.ok) return;
+    set((state) => {
+      const entry = state.ticketDetails[key];
+      if (entry === undefined) return state;
+      return { ticketDetails: { ...state.ticketDetails, [key]: { ...entry, transitions: result.value } } };
+    });
+  },
+
+  setTicketDetailIssue: (issue) =>
+    set((state) => {
+      const entry = state.ticketDetails[issue.key];
+      if (entry?.issue === undefined) return state;
+      return { ticketDetails: { ...state.ticketDetails, [issue.key]: { ...entry, issue: toTicket(issue) } } };
     }),
 
   /**
@@ -5040,15 +5775,22 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       const settled =
         source.kind === 'live' && !source.stale && source.repos === repos;
       const entities = rememberSessionPrs(state.entities, learned);
+      const prDetails = dropLeftPrs(state.prDetails, state.prs, prs);
+      const prDiffs = dropLeftPrs(state.prDiffs, state.prs, prs);
+      const prChecks = dropLeftPrs(state.prChecks, state.prs, prs);
 
       return {
         prs: samePrs(prs, state.prs) ? state.prs : prs,
         prSource: settled ? source : { kind: 'live', stale: false, repos },
+        prsReadAt: Date.now(),
         // Omitted rather than assigned when nothing was learned — the common
         // case by a wide margin, once a fleet's PRs have settled. Writing an
         // identical map back would wake every entity subscriber on every tick
         // of a once-a-minute poller.
         ...(entities === state.entities ? {} : { entities }),
+        ...(prDetails === state.prDetails ? {} : { prDetails }),
+        ...(prDiffs === state.prDiffs ? {} : { prDiffs }),
+        ...(prChecks === state.prChecks ? {} : { prChecks }),
       };
     });
 
@@ -5082,7 +5824,9 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         // partial still rebuilds the root object and wakes every listener.
         // Returning the state itself is what `setSessionStatus` does, and
         // zustand short-circuits on it.
-        return source.stale ? state : { prSource: { ...source, stale: true } };
+        return source.stale
+          ? state
+          : { prSource: { ...source, stale: true, failedAt: Date.now() } };
       }
 
       return source.kind === 'failed' && source.message === message
@@ -5102,17 +5846,19 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * sweep, forever. Both slices are held so the panel's explanation renders once
    * rather than once a minute.
    */
-  reportPrsUnconfigured: (message) =>
+  reportPrsUnconfigured: (message, reason) =>
     set((state) => {
       const source = state.prSource;
       const settled =
-        source.kind === 'unconfigured' && source.message === message;
+        source.kind === 'unconfigured' &&
+        source.message === message &&
+        source.reason === reason;
 
       if (settled && state.prs.length === 0) return state;
 
       return {
         prs: state.prs.length === 0 ? state.prs : [],
-        prSource: settled ? source : { kind: 'unconfigured', message },
+        prSource: settled ? source : { kind: 'unconfigured', message, reason },
       };
     }),
 
@@ -5139,6 +5885,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     if (!isDesktop()) {
       get().reportPrsUnconfigured(
         'Pull requests need the desktop app — this is the browser preview.',
+        null,
       );
       return;
     }
@@ -5196,7 +5943,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
           kind === 'unauthenticated' ||
           kind === 'no-repos'
         ) {
-          get().reportPrsUnconfigured(message);
+          get().reportPrsUnconfigured(message, kind);
           return;
         }
 
@@ -5474,12 +6221,14 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       agentOrder: [],
       notifs: [],
       ledger: [],
+      closedAsks: new Set<string>(),
       prs: [],
       // `hydratePrs` sets `prs` and `prSource` together; leaving the old
       // mode's `prSource` standing would claim a source for a list that was
       // just emptied. `{ kind: 'loading' }` is the same value `reset()` and
       // this store's own initial state use for "nothing read yet".
       prSource: { kind: 'loading' },
+      prsReadAt: null,
       /*
         **Tickets are the remote machine's too, and this used to be wrong in
         the other direction.**
@@ -5499,6 +6248,12 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       */
       tickets: [],
       ticketSource: { kind: 'loading' },
+      ticketsReadAt: null,
+      ticketDetails: {},
+      prDetails: {},
+      prDiffs: {},
+      prChecks: {},
+      prTimelines: {},
       /*
         Not "an orphan quietly wasting memory" the way it first read — session
         ids are **not unique across machines**. `nextSpawnId`/`rememberSpawnId`
@@ -5516,6 +6271,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       metrics: {},
       // Keyed by the same colliding ids as `metrics` (HIVE-179).
       plans: {},
+      changedFiles: {},
       /*
         Results, not just the request behind them.
 
@@ -5588,11 +6344,21 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       ...emptySeeds(),
       notifs: [],
       remoteLink: null,
+      remoteLostAcked: 0,
       ledger: [],
+      closedAsks: new Set<string>(),
       metrics: {},
       plans: {},
+      changedFiles: {},
       ticketSource: { kind: 'loading' },
+      ticketsReadAt: null,
+      ticketDetails: {},
+      prDetails: {},
+      prDiffs: {},
+      prChecks: {},
+      prTimelines: {},
       prSource: { kind: 'loading' },
+      prsReadAt: null,
       prSearch: NO_PR_SEARCH,
       ticketSearch: NO_TICKET_SEARCH,
     });
@@ -5610,6 +6376,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
 /** One entity, or undefined. */
 export const useEntity = (id: string) =>
   useHiveStore((state) => state.entities[id]);
+
+/**
+ * Whether a tab the Sessions place would return to has nothing left to show:
+ * its row is gone, or its session ended. The bar then lands on the Overmind
+ * (ui-store `selectPlace`). `'orch'` is never gone.
+ */
+export const useTabGone = (id: string): boolean =>
+  useHiveStore((state) => {
+    if (id === 'orch') return false;
+    const entity = state.entities[id];
+    return entity === undefined || (isSession(entity) && isEnded(entity.status));
+  });
 
 /**
  * NUL, because it is the one byte neither an entity id nor a
@@ -5797,9 +6575,8 @@ export const useCounts = () =>
          *
          * So the number answers the question the label answers — *is this task
          * progressing* — rather than the one the status field answers. The
-         * distinction is not lost: {@link useIdleDetailCounts} still keys on
-         * `status === 'idle'` and feeds the tooltip's `N with agents`
-         * breakdown, which is where it has room to be spelled out.
+         * distinction is not lost: `idleDetail` stays on the entity, keyed on
+         * `status === 'idle'`.
          *
          * The cost, stated plainly: `counts` is no longer a partition of
          * `SessionStatus` by that field. It is still keyed by it, and the
@@ -5813,30 +6590,6 @@ export const useCounts = () =>
         counts[bucket] += 1;
       }
       return counts;
-    }),
-  );
-
-/**
- * Idle sessions, broken down by what is still running (HIVE-83).
- *
- * A second selector rather than a wider `useCounts()`: the header's visible
- * tally stays five numbers on purpose (widening it was the thing this story
- * deliberately did not do), and this feeds the tooltip only. Computed here,
- * never stored — one source of truth per number on screen, same rule as
- * `useCounts()`.
- */
-export const useIdleDetailCounts = () =>
-  useHiveStore(
-    useShallow((state) => {
-      let agents = 0;
-      let script = 0;
-      for (const id of state.order) {
-        const entity = state.entities[id];
-        if (!entity || !isSession(entity) || entity.status !== 'idle') continue;
-        if (entity.idleDetail === 'agents') agents += 1;
-        else if (entity.idleDetail === 'script') script += 1;
-      }
-      return { agents, script };
     }),
   );
 
@@ -5895,6 +6648,90 @@ function navOrderOf(state: HiveState): string[] {
 
 /** Active sessions first, then ended ones — the keyboard nav order (041, 060). */
 export const useNavOrder = () => useHiveStore(useShallow(navOrderOf));
+
+/** What the Overmind table is asked to show (HIVE-197): `useFleetView()`'s answer. */
+export interface FleetView {
+  project: string | null;
+  filter: TableFilter;
+  endedAll: boolean;
+}
+
+/** The Overmind table's rows, group by group, in drawing order (HIVE-197). */
+export interface FleetGroups {
+  live: string[];
+  agents: string[];
+  ended: string[];
+  /** Endings the unfiltered table folds away behind "N more ›". */
+  endedMore: number;
+}
+
+const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString();
+
+/**
+ * What the Overmind table draws, group by group (HIVE-197). The table paints these
+ * and {@link useFleetNavOrder} flattens them, so the caret and the rows agree —
+ * the rule {@link navOrderOf} keeps for the whole fleet.
+ *
+ * Unfiltered, Ended shows today's endings and counts the rest (`endedMore`);
+ * a project filter or the Ended filter shows them whole. `repo` is the filtered
+ * project's folder name ({@link repoDirName}); `null` means no agent works there.
+ */
+export function fleetGroupsOf(
+  state: Pick<HiveState, 'entities' | 'order' | 'agentOrder'>,
+  view: FleetView,
+  repo: string | null,
+  now: number,
+): FleetGroups {
+  const live: string[] = [];
+  const ended: string[] = [];
+  for (const id of state.order) {
+    const entity = state.entities[id];
+    if (!entity || !isSession(entity)) continue;
+    if (view.project !== null && entity.project !== view.project) continue;
+    (isEnded(entity.status) ? ended : live).push(id);
+  }
+  const agents = rankedAgents(state.agentOrder, state.entities).filter((id) => {
+    if (view.project === null) return true;
+    const entity = state.entities[id];
+    return repo !== null && entity !== undefined && isAgent(entity) && agentWorksIn(entity, repo);
+  });
+  const endedSorted = byRecency(ended, state.entities);
+  const folds = view.project === null && view.filter === 'all' && !view.endedAll;
+  // `recencyOf` of an ended row is its `endedAt`, so "today" is ended today.
+  const shown = folds
+    ? endedSorted.filter((id) => sameDay(recencyOf(state.entities[id] as Session), now))
+    : endedSorted;
+
+  return {
+    live: view.filter === 'ended' ? [] : byRecency(live, state.entities),
+    agents: view.filter === 'ended' ? [] : agents,
+    ended: view.filter === 'live' ? [] : shown,
+    endedMore: view.filter === 'live' ? 0 : endedSorted.length - shown.length,
+  };
+}
+
+/** The folder name of a configured project, or `null` (HIVE-197). */
+export const useProjectRepo = (projectId: string | null): string | null => {
+  const snapshot = useSyncExternalStore(subscribeProjectConfig, projectConfigSnapshot, projectConfigSnapshot);
+  if (projectId === null) return null;
+  return repoDirName(snapshot?.projects.find((project) => project.id === projectId)?.path ?? null);
+};
+
+const useFleetGroups = <T,>(pick: (groups: FleetGroups) => T): T => {
+  const view = useFleetView();
+  const repo = useProjectRepo(view.project);
+  // ponytail: `now` is read per store change, so "today" rolls over at the next update after midnight.
+  return useHiveStore(useShallow((state) => pick(fleetGroupsOf(state, view, repo, Date.now()))));
+};
+
+/** One group of the Overmind table, under the current filters (HIVE-197). */
+export const useFleetGroup = (group: 'live' | 'agents' | 'ended'): string[] =>
+  useFleetGroups((groups) => groups[group]);
+/** How many endings the unfiltered table folds away behind "N more ›". */
+export const useEndedMore = (): number => useFleetGroups((groups) => groups.endedMore);
+/** The rows on screen, flattened in the table's order — what ↑↓ walks (HIVE-197). */
+export const useFleetNavOrder = (): string[] =>
+  useFleetGroups((groups) => [...groups.live, ...groups.agents, ...groups.ended]);
 
 /**
  * Every id the centre stage mounts a terminal surface for (terminals).
@@ -6026,6 +6863,9 @@ export const useHasResumable = (): boolean =>
     }),
   );
 
+/** The console's last line, for the folded dock's peek (HIVE-197). */
+export const useLastOrchLine = (): string => useHiveStore((state) => state.orchLines.at(-1)?.text ?? '');
+
 /**
  * One agent's run log.
  *
@@ -6048,27 +6888,28 @@ export const useAgentLines = (name: string): TermLine[] =>
 const EMPTY_RUNS: RunSummary[] = [];
 
 interface AgentGroup {
-  key: 'awake' | 'sleeping' | 'paused';
+  key: AgentGroupKey;
   label: string;
   ids: string[];
 }
 
 /**
- * The rail's groups, in the order they are read (HIVE-116).
+ * The panel's lanes, in the order they are read (HIVE-204, from round two).
  *
- * The question a grouping answers here is *should I look at this?*, which is
- * why `failed` files under Awake rather than earning a fourth group: a broken
- * agent is not resting, and filing it under Sleeping would bury the one row
- * that actually needs a person. Inside Awake, `asking` sorts first and ties
- * break on the most recent run — the same "what needs me first" order the
- * fleet table reads in.
+ * The question a lane answers is *should I look at this?* Summons holds what
+ * needs a person: `asking`, `failed`, and a definition that does not parse
+ * (`invalid`), whatever its status, because nothing it does will fix itself.
+ * Inside Summons `asking` sorts first, since somebody is blocked on the user,
+ * then the most recent run. Morphing holds `working`, newest run first.
+ * Burrowed holds `sleeping`, then `paused` (decision 1, 2026-10-02): nothing
+ * wakes a paused agent, so it sits after the ones that will wake on their own.
  *
- * An empty group is omitted rather than drawn with a zero: a header reading
- * `PAUSED 0` is a line of noise about nothing.
+ * An empty lane is omitted rather than drawn with a zero: a header reading
+ * `Morphing 0` is a line of noise about nothing.
  */
 export const useAgentsByGroup = (): AgentGroup[] => {
   /*
-    The three fields the grouping reads, and nothing else.
+    The four fields the grouping reads, and nothing else.
 
     Subscribing to `state.entities` re-ran this on every write to *any* entity
     — a line batch from a running agent, a session's status change — because
@@ -6087,7 +6928,9 @@ export const useAgentsByGroup = (): AgentGroup[] => {
         // so the same narrowing every other agent selector does.
         if (entity === undefined || !isAgent(entity)) return [];
 
-        return [`${id}|${entity.status}|${entity.lastRunAt ?? 0}`];
+        return [
+          `${id}|${entity.status}|${entity.lastRunAt ?? 0}|${entity.invalid === undefined ? 0 : 1}`,
+        ];
       }),
     ),
   );
@@ -6104,37 +6947,53 @@ export const useAgentsByGroup = (): AgentGroup[] => {
       digits and dashes only.
     */
     const parsed = rows.map((row) => {
-      const [id = '', status = '', lastRunAt = '0'] = row.split('|');
+      const [id = '', status = '', lastRunAt = '0', invalid = '0'] =
+        row.split('|');
 
-      return { id, status, lastRunAt: Number(lastRunAt) };
+      return {
+        id,
+        status,
+        lastRunAt: Number(lastRunAt),
+        invalid: invalid === '1',
+      };
     });
 
-    const bucket: Record<AgentGroup['key'], (typeof parsed)[number][]> = {
-      awake: [],
-      sleeping: [],
-      paused: [],
+    type Row = (typeof parsed)[number];
+
+    const bucket: Record<AgentGroupKey, Row[]> = {
+      summons: [],
+      morphing: [],
+      burrowed: [],
     };
 
     for (const row of parsed) {
-      if (row.status === 'paused') bucket.paused.push(row);
-      else if (row.status === 'sleeping') bucket.sleeping.push(row);
-      else bucket.awake.push(row);
+      if (row.invalid || row.status === 'asking' || row.status === 'failed')
+        bucket.summons.push(row);
+      else if (row.status === 'working') bucket.morphing.push(row);
+      else bucket.burrowed.push(row);
     }
 
-    bucket.awake.sort((a, b) => {
-      if (a.status === 'asking' && b.status !== 'asking') return -1;
-      if (b.status === 'asking' && a.status !== 'asking') return 1;
+    const newest = (a: Row, b: Row) => b.lastRunAt - a.lastRunAt;
 
-      return b.lastRunAt - a.lastRunAt;
-    });
+    bucket.summons.sort(
+      (a, b) =>
+        Number(b.status === 'asking') - Number(a.status === 'asking') ||
+        newest(a, b),
+    );
+    bucket.morphing.sort(newest);
+    bucket.burrowed.sort(
+      (a, b) =>
+        Number(a.status === 'paused') - Number(b.status === 'paused') ||
+        newest(a, b),
+    );
 
-    const labels: Record<AgentGroup['key'], string> = {
-      awake: 'Awake',
-      sleeping: 'Sleeping',
-      paused: 'Paused',
+    const labels: Record<AgentGroupKey, string> = {
+      summons: 'Summons',
+      morphing: 'Morphing',
+      burrowed: 'Burrowed',
     };
 
-    return (['awake', 'sleeping', 'paused'] as const)
+    return (['summons', 'morphing', 'burrowed'] as const)
       .filter((key) => bucket[key].length > 0)
       .map((key) => ({
         key,
@@ -6226,99 +7085,6 @@ export const useAgentFacts = (name: string): AgentFacts | null => {
 };
 
 /**
- * The Agents tab's badge: how many agents you have.
- *
- * An inventory, exactly like Work's ticket count, and deliberately *not* the
- * open-ask count this badge used to carry. That number answered "how many of
- * my tenants are stuck on me?", which is a good question and the wrong one for
- * a badge that is zero almost all day: the rail then said nothing at all about
- * a pane holding five agents. The two facts move on two clocks — what you own
- * changes when you write an `AGENT.md`, what is happening changes minute to
- * minute — so they are now two marks rather than one overloaded number. The
- * second is {@link useAgentFleetStatus}.
- *
- * Reads `agentOrder` rather than filtering `entities`, so the selector never
- * subscribes to a map whose identity changes on every line batch from a running
- * terminal. That is only sound because `hydrateAgents` now records the names it
- * actually wrote: the array once held every summary's name, including one the
- * session guard had refused, and this count is what would have put that phantom
- * on screen.
- */
-export const useAgentCount = (): number =>
-  useHiveStore((state) => state.agentOrder.length);
-
-/**
- * The three states worth interrupting the user for, loudest first.
- *
- * The order is the rail's own, not a new opinion: `useAgentsByGroup` already
- * sorts `asking` ahead of everything in Awake because somebody is blocked on
- * the user, and `useAgentsForFleet` reads the same way. A summary dot that
- * showed green while an agent waited would invert the priority both of those
- * spend code establishing.
- */
-const FLEET_RANK = ['asking', 'failed', 'working'] as const;
-
-/** What a fleet summary can report — the rest of {@link AgentStatus} is rest. */
-export type FleetStatus = (typeof FLEET_RANK)[number];
-
-/**
- * The loudest thing the fleet is doing, or `undefined` when it is all at rest
- * — the dot on the Agents tab's glyph.
- *
- * Paired with {@link useAgentCount} rather than folded into it, so neither has
- * to stand in for the other: the badge says *two agents*, the dot says
- * *one of them is running*. `sleeping` and `paused` return `undefined` and the
- * tab wears no dot, which is the state it sits in most of the day and the one
- * where another mark would be noise.
- *
- * ## An unparseable definition is a failure here
- *
- * `registry.ts` files a folder it could not read as `sleeping`, because a
- * summary needs *some* status and there is no parsed one to use. Taken at face
- * value that would leave a broken agent with no mark at all — and in the
- * collapsed rail the dot is the entire signal, so the one agent that needs a
- * person would be the one the rail never mentions. `invalid` therefore ranks
- * as `failed`.
- *
- * The row keeps the finer distinction: `agent-row.tsx` draws `invalid` in
- * amber beside the word "invalid", so the difference between *broke while
- * running* and *never parsed* survives one click away. This selector answers
- * only "should I look?", where both are yes.
- *
- * Returns a primitive, so the read is cheap despite walking `entities`: an
- * unrelated write recomputes the same string and `Object.is` stops the render.
- */
-export const useAgentFleetStatus = (): FleetStatus | undefined =>
-  useHiveStore((state) => {
-    let best: number | undefined;
-
-    for (const id of state.agentOrder) {
-      const entity = state.entities[id];
-
-      // `entities` holds both kinds and an agent name is a legal session id —
-      // the same narrowing every other agent selector does.
-      if (entity === undefined || !isAgent(entity)) continue;
-
-      /*
-        Widened to `AgentStatus[]` for the lookup, rather than narrowing
-        `entity.status` down to `FleetStatus` — a resting status is a legal
-        input here and must return -1, not be asserted into a rank it has not
-        got.
-      */
-      const rank = (FLEET_RANK as readonly AgentStatus[]).indexOf(
-        entity.invalid === undefined ? entity.status : 'failed',
-      );
-
-      if (rank === -1) continue;
-      if (best === undefined || rank < best) best = rank;
-      // Nothing outranks `asking`; the rest of the walk cannot change it.
-      if (best === 0) break;
-    }
-
-    return best === undefined ? undefined : FLEET_RANK[best];
-  });
-
-/**
  * One agent's side of the log — what it said, and what it was told.
  *
  * A selector rather than two `useLedgerEntries` calls merged in a component,
@@ -6354,8 +7120,8 @@ export const useAgentAskRef = (name: string): string | undefined => {
  * The agents, ordered for the fleet table's AGENTS group (HIVE-117).
  *
  * A second ordering rather than a reuse of {@link useAgentsByGroup}, because
- * the two surfaces are answering different questions. The rail *groups* —
- * Awake, Sleeping, Paused, three headings the eye scans between. The fleet
+ * the two surfaces are answering different questions. The panel *groups* —
+ * Summons, Morphing, Burrowed, three lanes the eye scans between. The fleet
  * table has one heading and one list, so the order has to carry the whole
  * priority by itself: `asking` (someone is waiting on you), then `working`,
  * then `sleeping` by the wake that comes soonest, then `paused` last because
@@ -6406,6 +7172,25 @@ function byFleetRank(a: AgentRank, b: AgentRank): number {
   if (b.nextRunAt === 0) return -1;
 
   return a.nextRunAt - b.nextRunAt;
+}
+
+/** A project's folder name, the key a `repo:` lane is matched on (HIVE-197). */
+export function repoDirName(path: string | null): string | null {
+  if (path === null) return null;
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.toLowerCase() ?? null;
+}
+
+/**
+ * Whether an agent has a live run in a project (HIVE-197): a `repo:<owner>/<name>`
+ * lane whose `<name>` is the project's folder name.
+ *
+ * ponytail: a checkout whose folder is not the repository's name never matches;
+ * a repo slug on `ProjectConfig` is the upgrade.
+ */
+export function agentWorksIn(agent: Agent, repo: string): boolean {
+  return agent.live.some(
+    (run) => run.lane?.startsWith('repo:') === true && run.lane.split('/').pop()?.toLowerCase() === repo,
+  );
 }
 
 /** The agents of `agentOrder`, ranked — shared by the table and the caret. */
@@ -6484,6 +7269,20 @@ export const useAskingAgentCount = (): number =>
     }
 
     return asking;
+  });
+
+/** Agents working right now: the bar's Agents count (HIVE-196). Same walk as `useAskingAgentCount`. */
+export const useWorkingAgentCount = (): number =>
+  useHiveStore((state) => {
+    let working = 0;
+    for (const id of state.agentOrder) {
+      const entity = state.entities[id];
+      if (entity !== undefined && isAgent(entity) && entity.status === 'working') {
+        working += 1;
+      }
+    }
+
+    return working;
   });
 
 /** An agent's pull request: always a number, linkable only when the sweep knows it. */
@@ -6602,6 +7401,219 @@ export const useSetSessionMetrics = () =>
 export const useSessionMetrics = (id: string | undefined) =>
   useHiveStore((state) => (id === undefined ? undefined : state.metrics[id]));
 
+/** The account's rate limits (HIVE-200): account-global, so any session's reading is the account's. */
+export interface AccountLimits {
+  fiveHourPct?: number;
+  fiveHourResetsAt?: number;
+  sevenDayPct?: number;
+  sevenDayResetsAt?: number;
+}
+
+const LIMIT_WINDOWS = {
+  fiveHour: ['fiveHourPct', 'fiveHourResetsAt'],
+  sevenDay: ['sevenDayPct', 'sevenDayResetsAt'],
+} as const;
+
+/**
+ * One window across every session's reading (D7): the latest `resetsAt` wins,
+ * since an older one belongs to a window that already rolled; within it, the
+ * highest percentage, since usage only grows inside a window. A reading with no
+ * reset ranks below every reading with one. An unreported window stays absent.
+ */
+function bestWindow(
+  metrics: Record<string, SessionMetrics>,
+  window: keyof typeof LIMIT_WINDOWS,
+): AccountLimits {
+  const [pctKey, resetKey] = LIMIT_WINDOWS[window];
+  let pct: number | undefined;
+  let at: number | undefined;
+  for (const m of Object.values(metrics)) {
+    const p = m[pctKey];
+    if (p === undefined) continue;
+    const r = m[resetKey];
+    const better =
+      pct === undefined || (r ?? -1) > (at ?? -1) || ((r ?? -1) === (at ?? -1) && p > pct);
+    if (better) {
+      pct = p;
+      at = r;
+    }
+  }
+  if (pct === undefined) return {};
+  return at === undefined ? { [pctKey]: pct } : { [pctKey]: pct, [resetKey]: at };
+}
+
+export const accountLimitsOf = (metrics: Record<string, SessionMetrics>): AccountLimits => ({
+  ...bestWindow(metrics, 'fiveHour'),
+  ...bestWindow(metrics, 'sevenDay'),
+});
+
+/** Home's Limits (HIVE-200). Four primitives under `useShallow`, so only a moved number re-renders. */
+export const useAccountLimits = (): AccountLimits =>
+  useHiveStore(useShallow((state) => accountLimitsOf(state.metrics)));
+
+/** One Coming up row (HIVE-200): a scheduled wake (`at`, ms) or a held pickup (no `at`). */
+export interface ComingUpRow {
+  id: string;
+  agent: string;
+  what: string;
+  at?: number;
+}
+
+const COMING_UP_MAX = 5;
+
+export function comingUpOf(
+  agents: readonly { id: string; sub: string; nextRunAt: number }[],
+  ledger: readonly LedgerEntry[],
+): ComingUpRow[] {
+  const scheduled = [...agents]
+    .sort((a, b) => a.nextRunAt - b.nextRunAt)
+    .map((a) => ({ id: a.id, agent: a.id, what: a.sub, at: a.nextRunAt }));
+  const heldRows = ledger.flatMap((entry) => {
+    const target = afterTarget(entry);
+    if (target === undefined || entry.to === undefined || !isHeld(entry, ledger)) return [];
+    const ticket = entry.meta?.['ticket'];
+    const work = typeof ticket === 'string' ? ticket : (entry.body.split('\n')[0] ?? '');
+    const repo = target.repo.split('/').pop() ?? target.repo;
+    return [{ id: entry.id, agent: entry.to, what: `picks up ${work} when ${repo}#${target.pr} ships` }];
+  });
+  return [...scheduled, ...heldRows].slice(0, COMING_UP_MAX);
+}
+
+const COMING_UP_SEP = '\u0000';
+
+/** Scheduled agents as strings, so `useShallow` sees no change on a terminal write. */
+const scheduledKeys = (state: HiveState): string[] =>
+  state.agentOrder.flatMap((id) => {
+    const entity = state.entities[id];
+    return entity !== undefined && isAgent(entity) && entity.nextRunAt !== undefined
+      ? [[entity.id, entity.nextRunAt, entity.sub].join(COMING_UP_SEP)]
+      : [];
+  });
+
+/** Home's Coming up (HIVE-200): scheduled wakes soonest first, then held pickups. At most five. */
+export const useComingUp = (): ComingUpRow[] => {
+  const keys = useHiveStore(useShallow(scheduledKeys));
+  const ledger = useHiveStore((state) => state.ledger);
+  return useMemo(() => {
+    const agents = keys.map((key) => {
+      const [id = '', at = '0', sub = ''] = key.split(COMING_UP_SEP);
+      return { id, sub, nextRunAt: Number(at) };
+    });
+    return comingUpOf(agents, ledger);
+  }, [keys, ledger]);
+};
+
+/** An Echo kind counted on one row, named by its first notification's title. */
+export interface EchoCount {
+  total: number;
+  first?: string;
+}
+
+/** Home's While you were away (HIVE-200), with the Echoes it reads (HIVE-217). */
+export interface WhileAway {
+  hatched: { numbers: number[]; by?: string };
+  goals: string[];
+  runs: { total: number; failed: number };
+  ready: { keys: string[]; total: number };
+  checksFailed: EchoCount;
+  approved: EchoCount;
+  clones: { failed: boolean; detail: string }[];
+}
+
+const READY_NAMED = 2;
+
+/** A run that ended without finishing: the outcomes `ledger/notify.ts` raises as `agent.failed`. */
+const RUN_CUT_OFF = new Set(['failed', 'budget', 'turns']);
+
+const echoCount = (rows: readonly HiveNotification[]): EchoCount =>
+  rows[0] === undefined ? { total: 0 } : { total: rows.length, first: rows[0].title };
+
+/**
+ * What happened after `since`, from state already in the renderer. Runs are
+ * bounded by the ledger tail (`LEDGER_MEMORY_CAP`), so a busy day can
+ * undercount; the row says so in its tooltip.
+ *
+ * The Echo lane lands here, since the Inbox shows only what needs you
+ * (HIVE-198). `session.goal` is `goals`. `pr.merged` is left out because
+ * `hatched` already counts every merged PR from the sweep. `agent.done` and
+ * `agent.failed` are left out because each one belongs to a run `runs` already
+ * counts, and `app.update_*` is left out because the update has its own
+ * surface (HIVE-217).
+ */
+export function whileAwayOf(
+  input: {
+    prs: readonly PrRecord[];
+    notifs: readonly HiveNotification[];
+    ledger: readonly LedgerEntry[];
+    readyKeys: readonly string[];
+  },
+  since: number,
+): WhileAway {
+  const merged = input.prs.filter(
+    (pr) => pr.state === 'merged' && Date.parse(pr.mergedAt ?? pr.updatedAt) > since,
+  );
+  const closers = merged.map(
+    (pr) =>
+      input.ledger.find(
+        (e) =>
+          e.meta?.['stage'] === 'closed' &&
+          String(e.meta['pr']) === String(pr.number) &&
+          String(e.meta['repo']).toLowerCase() === `${pr.owner}/${pr.repo}`.toLowerCase(),
+      )?.from,
+  );
+  const first = closers[0];
+  const by = first !== undefined && closers.every((who) => who === first) ? first : undefined;
+
+  let total = 0;
+  let failed = 0;
+  for (const e of input.ledger) {
+    if (e.kind !== 'event' || e.ts <= since || !e.body.startsWith('run.ended')) continue;
+    total += 1;
+    if (RUN_CUT_OFF.has(String(e.meta?.['outcome']))) failed += 1;
+  }
+
+  // ponytail: bounded by the notification cap, whose trim drops Echoes first, so a long absence can undercount.
+  const echoes = input.notifs
+    .filter((n) => n.createdAt > since)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const ofKind = (kind: NotificationKind) => echoes.filter((n) => n.kind === kind);
+
+  return {
+    hatched: {
+      numbers: merged.map((pr) => pr.number).sort((a, b) => a - b),
+      ...(by === undefined ? {} : { by }),
+    },
+    goals: input.notifs
+      .filter((n) => n.kind === 'session.goal' && n.createdAt > since)
+      .map((n) => n.title),
+    runs: { total, failed },
+    ready: { keys: input.readyKeys.slice(0, READY_NAMED), total: input.readyKeys.length },
+    checksFailed: echoCount(ofKind('pr.checks_failed')),
+    approved: echoCount(ofKind('pr.approved')),
+    // ponytail: a failed clone is told apart only by the title main gives it; an `ok` field on the row would end that.
+    clones: ofKind('clone.done').map((n) =>
+      n.title === 'Clone failed' ? { failed: true, detail: n.body } : { failed: false, detail: '' },
+    ),
+  };
+}
+
+/** Home's While you were away (HIVE-200). Memoised over its slices, so a terminal write costs nothing. */
+export const useWhileAway = (since: number): WhileAway => {
+  const prs = useHiveStore((state) => state.prs);
+  const notifs = useHiveStore((state) => state.notifs);
+  const ledger = useHiveStore((state) => state.ledger);
+  const tickets = useHiveStore((state) => state.tickets);
+  const fleet = useHiveStore(selectSessionFacets);
+  return useMemo(() => {
+    const readyKeys = tickets
+      .filter(
+        (t) => t.statusCategory === 'todo' && liveSessionsForTicket(t.key, fleet).length === 0,
+      )
+      .map((t) => t.key);
+    return whileAwayOf({ prs, notifs, ledger, readyKeys }, since);
+  }, [prs, notifs, ledger, tickets, fleet, since]);
+};
+
 /**
  * The session's plan, or undefined (HIVE-179). Stable identity: main
  * publishes a new object only on a change, so this re-renders only then.
@@ -6628,11 +7640,161 @@ export const usePlanProgress = (id: string | undefined) =>
     }),
   );
 
+/** One cell of Home's comb (HIVE-199): raw facts, worded by `features/home/cell-text`. */
+export interface CombEntity {
+  id: string;
+  name: string;
+  kind: 'session' | 'terminal' | 'agent';
+  /** A project id, or `swarm` for an agent. */
+  project: string;
+  state: CellState;
+  status: SessionStatus | AgentStatus | TerminalStatus;
+  idleDetail?: IdleDetail;
+  done?: number;
+  total?: number;
+  /** An asking agent's open ask, its first line. */
+  ask?: string;
+  askedAt?: number;
+  /** A failed agent's last run reason, or why its definition is invalid. */
+  reason?: string;
+  /** A resting agent's next wake, as `describeNextRun` words it. */
+  nextRun?: string;
+}
+
+const COMB_SEP = '\u0000';
+
+/**
+ * Every live session, live terminal and agent, flattened to strings.
+ *
+ * Strings under `useShallow` for the reason `useAgentsByGroup` records: a
+ * transcript line or a cost update changes the entity map's identity and
+ * nothing here, so it re-renders nothing. The open asks are computed only when
+ * some agent is asking, because this runs on every store write.
+ */
+const combRowsSelector = (state: HiveState): string[] => {
+  const rows: string[] = [];
+  const row = (fields: (string | number | undefined)[]): string =>
+    fields.map((f) => String(f ?? '').replaceAll(COMB_SEP, '')).join(COMB_SEP);
+
+  for (const id of state.order) {
+    const e = state.entities[id];
+    if (e === undefined) continue;
+    if (isTerminal(e)) {
+      if (e.ended === undefined) rows.push(row([id, 'terminal', id, e.project, 'terminal', e.status]));
+      continue;
+    }
+    if (!isSession(e) || isEnded(e.status)) continue;
+    const combState: CellState =
+      e.status === 'waiting' ? 'summons' : e.status === 'working' || e.idleDetail !== undefined ? 'morphing' : 'burrowed';
+    const tasks = state.plans[id]?.tasks;
+    rows.push(row([
+      id, 'session', e.name ?? id, e.project, combState, e.status, e.idleDetail,
+      tasks?.filter((t) => t.status === 'completed').length, tasks?.length,
+    ]));
+  }
+
+  let asks: OpenAsk[] | undefined;
+  for (const id of state.agentOrder) {
+    const a = state.entities[id];
+    if (a === undefined || !isAgent(a)) continue;
+    const combState: CellState =
+      a.invalid !== undefined || a.status === 'failed' ? 'failed'
+        : a.status === 'asking' ? 'summons'
+          : a.status === 'working' ? 'morphing'
+            : 'burrowed';
+    const ask = combState === 'summons'
+      ? (asks ??= openAsks(state.ledger, Date.now())).find((x) => x.from === id)
+      : undefined;
+    rows.push(row([
+      id, 'agent', id, SWARM, combState, a.status, undefined, undefined, undefined,
+      ask?.body.split('\n')[0]?.slice(0, 80), ask?.ts,
+      combState === 'failed' ? (a.invalid ?? a.runs.at(-1)?.reason ?? 'failed') : undefined,
+      combState === 'burrowed' ? describeNextRun(a) : undefined,
+    ]));
+  }
+  return rows;
+};
+
+function parseCombRow(text: string): CombEntity {
+  const [id = '', kind, name = '', project = '', state, status, idleDetail, done, total, ask, askedAt, reason, nextRun] =
+    text.split(COMB_SEP);
+  const opt = (v: string | undefined): string | undefined => (v ? v : undefined);
+  const num = (v: string | undefined): number | undefined => (v ? Number(v) : undefined);
+  return {
+    id, name, project,
+    kind: kind as CombEntity['kind'],
+    state: state as CellState,
+    status: status as CombEntity['status'],
+    idleDetail: opt(idleDetail) as IdleDetail | undefined,
+    done: num(done), total: num(total),
+    ask: opt(ask), askedAt: num(askedAt), reason: opt(reason), nextRun: opt(nextRun),
+  };
+}
+
+/** Home's comb: every live session, live terminal and agent (HIVE-199). Derived, never stored. */
+export const useCombEntities = (): CombEntity[] => {
+  const rows = useHiveStore(useShallow(combRowsSelector));
+  return useMemo(() => rows.map(parseCombRow), [rows]);
+};
+
+/** The comb's own counts. "Needs you" is not one: that is `useSummonsCount` (HIVE-217). */
+export interface CombSummary {
+  working: number;
+  failed: number;
+  /** Burrowed cells and terminals. */
+  resting: number;
+  /** Projects with a patch. */
+  projects: number;
+  agents: number;
+}
+
+export function summariseComb(entities: CombEntity[]): CombSummary {
+  const count = (state: CellState): number => entities.filter((e) => e.state === state).length;
+  return {
+    working: count('morphing'),
+    failed: count('failed'),
+    resting: count('burrowed') + count('terminal'),
+    projects: new Set(entities.filter((e) => e.project !== SWARM).map((e) => e.project)).size,
+    agents: entities.filter((e) => e.kind === 'agent').length,
+  };
+}
+
+/** The headline's counts, over the same cells the comb draws. */
+export const useCombSummary = (): CombSummary => {
+  const entities = useCombEntities();
+  return useMemo(() => summariseComb(entities), [entities]);
+};
+
 /** One session's plan changed, or went (HIVE-179). */
 export const useSetPlan = () => useHiveStore((state) => state.setPlan);
 
 /** Merge the `plans:list` snapshot (HIVE-179). */
 export const useHydratePlans = () => useHiveStore((state) => state.hydratePlans);
+
+/** The session's changed files, first-seen order (HIVE-201). Keyed by main's id: pass `terminalOf(session)`. */
+export const useChangedFiles = (id: string | undefined) =>
+  useHiveStore((state) => (id === undefined ? undefined : state.changedFiles[id]));
+
+/** How many files the session changed; 0 without a list. */
+export const useChangedFileCount = (id: string | undefined) =>
+  useHiveStore((state) => (id === undefined ? 0 : (state.changedFiles[id]?.length ?? 0)));
+
+/**
+ * One tree row's mark. A primitive, so a row re-renders only on its own change.
+ *
+ * ponytail: linear scan per row; a session changes tens of files, so a Map
+ * keyed by path is only worth it past hundreds.
+ */
+export const useChangedFileMark = (id: string | undefined, path: string) =>
+  useHiveStore((state) =>
+    id === undefined ? undefined : state.changedFiles[id]?.find((file) => file.path === path)?.mark,
+  );
+
+/** Replace one session's changed files (HIVE-201). */
+export const useSetChangedFiles = () => useHiveStore((state) => state.setChangedFiles);
+
+/** Merge the `changed-files:list` snapshot (HIVE-201). */
+export const useHydrateChangedFiles = () => useHiveStore((state) => state.hydrateChangedFiles);
 
 /** A confirmed ticket key the user named mid-session (HIVE-78). */
 export const useSetSessionTicket = () =>
@@ -6717,6 +7879,10 @@ export const useSessionBooting = (id: string): boolean =>
 export function currentRowFor(id: string): string {
   return currentSessionIn(useHiveStore.getState(), id);
 }
+
+/** {@link currentRowFor} for a render path (HIVE-198): re-resolves when the row behind a terminal changes. */
+export const useCurrentRow = (terminalId: string): string =>
+  useHiveStore((state) => currentSessionIn(state, terminalId));
 
 /**
  * True when `id` currently names an agent, not a terminal (HIVE-118).
@@ -6830,11 +7996,11 @@ export const useLiveSessionCounts = () =>
  *
  * With no seeded projects there is nothing to merge and no precedence to
  * resolve: a project exists because the user mapped it. An empty config means
- * an empty list, which `projects-panel.tsx` says out loud rather than rendering
+ * an empty list, which the Sessions panel says out loud rather than rendering
  * as a blank column.
  *
  * **Config order is the file's order and is never sorted.** Story 103's
- * drag-reorder works by rewriting that array, and the left rail reads it
+ * drag-reorder works by rewriting that array, and the Sessions panel reads it
  * positionally, so sorting here would silently make 103 unimplementable.
  */
 export const useProjects = (): ProjectRow[] => {
@@ -6897,6 +8063,84 @@ export const useProjectLiveCount = (projectId: string): number =>
     }, 0),
   );
 
+/** A project's live entries, split as the panel colours them (HIVE-197). */
+export const useProjectCounts = (projectId: string): { needs: number; other: number } =>
+  useHiveStore(
+    useShallow((state) => {
+      let needs = 0;
+      let other = 0;
+      for (const id of state.order) {
+        const entity = state.entities[id];
+        if (entity === undefined || isAgent(entity) || entity.project !== projectId) continue;
+        if (isTerminal(entity)) other += entity.ended === undefined ? 1 : 0;
+        else if (entity.status === 'waiting') needs += 1;
+        else if (!isEnded(entity.status)) other += 1;
+      }
+      return { needs, other };
+    }),
+  );
+
+/** The panel head: every live entry, and how many need you (HIVE-197). */
+export const useSessionsHeadCounts = (): { live: number; needs: number } =>
+  useHiveStore(
+    useShallow((state) => {
+      let live = 0;
+      let needs = 0;
+      for (const id of state.order) {
+        const entity = state.entities[id];
+        if (entity === undefined || isAgent(entity)) continue;
+        if (isTerminal(entity)) live += entity.ended === undefined ? 1 : 0;
+        else if (!isEnded(entity.status)) {
+          live += 1;
+          if (entity.status === 'waiting') needs += 1;
+        }
+      }
+      return { live, needs };
+    }),
+  );
+
+/** The Overmind's head line: sessions the table can draw (HIVE-197). */
+export const useOvermindHeadCounts = (project: string | null) =>
+  useHiveStore(
+    useShallow((state) => {
+      const now = Date.now();
+      const projects = new Set<string>();
+      let live = 0;
+      let needs = 0;
+      let ended = 0;
+      let endedToday = 0;
+      for (const id of state.order) {
+        const entity = state.entities[id];
+        if (entity === undefined || !isSession(entity)) continue;
+        if (project !== null && entity.project !== project) continue;
+        if (isEnded(entity.status)) {
+          ended += 1;
+          if (sameDay(recencyOf(entity), now)) endedToday += 1;
+        } else {
+          live += 1;
+          projects.add(entity.project);
+          if (entity.status === 'waiting') needs += 1;
+        }
+      }
+      return { live, projects: projects.size, needs, ended, endedToday };
+    }),
+  );
+
+/** Agents with a live run in a project, ranked (HIVE-197). */
+export const useAgentsWorkingIn = (project: string | null): string[] => {
+  const repo = useProjectRepo(project);
+  return useHiveStore(
+    useShallow((state) =>
+      repo === null
+        ? []
+        : rankedAgents(state.agentOrder, state.entities).filter((id) => {
+            const entity = state.entities[id];
+            return entity !== undefined && isAgent(entity) && agentWorksIn(entity, repo);
+          }),
+    ),
+  );
+};
+
 /** Every work item, in fixture order (story 032). */
 export const useTickets = () =>
   useHiveStore(useShallow((state) => state.tickets));
@@ -6905,6 +8149,10 @@ export const useTickets = () =>
 export const useTicketSource = (): TicketSource =>
   useHiveStore((state) => state.ticketSource);
 
+/** When the last good ticket read landed (HIVE-211, D5): the stale line's second time. */
+export const useTicketsReadAt = (): number | null =>
+  useHiveStore((state) => state.ticketsReadAt);
+
 /** The refresh action, for the panel's mount effect and its retry (HIVE-69). */
 export const useRefreshTickets = (): (() => Promise<void>) =>
   useHiveStore((state) => state.refreshTickets);
@@ -6912,6 +8160,106 @@ export const useRefreshTickets = (): (() => Promise<void>) =>
 /** Install one re-read issue after a transition (HIVE-70). */
 export const useUpdateTicket = (): ((issue: JiraIssue) => void) =>
   useHiveStore((state) => state.updateTicket);
+
+/** One ticket's detail, or undefined before its first load (HIVE-203, keyed by HIVE-202). */
+export const useTicketDetail = (ticketKey: string): TicketDetail | undefined =>
+  useHiveStore((state) => state.ticketDetails[ticketKey]);
+
+/** Read one ticket for the page or the Ticket tab (HIVE-203, HIVE-202). */
+export const useLoadTicketDetail = (): ((key: string, want: TicketDetailWant) => Promise<void>) =>
+  useHiveStore((state) => state.loadTicketDetail);
+
+/** A poller's re-read of a ticket already held (HIVE-203, HIVE-202). */
+export const useRefreshTicketDetail = (): ((key: string, want: TicketDetailWant) => Promise<void>) =>
+  useHiveStore((state) => state.refreshTicketDetail);
+
+/** One PR's detail, or undefined before its first load (HIVE-205). `key` is {@link prKey}'s. */
+export const usePrDetail = (key: string): PrDetailEntry | undefined =>
+  useHiveStore((state) => state.prDetails[key]);
+
+/** One PR's Checks reads (HIVE-206). */
+export const usePrChecks = (key: string): PrChecksEntry | undefined => useHiveStore((state) => state.prChecks[key]);
+
+/** The last eight pushes, oldest first (HIVE-206, D1). */
+export const usePushes = (key: string): Push[] => {
+  const runs = useHiveStore((state) => state.prChecks[key]?.runs);
+  return useMemo(() => foldPushes(runs ?? []), [runs]);
+};
+
+/** The shown push (`sha`, else the newest) laid out; null until runs are read or when there are none. */
+export const useChecksGraph = (key: string, sha: string | null, expanded: ReadonlySet<string>): ChecksGraph | null => {
+  const entry = useHiveStore((state) => state.prChecks[key]);
+  const pushes = usePushes(key);
+  return useMemo(() => {
+    const push = pushes.find((p) => p.sha === sha) ?? pushes.at(-1);
+    if (entry === undefined || push === undefined) return null;
+    return layoutGraph(entry.workflows ?? [], push.runs, entry.jobs, expanded, Date.now());
+  }, [entry, pushes, sha, expanded]);
+};
+
+/** The job under the graph: the clicked one, else the shown push's first failed job (HIVE-206). */
+export const useShownJob = (key: string, sha: string | null, clicked: number | null): RunJob | null => {
+  const entry = useHiveStore((state) => state.prChecks[key]);
+  const pushes = usePushes(key);
+  return useMemo(() => {
+    const push = pushes.find((p) => p.sha === sha) ?? pushes.at(-1);
+    if (entry === undefined || push === undefined) return null;
+    const jobs = push.runs.flatMap((one) => entry.jobs[one.id] ?? []);
+    return jobs.find((j) => j.id === clicked) ?? jobs.find((j) => jobState(j.status, j.conclusion) === 'failed') ?? null;
+  }, [entry, pushes, sha, clicked]);
+};
+
+/** The Checks tab's three actions. */
+export const usePrChecksActions = () =>
+  useHiveStore(useShallow((state) => ({ loadPrChecks: state.loadPrChecks, loadJobLog: state.loadJobLog, rerunFailed: state.rerunFailed })));
+
+/** Read, or re-read, one PR's detail (HIVE-205). */
+export const useLoadPrDetail = (): ((owner: string, repo: string, n: number) => Promise<void>) =>
+  useHiveStore((state) => state.loadPrDetail);
+
+/** Comment on a PR, then re-read it (HIVE-205). */
+export const useCommentOnPr = (): ((owner: string, repo: string, n: number, body: string) => Promise<GhResult<true>>) =>
+  useHiveStore((state) => state.commentOnPr);
+
+/** One PR's diff entry (HIVE-207). `key` is {@link prKey}'s. */
+export const usePrDiff = (key: string): PrDiffEntry | undefined => useHiveStore((state) => state.prDiffs[key]);
+
+/** One PR's Timeline entry (HIVE-208). `key` is {@link prKey}'s. */
+export const usePrTimelineEntry = (key: string): PrTimelineEntry | undefined => useHiveStore((state) => state.prTimelines[key]);
+
+/** Read, or re-read, one PR's Timeline (HIVE-208). */
+export const useLoadPrTimeline = (): ((owner: string, repo: string, n: number) => Promise<void>) =>
+  useHiveStore((state) => state.loadPrTimeline);
+
+/** One PR's diff, parsed: once per text, never stored (HIVE-207). `null` before the first text. */
+export const useParsedPrDiff = (key: string): DiffFile[] | null => {
+  const text = useHiveStore((state) => state.prDiffs[key]?.text);
+  return useMemo(() => (text === undefined ? null : parseUnifiedDiff(text)), [text]);
+};
+
+/** Read one PR's diff at a head sha (HIVE-207). */
+export const useLoadPrDiff = (): HiveState['loadPrDiff'] => useHiveStore((state) => state.loadPrDiff);
+
+/** Reply to, resolve and unresolve a review thread (HIVE-207). */
+export const usePrThreadActions = (): {
+  reply: HiveState['replyToPrThread'];
+  setResolved: HiveState['setPrThreadResolved'];
+} => useHiveStore(useShallow((state) => ({ reply: state.replyToPrThread, setResolved: state.setPrThreadResolved })));
+
+/** Mark or unmark a file viewed (HIVE-207). */
+export const useSetPrFileViewed = (): HiveState['setPrFileViewed'] => useHiveStore((state) => state.setPrFileViewed);
+
+/** Show a just-posted comment on the open ticket (HIVE-203). */
+export const useAppendTicketComment = (): ((key: string, comment: JiraComment) => void) =>
+  useHiveStore((state) => state.appendTicketComment);
+
+/** Re-read the open ticket's transitions (HIVE-203). */
+export const useReloadTicketTransitions = (): ((key: string) => Promise<void>) =>
+  useHiveStore((state) => state.reloadTicketTransitions);
+
+/** Install a re-read issue for an open ticket the list does not hold (HIVE-203). */
+export const useSetTicketDetailIssue = (): ((issue: JiraIssue) => void) =>
+  useHiveStore((state) => state.setTicketDetailIssue);
 
 /**
  * The five things the fleet-derived selectors below actually read off a session.
@@ -7464,20 +8812,214 @@ export const useTicket = (ticketKey: string | null): Ticket | undefined =>
   );
 
 /**
- * How many work items exist — the left rail's Work tab badge (story 030).
+ * The Work panel's row for each ticket in `tickets` (HIVE-203): the title with
+ * its tags dropped, the tone of its dot, and the one fact that leads.
  *
- * Counts every ticket, Done ones included, matching the concept. The badge
- * answers "how much work is tracked here", not "how much is outstanding".
+ * Takes the list rather than reading it so search results get the same rows
+ * as the standing list.
  */
-export const useTicketCount = () =>
-  useHiveStore((state) => state.tickets.length);
+export const useTicketRowModels = (tickets: readonly Ticket[]): TicketRowModel[] => {
+  const all = useHiveStore((state) => state.tickets);
+  const fleet = useHiveStore(selectSessionFacets);
+  const entities = useHiveStore((state) => state.entities);
+  const prs = useHiveStore((state) => state.prs);
+  const ledger = useHiveStore((state) => state.ledger);
+
+  // ponytail: recomputes every row on any entity write; the panel is one component, not the terminals.
+  return useMemo(
+    () =>
+      tickets.map((ticket) => {
+        const sessions = liveSessionsForTicket(ticket.key, fleet).flatMap((id) => {
+          const entity = entities[id];
+          return entity && isSession(entity) ? [entity.status] : [];
+        });
+        return ticketRow({
+          ticket,
+          sessions,
+          prs: resolveTicketPrs(ticket.key, all, fleet, prs),
+          progress: buildProgressFor(ledger, ticket.key),
+        });
+      }),
+    [tickets, all, fleet, entities, prs, ledger],
+  );
+};
+
+/** The Work panel's groups, In progress then To do then Done, with its counts (HIVE-203). */
+export const useTicketGroups = (): { groups: TicketGroup[]; total: number; needYou: number } => {
+  const rows = useTicketRowModels(useTickets());
+
+  return useMemo(() => groupTickets(rows), [rows]);
+};
+
+/**
+ * The ticket the Work page shows (HIVE-203): the list's, else the issue the
+ * detail slice read for itself because the list does not hold it.
+ */
+export const useOpenTicket = (ticketKey: string | null): Ticket | undefined =>
+  useHiveStore((state) => {
+    if (ticketKey === null) return undefined;
+    const listed = state.tickets.find((ticket) => ticket.key === ticketKey);
+    if (listed) return listed;
+    return state.ticketDetails[ticketKey]?.issue;
+  });
+
+/** The ticket page's key/value column (HIVE-203). */
+export const useTicketProperties = (ticketKey: string): TicketProperties | undefined => {
+  const ticket = useOpenTicket(ticketKey);
+  const fleet = useHiveStore(selectSessionFacets);
+  const entities = useHiveStore((state) => state.entities);
+  const ledger = useHiveStore((state) => state.ledger);
+  const parent = useHiveStore((state) => state.ticketDetails[ticketKey]?.detail?.parent);
+
+  return useMemo(() => {
+    if (ticket === undefined) return undefined;
+    const tags = parseTitleTags(ticket.title);
+    const priority = tags.priority ?? ticket.priority ?? undefined;
+    const live = liveSessionsForTicket(ticketKey, fleet)
+      .map((id) => entities[id])
+      .find((entity) => entity !== undefined && isSession(entity));
+    const agent = buildProgressFor(ledger, ticketKey)?.from;
+    return {
+      status: ticket.status,
+      ...(priority ? { priority } : {}),
+      ...(tags.side ? { side: tags.side } : {}),
+      ...(live ? { project: live.project } : {}),
+      assignee: ticket.assignee ?? 'Unassigned',
+      ...(agent ? { agent } : {}),
+      ...(parent ? { epic: parent.key } : {}),
+    };
+  }, [ticket, ticketKey, fleet, entities, ledger, parent]);
+};
+
+/**
+ * The ticket's ledger events (HIVE-203): what `ledger:list` answered on open,
+ * plus what the tail has appended since, deduped by id and in id order — ids
+ * sort in write order.
+ */
+export const useTicketEvents = (ticketKey: string): LedgerEntry[] => {
+  const history = useHiveStore((state) => state.ticketDetails[ticketKey]?.history);
+  const ledger = useHiveStore((state) => state.ledger);
+  const query = useMemo<LedgerReadQuery>(() => ({ ticket: ticketKey }), [ticketKey]);
+
+  return useMemo(() => {
+    const byId = new Map<string, LedgerEntry>();
+    for (const entry of history ?? []) byId.set(entry.id, entry);
+    for (const entry of ledger) if (matches(entry, query)) byId.set(entry.id, entry);
+    return [...byId.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  }, [history, ledger, query]);
+};
+
+/** The one step forward from the ticket's status, from its cached transitions (HIVE-203, D6). */
+export const useNextTransition = (ticketKey: string): JiraTransition | undefined => {
+  const ticket = useOpenTicket(ticketKey);
+  const transitions = useHiveStore((state) => state.ticketDetails[ticketKey]?.transitions);
+
+  return useMemo(
+    () => (ticket === undefined ? undefined : nextTransition(transitions ?? [], ticket.statusCategory)),
+    [ticket, transitions],
+  );
+};
+
+/** The Ticket tab's links, sorted into arcs with the verdict and counts (HIVE-202). */
+export const useTicketLinks = (ticketKey: string): TicketLinksModel | undefined => {
+  const links = useHiveStore((state) => state.ticketDetails[ticketKey]?.links);
+  const secondHop = useHiveStore((state) => state.ticketDetails[ticketKey]?.secondHop);
+  return useMemo(() => (links === undefined ? undefined : ticketLinksModel(links, secondHop)), [links, secondHop]);
+};
+
+/** The acceptance list, else the description, else null (HIVE-202). */
+export const useTicketCriteria = (ticketKey: string): Criteria => {
+  const description = useHiveStore((state) => state.ticketDetails[ticketKey]?.detail?.description);
+  return useMemo(() => parseCriteria(description), [description]);
+};
+
+/** The newest comment read: the comments page is the newest fifty, oldest first (HIVE-202, D1). */
+export const useLatestComment = (ticketKey: string): JiraComment | undefined =>
+  useHiveStore((state) => state.ticketDetails[ticketKey]?.comments?.at(-1));
+
+/** The ring's label, only for an epic (HIVE-202, D6). */
+export const useEpicLabel = (ticketKey: string): string | null =>
+  useHiveStore((state) => {
+    const entry = state.ticketDetails[ticketKey];
+    return epicLabel(entry?.detail?.parent, entry?.epicProgress);
+  });
 
 /** Inbox unread count (stories 050, 021). */
 export const useUnreadCount = () =>
   useHiveStore((state) => state.notifs.filter((notif) => notif.unread).length);
 
-/** The inbox, newest first (story 051). */
-export const useNotifs = () => useHiveStore((state) => state.notifs);
+/** The Summons queue (HIVE-214): what waits on you, split for the pill. */
+export interface Summons {
+  /** `agent.ask` and `agent.permission` whose thread is open, and `pr.review_requested`. */
+  asks: HiveNotification[];
+  /** `session.blocked`, `session.idle` and `session.input_needed`, less the one on stage. */
+  sessions: HiveNotification[];
+}
+
+/**
+ * One derivation behind both hooks, so the queue and its count cannot
+ * disagree. Rows keep the store's order, newest first.
+ */
+export function summonsOf(
+  notifs: readonly HiveNotification[],
+  closedAsks: ReadonlySet<string>,
+  onStage: string | null,
+): Summons {
+  const open = askOpenIn(closedAsks);
+  const summons: Summons = { asks: [], sessions: [] };
+  for (const notif of notifs) {
+    if (!waitsOnYou(notif, open)) continue;
+    if (!isSessionSummons(notif)) summons.asks.push(notif);
+    else if (!(notif.action.type === 'session' && notif.action.entityId === onStage)) {
+      summons.sessions.push(notif);
+    }
+  }
+  return summons;
+}
+
+/**
+ * The agents on a quiet session's work (idle with agents, 6 Oct 2026): its
+ * open asks to agents, read off the ledger mirror. Only for a session that is
+ * plainly idle, so a working row never pays for the scan.
+ */
+const delegatesFor = (state: HiveState, session: Session | undefined): readonly Delegate[] => {
+  if (session === undefined || session.status !== 'idle' || session.idleDetail !== undefined) return [];
+  const open = openAsks(state.ledger, Date.now()).filter((ask) => !state.closedAsks.has(ask.id));
+  return delegatesOf(open, state.ledger, terminalOf(session), (id) => state.entities[id]?.kind === 'agent');
+};
+
+/** `shipper`, `agents` or `2 agents` for `idle (…)`, or null. A string, so a row re-renders only when it changes. */
+export const useDelegateWord = (session: Session | undefined): string | null =>
+  useHiveStore((state) => delegationWord(delegatesFor(state, session)));
+
+/** Every agent on it, by name, with who each brought in: the status's tooltip. */
+export const useDelegateTitle = (session: Session | undefined): string | null =>
+  useHiveStore((state) => delegationTitle(delegatesFor(state, session)));
+
+/** The Summons queue, leaving out the session on stage. Derived, never stored. */
+export const useSummons = (onStage: string | null): Summons => {
+  const notifs = useHiveStore((state) => state.notifs);
+  const closedAsks = useHiveStore((state) => state.closedAsks);
+  return useMemo(() => summonsOf(notifs, closedAsks, onStage), [notifs, closedAsks, onStage]);
+};
+
+/** The queue's length, as a number, so a subscriber re-renders only when it moves. */
+export const useSummonsCount = (onStage: string | null): number =>
+  useHiveStore((state) => {
+    const { asks, sessions } = summonsOf(state.notifs, state.closedAsks, onStage);
+    return asks.length + sessions.length;
+  });
+
+/** True while an unswept `session.idle` or `session.input_needed` row names this terminal. */
+export const useYoursAgain = (terminalId: string): boolean =>
+  useHiveStore((state) =>
+    state.notifs.some(
+      (notif) =>
+        (notif.kind === 'session.idle' || notif.kind === 'session.input_needed') &&
+        notif.action.type === 'session' &&
+        notif.action.entityId === terminalId,
+    ),
+  );
 
 /** Hydration and the push subscription — see `use-ledger-sync.ts`. */
 export const useHydrateLedger = () => useHiveStore((state) => state.hydrateLedger);
@@ -7523,7 +9065,7 @@ export const useLedgerEntries = (filter?: LedgerReadQuery): LedgerEntry[] => {
 /**
  * Whether the shipper holds a PR, for its card's badge (HIVE-171).
  *
- * `slug` is `owner/name`. Memoised over the tail like `useBuildProgress`, so
+ * `slug` is `owner/name`. Memoised over the tail, so
  * the scan runs once per ledger change rather than once per store change.
  */
 export const useShipping = (slug: string, n: number): boolean => {
@@ -7532,11 +9074,101 @@ export const useShipping = (slug: string, n: number): boolean => {
   return useMemo(() => isShipping(entries, slug, n), [entries, slug, n]);
 };
 
-/** The builder's latest progress on a ticket, for its card's line (HIVE-171). */
-export const useBuildProgress = (ticketKey: string): BuildProgress | undefined => {
+/**
+ * The shipper's merge card for one PR, or `undefined` (HIVE-205): what the PR
+ * page's Merge answers. `Date.now()` inside the memo, as `openAsks`' other
+ * readers do; an ask retired by its ttl alone stays until the next append.
+ */
+export const useMergeAsk = (slug: string, n: number): OpenAsk | undefined => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => mergeAsk(openAsks(entries, Date.now()), slug, n), [entries, slug, n]);
+};
+
+/**
+ * One PR's ship track (HIVE-205), memoised over the tail like {@link useShipping}.
+ * `Date.now()` is read inside the memo, as the `openAsks` selectors do: the open
+ * stop's time moves on the next ledger change or page poll, not by the second.
+ */
+export const useShipTrack = (slug: string, n: number): ShipTrack => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => shipTrack(entries, slug, n, Date.now()), [entries, slug, n]);
+};
+
+/**
+ * The Timeline's lanes and buckets (HIVE-208): derived, never stored; `null`
+ * until the timeline is read. The ledger is the history read once on open
+ * merged with the live tail by id, the tail winning. "To me" is the fleet's
+ * reading, as the Hatchery's.
+ */
+export const useTimelineModel = (pr: Pick<Pr, 'owner' | 'repo' | 'n' | 'mine'>, now: number): TimelineModel | null => {
+  const entry = useHiveStore((state) => state.prTimelines[prKey(pr.owner, pr.repo, pr.n)]);
+  const ledger = useHiveStore((state) => state.ledger);
+  const fleet = useHiveStore(selectSessionFacets);
+  const timeline = entry?.timeline;
+  const history = entry?.history;
+  return useMemo(() => {
+    if (timeline === undefined) return null;
+    const byId = new Map<string, LedgerEntry>();
+    for (const e of [...(history ?? []), ...ledger]) byId.set(e.id, e);
+    const entries = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+    const sessions = new Set(fleet.map((facet) => facet.id));
+    const toMe = (to: string) => to === OVERMIND || sessions.has(to);
+    return buildTimeline({ timeline, entries, slug: `${pr.owner}/${pr.repo}`, n: pr.n, mine: pr.mine, toMe, now });
+  }, [timeline, history, ledger, fleet, pr.owner, pr.repo, pr.n, pr.mine, now]);
+};
+
+/** Every ledger entry naming one PR, oldest first: the Everything filter (HIVE-205). */
+export const usePrEvents = (slug: string, n: number): LedgerEntry[] => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => prEvents(entries, slug, n), [entries, slug, n]);
+};
+
+/** Who handed a PR to the shipper, for the header's "opened by" (HIVE-205). */
+export const usePrOpener = (slug: string, n: number): string | null => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => prOpener(entries, slug, n), [entries, slug, n]);
+};
+
+/** acr's review URLs, for "via the Hive" (HIVE-205). */
+export const useReviewUrls = (): ReadonlySet<string> => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => reviewUrls(entries), [entries]);
+};
+
+/** The holder's newest entry naming a PR, for the ship track's "now" line (HIVE-205). */
+export const useHolderPost = (slug: string, n: number, holder: string | null): LedgerEntry | null => {
+  const entries = useHiveStore((state) => state.ledger);
+  return useMemo(() => (holder === null ? null : holderPost(entries, slug, n, holder)), [entries, slug, n, holder]);
+};
+
+/** What an agent last said on the ledger, as its panel row shows it (HIVE-204). */
+export interface AgentLastWord {
+  kind: LedgerKind;
+  ref?: string;
+  line: string;
+  ts: number;
+}
+
+/** The agent's last word on the ledger (HIVE-204): newest by id (ids sort in write order), first line. */
+export const useAgentLastWord = (name: string): AgentLastWord | undefined => {
   const entries = useHiveStore((state) => state.ledger);
 
-  return useMemo(() => buildProgressFor(entries, ticketKey), [entries, ticketKey]);
+  return useMemo(() => {
+    let newest: LedgerEntry | undefined;
+
+    for (const entry of entries) {
+      if (entry.from === name && (newest === undefined || entry.id > newest.id)) newest = entry;
+    }
+
+    if (newest === undefined) return undefined;
+
+    return {
+      kind: newest.kind,
+      ...(newest.ref === undefined ? {} : { ref: newest.ref }),
+      line: newest.body.split('\n', 1)[0] ?? '',
+      ts: newest.ts,
+    };
+  }, [entries, name]);
 };
 
 /** One conversation: the ask, and everything that named it. */
@@ -7579,6 +9211,9 @@ const resolvePrs = (
     checks: pr.checks,
     url: pr.url,
     branch: pr.branch,
+    updatedAt: pr.updatedAt,
+    mergedAt: pr.mergedAt,
+    mine: pr.mine,
     session: sessionForPr(pr, fleet),
   }));
 
@@ -7609,6 +9244,101 @@ export const usePrSearchResults = (): Pr[] | null => {
     () => (results === null ? null : resolvePrs(results, fleet)),
     [results, fleet],
   );
+};
+
+/**
+ * `Pr[]` → the Hatchery's rows: each PR's hatch status from three ledger
+ * readings, sorted (HIVE-215). Shared by the sweep and the search so the two
+ * lists cannot disagree about a flap.
+ *
+ * `now` is read inside the caller's memo, as the selectors over `openAsks`
+ * read it: the memo reruns on every ledger or PR change and the 60 s sweep
+ * replaces `prs`, so an ask retired by its ttl with nothing else changing
+ * stays counted until the next sweep at most.
+ */
+const hatcheryOf = (
+  prs: readonly Pr[],
+  ledger: readonly LedgerEntry[],
+  fleet: ReturnType<typeof selectSessionFacets>,
+  now: number,
+): HatcheryRow[] => {
+  const open = openAsks(ledger, now);
+  const sessions = new Set(fleet.map((facet) => facet.id));
+  const toMe = (to: string) => to === OVERMIND || sessions.has(to);
+
+  return sortHatchery(
+    prs.map((pr) => {
+      const slug = `${pr.owner}/${pr.repo}`;
+      const facts = {
+        stage: shipStage(ledger, slug, pr.n),
+        askedMe: asksMeAbout(open, slug, pr.n, toMe),
+        mergeWaiting: mergeWaiting(open, slug, pr.n),
+      };
+      return { pr, hatch: hatchStatus(pr, facts, now) };
+    }),
+  );
+};
+
+/**
+ * Every swept PR with its hatch status, in the Hatchery's order (HIVE-215).
+ *
+ * The one list HIVE-205's rows, HIVE-200's per-flap counts and HIVE-209's
+ * sub line all read. Memoised over `prs`, the session facets and the ledger,
+ * as {@link usePrs} and {@link useShipping} are.
+ */
+export const useHatchery = (): HatcheryRow[] => {
+  const prs = useHiveStore((state) => state.prs);
+  const fleet = useHiveStore(selectSessionFacets);
+  const ledger = useHiveStore((state) => state.ledger);
+
+  return useMemo(() => hatcheryOf(resolvePrs(prs, fleet), ledger, fleet, Date.now()), [prs, fleet, ledger]);
+};
+
+/** The same over the searched PRs; `null` while nothing is searched. Others' PRs never SUMMONS. */
+export const useHatcherySearch = (): HatcheryRow[] | null => {
+  const results = useHiveStore((state) => state.prSearch.results);
+  const fleet = useHiveStore(selectSessionFacets);
+  const ledger = useHiveStore((state) => state.ledger);
+
+  return useMemo(
+    () => (results === null ? null : hatcheryOf(resolvePrs(results, fleet), ledger, fleet, Date.now())),
+    [results, fleet, ledger],
+  );
+};
+
+/**
+ * How many swept PRs need you (SUMMONS), for the bar (HIVE-205; HIVE-196
+ * deferred it here). The sweep only, never a search; 0 unless the source is
+ * live, so a loading, unconfigured or failed read draws no count.
+ */
+export const usePrNeedsYouCount = (): number => {
+  const rows = useHatchery();
+  const live = useHiveStore((state) => state.prSource.kind === 'live');
+
+  return live ? rows.filter((row) => row.hatch.needsYou).length : 0;
+};
+
+/** One flap's count for Home (HIVE-200). */
+export interface FlapCount {
+  flap: Flap;
+  count: number;
+  tone: FlapTone;
+}
+
+/** Counts per flap over the Hatchery's rows, in `FLAP_RANK` order; a flap with no PR is left out. */
+export function flapCountsOf(rows: readonly HatcheryRow[]): FlapCount[] {
+  const counts = new Map<Flap, number>();
+  for (const { hatch } of rows) counts.set(hatch.flap, (counts.get(hatch.flap) ?? 0) + 1);
+  return [...counts]
+    .sort(([a], [b]) => FLAP_RANK[a] - FLAP_RANK[b])
+    .map(([flap, count]) => ({ flap, count, tone: flapTone(flap) }));
+}
+
+/** Home's Pull requests (HIVE-200), over HIVE-215's one rule. Empty unless the sweep is live. */
+export const usePrFlapCounts = (): FlapCount[] => {
+  const rows = useHatchery();
+  const live = useHiveStore((state) => state.prSource.kind === 'live');
+  return useMemo(() => (live ? flapCountsOf(rows) : []), [rows, live]);
 };
 
 /**
@@ -7646,8 +9376,66 @@ export const useSessionPr = (id: string): SessionPr | null => {
   );
 };
 
+/** A session's PR and, when the sweep can see it, its Hatchery row (HIVE-209). */
+export interface SessionPrRow {
+  pr: SessionPr;
+  /** `null` for a remembered PR: no owner, repo or title to read details with. */
+  row: HatcheryRow | null;
+}
+
+/**
+ * The session panel's PR tab and strip dot read this (HIVE-209): `useSessionPr`
+ * for which PR, `useHatchery` for its flap. Matched by URL, which is unique
+ * across repos where the number is not.
+ */
+export const useSessionPrRow = (id: string): SessionPrRow | null => {
+  const pr = useSessionPr(id);
+  const rows = useHatchery();
+
+  return useMemo(
+    () => (pr === null ? null : { pr, row: rows.find((row) => row.pr.url === pr.url) ?? null }),
+    [pr, rows],
+  );
+};
+
 /** Where the PR list came from, and how much to trust it. */
 export const usePrSource = () => useHiveStore((state) => state.prSource);
+
+/**
+ * The Hatchery is quiet (HIVE-205, D15): the sweep is live and found nothing.
+ * The sweep is the Hatchery's list, so empty here is empty there. A boolean
+ * selector, so the list panel does not re-render on every PR change.
+ */
+export const usePrsQuiet = (): boolean =>
+  useHiveStore((state) => state.prSource.kind === 'live' && state.prs.length === 0);
+
+/**
+ * No list without items (HIVE-211): each place's panel is drawn only while it
+ * has something to list. Loading keeps the panel, for its skeleton; anything
+ * else empty hands the stage a page that says why.
+ */
+export const useWorkListed = (): boolean =>
+  useHiveStore(
+    (state) =>
+      state.ticketSource.kind === 'loading' ||
+      (state.ticketSource.kind === 'live' && state.tickets.length > 0),
+  );
+
+export const usePrsListed = (): boolean =>
+  useHiveStore(
+    (state) =>
+      state.prSource.kind === 'loading' ||
+      (state.prSource.kind === 'live' && state.prs.length > 0),
+  );
+
+export const useAgentsListed = (): boolean =>
+  useHiveStore((state) => Object.values(state.entities).some(isAgent));
+
+/** Projects come from the config snapshot, not the store, so this reads `useProjects`. */
+export const useSessionsListed = (): boolean => useProjects().length > 0;
+
+/** When the last good PR sweep landed (HIVE-211, D5): the stale line's second time. */
+export const usePrsReadAt = (): number | null => useHiveStore((state) => state.prsReadAt);
 
 /** Sweep GitHub. The poller's entry point — see `hooks/use-pr-refresh.ts`. */
 export const useRefreshPrs = () => useHiveStore((state) => state.refreshPrs);
@@ -7674,8 +9462,6 @@ export const useAnswerAsk = () => useHiveStore((state) => state.answerAsk);
 export const useDismissNotif = () =>
   useHiveStore((state) => state.dismissNotif);
 
-/** Empty the inbox — the panel's Clear all. */
-export const useClearNotifs = () => useHiveStore((state) => state.clearNotifs);
 
 /** Push a notification — the stream's entry point (stories 051, 061, HIVE-75). */
 export const usePushNotif = () => useHiveStore((state) => state.pushNotif);
@@ -7684,7 +9470,7 @@ export const usePushNotif = () => useHiveStore((state) => state.pushNotif);
  * What this window's attachment is doing, or `null` when it has none
  * (HIVE-150).
  *
- * The header chip and the attach pane both read this rather than
+ * The connection item and the attach pane both read this rather than
  * `AppInfo.attachedServerName`. That field is still the runtime truth, but it
  * is read on demand: a socket that dies without a config write leaves it
  * unread and the chip claiming an attachment that is gone. This is pushed.
@@ -7693,6 +9479,19 @@ export const useRemoteLink = () => useHiveStore((state) => state.remoteLink);
 
 /** Install the link status main just pushed (HIVE-150). */
 export const useSetRemoteLink = () => useHiveStore((state) => state.setRemoteLink);
+
+/**
+ * What the dropped link lost that the user has not cleared yet (HIVE-211).
+ * One count for the bar's foot and the stage line, so Clear anywhere clears
+ * everywhere.
+ */
+export const useUnackedLost = (): number =>
+  useHiveStore((state) =>
+    state.remoteLink === null ? 0 : Math.max(0, state.remoteLink.lost - state.remoteLostAcked),
+  );
+
+/** Clear the lost count (HIVE-211). */
+export const useAcknowledgeLost = () => useHiveStore((state) => state.acknowledgeLost);
 
 /**
  * Re-state the fleet from an accept frame's snapshot (HIVE-150).

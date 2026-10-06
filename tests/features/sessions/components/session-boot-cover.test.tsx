@@ -24,19 +24,22 @@ function stubMatchMedia(matches: boolean) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
 describe('SessionBootCover', () => {
-  it('shows the hydralisk — the unit that does the work', () => {
+  it.each([
+    [0, 'overlord'],
+    [0.5, 'mutalisk'],
+    [0.99, 'spire'],
+  ])('casts a random creature from the boot pool (Math.random %s → %s)', (roll, creature) => {
     stubMatchMedia(false);
+    vi.spyOn(Math, 'random').mockReturnValue(roll);
     const { container } = render(<SessionBootCover />);
 
-    expect(container.querySelector('[data-creature]')).toHaveAttribute(
-      'data-creature',
-      'hydralisk',
-    );
+    expect(container.querySelector('[data-creature]')).toHaveAttribute('data-creature', creature);
   });
 
   it('draws a line from the session pool', () => {

@@ -129,6 +129,7 @@ describe('ExplorerPanel — degraded states', () => {
     render(<ExplorerPanel />);
 
     expect(screen.getByText(/No session open/i)).toBeInTheDocument();
+    expect(document.querySelector('[data-creature]')).toHaveAttribute('data-creature', 'overlord');
     // The distinction that matters: projects *are* mapped, so this must not be
     // the setup message that sends the user to Settings.
     expect(screen.queryByText(/No projects mapped/i)).not.toBeInTheDocument();
@@ -195,15 +196,15 @@ describe('ExplorerPanel — degraded states', () => {
    * The browser e2e cannot reach this state — the explorer needs the desktop
    * fs bridge — so the creature is pinned here instead.
    */
-  it('leads the empty repository with a hive at rail size', async () => {
+  it('leads the empty repository with an egg at rail size', async () => {
     readDir.mockResolvedValue({ ok: true, value: [] });
     render(<ExplorerPanel />);
 
     await screen.findByText(/This repository is empty/);
-    const img = screen.getByRole('presentation', { hidden: true });
+    const creature = document.querySelector('[data-creature]');
 
-    expect(img).toHaveAttribute('data-creature', 'hive');
-    expect(img).toHaveStyle({ height: '44px' });
+    expect(creature).toHaveAttribute('data-creature', 'egg');
+    expect(creature).toHaveStyle({ height: '44px' });
   });
 });
 
@@ -336,5 +337,39 @@ describe('ExplorerPanel — refreshing', () => {
     // that also subscribed would double-reconcile every event.
     expect(onFsChanged).not.toHaveBeenCalled();
     expect(watchProject).not.toHaveBeenCalled();
+  });
+});
+
+describe('ExplorerPanel — changed in this session (HIVE-201)', () => {
+  beforeEach(() => {
+    useHiveStore.getState().setChangedFiles('main-1', [
+      { path: 'src/app.ts', mark: 'M', added: 3, removed: 1 },
+    ]);
+  });
+
+  it('lists the changed files above the tree when given the session', async () => {
+    render(<ExplorerPanel changesId="main-1" />);
+
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+    const block = screen.getByRole('region', { name: 'Changed in this session' });
+    expect(block).toHaveTextContent('src/app.ts');
+    expect(
+      block.compareDocumentPosition(screen.getByText('README.md')) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it('hides the block while searching, and in Classic, which passes no session', async () => {
+    useUiStore.getState().setExplorerSearchTerm('app');
+    const { unmount } = render(<ExplorerPanel changesId="main-1" />);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('region', { name: 'Changed in this session' })).toBeNull();
+    unmount();
+
+    useUiStore.getState().setExplorerSearchTerm('');
+    render(<ExplorerPanel />);
+    expect(await screen.findByText('README.md')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Changed in this session' })).toBeNull();
   });
 });

@@ -1,11 +1,12 @@
 import {
-  NOTIFICATION_CAP,
   NOTIFICATION_KIND_SPECS,
   type HiveNotification,
   type NotificationAction,
+  type NotificationDelivery,
   type NotificationKind,
   type NotificationPrefs,
 } from '@shared/notification-contract';
+import { trimNotifications, waitsOnYou, type AskOpen } from '@shared/notification-lanes';
 
 /**
  * One owner for every notification the app raises (HIVE-75).
@@ -95,6 +96,13 @@ export interface NotificationInput {
   link?: { href: string; label: string };
   /** Overridable for tests; defaults to the hub's clock. */
   createdAt?: number;
+  /**
+   * Deliver at least as this kind would, while a row of it about the same
+   * session is in the buffer: the row this one is about to replace. So
+   * `session.input_needed` taking over a gated `session.idle` keeps the idle
+   * toast, rather than dropping to its own inbox-only default (6 Oct 2026).
+   */
+  deliverAsWell?: NotificationKind;
 }
 
 export interface NotificationHubOptions {
@@ -136,7 +144,8 @@ export interface NotificationHubOptions {
    */
   announceDismissed: (id: string | null) => void;
   /**
-   * How many are still unread, after every change to the buffer.
+   * The count on the dock badge: the rows that wait on you (HIVE-214), after
+   * every change to the buffer.
    *
    * Pushed rather than offered as a getter, because the consumer is the **dock
    * badge** and a badge is only ever wrong in one direction: nobody notices a
@@ -148,7 +157,7 @@ export interface NotificationHubOptions {
    * Electron's notifications outright, so the dock badge is not decoration
    * beside the toast, it is the only thing the user sees from outside the app.
    */
-  announceUnread: (count: number) => void;
+  announceBadge: (count: number) => void;
   now: () => number;
   /**
    * Is **every** attended surface already looking at what this notification is
@@ -172,6 +181,13 @@ export interface NotificationHubOptions {
    * target's absence of one — behaves exactly as it did before.
    */
   isForegroundEverywhere?: (action: NotificationAction) => boolean;
+  /**
+   * Ask threads that no longer wait on anyone (HIVE-214) — `closedAskThreads`
+   * over main's ledger. Read once per count, trim and clear, never captured: an
+   * answer only marks its row read, so this is how the hub learns the ask is
+   * gone. Absent means every ask is open, which every older test relies on.
+   */
+  closedAsks?: () => ReadonlySet<string>;
   /**
    * What to call a notification's `subject` in a **desktop toast** (HIVE-110).
    *
@@ -379,14 +395,32 @@ export function createNotificationHub(
     activate,
     announceRead,
     announceDismissed,
-    announceUnread,
+    announceBadge,
     now,
     isForegroundEverywhere,
+    closedAsks,
     subjectName,
   } = options;
 
   let buffer: HiveNotification[] = [];
   const seen = new Set<string>();
+  /** A raised row's `deliverAsWell`, for the promotion that may come later. Dropped with the row. */
+  const inherits = new Map<string, NotificationKind>();
+  const RANK: Record<NotificationDelivery, number> = { off: 0, inbox: 1, both: 2 };
+  const deliveryOf = (kind: NotificationKind): NotificationDelivery =>
+    prefs()[kind] ?? NOTIFICATION_KIND_SPECS[kind].defaultDelivery;
+  /** The stronger of a row's own delivery and the one it inherited, never raising an `off`. */
+  const effective = (own: NotificationDelivery, also: NotificationKind | undefined): NotificationDelivery => {
+    if (own === 'off' || also === undefined) return own;
+    const other = deliveryOf(also);
+    return RANK[other] > RANK[own] ? other : own;
+  };
+  const NONE: ReadonlySet<string> = new Set();
+  /** One read of the closed set per pass over the buffer. */
+  const askOpen = (): AskOpen => {
+    const closed = closedAsks?.() ?? NONE;
+    return (thread) => !closed.has(thread);
+  };
 
   /**
    * What a **toast** calls this notification (HIVE-110).
@@ -415,16 +449,14 @@ export function createNotificationHub(
   };
 
   /**
-   * Counted from the buffer rather than kept as a tally.
-   *
-   * The codebase's own rule — derived values are computed, never stored — and
-   * the reason it applies here is `NOTIFICATION_CAP`: a counter incremented on
-   * raise and decremented on read would have to also notice an *eviction*, and
-   * an unread row falling off the end of a fifty-deep buffer is exactly the
-   * event a hand-maintained tally forgets. Fifty entries is nothing to walk.
+   * The dock's number: the rows that wait on you (HIVE-214), counted from the
+   * buffer rather than kept as a tally — an eviction or a closing ask is
+   * exactly what a hand-maintained counter forgets. Read state does not enter
+   * into it: a read question is still a question.
    */
   const announce = (): void => {
-    announceUnread(buffer.reduce((n, entry) => n + (entry.unread ? 1 : 0), 0));
+    const open = askOpen();
+    announceBadge(buffer.filter((entry) => waitsOnYou(entry, open)).length);
   };
 
   /**
@@ -531,7 +563,7 @@ export function createNotificationHub(
 
       const spec = NOTIFICATION_KIND_SPECS[entry.kind];
       if (spec === undefined) return true;
-      const delivery = prefs()[entry.kind] ?? spec.defaultDelivery;
+      const delivery = effective(prefs()[entry.kind] ?? spec.defaultDelivery, inherits.get(entry.id));
       // `off` means do not raise — not "raise it quietly".
       if (delivery === 'off') return true;
 
@@ -667,18 +699,21 @@ export function createNotificationHub(
   };
 
   /**
-   * The bulk gesture. Same two follow-ups as `dismiss`, once.
+   * The bulk gesture, which clears the news and nothing that waits on you
+   * (HIVE-214): an open ask or a blocked session leaves only when it is
+   * answered, closed, expired or swept with its session.
    *
-   * `announceDismissed(null)` rather than one call per row: the renderer's
-   * handler is a filter over its own list, so N events would be N re-renders of
-   * a list that is about to be empty either way.
+   * `announceDismissed(null)` rather than one call per row: the renderer
+   * applies the same filter to its own list (`applyDismiss(null)`).
    *
-   * An already-empty buffer announces nothing, so a double-click on Clear all
-   * does not push a second event at every window.
+   * A clear that drops nothing announces nothing, so a double-click on Clear
+   * all does not push a second event at every window.
    */
   const clearInbox = (): void => {
-    if (buffer.length === 0) return;
-    buffer = [];
+    const open = askOpen();
+    const kept = buffer.filter((entry) => waitsOnYou(entry, open));
+    if (kept.length === buffer.length) return;
+    buffer = kept;
     announceDismissed(null);
     announce();
   };
@@ -710,7 +745,18 @@ export function createNotificationHub(
         // delivery for it would be a switch the settings pane cannot show.
         if (spec === undefined) return null;
 
-        const delivery = prefs()[input.kind] ?? spec.defaultDelivery;
+        const action = input.action ?? { type: 'none' as const };
+        const replaces =
+          input.deliverAsWell !== undefined &&
+          action.type === 'session' &&
+          buffer.some(
+            (entry) =>
+              entry.kind === input.deliverAsWell &&
+              entry.action.type === 'session' &&
+              entry.action.entityId === action.entityId,
+          );
+        const also = replaces ? input.deliverAsWell : undefined;
+        const delivery = effective(prefs()[input.kind] ?? spec.defaultDelivery, also);
         if (delivery === 'off') return null;
 
         const createdAt = input.createdAt ?? now();
@@ -718,6 +764,13 @@ export function createNotificationHub(
 
         if (seen.has(id)) return null;
         remember(id);
+        if (also !== undefined) {
+          // ponytail: pruned here, on the next inheriting raise, rather than on every removal path; a handful of ids at most.
+          for (const known of inherits.keys()) {
+            if (!buffer.some((entry) => entry.id === known)) inherits.delete(known);
+          }
+          inherits.set(id, also);
+        }
 
         /**
          * The gate: **downgrade, never drop** (HIVE-81).
@@ -786,10 +839,10 @@ export function createNotificationHub(
                 (entry) => supersedeKey(entry.kind, entry.action) === key,
               );
 
-        buffer = [
-          notification,
-          ...buffer.filter((entry) => !superseded.includes(entry)),
-        ].slice(0, NOTIFICATION_CAP);
+        buffer = trimNotifications(
+          [notification, ...buffer.filter((entry) => !superseded.includes(entry))],
+          askOpen(),
+        );
 
         /**
          * Counted once, from the settled buffer. A supersede is a removal and

@@ -3,8 +3,8 @@ import { useState } from 'react';
 import { SegmentedControl } from '@components/ui/segmented-control';
 import { TextField } from '@components/ui/text-field';
 import { ContainerCommandPreview } from '@features/settings/components/container-command-preview';
-import { SettingsGroup } from '@features/settings/components/settings-group';
 import { SettingsNestingContext } from '@features/settings/components/settings-nesting';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { setProjectRuntimeConfig } from '@lib/project-config';
 import type {
   ContainerConfig,
@@ -220,9 +220,9 @@ export function ContainerGroup({
           title="Container"
           description="Present means every session for this project runs inside the container the command starts. This app never starts, stops or names it."
         >
-          <div className="flex flex-col gap-3.5 rounded-[8px] border border-border-soft bg-panel-2 p-3">
+          <div className="flex flex-col gap-3.5 rounded-lg border border-border-soft bg-panel-2 p-3">
             <div className="flex flex-col gap-2">
-              <span className="text-[11px] uppercase tracking-wide text-subtle">
+              <span className="text-micro uppercase tracking-wide text-subtle">
                 Where things are
               </span>
               <div className="grid grid-cols-2 gap-3">
@@ -232,7 +232,7 @@ export function ContainerGroup({
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-[11px] uppercase tracking-wide text-subtle">
+              <span className="text-micro uppercase tracking-wide text-subtle">
                 How it is invoked
               </span>
               <div className="grid grid-cols-2 gap-3">
@@ -254,7 +254,7 @@ export function ContainerGroup({
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-[11px] uppercase tracking-wide text-subtle">Freshness</span>
+              <span className="text-micro uppercase tracking-wide text-subtle">Freshness</span>
               <SegmentedControl
                 label="Freshness"
                 options={FRESHNESS}
@@ -265,7 +265,7 @@ export function ContainerGroup({
                   commit(normalise(next));
                 }}
               />
-              <span className="text-[11.5px] text-subtle">
+              <span className="text-ui-sm text-subtle">
                 {FRESHNESS_COPY[effective.freshness]}
               </span>
             </div>
@@ -279,7 +279,7 @@ export function ContainerGroup({
             {...(diagnostic === undefined ? {} : { diagnostic })}
           />
 
-          <p className="border-l-2 border-amber pl-2.5 text-[11.5px] text-muted">
+          <p className="border-l-2 border-amber pl-2.5 text-ui-sm text-muted">
             Values above are typed into the terminal, so they are visible in
             scroll-back and to ps. Credentials belong in the image — while
             Subscription auth is on, this app strips the API-key variables out of

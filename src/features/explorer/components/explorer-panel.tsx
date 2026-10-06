@@ -4,6 +4,7 @@ import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
 import { EmptyState, EmptyStatePath } from '@components/ui/empty-state';
 import { Icon } from '@components/ui/icon';
+import { ChangedFiles } from '@features/explorer/components/changed-files';
 import { ExplorerResults } from '@features/explorer/components/explorer-results';
 import { ExplorerSearchRow } from '@features/explorer/components/explorer-search-row';
 import { TreeNode } from '@features/explorer/components/tree-node';
@@ -39,12 +40,16 @@ import {
  *
  * ## The watcher does *not* live here
  *
- * It did, and that was a bug: the rail swaps panels and the shell can unmount
- * the rail entirely, so freshness died the moment the user looked at the Inbox
- * with a file open. `useProjectWatcher()` is mounted at the composition root
+ * It did, and that was a bug: the session panel swaps tabs and can close
+ * entirely, so freshness died the moment the user left the Files tab with a
+ * file open. `useProjectWatcher()` is mounted at the composition root
  * instead, and this panel reads the revision counter it bumps.
+ *
+ * `changesId` is main's id for the session on stage (`terminalOf(session)`,
+ * HIVE-201): the session panel's Files tab passes it, and the panel lists the
+ * session's changed files above the tree and marks them in it.
  */
-export function ExplorerPanel() {
+export function ExplorerPanel({ changesId }: { changesId?: string } = {}) {
   const { project, root: subRoot, sessionId, display, branch } = useExplorerProject();
   /**
    * Main's verdict on which tree the reads below actually resolve under.
@@ -223,7 +228,7 @@ export function ExplorerPanel() {
         ) : (
           <EmptyState
             phrase="empty.explorer"
-            creature="hive"
+            creature="overlord"
             action="Open one from the fleet, or start a new session."
           >
             No session open — the explorer follows the session you are watching.
@@ -273,7 +278,7 @@ export function ExplorerPanel() {
           prefix is the renderer's own and main honours it by construction.
         */}
         <span
-          className="flex-1 truncate font-mono text-[11.5px] tracking-wide text-subtle uppercase"
+          className="flex-1 truncate tabular-nums text-ui-sm tracking-wide text-subtle uppercase"
           title={
             explorerRoot?.widened === true
               ? explorerRoot.path
@@ -292,12 +297,12 @@ export function ExplorerPanel() {
           Not decoration: the two questions a user asks of a file tree
           mid-session are *which directory* and *which branch*, and the panel
           could answer neither. `branchLabel`'s em dash is deliberately not used
-          here — the rail already prints it in the session meta bar, and a
+          here — the session header already prints it, and a
           second em dash in a 320px column is noise rather than an answer.
         */}
         {branch === undefined ? null : (
           <span
-            className="max-w-[110px] shrink-0 truncate rounded-full border border-border bg-chip px-1.5 py-px font-mono text-[9.5px] text-brand"
+            className="max-w-[110px] shrink-0 truncate rounded-full border border-border bg-chip px-1.5 py-px tabular-nums text-micro text-brand"
             title={`On branch ${branch}`}
           >
             {branch}
@@ -308,7 +313,7 @@ export function ExplorerPanel() {
           type="button"
           onClick={refresh}
           title="Refresh"
-          className="rounded-md p-1 text-subtle hover:bg-hover hover:text-muted"
+          className="rounded-full p-1.5 text-subtle hover:bg-hover hover:text-muted"
         >
           <Icon name="ph-arrows-clockwise" size={13} />
           <span className="sr-only">Refresh the tree</span>
@@ -318,7 +323,7 @@ export function ExplorerPanel() {
           type="button"
           onClick={collapseAll}
           title="Collapse all"
-          className="rounded-md p-1 text-subtle hover:bg-hover hover:text-muted"
+          className="rounded-full p-1.5 text-subtle hover:bg-hover hover:text-muted"
         >
           <Icon name="ph-arrows-in-simple" size={13} />
           <span className="sr-only">Collapse every folder</span>
@@ -332,12 +337,18 @@ export function ExplorerPanel() {
       */}
       {usable ? <ExplorerSearchRow status={status} /> : null}
 
+      {/* The session's own edits, above the tree they mark (HIVE-201). */}
+      {usable && !searching ? (
+        <ChangedFiles changesId={changesId} subRoot={subRoot} onOpenFile={onOpenFile} />
+      ) : null}
+
       {/*
         The project resolves but its directory does not. `access.reason` is the
         config's own verdict, which names the file to edit — a better message
         than anything this panel could compose, and the same one the projects
         tree shows for the same project.
       */}
+
       {!usable ? (
         <EmptyState>{access.reason ?? 'This project has no folder.'}</EmptyState>
       ) : null}
@@ -347,7 +358,7 @@ export function ExplorerPanel() {
       ) : null}
 
       {usable && !searching && !root.error && root.entries?.length === 0 ? (
-        <EmptyState phrase="empty.explorer" creature="hive">This repository is empty.</EmptyState>
+        <EmptyState phrase="empty.explorer" creature="egg">This repository is empty.</EmptyState>
       ) : null}
 
       {usable && !searching
@@ -372,6 +383,7 @@ export function ExplorerPanel() {
               refreshToken={refreshToken}
               sessionId={sessionId}
               rootKey={explorerRoot?.key ?? ''}
+              changesId={changesId}
               onOpenFile={onOpenFile}
             />
           ))
@@ -413,7 +425,7 @@ function SearchView({
   // Below the floor main enforces, so nothing was walked and nothing is owed.
   if (query.length < MIN_QUERY_CHARS) {
     return (
-      <p className="px-2 py-3 text-[10.5px] text-subtle">
+      <p className="px-2 py-3 text-micro text-subtle">
         Keep typing — {MIN_QUERY_CHARS} characters at least.
       </p>
     );
@@ -424,8 +436,8 @@ function SearchView({
   if (state.results.hits.length === 0) {
     return (
       <div className="flex flex-col gap-[3px] px-2 py-3">
-        <p className="text-[11.5px] text-muted">{phrase}</p>
-        <p className="truncate text-[11.5px] text-subtle" title={query}>
+        <p className="text-ui-sm text-muted">{phrase}</p>
+        <p className="truncate text-ui-sm text-subtle" title={query}>
           nothing matches “{query}”
         </p>
       </div>

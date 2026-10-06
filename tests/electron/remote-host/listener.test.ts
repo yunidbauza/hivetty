@@ -994,6 +994,13 @@ describe('post-attach frames', () => {
     expect(onDetach).toHaveBeenCalledTimes(1);
   });
 
+  it('names the paired device on the attached surface (HIVE-218)', async () => {
+    const onAttach = vi.fn();
+    await attachedSocket({ onAttach });
+
+    expect((onAttach.mock.calls[0][0] as { deviceName?: string }).deviceName).toBe('MacBook');
+  });
+
   it('passes resumeFrom as undefined when the client omitted it', async () => {
     const onAttach = vi.fn();
     await attachedSocket({ onAttach });

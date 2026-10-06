@@ -136,6 +136,8 @@ beforeEach(() => {
   useUiStore.getState().reset();
   useEditorStore.getState().reset();
   useAppearanceStore.getState().reset();
+  // The Sessions place shows the stage; Home, Work, Agents and PRs cover it.
+  useUiStore.setState({ place: 'sessions' });
   useHiveStore.setState({
     entities: {
       'sess-03': session,
@@ -153,6 +155,26 @@ describe('useForegroundSession', () => {
     renderHook(() => useForegroundSession());
 
     expect(calls).toEqual([expected]);
+  });
+
+  it('reports nothing while Home covers the stage (HIVE-195)', () => {
+    withBridge();
+    seed({ activeTab: 'sess-03' });
+    useUiStore.setState({ place: 'home' });
+
+    renderHook(() => useForegroundSession());
+
+    expect(calls).toEqual([null]);
+  });
+
+  it('reports nothing while Work covers the stage (HIVE-203)', () => {
+    withBridge();
+    seed({ activeTab: 'sess-03' });
+    useUiStore.setState({ place: 'work' });
+
+    renderHook(() => useForegroundSession());
+
+    expect(calls).toEqual([null]);
   });
 
   it('does nothing without a bridge', () => {

@@ -20,18 +20,26 @@ body,
 :root {
   /* Lets max-height animate from an intrinsic keyword (the card collapse). */
   interpolate-size: allow-keywords;
+  /* Native controls (checkboxes, the <select> popup, scrollbars) follow the app, not the OS (HIVE-225). */
+  color-scheme: dark;
+}
+
+body[data-theme='light'] {
+  color-scheme: light;
 }
 
 body {
   margin: 0;
-  /* The shell fills the viewport and never scrolls as a page — the left rail,
-     center stage, and activity rail each own their own scrollbar (story 020).
-     Without this, a tall rail would scroll the whole document and drag the
+  /* The shell fills the viewport and never scrolls as a page — the list panel,
+     center stage, and session panel each own their own scrollbar (story 020).
+     Without this, a tall panel would scroll the whole document and drag the
      terminal out of view. */
   overflow: hidden;
   background: var(--cc-bg);
   color: var(--cc-ink);
-  font-family: var(--font-mono);
+  /* Words are sans everywhere; mono is opt-in (`font-mono`) for code, logs and
+     identifiers. The terminal and the editor set their own face. */
+  font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -80,7 +88,7 @@ body {
  *
  * In `@layer base` so a control that genuinely wants the native affordance can
  * ask for it back by naming it. Proven on screen by
- * `tests/e2e/web/search-clear-button.spec.ts`: nothing in the DOM can see this
+ * `tests/e2e/electron/search-clear-button.spec.ts`: nothing in the DOM can see this
  * pseudo element, so only a real browser can say whether it is drawn.
  */
 @layer base {
@@ -107,6 +115,20 @@ body {
   }
   100% {
     opacity: 1;
+  }
+}
+
+/* HIVE-206: dashes flowing along an edge into a running job. */
+@keyframes ccflow {
+  to {
+    stroke-dashoffset: -22;
+  }
+}
+
+/* The first-run cells (HIVE-200). The global reduced-motion clamp stills them. */
+@keyframes ccbreathe {
+  50% {
+    opacity: 0.55;
   }
 }
 
@@ -149,6 +171,18 @@ body {
   }
 }
 
+/* The Hatchery's panel arriving when the first PR appears (HIVE-205, R4). */
+@keyframes ccslidein {
+  from {
+    transform: translateX(-12px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
 @keyframes ccblink {
   0%,
   100% {
@@ -156,6 +190,254 @@ body {
   }
   50% {
     opacity: 0;
+  }
+}
+
+/* The flap turning over a changed word (HIVE-205): the word swaps at half way, edge-on. */
+@keyframes ccflap {
+  0%,
+  100% {
+    transform: rotateX(0deg);
+  }
+  50% {
+    transform: rotateX(90deg);
+  }
+}
+
+/* The empty Hatchery's dormant egg (HIVE-205): one 7s loop. It rocks, the yolk
+   glows, spores drift, the creep breathes. Nothing emerges. `useReducedMotion`
+   drops every class. */
+@keyframes cceggrock {
+  0%,
+  30%,
+  100% {
+    transform: rotate(0deg);
+  }
+  36% {
+    transform: rotate(-5deg);
+  }
+  42% {
+    transform: rotate(4deg);
+  }
+  48% {
+    transform: rotate(-3deg);
+  }
+  54% {
+    transform: rotate(1.5deg);
+  }
+  60% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes cceggglow {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  45% {
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.25;
+  }
+}
+
+@keyframes ccspore {
+  0% {
+    opacity: 0;
+    transform: translateY(40px);
+  }
+  15% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-90px);
+  }
+}
+
+@keyframes cccreep {
+  50% {
+    transform: scale(1.06, 1.1);
+  }
+}
+
+/* The Brood's egg (HIVE-221): what lives under the shell. Specks drift by their
+   own `--dx`/`--dy`, the occupant darkens and twitches at the swell, a
+   heartbeat thumps, the veins silhouette and pulse in bands, the blisters catch
+   the light. */
+@keyframes cceggspeck {
+  50% {
+    transform: translate(var(--dx), var(--dy));
+  }
+}
+
+@keyframes cceggocc {
+  0%,
+  22% {
+    opacity: 0.05;
+  }
+  30% {
+    opacity: 0.09;
+  }
+  45% {
+    opacity: 0.72;
+  }
+  53% {
+    opacity: 0.4;
+  }
+  68%,
+  100% {
+    opacity: 0.05;
+  }
+}
+
+@keyframes cceggtwitch {
+  0%,
+  23% {
+    transform: none;
+  }
+  25.5% {
+    transform: rotate(-7deg) translate(1px, -1.5px);
+  }
+  27.5% {
+    transform: rotate(3deg) translate(-0.5px, 0.5px);
+  }
+  29.5%,
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes cceggheart {
+  0%,
+  40%,
+  100% {
+    opacity: 0.05;
+    transform: scale(1);
+  }
+  8% {
+    opacity: 0.2;
+    transform: scale(1.18);
+  }
+  16% {
+    opacity: 0.07;
+    transform: scale(1);
+  }
+  24% {
+    opacity: 0.15;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes cceggveinsil {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  45% {
+    opacity: 0.85;
+  }
+  70% {
+    opacity: 0;
+  }
+}
+
+@keyframes cceggveinpulse {
+  0%,
+  40%,
+  100% {
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.14;
+  }
+}
+
+@keyframes cceggcatch {
+  0%,
+  100% {
+    opacity: 0.03;
+  }
+  45% {
+    opacity: 0.4;
+  }
+  70% {
+    opacity: 0.03;
+  }
+}
+
+/* The not-wired places' comb cell (`CombGlyph`): one 9s loop. The rim lights
+   green round the cell, stalls at two thirds, sputters red and goes dark; the
+   icon brightens with the charge and dims at the failure. */
+@keyframes cccombrim {
+  0%,
+  24% {
+    stroke-dasharray: 0 100;
+    opacity: 0;
+  }
+  26% {
+    opacity: 0.9;
+  }
+  48%,
+  52% {
+    stroke-dasharray: 68 100;
+    opacity: 0.9;
+  }
+  56% {
+    opacity: 0;
+  }
+  58% {
+    opacity: 0.6;
+  }
+  60%,
+  100% {
+    stroke-dasharray: 68 100;
+    opacity: 0;
+  }
+}
+
+@keyframes cccombfail {
+  0%,
+  53% {
+    opacity: 0;
+  }
+  54% {
+    opacity: 0.95;
+  }
+  56% {
+    opacity: 0.15;
+  }
+  58% {
+    opacity: 0.85;
+  }
+  61% {
+    opacity: 0.1;
+  }
+  63% {
+    opacity: 0.6;
+  }
+  75%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes cccombicon {
+  0%,
+  25%,
+  100% {
+    opacity: 0.75;
+  }
+  48% {
+    opacity: 1;
+  }
+  56% {
+    opacity: 0.6;
+  }
+  75% {
+    opacity: 0.75;
   }
 }
 
@@ -169,63 +451,6 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-}
-
-/**
- * The diffused pool behind the header's hive mark (HIVE-100).
- *
- * A class rather than an arbitrary Tailwind value, because the value is a
- * blurred `radial-gradient` inside a `color-mix` — legible here, and a
- * forty-character unreadable string in a `className`.
- *
- * It is `::before` rather than a `background` on the element itself so it can
- * be *larger* than the 40px sprite it sits behind: a glow the same size as the
- * mark is a rectangle behind a creature, not a pool under one. The pseudo
- * element paints before the element's children, so the sprite lands on top
- * without either of them needing a `z-index`.
- *
- * Colour and strength come from `--cc-bloom`, which is the one thing here that
- * differs per theme — see the token.
- */
-.brand-bloom::before {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 52%;
-  /* Fixed, not an inset percentage of the mark. A pool sized *from* the sprite
-     is always hidden behind it — the sprite covers its own centre, so only what
-     spills past the silhouette is ever seen. These are the splash's proportions
-     at header scale: wider than tall, and sitting slightly low, so it reads as
-     ground under the creature rather than as a halo around it. The width is
-     also bounded by the window — the mark starts at the header's 16px padding,
-     so anything wider than this spills off the left edge of the app. */
-  width: 64px;
-  height: 46px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: radial-gradient(closest-side, var(--cc-bloom), transparent);
-  filter: blur(8px);
-  pointer-events: none;
-}
-
-/**
- * And the sprite paints *over* the pool.
- *
- * Not the free win it looks like. An absolutely-positioned `::before` is a
- * **positioned** box, and positioned boxes paint after non-positioned inline
- * content — so the default order puts the pool on top of the very image it is
- * meant to sit behind, washing the creature in blue instead of lifting it off
- * the ground. It is a difference that is easy to miss, because the result still
- * looks like "a faint glow".
- *
- * `z-index: -1` on the pseudo element is the usual fix and the wrong one here:
- * it would drop the pool behind the *header's* own background as well, since
- * neither the header nor this span establishes a stacking context. Promoting
- * the sprite into the same positioned layer keeps both inside this span and
- * settles the order by DOM position, where `::before` is first by definition.
- */
-.brand-bloom img {
-  position: relative;
 }
 
 /* Thin custom scrollbars. */

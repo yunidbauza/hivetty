@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILT_IN_THEME } from '@lib/theme/built-in';
-import { MAX_THEME_BYTES } from '@lib/theme/contract';
+import { BUILT_IN_THEMES } from '@lib/theme/built-in-themes';
+import { MAX_THEME_BYTES, THEME_MODES } from '@lib/theme/contract';
 import { importTheme, isHiveTheme, utf8ByteLength } from '@lib/theme/validate';
 
 /** A complete, valid theme built by recolouring the built-in. */
@@ -249,6 +250,51 @@ describe('unknown keys', () => {
   });
 });
 
+describe('the creature colours (HIVE-199)', () => {
+  it('imports a theme without creep and chitin with no warning about them', () => {
+    const theme = structuredClone(BUILT_IN_THEME);
+    for (const mode of THEME_MODES) {
+      delete theme.modes[mode].ui.creep;
+      delete theme.modes[mode].ui.chitin;
+    }
+    const result = importTheme(JSON.stringify(theme), 'old.json');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.theme.modes.dark.ui.creep).toBeUndefined();
+    expect(result.inherited).toBe(0);
+    expect(result.notes.join('\n')).not.toMatch(/creep|chitin/);
+  });
+
+  it('imports a theme without the Brood tissue ramp with no warning about it', () => {
+    const theme = structuredClone(BUILT_IN_THEME);
+    for (const mode of THEME_MODES) {
+      for (const key of ['tissueDeep', 'tissue', 'tissueLit', 'glowCore', 'ground'] as const) {
+        delete theme.modes[mode].ui[key];
+      }
+    }
+    const result = importTheme(JSON.stringify(theme), 'old.json');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.theme.modes.dark.ui.tissue).toBeUndefined();
+    expect(result.inherited).toBe(0);
+    expect(result.notes.join('\n')).not.toMatch(/tissue|glowCore|ground/);
+  });
+
+  it('round-trips a theme that carries them', () => {
+    const result = importTheme(JSON.stringify(BUILT_IN_THEME), 'hive.json');
+    expect(result.ok && result.theme.modes.light.ui.chitin).toBe('#6a54b0');
+  });
+
+  it('rejects an unreadable creep like any other ui colour', () => {
+    const modes = structuredClone(BUILT_IN_THEME.modes) as Record<string, any>;
+    modes.dark.ui.creep = 'not-a-colour';
+    const result = importTheme(fullTheme({ modes }), 'bad.json');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.detail).toBe('modes.dark.ui.creep is not a colour Hive TTY can read.');
+  });
+});
+
 describe('colour parsing', () => {
   it('names the exact path of an unparseable colour', () => {
     const modes = structuredClone(BUILT_IN_THEME.modes) as Record<string, any>;
@@ -316,7 +362,7 @@ describe('colour parsing', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.detail).toBe(
-      'modes.dark.terminal.cyan is not a colour the Hive can read.',
+      'modes.dark.terminal.cyan is not a colour Hive TTY can read.',
     );
   });
 });
@@ -324,7 +370,7 @@ describe('colour parsing', () => {
 /**
  * The accepted set is a deliberate spec decision and stays exactly as it is.
  * What changes is the sentence: a theme ported from VS Code routinely carries
- * `rgba()`, and "is not a colour the Hive can read" reads as *cannot parse
+ * `rgba()`, and "is not a colour Hive TTY can read" reads as *cannot parse
  * that*, sending its author hunting for a typo that is not there.
  */
 describe('a recognised but unsupported colour family', () => {
@@ -338,7 +384,7 @@ describe('a recognised but unsupported colour family', () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.detail).toContain('modes.light.ui.panel');
-      expect(result.detail).toContain('which the Hive does not read');
+      expect(result.detail).toContain('which Hive TTY does not read');
       // And it says what would work, so there is something to do about it.
       expect(result.detail).toContain('rgb() or oklch()');
     },
@@ -353,7 +399,7 @@ describe('a recognised but unsupported colour family', () => {
     if (result.ok) return;
     // The family *is* supported — this one really is unreadable.
     expect(result.detail).toBe(
-      'modes.light.ui.panel is not a colour the Hive can read.',
+      'modes.light.ui.panel is not a colour Hive TTY can read.',
     );
   });
 });
@@ -461,6 +507,27 @@ describe('isHiveTheme', () => {
     broken.modes.light.syntax.keyword = 'rgba(0,0,0,0.3)';
     expect(isHiveTheme(broken)).toBe(false);
   });
+
+  /**
+   * HIVE-199: apply.ts now reads the optional creature keys from a stored
+   * theme, so a malformed one must be dropped here rather than crash the boot
+   * or reach the generated `<style>`.
+   */
+  it.each([
+    { label: 'a number', value: 5 as unknown },
+    { label: 'not a colour', value: 'x;} body{display:none' as unknown },
+  ])('rejects an optional creature colour that is $label', ({ value }) => {
+    const broken = structuredClone(BUILT_IN_THEME) as Record<string, any>;
+    broken.modes.dark.ui.creep = value;
+    expect(isHiveTheme(broken)).toBe(false);
+  });
+
+  it('accepts a theme without the optional colours', () => {
+    const bare = structuredClone(BUILT_IN_THEME) as Record<string, any>;
+    delete bare.modes.dark.ui.chitin;
+    delete bare.modes.dark.terminal.surface;
+    expect(isHiveTheme(bare)).toBe(true);
+  });
 });
 
 describe('contrast', () => {
@@ -504,5 +571,24 @@ describe('contrast', () => {
     expect(
       result.notes.some((note) => note.includes('brand on panel')),
     ).toBe(false);
+  });
+});
+
+describe('rule 9 — the plan glyph’s check (panel on green)', () => {
+  it('notes a theme whose green is too close to its panel', () => {
+    const modes = structuredClone(BUILT_IN_THEME.modes);
+    modes.dark.ui.green = modes.dark.ui.panel;
+    const result = importTheme(fullTheme({ modes }), 'flat.json');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.notes.some((note) => note.includes('panel') && note.includes('green'))).toBe(true);
+  });
+
+  it('never fires on a built-in theme', () => {
+    for (const theme of [BUILT_IN_THEME, ...Object.values(BUILT_IN_THEMES)]) {
+      const result = importTheme(JSON.stringify(theme), 'built-in.json');
+      if (!result.ok) throw new Error(result.detail);
+      expect(result.notes.filter((note) => note.includes('green'))).toEqual([]);
+    }
   });
 });

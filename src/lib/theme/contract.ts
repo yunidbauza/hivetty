@@ -55,11 +55,30 @@ export const TERMINAL_KEYS = [
  */
 export const TERMINAL_SURFACE_KEYS = ['surface', 'surfaceAlt'] as const;
 
+/**
+ * The creature colours (HIVE-199): the creep under a busy comb patch and the
+ * mutalisk's chitin. **Optional on purpose**, for the reason
+ * {@link TERMINAL_SURFACE_KEYS} is: every theme exported before this ticket
+ * lacks them, and a required key would reject all of them. `swarmPaletteOf`
+ * derives both from the theme's own `bg`, `brand` and `ink` when they are
+ * absent, so an imported theme's creatures match its palette, not the
+ * built-in's violet.
+ *
+ * `tissueDeep`, `tissue`, `tissueLit`, `glowCore` and `ground` (HIVE-221) are
+ * the Brood creatures' tissue ramp: the shadowed, mid and lit flesh, the core
+ * of their green glow, and the ground they stand on. Optional for the same
+ * reason, and derived the same way when absent.
+ */
+export const UI_OPTIONAL_KEYS = [
+  'creep', 'chitin', 'tissueDeep', 'tissue', 'tissueLit', 'glowCore', 'ground',
+] as const;
+
 type UiKey = (typeof UI_KEYS)[number];
+type UiOptionalKey = (typeof UI_OPTIONAL_KEYS)[number];
 type SyntaxKey = (typeof SYNTAX_KEYS)[number];
 type TerminalKey = (typeof TERMINAL_KEYS)[number];
 
-export type UiColors = Record<UiKey, string>;
+export type UiColors = Record<UiKey, string> & Partial<Record<UiOptionalKey, string>>;
 export type SyntaxColors = Record<SyntaxKey, string>;
 type TerminalSurfaceKey = (typeof TERMINAL_SURFACE_KEYS)[number];
 
@@ -100,7 +119,7 @@ function kebab(key: string): string {
   return key.replace(/([a-z])([A-Z0-9])/g, '$1-$2').toLowerCase();
 }
 
-export function uiTokenName(key: UiKey): string {
+export function uiTokenName(key: UiKey | UiOptionalKey): string {
   return `--cc-${kebab(key)}`;
 }
 

@@ -1283,7 +1283,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return {
           started: false,
           refused: 'unknown',
-          reason: 'The Hive is shutting down.',
+          reason: 'Hive TTY is shutting down.',
         };
       }
 

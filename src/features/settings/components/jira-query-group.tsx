@@ -3,12 +3,13 @@ import { useState } from 'react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
+import { Button } from '@components/ui/button';
 import { TextField } from '@components/ui/text-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { searchJiraIssues } from '@lib/jira';
 import { setJiraConnection } from '@lib/project-config';
 import { BRIDGE_ERROR } from '@lib/utils';
-import { JIRA_DEFAULT_JQL } from '@shared/jira-contract';
+import { JIRA_DEFAULT_JQL, JIRA_MAX_ISSUES } from '@shared/jira-contract';
 
 /**
  * Which issues the WORK tab shows (HIVE-69).
@@ -86,7 +87,7 @@ export function JiraQueryGroup({ jql, canTest }: JiraQueryGroupProps) {
       title="Query"
       description="Which issues the WORK tab shows."
     >
-      <div className="flex flex-col gap-2.5 rounded-[7px] border border-border-soft p-3">
+      <div className="flex flex-col gap-2.5 rounded-lg border border-border-soft p-3">
         <TextField
           label="JQL override"
           value={draft}
@@ -97,38 +98,42 @@ export function JiraQueryGroup({ jql, canTest }: JiraQueryGroupProps) {
         />
 
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
             onClick={test}
-            disabled={testing || !canTest}
-            className="rounded-[6px] border border-border bg-panel-2 px-2.5 py-1 text-[12px] text-ink hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-panel-2"
+            disabled={!canTest}
+            pending={testing}
+            className="rounded-md border-border bg-panel-2 px-2.5 py-1 text-control leading-normal text-ink hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-panel-2 aria-disabled:text-subtle aria-disabled:hover:bg-panel-2"
           >
             {testing ? testingPhrase : 'Test query'}
-          </button>
+          </Button>
           {canTest ? null : (
-            <span className="text-[11.5px] text-subtle">
+            <span className="text-ui-sm text-subtle">
               Configure the site, email and token first.
             </span>
           )}
         </div>
 
-        {verdict === null ? null : verdict.kind === 'matched' ? (
-          <p className="flex items-start gap-2 text-[12.5px]">
-            <CheckCircle size={14} className="mt-px shrink-0 text-green" />
-            <span className="text-ink">
-              {verdict.count === 0
-                ? 'Ran, and matched no issues.'
-                : `Matched ${verdict.count} issue${verdict.count === 1 ? '' : 's'}.`}
-              {verdict.capped ? ' The first 200 — there were more.' : ''}
-            </span>
-          </p>
-        ) : (
-          <p className="flex items-start gap-2 text-[12.5px]">
-            <XCircle size={14} className="mt-px shrink-0 text-red" />
-            {/* Jira's own words. It knows why better than any parser here would. */}
-            <span className="text-red">{verdict.message}</span>
-          </p>
-        )}
+        {/* Always mounted: a live region that mounts with its text is not reliably announced (HIVE-225). */}
+        <div role="status" className="empty:-mt-2.5">
+          {verdict === null ? null : verdict.kind === 'matched' ? (
+            <p className="flex items-start gap-2 text-control">
+              <CheckCircle size={14} className="mt-px shrink-0 text-green" />
+              <span className="text-ink">
+                {verdict.count === 0
+                  ? 'Ran, and matched no issues.'
+                  : `Matched ${verdict.count} issue${verdict.count === 1 ? '' : 's'}.`}
+                {verdict.capped ? ` The first ${String(JIRA_MAX_ISSUES)} — there were more.` : ''}
+              </span>
+            </p>
+          ) : (
+            <p className="flex items-start gap-2 text-control">
+              <XCircle size={14} className="mt-px shrink-0 text-red" />
+              {/* Jira's own words. It knows why better than any parser here would. */}
+              <span className="text-red">{verdict.message}</span>
+            </p>
+          )}
+        </div>
       </div>
     </SettingsGroup>
   );

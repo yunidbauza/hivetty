@@ -21,7 +21,7 @@ import type { IdleDetail } from '@shared/hook-contract';
  * so that one word means one colour wherever it is drawn, and only `failed`
  * needed a hue the session vocabulary does not have.
  */
-export type DotStatus = SessionStatus | AgentStatus | TerminalStatus;
+type DotStatus = SessionStatus | AgentStatus | TerminalStatus;
 
 /**
  * `terminated` is muted, not blue, and not `subtle` either (story 108).
@@ -78,12 +78,12 @@ export const STATUS_FILL: Record<DotStatus, string> = {
  */
 export const STATUS_TEXT: Record<DotStatus, string> = {
   working: 'text-green',
-  waiting: 'text-amber',
+  waiting: 'text-amber-text',
   idle: 'text-subtle',
   done: 'text-brand',
   terminated: 'text-muted',
   sleeping: 'text-subtle',
-  asking: 'text-amber',
+  asking: 'text-amber-text',
   paused: 'text-muted',
   failed: 'text-red',
   prompt: 'text-subtle',
@@ -130,8 +130,9 @@ export const STATUS_LABEL: Record<DotStatus, string> = {
  * label beside it says `working (agents)` and a grey ring under a green word
  * would be the dot and the text disagreeing. The ring is what still separates
  * it from a solid green session; the hue no longer is. `STATUS_RING.idle` is
- * therefore unreachable in practice and is kept only so the record stays total
- * — the same reason `STATUS_FILL` lists every member.
+ * the ring of an idle session with an agent on its work (`idle (shipper)`).
+ * The rest are kept so the record stays total, as `STATUS_FILL` lists every
+ * member.
  */
 const STATUS_RING: Record<DotStatus, string> = {
   working: 'border-green',
@@ -175,10 +176,16 @@ const DETAIL_LABEL: Record<IdleDetail, string> = {
   script: 'scripts',
 };
 
-export function statusLabel(status: DotStatus, detail?: IdleDetail): string {
+/**
+ * `delegate` is `idle (shipper)`: the session is quiet and an agent it asked
+ * is on its work (`delegationWord`). Its own running work wins: a session
+ * with subagents going says `working (agents)` whoever else it asked.
+ */
+export function statusLabel(status: DotStatus, detail?: IdleDetail, delegate?: string | null): string {
   if (status === 'idle' && detail !== undefined) {
     return `working (${DETAIL_LABEL[detail]})`;
   }
+  if (status === 'idle' && delegate) return `idle (${delegate})`;
   return STATUS_LABEL[status];
 }
 
@@ -213,6 +220,8 @@ interface StatusDotProps {
    * accessibility tree rather than duplicating the text next to it.
    */
   label?: string;
+  /** An agent on this quiet session's work (`idle (shipper)`): a grey ring, not a disc. */
+  delegate?: string | null;
   /**
    * What a quiet session is still running (HIVE-83), folded into the sr-only
    * text alongside `label`.
@@ -236,6 +245,7 @@ export function StatusDot({
   pulse,
   label,
   detail,
+  delegate,
   className,
 }: StatusDotProps) {
   const pulsing = pulse ?? status === 'working';
@@ -248,6 +258,8 @@ export function StatusDot({
    * dot unrepresentable regardless of what the caller passes.
    */
   const hollow = status === 'idle' && detail !== undefined;
+  // Idle's own grey, as a ring: quiet, and not empty. The label stays idle's colour too.
+  const delegated = status === 'idle' && detail === undefined && Boolean(delegate);
 
   return (
     <span
@@ -262,13 +274,15 @@ export function StatusDot({
         */
         hollow
           ? `border-[1.5px] ${STATUS_RING.working}`
-          : STATUS_FILL[status],
+          : delegated
+            ? `border-[1.5px] ${STATUS_RING.idle}`
+            : STATUS_FILL[status],
         pulsing && 'animate-ccpulse',
         className,
       )}
     >
       {label ? (
-        <span className="sr-only">{`${label}: ${statusLabel(status, detail)}`}</span>
+        <span className="sr-only">{`${label}: ${statusLabel(status, detail, delegate)}`}</span>
       ) : null}
     </span>
   );

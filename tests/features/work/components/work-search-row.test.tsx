@@ -152,6 +152,8 @@ describe('what the count says', () => {
     status: 'To Do',
     statusCategory: 'todo' as const,
     title: key,
+    priority: null,
+    assignee: null,
     url: `https://example.invalid/${key}`,
   });
 

@@ -32,7 +32,7 @@ function PaneMessage({ icon, children }: { icon: string; children: string }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
       <Icon name={icon} size={20} className="text-subtle" />
-      <p className="text-[12px] text-subtle">{children}</p>
+      <p className="text-control text-subtle">{children}</p>
     </div>
   );
 }
@@ -152,8 +152,8 @@ export function EditorPane() {
     return (
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-panel-2 px-6 text-center">
         <SwarmCreature creature="spire" size={96} />
-        <p className="text-[12px] text-muted">{emptyPhrase}</p>
-        <p className="text-[12px] text-subtle">
+        <p className="text-control text-muted">{emptyPhrase}</p>
+        <p className="text-control text-subtle">
           Open a file from the explorer to edit it here.
         </p>
       </div>
@@ -169,7 +169,7 @@ export function EditorPane() {
       */}
       {nav === 'single' ? (
         <div className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-panel px-3 py-1.5">
-          <span className="flex-1 truncate font-mono text-[11.5px] text-muted">
+          <span className="flex-1 truncate tabular-nums text-ui-sm text-muted">
             {file.relPath}
           </span>
           {file.dirty ? (
@@ -180,7 +180,7 @@ export function EditorPane() {
           <button
             type="button"
             onClick={() => closeFile(file.key)}
-            className="rounded p-0.5 text-subtle hover:bg-active hover:text-ink"
+            className="rounded-full p-0.5 text-subtle hover:bg-active hover:text-ink"
           >
             <Icon name="ph-x" size={12} />
             <span className="sr-only">Close {file.name}</span>

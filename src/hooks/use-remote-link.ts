@@ -8,7 +8,7 @@ import { useApplyAttachSnapshot, useSetRemoteLink } from '@stores/hive-store';
  *
  * Mounted once, beside `useNotificationStream`, and for the same reason: the
  * link changes while nobody is looking at Settings, and a state read on demand
- * is wrong for as long as nobody asks. Before this, the header chip's only
+ * is wrong for as long as nobody asks. Before this, the connection item's only
  * source was `AppInfo.attachedServerName` read inside an effect keyed on the
  * config snapshot — so a socket that died without a config write left the chip
  * naming a machine this window could no longer reach, for as long as the window

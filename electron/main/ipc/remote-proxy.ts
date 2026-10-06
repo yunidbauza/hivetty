@@ -79,6 +79,7 @@ function localAnswerFor(
     localRemotePair: (payload: unknown) => unknown;
     localRemoteForget: () => void;
     localRemotePaired: () => boolean;
+    localDialNow: () => void;
   },
 ): ((payload: unknown) => unknown | Promise<unknown>) | null {
   switch (channel) {
@@ -124,6 +125,13 @@ function localAnswerFor(
     */
     case CH.notificationsBadge:
       return (payload) => badgeDock(payload);
+    /*
+      The tenth (HIVE-211), handed down for `CH.remoteForget`'s cycle reason:
+      the reconnect loop it restarts lives in `router.ts`. It has to answer
+      here because the moment it matters is the moment the socket is down.
+    */
+    case CH.remoteDialNow:
+      return () => deps.localDialNow();
     default:
       return null;
   }
@@ -342,10 +350,23 @@ export function lostToTheLink(cause: unknown): boolean {
 
 /**
  * Calls a timer makes rather than a person — the PR sweep polls `github:prs`
- * every minute, and grading alone would count it, since shelling out to `gh` is
- * `execute`. Never an action the user has to redo.
+ * every minute, the PR page re-reads `github:pr-detail` on its own poll
+ * (HIVE-205), the Checks tab re-reads `github:pr-runs` and
+ * `github:run-jobs` on its own (HIVE-206), and the Files tab re-reads
+ * `github:pr-diff` when that poll sees the head move (HIVE-207), and the
+ * Timeline tab re-reads `github:pr-timeline` on its own (HIVE-208); grading alone
+ * would count them all, since shelling out to `gh` is `execute`. Never an
+ * action the user has to redo. A comment, a failed log opened, a re-run, a
+ * thread write and a Viewed mark are.
  */
-const BACKGROUND_CALLS: ReadonlySet<string> = new Set([CH.githubPrs]);
+const BACKGROUND_CALLS: ReadonlySet<string> = new Set([
+  CH.githubPrs,
+  CH.githubPrDetail,
+  CH.githubPrRuns,
+  CH.githubRunJobs,
+  CH.githubPrDiff,
+  CH.githubPrTimeline,
+]);
 
 /**
  * Whether a lost frame on `channel` is something the user did and must redo
@@ -378,6 +399,12 @@ export function registerRemoteProxy(deps: {
    */
   localRemotePaired?: () => boolean;
   /**
+   * Try now (HIVE-211): restarts this process's reconnect loop. Defaults to a
+   * no-op rather than a throw, unlike the four above: a proxy registered without
+   * a loop has nothing to dial, and doing nothing is the true answer.
+   */
+  localDialNow?: () => void;
+  /**
    * Where a reconnect's `resumeFrom` is built from (HIVE-150).
    *
    * Optional because a proxy without one is still a correct proxy — it simply
@@ -409,6 +436,7 @@ export function registerRemoteProxy(deps: {
     localRemotePair = noLocalRemotePair,
     localRemoteForget = noLocalRemoteForget,
     localRemotePaired = () => false,
+    localDialNow = () => undefined,
     resumeTracker,
     onLinkLoss = () => undefined,
   } = deps;
@@ -478,6 +506,7 @@ export function registerRemoteProxy(deps: {
             localRemotePair,
             localRemoteForget,
             localRemotePaired,
+            localDialNow,
           })
         : null;
       /*

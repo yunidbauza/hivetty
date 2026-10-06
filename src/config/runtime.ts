@@ -15,7 +15,7 @@ import { WINDOW_BOUND } from '@shared/remote-contract';
  * demo with it. A browser has no bridge, so it has no PTYs, no config file and
  * no Jira — and now nothing pretending otherwise.
  *
- * What it still buys is real: the shell, the rails, the theme, the layout and
+ * What it still buys is real: the shell, the panels, the theme, the layout and
  * every empty state are developable and testable without spawning a process, and
  * `tests/e2e/web/` covers exactly that. Anything involving a session belongs in
  * `tests/e2e/electron/`, where sessions exist.

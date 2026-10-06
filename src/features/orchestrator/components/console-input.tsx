@@ -5,7 +5,7 @@ import { ADVERTISED_VERBS } from '@/types/command';
 import { parseCommand } from '@features/orchestrator/utils/parse-command';
 import { effectiveSelId } from '@features/orchestrator/utils/selection';
 import {
-  useNavOrder,
+  useFleetNavOrder,
   openOrResume,
   useRunOrchCommand,
 } from '@stores/hive-store';
@@ -48,7 +48,7 @@ export function ConsoleInput() {
 
 
   const runOrchCommand = useRunOrchCommand();
-  const navOrder = useNavOrder();
+  const navOrder = useFleetNavOrder();
   const selId = useSelId();
   const setSelId = useSetSelId();
 
@@ -188,7 +188,7 @@ export function ConsoleInput() {
           than a quoted literal. The test below greps the rendered output for
           `/orchestrator/i` precisely so a seventh copy cannot hide the same way.
         */}
-        <span className="shrink-0 font-mono text-[13px] text-green">
+        <span className="shrink-0 font-mono text-ui text-green">
           overmind ❯
         </span>
         <textarea
@@ -205,9 +205,9 @@ export function ConsoleInput() {
            * the cap the row scrolls. `resize-none` because a drag handle in the
            * corner of a terminal prompt would fight that.
            */
-          className="min-w-0 flex-1 resize-none field-sizing-content max-h-[10lh] overflow-y-auto border-none bg-transparent font-mono text-[12.5px] leading-normal text-ink caret-green outline-none placeholder:text-subtle"
+          className="min-w-0 flex-1 resize-none field-sizing-content max-h-[10lh] overflow-y-auto border-none bg-transparent font-mono text-control leading-normal text-ink caret-green outline-none placeholder:text-subtle"
         />
-        <span className="shrink-0 pt-px font-mono text-[10.5px] whitespace-nowrap text-subtle">
+        <span className="shrink-0 pt-px font-mono text-micro whitespace-nowrap text-subtle">
           {KEY_HINT}
         </span>
       </div>
@@ -242,7 +242,7 @@ export function ConsoleInput() {
           string that has moved is a spec that silently stops testing anything.
         */
         data-testid="console-hints"
-        className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-[11px] text-subtle"
+        className="flex shrink-0 items-center justify-center border-t border-border-soft bg-term-input px-[18px] py-[11px] font-mono text-micro text-subtle"
       >
         <span>{ADVERTISED_VERBS.join(' · ')}</span>
       </div>

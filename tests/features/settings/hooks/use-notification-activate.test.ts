@@ -1,10 +1,11 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Agent, Session } from '@/types/entity';
 
 import { useNotificationActivate } from '@features/settings/hooks/use-notification-activate';
 import type { NotificationActivateEvent } from '@shared/ipc-contract';
+import { useAppearanceStore } from '@stores/appearance-store';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
 
@@ -119,29 +120,6 @@ describe('useNotificationActivate', () => {
     expect(useUiStore.getState().activeTab).not.toBe('sess-successor');
   });
 
-  /**
-   * The finding this closes (HIVE-118 self-review): an ask toast focused the
-   * window and stopped. Main returned early, the renderer heard nothing, and
-   * the rail stayed exactly where it was — which, for a user parked on the
-   * explorer with the rail collapsed, meant clicking a question and landing on
-   * a file tree with no card and no signal on it.
-   *
-   * Both halves are asserted, because the rail has two independent ways to
-   * hide the inbox: the wrong tab, and no rail at all. The starting state is
-   * deliberately the worst one.
-   */
-  it('reveals the inbox when an ask is activated, opening the rail if it was hidden', () => {
-    useUiStore.setState({ railTab: 'explorer', showActivityRail: false });
-
-    (window as { hive?: unknown }).hive = bridge;
-    renderHook(() => useNotificationActivate());
-
-    listeners[0]?.({ type: 'ask' });
-
-    expect(useUiStore.getState().railTab).toBe('inbox');
-    expect(useUiStore.getState().showActivityRail).toBe(true);
-  });
-
   /** An ask is answered where it is: nothing opens on the centre stage. */
   it('opens no tab for an ask', () => {
     useUiStore.getState().openTab('orch');
@@ -149,8 +127,25 @@ describe('useNotificationActivate', () => {
     (window as { hive?: unknown }).hive = bridge;
     renderHook(() => useNotificationActivate());
 
-    listeners[0]?.({ type: 'ask' });
+    listeners[0]?.({ type: 'ask', thread: 'a41' });
 
     expect(useUiStore.getState().activeTab).toBe('orch');
+  });
+});
+
+describe('useNotificationActivate — the drawer (HIVE-198)', () => {
+  beforeEach(() => {
+    useUiStore.getState().reset();
+  });
+
+  afterEach(() => {
+    useAppearanceStore.getState().reset();
+  });
+
+  it('opens the drawer on the asked thread, with no layout seeded (HIVE-213)', () => {
+    (window as { hive?: unknown }).hive = bridge;
+    renderHook(() => useNotificationActivate());
+    act(() => listeners.at(-1)?.({ type: 'ask', thread: 'a41' }));
+    expect(useUiStore.getState().inboxDrawer).toEqual({ open: true, thread: 'a41' });
   });
 });

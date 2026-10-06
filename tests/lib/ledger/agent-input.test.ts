@@ -18,6 +18,11 @@ describe('parseAgentInput', () => {
     });
   });
 
+  it('reads the ref in any case, and hands the ledger the ref lowercase', () => {
+    expect(parseAgentInput('answer A71 approve')).toEqual({ kind: 'answer', thread: 'a71', body: 'approve' });
+    expect(parseAgentInput('answer a71 approve')).toEqual({ kind: 'answer', thread: 'a71', body: 'approve' });
+  });
+
   it('keeps the whole tail of an answer', () => {
     expect(parseAgentInput('answer a71 hold for me, I will look tonight')).toEqual(
       {

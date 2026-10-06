@@ -212,4 +212,10 @@ describe('SegmentedControl', () => {
 
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it('marks an option that carries an alert with a dot and words for a screen reader (HIVE-206)', () => {
+    render(<SegmentedControl label="Tab" value="a" onChange={() => {}} options={[{ value: 'a', label: 'A' }, { value: 'b', label: 'Checks', alert: true }]} />);
+    expect(screen.getByRole('radio', { name: 'Checks, failing' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'A' })).toBeInTheDocument();
+  });
 });

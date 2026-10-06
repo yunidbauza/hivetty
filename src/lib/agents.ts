@@ -1,6 +1,8 @@
 import {
+  AGENT_NAME_PATTERN,
   dayKey,
   formatRunCost,
+  isReservedAgentName,
   readFrontmatter,
   type AgentStatus,
   type AgentsSnapshot,
@@ -403,7 +405,7 @@ export function frontmatterName(source: string): string {
  * The names a new agent is drawn from.
  *
  * Zerg units, because the app is already speaking this language: it ships a
- * `hydralisk` sprite, and the agents empty state reads "The brood sleeps. No
+ * mutalisk that holds the air, and the agents empty state reads "The brood sleeps. No
  * drones assigned. Ready to spawn." A default of `agent-1` was the thing out of
  * place in that room.
  *
@@ -456,6 +458,57 @@ export function nextAgentName(
 
     if (!taken.includes(candidate)) return candidate;
   }
+}
+
+/**
+ * What a new agent starts as.
+ *
+ * A template rather than an empty box: the frontmatter is not guessable and a
+ * file without it is one main refuses.
+ *
+ * **`name` is seeded, not blank.** It used to be left empty on the argument
+ * that the user must supply it and that seeding invites a tree full of
+ * `new-agent`s — but the form had no name control at all, so the only
+ * expression that argument found was a red box the form could not clear. A
+ * free `agent-n` plus an editable field is the same argument made somewhere
+ * the user can act on it, and it is how a session already opens.
+ *
+ * `icon` is seeded with a name the icon registry can actually draw. `Robot`
+ * was not one: `GLYPHS` is keyed `ph-robot`, so every agent created from this
+ * template rendered the fallback question mark on its own row.
+ *
+ * The body is a **stub instruction**, not a sentence about the agent. It used to
+ * read "You are … . On every wake, read your ledger inbox first, then do your
+ * job" — which is both the self-description shape and the exact "do your job"
+ * phrasing that `wakePrompt` dropped for naming no work. A user who kept the
+ * seeded body got an agent whose standing instructions said nothing to carry
+ * out, one screen after the Source tab told them to write instructions rather
+ * than a description.
+ */
+export const templateFor = (taken: readonly string[]): string => `---
+name: ${nextAgentName(taken)}
+description: What this agent watches, and what it does about it
+icon: ph-robot
+wake:
+  every: 5m
+  on: [ledger]
+autonomy: ask
+---
+
+Watch … , and when you find … , do … .
+`;
+
+/** Why this name cannot be saved, or `null`. Mirrors main's own rules. */
+export function nameProblem(name: string, taken: readonly string[]): string | null {
+  if (name === '') return 'Give the agent a name in its frontmatter.';
+  if (isReservedAgentName(name)) {
+    return `"${name}" is reserved by Hive TTY.`;
+  }
+  if (!AGENT_NAME_PATTERN.test(name)) {
+    return 'Lowercase letters, digits and dashes only.';
+  }
+  if (taken.includes(name)) return `You already have an agent called ${name}.`;
+  return null;
 }
 
 /** `YYYYMMDD-HHMMSS-NNNN`, in local time, as `ledger/store.ts` mints an ask id. */

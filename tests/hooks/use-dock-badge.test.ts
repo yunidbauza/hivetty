@@ -6,6 +6,7 @@ import type { HiveNotification } from '@shared/notification-contract';
 
 import { useDockBadge } from '@/hooks/use-dock-badge';
 import { useHiveStore } from '@stores/hive-store';
+import { useUiStore } from '@stores/ui-store';
 
 /**
  * The renderer half of this machine's dock badge (HIVE-159).
@@ -16,8 +17,17 @@ import { useHiveStore } from '@stores/hive-store';
 
 const badge = vi.fn<(count: number) => Promise<void>>(async () => undefined);
 
-const notif = (id: string, unread: boolean): HiveNotification =>
-  ({ id, unread }) as unknown as HiveNotification;
+/** A blocked session (waits on you) or a piece of news (never counts). */
+const notif = (id: string, waits: boolean): HiveNotification =>
+  ({
+    id,
+    kind: waits ? 'session.blocked' : 'pr.merged',
+    title: id,
+    body: '',
+    createdAt: 0,
+    unread: true,
+    action: waits ? { type: 'session', entityId: `term-${id}` } : { type: 'none' },
+  }) as HiveNotification;
 
 const link = (epoch: number): RemoteLinkStatus => ({
   state: 'attached',
@@ -31,7 +41,7 @@ const link = (epoch: number): RemoteLinkStatus => ({
 
 beforeEach(() => {
   badge.mockClear();
-  useHiveStore.setState({ notifs: [], remoteLink: null });
+  useHiveStore.setState({ notifs: [], ledger: [], remoteLink: null });
   window.hive = { notifications: { badge } } as unknown as typeof window.hive;
 });
 
@@ -40,7 +50,7 @@ afterEach(() => {
 });
 
 describe('useDockBadge', () => {
-  it('reports the unread count on mount', () => {
+  it('reports the Summons count on mount', () => {
     useHiveStore.setState({ notifs: [notif('a', true), notif('b', false), notif('c', true)] });
 
     renderHook(() => useDockBadge());
@@ -115,6 +125,32 @@ describe('useDockBadge', () => {
     });
 
     expect(badge).toHaveBeenCalledWith(1);
+  });
+
+  /** HIVE-214: the dock speaks for the app when nobody is looking, so the session on stage counts. */
+  it('counts the session on stage', () => {
+    useUiStore.setState({ activeTab: 'sess-x' });
+    useHiveStore.setState({ notifs: [notif('x', true)] });
+
+    renderHook(() => useDockBadge());
+
+    expect(badge).toHaveBeenLastCalledWith(1);
+  });
+
+  it('sends 0 with nothing waiting', () => {
+    useHiveStore.setState({ notifs: [notif('m', false)] });
+
+    renderHook(() => useDockBadge());
+
+    expect(badge).toHaveBeenLastCalledWith(0);
+  });
+
+  it('counts a read blocked session: it still waits on you', () => {
+    useHiveStore.setState({ notifs: [{ ...notif('a', true), unread: false }] });
+
+    renderHook(() => useDockBadge());
+
+    expect(badge).toHaveBeenLastCalledWith(1);
   });
 
   it('does nothing without a bridge, which is the browser demo', () => {

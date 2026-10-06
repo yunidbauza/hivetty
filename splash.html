@@ -2,7 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>The Hive</title>
+    <title>Hive</title>
+    <!--
+      Nothing paints until splash.css does. The window can draw before that
+      stylesheet applies (always under the dev server, where Vite injects it
+      from the module; on a slow cold start in a build), and the copy below
+      would show for a moment as unstyled black text. splash.css reveals the body.
+    -->
+    <style>
+      body {
+        visibility: hidden;
+      }
+    </style>
   </head>
   <body>
     <!--
@@ -19,61 +30,24 @@
     -->
     <div class="chamber">
       <div class="bloom"></div>
-      <div class="pool"></div>
-
-      <svg class="rings" viewBox="0 0 470 470" aria-hidden="true">
-        <circle
-          class="chitin"
-          cx="235"
-          cy="235"
-          r="222"
-          fill="none"
-          stroke="var(--cc-border-soft)"
-          stroke-width="1"
-          stroke-dasharray="3 9"
-        />
-        <circle
-          cx="235"
-          cy="235"
-          r="180"
-          fill="none"
-          stroke="var(--cc-border-soft)"
-          stroke-width="2"
-        />
-        <!-- 1131 is the circumference at r=180, and the dash length the
-             `draw` keyframe counts down from. -->
-        <circle
-          class="progress"
-          cx="235"
-          cy="235"
-          r="180"
-          fill="none"
-          stroke="var(--cc-brand-fill-strong)"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-dasharray="1131"
-          stroke-dashoffset="1131"
-          transform="rotate(-90 235 235)"
-        />
-      </svg>
 
       <!--
-        Two ways to draw one creature. The canvas is the mp4 with its white
-        ground keyed away frame by frame; the image is the same loop with the
-        transparency already baked in, shown only if the video never produces
-        a frame. `splash.ts` picks, and exactly one is ever visible.
+        The brood world: comb chambers bud from a seed into a spherical volume
+        nothing outlines, each log line lands on them, and seven mutalisks tear
+        out of their chambers to circle a ring of spores. One transparent canvas
+        the size of the chamber, the creep included; the bloom stays CSS beneath
+        it. `splash.ts` draws it.
       -->
-      <canvas class="sprite" id="sprite" width="486" height="526"></canvas>
-      <img class="sprite" id="sprite-fallback" alt="" hidden />
+      <canvas class="globe" id="globe" aria-hidden="true"></canvas>
 
       <div class="vignette"></div>
       <div class="scanlines"></div>
 
       <div class="copy">
         <p class="kicker">overmind · swarm awakening</p>
-        <p class="wordmark" aria-label="The Hive">
-          <span>T</span><span>H</span><span>E</span><span>&nbsp;</span><span>H</span
-          ><span>I</span><span>V</span><span>E</span>
+        <p class="wordmark" aria-label="Hive TTY">
+          <span>H</span><span>I</span><span>V</span><span>E</span
+          ><em class="tty" aria-hidden="true"><i>t</i><i>t</i><i>y</i><b class="cursor"></b></em>
         </p>
         <ul class="log">
           <li>spawning drones · 4 sessions attached</li>

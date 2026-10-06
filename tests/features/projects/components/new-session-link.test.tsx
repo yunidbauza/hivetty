@@ -120,10 +120,9 @@ describe('NewSessionLink', () => {
     render(<NewSessionLink projectId={PROJECT} projectName={PROJECT_NAME} />);
 
     /**
-     * The visible label is just `new session`. A screen-reader user arriving
-     * here out of context cannot see the folder row above it, so the project
-     * has to be in the name — and it contains the visible text, which is what
-     * WCAG's Label in Name asks for.
+     * The visible label is just a plus. A screen-reader user arriving here out
+     * of context cannot see the folder row it sits on, so the project has to
+     * be in the name.
      *
      * The *other* consequence — that `New session` alone stops identifying one
      * control — is a Playwright problem, not a jsdom one: Testing Library
@@ -191,5 +190,13 @@ describe('NewSessionLink', () => {
     render(<NewSessionLink projectId={PROJECT} projectName={PROJECT_NAME} />);
 
     expect(screen.getByRole('button')).toBeEnabled();
+  });
+});
+
+describe('NewSessionLink — label', () => {
+  it('is a bare plus; the name carries the words', () => {
+    setProjectConfigForTest(snapshot([{ id: PROJECT, status: 'ok' }]));
+    render(<NewSessionLink projectId={PROJECT} projectName={PROJECT_NAME} />);
+    expect(screen.getByRole('button', { name: `New session in ${PROJECT_NAME}` })).toHaveTextContent('');
   });
 });

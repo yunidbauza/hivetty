@@ -11,7 +11,8 @@ import {
   HOOK_HEADER_TOKEN,
 } from '../../../electron/shared/hook-contract';
 import { LEDGER_POST_PATH, type LedgerEntry } from '../../../electron/shared/ledger-contract';
-import { selectRailTab } from '../fixtures/rail-tabs';
+import { goToOvermind, overmindNewSession } from '../fixtures/places';
+
 import { launchHive } from './fixtures/hive-app';
 
 /**
@@ -223,9 +224,10 @@ test('the scope ladder keeps one row however long the path is', async ({}, testI
 
   try {
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
     const search = page.getByRole('textbox', { name: 'Search all projects' });
     await expect(search).toBeFocused();
     await page.keyboard.type(PROJECT);
@@ -239,10 +241,14 @@ test('the scope ladder keeps one row however long the path is', async ({}, testI
     await shell(page, postPathAskCommand('Edit', `${LONG_DIR}/watch.json`, longPosted));
     await expectMarker(longPosted, '200');
 
-    await selectRailTab(page.getByRole('tab', { name: /^Inbox/ }));
+    // The ask came from the session's own shell, so the keyboard is in its
+    // terminal and the ask waits in the pill (the quiet rule, inbox-pill.spec.ts).
+    await page.getByRole('button', { name: /^Inbox, / }).click();
+    const drawer = page.getByRole('dialog', { name: 'Needs you' });
+    await expect(drawer).toBeVisible();
 
     const ladderIn = (tool: string) =>
-      page
+      drawer
         .getByRole('article', { name: new RegExp(`^Ask from ${SESSION}: Allow ${tool}\\?`) })
         .getByRole('radiogroup', { name: 'How far this permission reaches' });
 
@@ -293,9 +299,10 @@ test('a permission card names the call the click authorises, not the body', asyn
 
   try {
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
     const search = page.getByRole('textbox', { name: 'Search all projects' });
     await expect(search).toBeFocused();
     await page.keyboard.type(PROJECT);
@@ -307,10 +314,14 @@ test('a permission card names the call the click authorises, not the body', asyn
     await shell(page, postDeceptiveAskCommand(posted));
     await expectMarker(posted, '200');
 
-    await selectRailTab(page.getByRole('tab', { name: /^Inbox/ }));
+    // The ask came from the session's own shell, so the keyboard is in its
+    // terminal and the ask waits in the pill (the quiet rule, inbox-pill.spec.ts).
+    await page.getByRole('button', { name: /^Inbox, / }).click();
+    const drawer = page.getByRole('dialog', { name: 'Needs you' });
+    await expect(drawer).toBeVisible();
 
     // The title is main's, so the card is addressable by the tool it will run.
-    const card = page.getByRole('article', {
+    const card = drawer.getByRole('article', {
       name: new RegExp(`^Ask from ${SESSION}: Allow Bash\\?`),
     });
     await expect(card).toBeVisible();
@@ -357,10 +368,11 @@ test('an ask posted to the ledger becomes a card, and answering it collapses the
 
   try {
     await page.waitForLoadState('domcontentloaded');
-    await page.waitForSelector('header');
+    await page.waitForSelector('nav[aria-label="Places"]');
 
     // Start the one session whose environment carries a real receiver token.
-    await page.getByRole('button', { name: 'New session', exact: true }).click();
+    await goToOvermind(page);
+    await overmindNewSession(page).click();
     const search = page.getByRole('textbox', { name: 'Search all projects' });
     await expect(search).toBeFocused();
     await page.keyboard.type(PROJECT);
@@ -374,7 +386,11 @@ test('an ask posted to the ledger becomes a card, and answering it collapses the
     await shell(page, postAskCommand(posted));
     await expectMarker(posted, '200');
 
-    await selectRailTab(page.getByRole('tab', { name: /^Inbox/ }));
+    // The ask came from the session's own shell, so the keyboard is in its
+    // terminal and the ask waits in the pill (the quiet rule, inbox-pill.spec.ts).
+    await page.getByRole('button', { name: /^Inbox, / }).click();
+    const drawer = page.getByRole('dialog', { name: 'Needs you' });
+    await expect(drawer).toBeVisible();
 
     /*
       The card's `aria-label` is `Ask from ${asker}: ${notif.title}`
@@ -383,7 +399,7 @@ test('an ask posted to the ledger becomes a card, and answering it collapses the
       Asserting on it here is asserting on the asker's name, not on the id
       coincidentally matching it.
     */
-    const card = page.getByRole('article', {
+    const card = drawer.getByRole('article', {
       name: new RegExp(`^Ask from ${SESSION}: ${ASK_TITLE}`),
     });
     await expect(card).toBeVisible();
@@ -395,12 +411,8 @@ test('an ask posted to the ledger becomes a card, and answering it collapses the
 
     await approve.click();
 
-    // Collapsed to its one-liner, carrying the exact answer that was clicked.
-    await expect(card.locator('[data-answered]')).toHaveAttribute(
-      'data-answered',
-      'Approve',
-    );
-    await expect(card.getByText(/answered/)).toBeVisible();
+    // Answered, the card leaves the drawer; the ledger holds both entries.
+    await expect(card).toHaveCount(0);
     await expect(approve).toHaveCount(0);
 
     // And the ledger itself — not just the screen — has both entries.

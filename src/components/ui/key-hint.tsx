@@ -25,7 +25,7 @@ export function KeyHint({ hints, className }: KeyHintProps) {
   return (
     <span
       className={cn(
-        'shrink-0 font-mono text-[10.5px] whitespace-nowrap text-subtle',
+        'shrink-0 tabular-nums text-micro whitespace-nowrap text-subtle',
         className,
       )}
       data-testid="key-hint"

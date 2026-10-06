@@ -202,7 +202,7 @@ function declaredName(body: string): string {
     throw new Error('Its SKILL.md declares no name — nothing was imported.');
   }
   if (name === RESERVED_SKILL_NAME) {
-    throw new Error(`"${name}" is reserved by The Hive — nothing was imported.`);
+    throw new Error(`"${name}" is reserved by Hive TTY — nothing was imported.`);
   }
   if (!SKILL_NAME_PATTERN.test(name)) {
     throw new Error(

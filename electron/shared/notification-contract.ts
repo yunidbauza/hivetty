@@ -40,6 +40,14 @@
 export type Tone = 'amber' | 'green' | 'brand' | 'red';
 
 /**
+ * Where a kind sits in the Inbox (HIVE-214, PRD v8 §5.1). Summons wait on you
+ * and are counted, a session that is yours again among them (6 Oct 2026: it
+ * was its own Burrowed lane, which bounced the dock and showed on no pill);
+ * Echoes are news. The trim evicts Echoes, never a row that waits on you.
+ */
+export type NotificationLane = 'summons' | 'echo';
+
+/**
  * Where a notification came from. Groups the settings section, nothing more.
  *
  * Deliberately coarser than {@link NotificationKind}: the user thinks in
@@ -372,6 +380,8 @@ interface NotificationKindSpec {
   /** A `ph-*` name as `src/components/ui/icon.tsx` spells it. */
   icon: string;
   tone: Tone;
+  /** Required, so a kind without a lane does not compile. */
+  lane: NotificationLane;
   defaultDelivery: NotificationDelivery;
 }
 
@@ -417,6 +427,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'A tool wants approval, or an agent asked a question and cannot carry on. Includes subagents.',
     icon: 'ph-hand-palm',
     tone: 'amber',
+    lane: 'summons',
     defaultDelivery: 'both',
   },
   /**
@@ -450,6 +461,8 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'Its turn ended and nothing is left running — no background agent, no background script. The moment it stopped working.',
     icon: 'ph-moon',
     tone: 'brand',
+    // Summons: it bounces the dock, so it is on the pill too (6 Oct 2026).
+    lane: 'summons',
     defaultDelivery: 'both',
   },
   'session.input_needed': {
@@ -459,6 +472,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'Its turn ended and nothing was typed for a while. Not a question — it has simply finished and is waiting on you.',
     icon: 'ph-keyboard',
     tone: 'amber',
+    lane: 'summons',
     /**
      * `inbox`, not `both` — and not `off` either.
      *
@@ -477,6 +491,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'Succeeded or failed. Long, and usually unattended.',
     icon: 'ph-download-simple',
     tone: 'brand',
+    lane: 'echo',
     defaultDelivery: 'both',
   },
   'pr.approved': {
@@ -485,6 +500,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'Someone signed off. Usually the last thing before it lands.',
     icon: 'ph-git-pull-request',
     tone: 'green',
+    lane: 'echo',
     defaultDelivery: 'both',
   },
   'pr.merged': {
@@ -493,6 +509,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'It landed. Confirmation rather than a call to act.',
     icon: 'ph-check-circle',
     tone: 'green',
+    lane: 'echo',
     defaultDelivery: 'inbox',
   },
   'pr.checks_failed': {
@@ -501,6 +518,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'CI went red on a pull request that was passing or pending.',
     icon: 'ph-x-circle',
     tone: 'red',
+    lane: 'echo',
     defaultDelivery: 'both',
   },
   'pr.review_requested': {
@@ -509,15 +527,17 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'Someone is waiting on you to look at their pull request.',
     icon: 'ph-git-pull-request',
     tone: 'amber',
+    lane: 'summons',
     defaultDelivery: 'both',
   },
   'app.update_available': {
     source: 'app',
     label: 'When a new version is available',
     description:
-      'A newer release of The Hive has been published. Nothing happens until you say so.',
+      'A newer release of Hive TTY has been published. Nothing happens until you say so.',
     icon: 'ph-arrow-circle-up',
     tone: 'brand',
+    lane: 'echo',
     /**
      * `both`, and it is the least chatty kind in this registry.
      *
@@ -537,6 +557,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'The download finished. Clicking it restarts the app on the new version.',
     icon: 'ph-arrow-clockwise',
     tone: 'green',
+    lane: 'echo',
     /**
      * `both`, because this one interrupts on purpose.
      *
@@ -562,6 +583,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'An agent or session is asking you something.',
     icon: 'ph-chat-circle-dots',
     tone: 'amber',
+    lane: 'summons',
     defaultDelivery: 'both',
   },
   /**
@@ -577,6 +599,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'An agent wants to use a tool its definition does not grant.',
     icon: 'ph-hand-palm',
     tone: 'amber',
+    lane: 'summons',
     defaultDelivery: 'both',
   },
   /**
@@ -598,6 +621,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'A session holding itself to a goal-on brief reports the goal active, a turn refused, or the goal done or failed.',
     icon: 'ph-target',
     tone: 'brand',
+    lane: 'echo',
     defaultDelivery: 'inbox',
   },
   /**
@@ -613,6 +637,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
     description: 'An agent reported what it did. An uneventful wake says nothing.',
     icon: 'ph-check-circle',
     tone: 'green',
+    lane: 'echo',
     defaultDelivery: 'inbox',
   },
   /**
@@ -629,6 +654,7 @@ export const NOTIFICATION_KIND_SPECS: Record<
       'A run ended badly — it failed, ran out of turns, spent its budget, or could not hand off its session.',
     icon: 'ph-warning',
     tone: 'red',
+    lane: 'echo',
     defaultDelivery: 'both',
   },
 };

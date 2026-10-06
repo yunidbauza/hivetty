@@ -729,7 +729,7 @@ describe('sessionCommand', () => {
        */
       expect(
         sessionCommand('claude', { model: 'opus', task: 'fix the hero' }),
-      ).toBe("claude --model opus 'fix the hero' && exit");
+      ).toBe("claude --model opus -- 'fix the hero' && exit");
     });
 
     it('quotes it, because it is the one value with no closed list behind it', () => {
@@ -740,7 +740,7 @@ describe('sessionCommand', () => {
        * `settingsPath` — that genuinely needs quoting.
        */
       expect(sessionCommand('claude', { task: 'rm -rf / ; echo $HOME' })).toBe(
-        "claude 'rm -rf / ; echo $HOME' && exit",
+        "claude -- 'rm -rf / ; echo $HOME' && exit",
       );
     });
 
@@ -748,7 +748,7 @@ describe('sessionCommand', () => {
       // `'\''` closes, escapes and reopens — the same mechanism `settingsPath`
       // relies on for `/Users/o'brien/…`.
       expect(sessionCommand('claude', { task: "don't break" })).toBe(
-        "claude 'don'\\''t break' && exit",
+        "claude -- 'don'\\''t break' && exit",
       );
     });
 
@@ -771,14 +771,18 @@ describe('sessionCommand', () => {
        */
       expect(
         sessionCommand('claude', { task: 'first line\nsecond line' }),
-      ).toBe("claude 'first line second line' && exit");
+      ).toBe("claude -- 'first line second line' && exit");
       expect(sessionCommand('claude', { task: 'trailing\r\n' })).toBe(
-        "claude 'trailing' && exit",
+        "claude -- 'trailing' && exit",
       );
     });
 
     it('rides alongside every other flag, in a full spawn', () => {
-      // The shape main actually builds, so the ordering of all six is pinned.
+      /**
+       * The shape main actually builds, so the ordering is pinned. The `--` is
+       * load-bearing: `--mcp-config <configs...>` is variadic, and without it
+       * `claude` read the task as a second config file and refused to start.
+       */
       expect(
         sessionCommand('claude', {
           model: 'sonnet',
@@ -786,7 +790,8 @@ describe('sessionCommand', () => {
           name: 'INCORP-455',
           settingsPath: '/Users/x/Application Support/hooks.json',
           pluginDir: '/Users/x/Application Support/hive/plugin',
-          task: 'what time is it',
+          mcpConfig: '/Users/x/Application Support/hive/mcp.json',
+          task: '/hive:work-on GRAC-1777',
           subscriptionAuth: true,
         }),
       ).toBe(
@@ -794,7 +799,8 @@ describe('sessionCommand', () => {
           'claude --model sonnet --effort high --name INCORP-455 ' +
           "--settings '/Users/x/Application Support/hooks.json' " +
           "--plugin-dir '/Users/x/Application Support/hive/plugin' " +
-          "'what time is it' && exit",
+          "--mcp-config '/Users/x/Application Support/hive/mcp.json' " +
+          "-- '/hive:work-on GRAC-1777' && exit",
       );
     });
   });

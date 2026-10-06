@@ -125,6 +125,27 @@ export const CLOSING_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Every ask thread that no longer waits on anyone (HIVE-214): closed by an
+ * entry in {@link CLOSING_KINDS}, or retired by the overmind's expiry event.
+ *
+ * Not {@link openAsks}: that needs the ask entry itself, which the renderer's
+ * 500-entry mirror can lose while the ask's row and question are still live,
+ * and it retires by clock rather than by main's sweep. A closing entry is
+ * always newer than its ask, so it is in the mirror when it matters. Both the
+ * hub's dock count and the renderer's Summons read this, so they agree.
+ */
+export function closedAskThreads(entries: readonly LedgerEntry[]): Set<string> {
+  const closed = new Set<string>();
+  for (const entry of entries) {
+    if (entry.thread !== undefined && CLOSING_KINDS.has(entry.kind)) closed.add(entry.thread);
+    // Only main's own marker counts — the forgery `expiredAsks` guards against.
+    const expired = entry.meta?.expired;
+    if (typeof expired === 'string' && entry.from === OVERMIND) closed.add(expired);
+  }
+  return closed;
+}
+
+/**
  * How long this ask lives before time retires it.
  *
  * `meta.ttlMs` lets an asker say its question is only worth asking for the next
@@ -277,6 +298,40 @@ const wholeNumberOf = (value: unknown): number | undefined => {
 };
 
 /**
+ * Which stage the shipper holds one PR at, or `null` when nobody holds it (HIVE-215).
+ *
+ * The same newest-first reading as {@link isShipping}, which is now this
+ * function `!== null`: the newest shipper `post` naming the PR gives its
+ * `meta.stage`; the claim before any post reads `'intake'`; a `release` of
+ * `owner/name#N` or a `closed` post reads `null`. A stage word the skill adds
+ * later comes back as written — the hatch rule decides what an unknown word
+ * means, not this reader.
+ */
+export function shipStage(entries: readonly LedgerEntry[], slug: string, n: number): string | null {
+  const wanted = slug.toLowerCase();
+  if (wanted === '') return null;
+  const claim = `${wanted}#${n}`;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i]!;
+    if (entry.from !== 'shipper') continue;
+    if (entry.kind === 'release' || entry.kind === 'claim') {
+      if (taskOf(entry)?.toLowerCase() === claim) return entry.kind === 'claim' ? 'intake' : null;
+      continue;
+    }
+    if (entry.kind !== 'post') continue;
+    const meta = entry.meta ?? {};
+    const repo = meta['repo'];
+    const stage = meta['stage'];
+    if (wholeNumberOf(meta['pr']) !== n || typeof repo !== 'string' || typeof stage !== 'string') {
+      continue;
+    }
+    if (repo.toLowerCase() !== wanted) continue;
+    return stage === 'closed' ? null : stage;
+  }
+  return null;
+}
+
+/**
  * Whether the shipper is holding one PR (HIVE-171).
  *
  * A yes or no, not the stage: most stages restate a GitHub badge the card
@@ -302,27 +357,247 @@ const wholeNumberOf = (value: unknown): number | undefined => {
  * release. Read from the log, never stored: one truth per number on screen.
  */
 export function isShipping(entries: readonly LedgerEntry[], slug: string, n: number): boolean {
+  return shipStage(entries, slug, n) !== null;
+}
+
+/** `meta.pr` + `meta.repo` name this PR, compared as {@link shipStage} compares. */
+const namesPr = (meta: Record<string, unknown> | undefined, slug: string, n: number): boolean => {
+  const repo = meta?.['repo'];
+  return wholeNumberOf(meta?.['pr']) === n && typeof repo === 'string' && repo.toLowerCase() === slug.toLowerCase();
+};
+
+/**
+ * Whether an open ask to you names one PR (HIVE-215, the hatch rule's rule 2).
+ *
+ * "To you" is the caller's `toMe`: the overmind, or a session id in the fleet.
+ * It is passed in because this file knows no fleet. An ask between agents (the
+ * shipper asking the fixer) is never yours. The PR is named by
+ * `meta: { pr, repo }`, which the ship skill puts on every ask to `reply-to`.
+ */
+export function asksMeAbout(
+  open: readonly OpenAsk[],
+  slug: string,
+  n: number,
+  toMe: (to: string) => boolean,
+): boolean {
+  if (slug === '') return false;
+  return open.some((ask) => ask.to !== undefined && toMe(ask.to) && namesPr(ask.meta, slug, n));
+}
+
+/** `gh pr merge <N> … --repo <owner>/<repo>`, the shape `merge-pr` runs; `--repo` is required. */
+const MERGE_COMMAND = /^\s*gh\s+pr\s+merge\s+(\d+)\b/;
+const REPO_FLAG = /\s--repo(?:=|\s+)(\S+)/;
+
+/**
+ * The shipper's merge card waiting on you, or `undefined` (HIVE-215; the ask
+ * itself since HIVE-205, whose Merge answers it).
+ *
+ * The card is a permission ask from `shipper`: `meta.kind: 'permission'`,
+ * `meta.tool: 'Bash'`, `meta.input.command` the merge. N and the repo are
+ * read from the command itself; a command with no `--repo` cannot say which
+ * repo it merges, so it matches nothing.
+ */
+export function mergeAsk(open: readonly OpenAsk[], slug: string, n: number): OpenAsk | undefined {
   const wanted = slug.toLowerCase();
-  if (wanted === '') return false;
-  const claim = `${wanted}#${n}`;
-  for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i]!;
-    if (entry.from !== 'shipper') continue;
-    if (entry.kind === 'release' || entry.kind === 'claim') {
-      if (taskOf(entry)?.toLowerCase() === claim) return entry.kind === 'claim';
-      continue;
-    }
-    if (entry.kind !== 'post') continue;
-    const meta = entry.meta ?? {};
-    const repo = meta['repo'];
-    const stage = meta['stage'];
-    if (wholeNumberOf(meta['pr']) !== n || typeof repo !== 'string' || typeof stage !== 'string') {
-      continue;
-    }
-    if (repo.toLowerCase() !== wanted) continue;
-    return stage !== 'closed';
+  if (wanted === '') return undefined;
+  return open.find((ask) => {
+    if (ask.from !== 'shipper') return false;
+    const meta = ask.meta ?? {};
+    if (meta['kind'] !== 'permission' || meta['tool'] !== 'Bash') return false;
+    const input = meta['input'];
+    const command = typeof input === 'object' && input !== null ? (input as Record<string, unknown>)['command'] : undefined;
+    if (typeof command !== 'string') return false;
+    const number = MERGE_COMMAND.exec(command)?.[1];
+    const repo = REPO_FLAG.exec(command)?.[1];
+    return number !== undefined && Number(number) === n && repo?.toLowerCase() === wanted;
+  });
+}
+
+/** Whether the shipper's merge waits on your card (HIVE-215, rule 2). */
+export function mergeWaiting(open: readonly OpenAsk[], slug: string, n: number): boolean {
+  return mergeAsk(open, slug, n) !== undefined;
+}
+
+/** The shipper's stops, in the order `resources/skills/ship/SKILL.md` walks them (HIVE-205). */
+export const SHIP_STOPS = ['intake', 'self-review', 'fix-self', 'ready', 'ci', 'findings', 'approval', 'merge'] as const;
+export type ShipStopName = (typeof SHIP_STOPS)[number];
+
+/** One stop on a PR's ship track (HIVE-205). */
+export interface ShipStop {
+  stage: ShipStopName;
+  /** When the PR first reached it; `null` for a stop never reached. */
+  firstAt: number | null;
+  /** Every visit summed; the open one runs to `now`. */
+  spentMs: number;
+  /** `acr` or `fixer` when the shipper asked one at its latest visit that asked anyone, else `shipper`; `null` never reached. */
+  holder: string | null;
+}
+
+export interface ShipTrack {
+  /** The shipper holds the PR now, as {@link shipStage} reads it. */
+  held: boolean;
+  /** The stop it is at while held; `null` for an unknown stage word or when not held. */
+  current: ShipStop | null;
+  /** All eight, in {@link SHIP_STOPS} order. */
+  stops: ShipStop[];
+  /** Every visit, oldest first; the open one has `to: null` (HIVE-208, the Timeline's buckets). */
+  visits: ShipVisit[];
+}
+
+const isShipStop = (stage: unknown): stage is ShipStopName =>
+  typeof stage === 'string' && (SHIP_STOPS as readonly string[]).includes(stage);
+
+/** `needle` in `text` as a whole name: no name character glued before it, no digit after it. */
+function mentions(text: string, needle: string): boolean {
+  for (let at = text.indexOf(needle); at !== -1; at = text.indexOf(needle, at + 1)) {
+    const before = at === 0 ? '' : (text[at - 1] ?? '');
+    const after = text[at + needle.length] ?? '';
+    if (!/[\w.-]/.test(before) && !/\d/.test(after)) return true;
   }
   return false;
+}
+
+/**
+ * Whether an entry names one PR (HIVE-205): `meta: { pr, repo }`, a task
+ * `owner/name#N` (a claim, or the fixer's `owner/name#N findings`), or — since
+ * the ship skill's asks to acr and fixer carry the PR only in their words —
+ * `owner/name#N` or `owner/name/pull/N` in the body. Case-insensitive, the
+ * number bounded so `#118` never matches `#1182`.
+ */
+function namesPrAnywhere(entry: LedgerEntry, slug: string, n: number): boolean {
+  if (namesPr(entry.meta, slug, n)) return true;
+  const wanted = `${slug.toLowerCase()}#${n}`;
+  const task = taskOf(entry)?.toLowerCase();
+  if (task === wanted || task?.startsWith(`${wanted} `) === true) return true;
+  const body = entry.body.toLowerCase();
+  return mentions(body, wanted) || mentions(body, `${slug.toLowerCase()}/pull/${n}`);
+}
+
+export interface ShipVisit {
+  stage: ShipStopName;
+  from: number;
+  to: number | null;
+  holder: string | null;
+}
+
+/**
+ * Every stop of one PR's ship track (HIVE-205): when it was first reached, the
+ * time spent there over every visit, and who held it. The same shipper entries
+ * {@link shipStage} reads, walked oldest first: the claim opens `intake`, each
+ * stage post closes the open visit and opens its own (approval → findings moves
+ * the current stop back), a release or a `closed` post ends it. The holder is
+ * the first shipper ask to `acr` or `fixer` naming the PR after a visit opens;
+ * with none, the shipper itself. `now` closes the open visit. Pure.
+ */
+export function shipTrack(entries: readonly LedgerEntry[], slug: string, n: number, now: number): ShipTrack {
+  const wanted = slug.toLowerCase();
+  const claim = `${wanted}#${n}`;
+  const visits: ShipVisit[] = [];
+  let open = -1;
+  let held = false;
+
+  const close = (at: number) => {
+    const visit = visits[open];
+    if (visit !== undefined) visit.to = at;
+    open = -1;
+  };
+  const enter = (stage: ShipStopName, at: number) => {
+    if (visits[open]?.stage === stage) return;
+    close(at);
+    open = visits.push({ stage, from: at, to: null, holder: null }) - 1;
+  };
+
+  for (const entry of wanted === '' ? [] : entries) {
+    if (entry.from !== 'shipper') continue;
+    if (entry.kind === 'claim' || entry.kind === 'release') {
+      if (taskOf(entry)?.toLowerCase() !== claim) continue;
+      if (entry.kind === 'release') {
+        close(entry.ts);
+        held = false;
+      } else if (!held) {
+        held = true;
+        enter('intake', entry.ts);
+      }
+      continue;
+    }
+    if (entry.kind === 'ask') {
+      const visit = visits[open];
+      if (visit !== undefined && visit.holder === null && (entry.to === 'acr' || entry.to === 'fixer') && namesPrAnywhere(entry, slug, n)) {
+        visit.holder = entry.to;
+      }
+      continue;
+    }
+    if (entry.kind !== 'post' || !namesPr(entry.meta, slug, n)) continue;
+    const stage = entry.meta?.['stage'];
+    if (stage === 'closed') {
+      close(entry.ts);
+      held = false;
+      continue;
+    }
+    if (typeof stage !== 'string') continue;
+    held = true;
+    // A word that is no stop (`sync`, a sub-step of approval and merge, or one
+    // the skill adds later) keeps the PR held and leaves the open stop running.
+    if (isShipStop(stage)) enter(stage, entry.ts);
+  }
+
+  const stops = SHIP_STOPS.map((stage): ShipStop => {
+    const mine = visits.filter((visit) => visit.stage === stage);
+    const first = mine[0];
+    if (first === undefined) return { stage, firstAt: null, spentMs: 0, holder: null };
+    return {
+      stage,
+      firstAt: first.from,
+      spentMs: mine.reduce((sum, visit) => sum + Math.max(0, (visit.to ?? now) - visit.from), 0),
+      holder: mine.findLast((visit) => visit.holder !== null)?.holder ?? 'shipper',
+    };
+  });
+  const at = held ? visits[open] : undefined;
+  return {
+    held,
+    current: at === undefined ? null : (stops.find((stop) => stop.stage === at.stage) ?? null),
+    stops,
+    visits: visits.map((visit) => ({ ...visit })),
+  };
+}
+
+/** Every entry naming one PR, oldest first: the PR page's Everything filter (HIVE-205). */
+export function prEvents(entries: readonly LedgerEntry[], slug: string, n: number): LedgerEntry[] {
+  if (slug === '') return [];
+  return entries.filter((entry) => namesPrAnywhere(entry, slug, n));
+}
+
+/** acr's `meta.review_url`s: a GitHub review whose URL is here came through the Hive (HIVE-205). */
+export function reviewUrls(entries: readonly LedgerEntry[]): ReadonlySet<string> {
+  const urls = new Set<string>();
+  for (const entry of entries) {
+    const url = entry.meta?.['review_url'];
+    if (entry.from === 'acr' && typeof url === 'string' && url !== '') urls.add(url);
+  }
+  return urls;
+}
+
+/**
+ * Who handed a PR to the shipper (HIVE-205): the `from` of the oldest intake
+ * ask to `shipper` naming it — `builder` for a PR the builder opened, a session
+ * id for one a session handed over — or `null`.
+ */
+export function prOpener(entries: readonly LedgerEntry[], slug: string, n: number): string | null {
+  if (slug === '') return null;
+  const intake = entries.find(
+    (entry) => entry.kind === 'ask' && entry.to === 'shipper' && entry.meta?.['stage'] === 'intake' && namesPr(entry.meta, slug, n),
+  );
+  return intake?.from ?? null;
+}
+
+/** The holder's newest entry naming the PR, for the ship track's "now" line (HIVE-205, D11). */
+export function holderPost(entries: readonly LedgerEntry[], slug: string, n: number, holder: string): LedgerEntry | null {
+  if (slug === '') return null;
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i]!;
+    if (entry.from === holder && namesPrAnywhere(entry, slug, n)) return entry;
+  }
+  return null;
 }
 
 /** Where an agent is working (HIVE-172). */
@@ -372,19 +647,23 @@ export function agentSiteFor(
   return worktree === undefined ? undefined : { worktree };
 }
 
-/** What the builder last reported for a ticket (HIVE-171). */
+/** What an agent last reported for a ticket (HIVE-171). */
 export interface BuildProgress {
+  /** Who posted it: any agent, not only the builder (HIVE-203). */
+  from: string;
   stage: string;
   /** The task it finished, when the post named one. */
   task?: number;
 }
 
 /**
- * The builder's latest progress for one ticket, or nothing (HIVE-171).
+ * The newest agent progress for one ticket, or nothing (HIVE-171).
  *
  * The builder posts one `post` per completed task with
- * `meta: { ticket, stage: "build", task, worktree }` (`resources/agents/builder`).
- * Same reading rule as {@link isShipping}: the newest matching post.
+ * `meta: { ticket, stage: "build", task, worktree }` (`resources/agents/builder`);
+ * the shipper and the fixer post their own stages on the same ticket. Any
+ * party's `post` counts, and `from` says whose it was (HIVE-203). Same reading
+ * rule as {@link isShipping}: the newest matching post.
  */
 export function buildProgressFor(
   entries: readonly LedgerEntry[],
@@ -393,14 +672,16 @@ export function buildProgressFor(
   const key = ticketKey.toUpperCase();
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i]!;
-    if (entry.from !== 'builder' || entry.kind !== 'post') continue;
+    if (entry.kind !== 'post') continue;
     const meta = entry.meta ?? {};
     const ticket = meta['ticket'];
     const stage = meta['stage'];
     if (typeof ticket !== 'string' || ticket.toUpperCase() !== key || typeof stage !== 'string') continue;
     const task = wholeNumberOf(meta['task']);
     const text = stage.slice(0, STAGE_TEXT_MAX);
-    return task === undefined ? { stage: text } : { stage: text, task };
+    return task === undefined
+      ? { from: entry.from, stage: text }
+      : { from: entry.from, stage: text, task };
   }
   return undefined;
 }
@@ -442,6 +723,10 @@ export function matches(entry: LedgerEntry, query: LedgerReadQuery): boolean {
   }
   if (query.to !== undefined && entry.to !== undefined && entry.to !== query.to) return false;
   if (query.since !== undefined && entry.id <= query.since) return false;
+  if (query.ticket !== undefined) {
+    const ticket = entry.meta?.['ticket'];
+    if (typeof ticket !== 'string' || ticket.toUpperCase() !== query.ticket.toUpperCase()) return false;
+  }
   return true;
 }
 
@@ -449,7 +734,8 @@ export function matches(entry: LedgerEntry, query: LedgerReadQuery): boolean {
  * A short ref, or a canonical id, to a canonical id.
  *
  * Accepting both is what lets one call site serve a human typing `a12` in the
- * console and a model echoing back the id it read.
+ * console and a model echoing back the id it read. A ref matches in any case:
+ * refs are minted lowercase, but `A12` is the same handle to whoever types it.
  */
 export function resolveRef(
   entries: readonly LedgerEntry[],
@@ -458,8 +744,9 @@ export function resolveRef(
   for (const entry of entries) {
     if (entry.id === refOrId) return entry.id;
   }
+  const ref = refOrId.toLowerCase();
   for (const entry of entries) {
-    if (entry.ref === refOrId) return entry.id;
+    if (entry.ref?.toLowerCase() === ref) return entry.id;
   }
   return undefined;
 }
@@ -597,4 +884,61 @@ export function laneOfRun(agent: string, run: unknown, entries: readonly LedgerE
   );
   const lane = begun?.meta?.['lane'];
   return typeof lane === 'string' && lane !== '' ? lane : STANDING_LANE;
+}
+
+/**
+ * An agent this party asked directly, still on the job, and the agents it
+ * brought in for the same job (idle with agents, 6 Oct 2026).
+ */
+export interface Delegate {
+  agent: string;
+  helpers: string[];
+}
+
+/** Two asks name the same job: the same PR, or the same ticket. */
+const sameJob = (a: LedgerEntry, b: LedgerEntry): boolean => {
+  const pr = wholeNumberOf(a.meta?.['pr']);
+  const repo = a.meta?.['repo'];
+  if (pr !== undefined && typeof repo === 'string' && namesPr(b.meta, repo, pr)) return true;
+  const ticket = a.meta?.['ticket'];
+  return typeof ticket === 'string' && ticket !== '' && b.meta?.['ticket'] === ticket;
+};
+
+/**
+ * The agents doing work for `party`: each agent it has an open ask with, in
+ * the order it asked, and under each the agents that agent asked about the
+ * same job (a PR or a ticket in `meta`).
+ *
+ * The open ask is the signal, not a live run: a shipper's job spans several
+ * runs with sleeps between them, and the ask stays open until the job closes.
+ * Only agents count (`isAgent`), and a held ask (`meta.after`) counts once
+ * its PR is out. Helpers are only ever a tooltip's detail; the label names
+ * the agents `party` asked itself.
+ */
+export function delegatesOf(
+  open: readonly LedgerEntry[],
+  log: readonly LedgerEntry[],
+  party: string,
+  isAgent: (id: string) => boolean,
+): Delegate[] {
+  const asked = open.filter(
+    (ask) => ask.kind === 'ask' && ask.from === party && ask.to !== undefined && isAgent(ask.to) && !isHeld(ask, log),
+  );
+  const agents = [...new Set(asked.map((ask) => ask.to ?? ''))];
+  return agents.map((agent) => {
+    const jobs = asked.filter((ask) => ask.to === agent);
+    const helpers = open
+      .filter(
+        (ask) =>
+          ask.kind === 'ask' &&
+          ask.from === agent &&
+          ask.to !== undefined &&
+          ask.to !== agent &&
+          ask.to !== party &&
+          isAgent(ask.to) &&
+          jobs.some((job) => sameJob(job, ask)),
+      )
+      .map((ask) => ask.to ?? '');
+    return { agent, helpers: [...new Set(helpers)] };
+  });
 }

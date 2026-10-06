@@ -391,11 +391,16 @@ export const sessionCommand = (
    * shell. The console's grammar cannot produce one (`parse-command.ts` splits on
    * whitespace) but the picker's message box can, and "cannot happen today" is a
    * weaker guarantee than one `replaceAll` here.
+   *
+   * Behind a `--`, because `--mcp-config <configs...>` is variadic: a prompt
+   * right after it is read as a second config file, and `claude` exits with
+   * `MCP config file not found: /hive:work-on KEY` (verified against the CLI).
+   * The `--` also keeps a task that begins with `-` from being read as a flag.
    */
   const initialPrompt =
     task === undefined || task.trim() === ''
       ? []
-      : [shellQuote(task.replaceAll(/[\r\n]+/g, ' ').trim())];
+      : ['--', shellQuote(task.replaceAll(/[\r\n]+/g, ' ').trim())];
 
   /*
     Substituted into `claudeCommand` alone, **before** the join — never into

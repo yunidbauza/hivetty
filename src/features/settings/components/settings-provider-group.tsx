@@ -67,9 +67,9 @@ export function SettingsProviderGroup({
   return (
     <SettingsNestingContext value={true}>
       <section aria-label={name} className="flex flex-col gap-5">
-        <h3 className="flex items-center gap-3 font-mono text-[11px] font-semibold tracking-[0.1em] text-brand uppercase">
+        <h3 className="flex items-center gap-3 tabular-nums text-micro font-semibold tracking-[0.1em] text-brand uppercase">
           {name}
-          <span aria-hidden="true" className="h-px flex-1 bg-brand/25" />
+          <span aria-hidden="true" className="h-px flex-1 bg-brand-strong" />
         </h3>
         {children}
       </section>

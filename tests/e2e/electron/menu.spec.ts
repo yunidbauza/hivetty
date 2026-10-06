@@ -1,5 +1,7 @@
 import type { ElectronApplication } from '@playwright/test';
 
+import { openConsole } from '../fixtures/places';
+
 import { expect, test } from './fixtures/hive-app';
 
 /**
@@ -34,7 +36,7 @@ async function menuRoles(hive: ElectronApplication): Promise<string[]> {
 }
 
 test('an application menu exists at all', async ({ hive, page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   // The failure mode is total: no menu means no clipboard shortcuts anywhere.
   expect(await menuRoles(hive)).not.toHaveLength(0);
@@ -44,7 +46,7 @@ test('the clipboard roles are present, which is what binds Cmd+C and Cmd+V', asy
   hive,
   page,
 }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   expect(await menuRoles(hive)).toEqual(
     expect.arrayContaining(['cut', 'copy', 'paste', 'selectall']),
@@ -52,13 +54,13 @@ test('the clipboard roles are present, which is what binds Cmd+C and Cmd+V', asy
 });
 
 test('quit is bound', async ({ hive, page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   expect(await menuRoles(hive)).toContain('quit');
 });
 
 test('a production build offers no DevTools', async ({ hive, page }) => {
-  await page.waitForSelector('header');
+  await page.waitForSelector('nav[aria-label="Places"]');
 
   // The spec runs the BUILT app, with no ELECTRON_RENDERER_URL — so this is
   // the shipped menu, and a shipped DevTools item is a shipped bug.
@@ -68,6 +70,8 @@ test('a production build offers no DevTools', async ({ hive, page }) => {
 test('terminal text can be selected, which is what Cmd+C then acts on', async ({
   page,
 }) => {
+  // The Overmind's transcript, folded until shown in round two.
+  await openConsole(page);
   const screen = page.locator('.xterm-screen').first();
   await expect(screen).toBeVisible();
 

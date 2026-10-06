@@ -1,3 +1,4 @@
+import { APP_DISPLAY_NAME } from '@shared/app-name';
 import type { AppInfo } from '@shared/ipc-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -5,9 +6,9 @@ import type { UpdateStatus } from '@shared/update-contract';
  * The About panel's decisions, with nothing imported that runs and nothing run.
  *
  * Split from `about.ts` for the reason `chamber.ts` is split from `splash.ts`:
- * the entry point has to import a `data:` URI of an mp4, touch the document on
- * load, and talk to a bridge that only exists inside Electron — the exact shape
- * a unit test cannot get inside. Everything that *decides* lives here, takes
+ * the entry point has to draw on a canvas and touch the document on load, and
+ * talk to a bridge that only exists inside Electron — the exact shape a unit
+ * test cannot get inside. Everything that *decides* lives here, takes
  * what it needs as an argument, and returns rather than reaches.
  *
  * What that buys beyond coverage: the update copy — the one place this window
@@ -26,8 +27,18 @@ export const WORDMARK_STEP = 0.042;
  * a letter added to the markup would then animate at zero and arrive first.
  */
 export function scheduleWordmark(root: ParentNode): void {
-  root.querySelectorAll<HTMLElement>('.wordmark span').forEach((glyph, i) => {
+  const glyphs = root.querySelectorAll<HTMLElement>('.wordmark span');
+  glyphs.forEach((glyph, i) => {
     glyph.style.animationDelay = `${WORDMARK_START + i * WORDMARK_STEP}s`;
+  });
+  // "Hive TTY", as on the splash: a cursor after HIVE, then `tty` typed in. About
+  // has no log to wait for, so it types as soon as the cursor has shown.
+  const cursorAt = WORDMARK_START + (glyphs.length - 1) * WORDMARK_STEP + 0.3;
+  root.querySelectorAll<HTMLElement>('.wordmark .cursor').forEach((cursor) => {
+    cursor.style.animationDelay = `${cursorAt}s, ${cursorAt}s`;
+  });
+  root.querySelectorAll<HTMLElement>('.wordmark .tty i').forEach((key, i) => {
+    key.style.animationDelay = `${cursorAt + 0.45 + i * 0.09}s`;
   });
 }
 
@@ -130,8 +141,8 @@ export function updateCopy(status: UpdateStatus): UpdateCopy {
         label: null,
         note:
           availableVersion === null
-            ? 'An update is ready — restart the Hive to install it.'
-            : `Version ${availableVersion} is ready — restart the Hive to install it.`,
+            ? `An update is ready — restart ${APP_DISPLAY_NAME} to install it.`
+            : `Version ${availableVersion} is ready — restart ${APP_DISPLAY_NAME} to install it.`,
         enabled: false,
       };
 
@@ -145,7 +156,7 @@ export function updateCopy(status: UpdateStatus): UpdateCopy {
     case 'idle':
     default:
       return checked
-        ? { label: null, note: 'The Hive is up to date.', enabled: false }
+        ? { label: null, note: `${APP_DISPLAY_NAME} is up to date.`, enabled: false }
         : { label: 'Check for updates', note: '', enabled: true };
   }
 }

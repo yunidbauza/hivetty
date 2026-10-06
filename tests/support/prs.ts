@@ -21,6 +21,8 @@ export function prRecord(overrides: Partial<PrRecord> = {}): PrRecord {
     findings: 2,
     checks: 'passing',
     updatedAt: '2026-08-09T12:00:00Z',
+    mergedAt: null,
+    mine: true,
     ...overrides,
   };
 }

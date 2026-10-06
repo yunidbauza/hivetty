@@ -27,9 +27,9 @@ export function EditorNotice({ tone, icon, children, actions }: EditorNoticeProp
   return (
     <div
       className={cn(
-        'flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-[11.5px]',
+        'flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-ui-sm',
         tone === 'amber'
-          ? 'border-border-soft bg-panel text-amber'
+          ? 'border-border-soft bg-panel text-amber-text'
           : 'border-border-soft bg-panel text-subtle',
       )}
     >
@@ -52,7 +52,7 @@ export function NoticeAction({
     <button
       type="button"
       onClick={onClick}
-      className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[11.5px] text-muted underline underline-offset-2 hover:bg-hover hover:text-ink"
+      className="shrink-0 rounded px-1.5 py-0.5 tabular-nums text-ui-sm text-muted underline underline-offset-2 hover:bg-hover hover:text-ink"
     >
       {children}
     </button>

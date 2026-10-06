@@ -112,9 +112,9 @@ export function ProjectRow({
 
       <div className="flex min-w-0 flex-1 flex-col">
         {editor ?? (
-          <span className="truncate text-[13px] text-ink">{project.name}</span>
+          <span className="truncate text-ui text-ink">{project.name}</span>
         )}
-        <span className="truncate text-[11.5px] text-subtle">{detail}</span>
+        <span className="truncate text-ui-sm text-subtle">{detail}</span>
       </div>
 
       {!project.isRepo ? (

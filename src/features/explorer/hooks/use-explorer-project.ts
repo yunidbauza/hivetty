@@ -1,5 +1,5 @@
 import { relativeRoot, rootDisplay } from '@/lib/explorer/session-root';
-import { isSession, type ProjectRow } from '@/types/entity';
+import { isSession, isTerminal, type ProjectRow } from '@/types/entity';
 
 import { useProjectPath } from '@hooks/use-project-config';
 import { useActiveEntity, useProjects } from '@stores/hive-store';
@@ -8,7 +8,8 @@ import { useActiveEntity, useProjects } from '@stores/hive-store';
  * Which repository the explorer is showing — and, since HIVE-78, **where in
  * it**.
  *
- * **One rule: the active session's project, or nothing** (HIVE-93).
+ * **One rule: the active session's or terminal's project, or nothing** (HIVE-93,
+ * HIVE-201: a terminal on stage gets Files too).
  *
  * The app is organised around "which session am I watching", the session already
  * names its project, and a second selector would be one more thing to keep in
@@ -83,28 +84,28 @@ export function useExplorerProject(): ExplorerTarget {
   const entity = useActiveEntity();
   const projects = useProjects();
 
-  const session = entity && isSession(entity) ? entity : null;
+  // A terminal on stage gets Files too (HIVE-201): its project and cwd, and no session to act for.
+  const owner = entity && (isSession(entity) || isTerminal(entity)) ? entity : null;
 
   /**
-   * The session's project must still be one the config *maps*. A session naming
+   * The owner's project must still be one the config *maps*. A session naming
    * a project that has since been removed resolves to `null` and gets the empty
    * state, rather than a tree rooted at a path nothing can read.
    */
-  const fromSession =
-    session !== null
-      ? (projects.find((project) => project.id === session.project) ?? null)
-      : null;
+  const fromOwner =
+    owner !== null ? (projects.find((project) => project.id === owner.project) ?? null) : null;
 
   // Hooks cannot be called conditionally, so this runs on every render. It is
-  // keyed on the session's own project, which is now the only project this hook
-  // can answer with.
-  const path = useProjectPath(fromSession?.id ?? '');
+  // keyed on the owner's own project, which is the only project this hook can
+  // answer with.
+  const path = useProjectPath(fromOwner?.id ?? '');
 
-  if (fromSession) {
+  if (fromOwner && owner) {
+    const session = isSession(owner) ? owner : null;
     return {
-      project: fromSession,
-      root: relativeRoot(path, session?.cwd),
-      display: rootDisplay(path, session?.cwd),
+      project: fromOwner,
+      root: relativeRoot(path, owner.cwd),
+      display: rootDisplay(path, owner.cwd),
       ...(session ? { sessionId: session.id } : {}),
       ...(session?.branch ? { branch: session.branch } : {}),
     };

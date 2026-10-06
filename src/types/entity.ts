@@ -310,6 +310,13 @@ export interface Session {
    */
   endedBy?: 'cleared' | 'finished' | 'app-closed';
   /**
+   * Why the process went, when nobody asked it to: a signal, the pty host
+   * crashing (main's `sessionLost`). A session that ends this way while
+   * watched keeps the ended card, which says this, instead of leaving for the
+   * Overmind as a clean `/exit` does. Cleared when the session comes back.
+   */
+  lost?: string;
+  /**
    * This row's conversation can be reopened (HIVE-93).
    *
    * Set from the session history at hydrate — main answers whether it still holds a
@@ -718,13 +725,15 @@ export const endedReason = (session: Session): string => {
 
   switch (session.status) {
     case 'terminated':
-      return `${label} has terminated — its process is gone`;
+      return session.lost === undefined
+        ? `${label} has terminated — its process is gone`
+        : `${label} ended unexpectedly: ${session.lost}`;
     case 'done': {
       switch (session.endedBy) {
         case 'finished':
           return `${label} finished with /done — resume to pick it up`;
         case 'app-closed':
-          return `${label} was open when The Hive last closed — resume to pick it back up`;
+          return `${label} was open when Hive TTY last closed — resume to pick it back up`;
         /*
           `cleared` and absent share a sentence, and absent is the older
           ending: every `done` row predating `endedBy` was a cleared one,

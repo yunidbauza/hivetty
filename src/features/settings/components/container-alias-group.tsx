@@ -3,7 +3,7 @@ import { useState } from 'react';
 
 import { Switch } from '@components/ui/switch';
 import { TextField } from '@components/ui/text-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { setReceiverConfig } from '@lib/project-config';
 import {
   DEFAULT_BIND,
@@ -128,8 +128,9 @@ export function ContainerAliasGroup({ hostAlias, bind }: ContainerAliasGroupProp
 
   /*
     Whether the resolved bind is off-loopback at all — the one definition of
-    "exposed" (`isLoopbackHost`, HIVE-134), reused rather than re-derived so the
-    header chip and this pane never disagree about what counts as widened.
+    "exposed" (`isLoopbackHost`, HIVE-134), reused rather than re-derived so
+    this pane never disagrees with the rest of the app about what counts as
+    widened.
   */
   const exposed = !isLoopbackHost(bind.host);
 
@@ -308,9 +309,9 @@ export function ContainerAliasGroup({ hostAlias, bind }: ContainerAliasGroupProp
       {open ? (
         <>
           {exposed ? (
-            <p className="flex items-start gap-2 text-[12.5px]">
-              <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
-              <span className="text-amber">{EXPOSED}</span>
+            <p className="flex items-start gap-2 text-control">
+              <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
+              <span className="text-amber-text">{EXPOSED}</span>
             </p>
           ) : null}
 

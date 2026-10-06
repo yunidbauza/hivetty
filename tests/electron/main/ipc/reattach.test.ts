@@ -302,6 +302,92 @@ describe('createReattachLoop', () => {
     expect(h.connect).toHaveBeenCalledTimes(before + 2);
   });
 
+  it('dials now on request, from the first step (HIVE-211)', async () => {
+    const h = harness(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+
+    h.loop.begin(TRANSPORT);
+    for (const step of BACKOFF_MS.slice(0, 3)) await vi.advanceTimersByTimeAsync(step);
+    const before = h.connect.mock.calls.length;
+    const statusesBefore = h.statuses.length;
+
+    h.loop.dialNow();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.connect).toHaveBeenCalledTimes(before + 1);
+    expect(h.statuses[statusesBefore]).toMatchObject({
+      state: 'reconnecting',
+      attempt: 1,
+      nextAttemptAt: Date.now(),
+    });
+    // The schedule restarted rather than Try now being one free dial.
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[1]);
+    expect(h.connect).toHaveBeenCalledTimes(before + 2);
+  });
+
+  it('dial now does nothing when not running, or after a terminal cause', async () => {
+    const h = harness(async () => fakeClient());
+
+    h.loop.dialNow();
+    h.loop.begin(TERMINAL);
+    h.loop.dialNow();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(h.connect).not.toHaveBeenCalled();
+  });
+
+  it('a dial-now raced by a pending dial adopts only the newest', async () => {
+    const releases: ((client: RemoteClient) => void)[] = [];
+    const h = harness(
+      async () =>
+        new Promise<RemoteClient>((resolve) => {
+          releases.push(resolve);
+        }),
+    );
+
+    h.loop.begin(TRANSPORT);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+    h.loop.dialNow();
+    h.loop.dialNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.connect).toHaveBeenCalledTimes(3);
+
+    const clients = [fakeClient(), fakeClient(), fakeClient()];
+    clients.forEach((client, i) => releases[i](client));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Two sockets superseded by a newer dial are closed, not adopted.
+    expect(h.attached).toEqual([clients[2]]);
+    expect(clients[0].close).toHaveBeenCalled();
+    expect(clients[1].close).toHaveBeenCalled();
+    expect(h.statuses.filter((s) => s.state === 'attached')).toHaveLength(1);
+  });
+
+  it('a superseded dial that fails does not reschedule over the restart', async () => {
+    const rejects: ((cause: Error) => void)[] = [];
+    const h = harness(
+      async () =>
+        new Promise<RemoteClient>((_resolve, reject) => {
+          rejects.push(reject);
+        }),
+    );
+
+    h.loop.begin(TRANSPORT);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]);
+    h.loop.dialNow();
+    await vi.advanceTimersByTimeAsync(0);
+    const statusesBefore = h.statuses.length;
+
+    // The timer's dial, now stale, fails: it must neither emit nor arm a timer.
+    rejects[0](new Error('ECONNREFUSED'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.statuses).toHaveLength(statusesBefore);
+
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(h.connect).toHaveBeenCalledTimes(2);
+  });
+
   it('cancels a pending retry', async () => {
     const h = harness(async () => fakeClient());
 

@@ -3,8 +3,9 @@ import { useState } from 'react';
 
 import { useSwarmPhrase } from '@/hooks/use-swarm-phrase';
 
+import { Button } from '@components/ui/button';
 import { SecretField } from '@components/ui/secret-field';
-import { SettingsGroup } from '@features/settings/components/settings-group';
+import { SettingsGroup } from '@features/shared/components/settings-group';
 import { clearJiraToken, saveJiraToken, testJiraConnection } from '@lib/jira';
 import { BRIDGE_ERROR } from '@lib/utils';
 import { JIRA_TOKEN_ENV } from '@shared/jira-contract';
@@ -38,7 +39,7 @@ interface JiraCredentialGroupProps {
 function CredentialLine({ credential }: { credential: JiraCredentialState }) {
   if (credential.kind === 'stored') {
     return (
-      <p className="flex items-start gap-2 text-[12.5px]">
+      <p className="flex items-start gap-2 text-control">
         <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         <span className="text-ink">
           A token is stored for{' '}
@@ -50,7 +51,7 @@ function CredentialLine({ credential }: { credential: JiraCredentialState }) {
 
   if (credential.kind === 'env') {
     return (
-      <p className="flex items-start gap-2 text-[12.5px]">
+      <p className="flex items-start gap-2 text-control">
         <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         <span className="text-ink">
           <code className="font-mono">{credential.variable}</code> is set in this
@@ -64,17 +65,17 @@ function CredentialLine({ credential }: { credential: JiraCredentialState }) {
 
   if (credential.kind === 'unavailable') {
     return (
-      <p className="flex items-start gap-2 text-[12.5px]">
-        <WarningCircle size={14} className="mt-px shrink-0 text-amber" />
+      <p className="flex items-start gap-2 text-control">
+        <WarningCircle size={14} className="mt-px shrink-0 text-amber-text" />
         {/* Main composed this sentence and it names the variable. Shown
             verbatim rather than translated back from a code. */}
-        <span className="text-amber">{credential.reason}</span>
+        <span className="text-amber-text">{credential.reason}</span>
       </p>
     );
   }
 
   return (
-    <p className="flex items-start gap-2 text-[12.5px]">
+    <p className="flex items-start gap-2 text-control">
       <Circle size={14} className="mt-px shrink-0 text-subtle" />
       <span className="text-subtle">
         No token stored. The WORK tab will keep showing sample tickets.
@@ -87,7 +88,7 @@ function CredentialLine({ credential }: { credential: JiraCredentialState }) {
 function TestVerdict({ result }: { result: JiraResult<JiraIdentity> }) {
   if (result.ok) {
     return (
-      <p className="flex items-start gap-2 text-[12.5px]">
+      <p className="flex items-start gap-2 text-control">
         <CheckCircle size={14} className="mt-px shrink-0 text-green" />
         <span className="text-ink">
           Signed in as{' '}
@@ -98,7 +99,7 @@ function TestVerdict({ result }: { result: JiraResult<JiraIdentity> }) {
   }
 
   return (
-    <p className="flex items-start gap-2 text-[12.5px]">
+    <p className="flex items-start gap-2 text-control">
       <XCircle size={14} className="mt-px shrink-0 text-red" />
       <span className="text-red">{result.error.message}</span>
     </p>
@@ -163,7 +164,7 @@ export function JiraCredentialGroup({
       title="API token"
       description="The one secret this app stores."
     >
-      <div className="flex flex-col gap-2.5 rounded-[7px] border border-border-soft p-3">
+      <div className="flex flex-col gap-2.5 rounded-lg border border-border-soft p-3">
         <CredentialLine credential={status.credential} />
 
         {/* A control that cannot work is absent rather than disabled — the same
@@ -187,7 +188,7 @@ export function JiraCredentialGroup({
                 type="button"
                 onClick={save}
                 disabled={draft.trim() === ''}
-                className="rounded-[6px] border border-border bg-panel-2 px-2.5 py-1 text-[12px] text-ink hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-panel-2"
+                className="rounded-md border border-border bg-panel-2 px-2.5 py-1 text-control text-ink hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-panel-2"
               >
                 Save
               </button>
@@ -195,7 +196,7 @@ export function JiraCredentialGroup({
                 <button
                   type="button"
                   onClick={clear}
-                  className="rounded-[6px] border border-transparent px-2 py-1 text-[12px] text-subtle hover:bg-hover hover:text-ink"
+                  className="rounded-full border border-transparent px-3 py-1 text-control text-subtle hover:bg-hover hover:text-ink"
                 >
                   Clear
                 </button>
@@ -203,14 +204,14 @@ export function JiraCredentialGroup({
             </div>
           </>
         ) : (
-          <p className="text-[11.5px] text-subtle">
-            The Hive will not write a token in plaintext instead. Set{' '}
+          <p className="text-ui-sm text-subtle">
+            Hive TTY will not write a token in plaintext instead. Set{' '}
             <code className="font-mono">{JIRA_TOKEN_ENV}</code> in this
             app&rsquo;s environment and restart it.
           </p>
         )}
 
-        <p className="text-[11.5px] text-subtle">
+        <p className="text-ui-sm text-subtle">
           Encrypted with a key the operating system holds, in this app&rsquo;s
           own data folder — never in{' '}
           <code className="font-mono">~/.hive/config.json</code>, which you are
@@ -222,20 +223,23 @@ export function JiraCredentialGroup({
         </p>
 
         <div className="flex items-center gap-2 border-t border-border-soft pt-2.5">
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            pending={testing}
             onClick={test}
-            disabled={testing}
-            className="rounded-[6px] border border-border bg-panel-2 px-2.5 py-1 text-[12px] text-ink hover:bg-hover disabled:cursor-not-allowed disabled:text-subtle disabled:hover:bg-panel-2"
+            className="rounded-md border-border bg-panel-2 px-2.5 py-1 text-control leading-normal text-ink hover:bg-hover aria-disabled:text-subtle aria-disabled:hover:bg-panel-2"
           >
             {testing ? testingPhrase : 'Test connection'}
-          </button>
-          <span className="text-[11.5px] text-subtle">
+          </Button>
+          <span className="text-ui-sm text-subtle">
             Calls <code className="font-mono">/rest/api/3/myself</code>.
           </span>
         </div>
 
-        {verdict === null ? null : <TestVerdict result={verdict} />}
+        {/* Always mounted: a live region that mounts with its text is not reliably announced (HIVE-225). */}
+        <div role="status" className="empty:-mt-2.5">
+          {verdict === null ? null : <TestVerdict result={verdict} />}
+        </div>
       </div>
     </SettingsGroup>
   );

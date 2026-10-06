@@ -135,23 +135,6 @@ describe('AppearanceSection', () => {
     expect(useAppearanceStore.getState().teamName).toBe('');
   });
 
-  /**
-   * HIVE-182. On by default; off hides the glyph rail only — the count on the
-   * session row stays, and costs no terminal columns.
-   */
-  it('offers Show plan panel, on by default, and writes it when switched', async () => {
-    const user = userEvent.setup();
-    render(<AppearanceSection />);
-
-    const toggle = screen.getByRole('switch', { name: 'Show plan panel' });
-    expect(toggle).toBeChecked();
-
-    await user.click(toggle);
-
-    expect(useAppearanceStore.getState().showPlanPanel).toBe(false);
-    expect(toggle).not.toBeChecked();
-  });
-
   it('puts Themes first and calls the switch Mode', () => {
     render(<AppearanceSection />);
     // Level 3: the group headings (Themes, Mode, Terminal, Team, Density) —
@@ -163,5 +146,12 @@ describe('AppearanceSection', () => {
     expect(headings[0]).toBe('Themes');
     expect(headings).toContain('Mode');
     expect(headings).not.toContain('Theme');
+  });
+
+  it('has no Layout control and no plan panel switch (HIVE-213)', () => {
+    render(<AppearanceSection />);
+    expect(screen.queryByRole('radiogroup', { name: 'Layout' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Show plan panel' })).not.toBeInTheDocument();
+    expect(screen.getByText('Compact tightens the rows in the list and session panels.')).toBeInTheDocument();
   });
 });

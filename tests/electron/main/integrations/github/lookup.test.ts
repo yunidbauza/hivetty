@@ -19,6 +19,8 @@ const record = (over: Partial<PrRecord> = {}): PrRecord => ({
   findings: 2,
   checks: 'passing',
   updatedAt: '2026-09-11T10:00:00Z',
+  mergedAt: null,
+  mine: true,
   ...over,
 });
 

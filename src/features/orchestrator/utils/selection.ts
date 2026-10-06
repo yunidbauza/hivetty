@@ -23,7 +23,7 @@
  *   "somewhere else".
  *
  * Shared by the table and the command row because they must agree about where
- * "here" is — the same reason `useNavOrder` exists at all.
+ * "here" is — the same reason `useFleetNavOrder` exists at all.
  */
 export function effectiveSelId(
   selId: string | null,

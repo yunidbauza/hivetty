@@ -21,6 +21,8 @@ import { cn } from '@/lib/utils';
 export interface SegmentedOption<T extends string> {
   value: T;
   label: string;
+  /** A red dot after the label, read as ", failing" (HIVE-206: the Checks tab while a check fails). */
+  alert?: boolean;
 }
 
 interface SegmentedControlProps<T extends string> {
@@ -179,8 +181,9 @@ export function SegmentedControl<T extends string>({
           file path — grows past whatever contains it, and in the
           316px rail that is the difference between a control and a bug.
         */
-        'inline-flex max-w-full items-center gap-0.5 rounded-[7px] border border-border-soft bg-panel-2 p-0.5',
-        wrap && 'flex-wrap',
+        'inline-flex max-w-full items-center gap-0.5 rounded-full border border-border-soft bg-panel-2 p-0.5',
+        // Wrapping onto a second row, a pill track would read as a blob; it softens to the card radius.
+        wrap && 'flex-wrap rounded-xl',
         disabled && 'opacity-45',
         className,
       )}
@@ -200,6 +203,8 @@ export function SegmentedControl<T extends string>({
             role="radio"
             id={`${groupId}-${option.value}`}
             aria-checked={selected}
+            // The alert dot is drawn aria-hidden; its words ride on the name.
+            aria-label={option.alert === true ? `${option.label}, failing` : undefined}
             disabled={dead}
             // Roving tabindex: one stop for the whole group, not one per option.
             tabIndex={option.value === tabStop ? 0 : -1}
@@ -236,7 +241,7 @@ export function SegmentedControl<T extends string>({
               }
             }}
             className={cn(
-              'rounded-[5px] px-2.5 py-1 text-[12.5px] outline-none',
+              'rounded-full px-3 py-1 text-control outline-none',
               /*
                 One line, always: a wrapped label makes the group taller and
                 every segment in it taller with it, which is how a long path
@@ -269,6 +274,9 @@ export function SegmentedControl<T extends string>({
             )}
           >
             {option.label}
+            {option.alert === true ? (
+              <span aria-hidden className="ml-1.5 inline-block size-1.5 shrink-0 rounded-full bg-red" />
+            ) : null}
           </button>
         );
       })}
