@@ -4,8 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_BIND, emptySnapshot, type ConfigSnapshot } from '@shared/config-contract';
 import type { AppInfo } from '@shared/ipc-contract';
+import type { UpdateStatus } from '@shared/update-contract';
 
-import { AdvancedSection } from '@features/settings/components/advanced-section';
+import { AdvancedSection, announceLine } from '@features/settings/components/advanced-section';
 import {
   resetProjectConfig,
   setAttachedServerForTest,
@@ -480,5 +481,35 @@ describe('AdvancedSection — What’s new', () => {
     render(<AdvancedSection />);
     await user.click(screen.getByRole('button', { name: 'Open What’s new' }));
     expect(useUiStore.getState().whatsNewOpen).toBe(true);
+  });
+});
+
+const at = (over: Partial<UpdateStatus>): UpdateStatus => ({
+  state: 'idle',
+  checked: false,
+  currentVersion: '1.1.2',
+  availableVersion: '1.2.0',
+  percent: null,
+  capability: { canCheck: true, mode: 'self-install', reason: '' },
+  releaseUrl: 'https://example.invalid/releases',
+  error: null,
+  ...over,
+});
+
+describe('announceLine (HIVE-226)', () => {
+  it.each([
+    ['checking', at({ state: 'checking' })],
+    ['downloading', at({ state: 'downloading', percent: 40 })],
+    ['unsupported', at({ state: 'unsupported' })],
+    ['idle before any check', at({ state: 'idle', checked: false })],
+  ])('says nothing while %s', (_, status) => {
+    expect(announceLine(status)).toBe('');
+  });
+
+  it('announces each result', () => {
+    expect(announceLine(at({ state: 'idle', checked: true }))).toBe('Version 1.1.2 — up to date.');
+    expect(announceLine(at({ state: 'available' }))).toBe('Version 1.2.0 is available.');
+    expect(announceLine(at({ state: 'ready' }))).toBe('Version 1.2.0 is ready — restart to install.');
+    expect(announceLine(at({ state: 'error', error: 'offline' }))).toBe('The last check did not complete.');
   });
 });

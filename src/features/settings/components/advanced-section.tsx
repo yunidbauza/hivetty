@@ -196,6 +196,25 @@ function updateLine(
   }
 }
 
+/**
+ * What the screen reader hears: only an answer to a check, never the steps on
+ * the way or the rotating phrase (HIVE-226). Empty means "say nothing".
+ */
+export function announceLine(status: UpdateStatus): string {
+  switch (status.state) {
+    case 'available':
+      return `Version ${status.availableVersion} is available.`;
+    case 'ready':
+      return `Version ${status.availableVersion} is ready — restart to install.`;
+    case 'error':
+      return 'The last check did not complete.';
+    case 'idle':
+      return status.checked ? `Version ${status.currentVersion} — up to date.` : '';
+    default:
+      return '';
+  }
+}
+
 export function AdvancedSection() {
   const snapshot = useProjectConfig();
   const whatsNew = useWhatsNewPrefs();
