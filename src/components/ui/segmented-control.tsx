@@ -2,6 +2,8 @@ import { useId, useRef } from 'react';
 
 import { cn } from '@/lib/utils';
 
+import { Icon } from '@components/ui/icon';
+
 /**
  * A small set of mutually exclusive choices, shown all at once (story 105).
  *
@@ -23,6 +25,12 @@ export interface SegmentedOption<T extends string> {
   label: string;
   /** A red dot after the label, read as ", failing" (HIVE-206: the Checks tab while a check fails). */
   alert?: boolean;
+  /**
+   * An `Icon` registry name. When set the segment shows the glyph only, and
+   * `label` becomes its accessible name and its `title` tooltip (the markdown
+   * view toggle, which has to fit inside the editor's tab strip).
+   */
+  icon?: string;
 }
 
 interface SegmentedControlProps<T extends string> {
@@ -130,6 +138,14 @@ export function SegmentedControl<T extends string>({
   );
 
   /**
+   * A group of glyphs has no track. The pill track exists to hold labels
+   * together as one control; 22px squares already read as one, and the track's
+   * border and padding are what made the markdown toggle taller than the
+   * editor's tab strip it sits in.
+   */
+  const iconsOnly = options.length > 0 && options.every((option) => option.icon !== undefined);
+
+  /**
    * Move selection *and* focus together.
    *
    * In a radio group the two are the same gesture: arrowing to an option
@@ -181,7 +197,9 @@ export function SegmentedControl<T extends string>({
           file path — grows past whatever contains it, and in the
           316px rail that is the difference between a control and a bug.
         */
-        'inline-flex max-w-full items-center gap-0.5 rounded-full border border-border-soft bg-panel-2 p-0.5',
+        iconsOnly
+          ? 'inline-flex max-w-full items-center gap-0.5'
+          : 'inline-flex max-w-full items-center gap-0.5 rounded-full border border-border-soft bg-panel-2 p-0.5',
         // Wrapping onto a second row, a pill track would read as a blob; it softens to the card radius.
         wrap && 'flex-wrap rounded-xl',
         disabled && 'opacity-45',
@@ -191,6 +209,7 @@ export function SegmentedControl<T extends string>({
       {options.map((option) => {
         const selected = option.value === value;
         const dead = isDead(option.value);
+        const name = option.alert === true ? `${option.label}, failing` : undefined;
 
         return (
           <button
@@ -204,7 +223,9 @@ export function SegmentedControl<T extends string>({
             id={`${groupId}-${option.value}`}
             aria-checked={selected}
             // The alert dot is drawn aria-hidden; its words ride on the name.
-            aria-label={option.alert === true ? `${option.label}, failing` : undefined}
+            // A glyph has no text, so an icon segment always carries its name here.
+            aria-label={option.icon === undefined ? name : (name ?? option.label)}
+            title={option.icon === undefined ? undefined : option.label}
             disabled={dead}
             // Roving tabindex: one stop for the whole group, not one per option.
             tabIndex={option.value === tabStop ? 0 : -1}
@@ -241,7 +262,9 @@ export function SegmentedControl<T extends string>({
               }
             }}
             className={cn(
-              'rounded-full px-3 py-1 text-control outline-none',
+              option.icon === undefined
+                ? 'rounded-full px-3 py-1 text-control outline-none'
+                : 'relative grid size-[22px] place-items-center rounded-md outline-none',
               /*
                 One line, always: a wrapped label makes the group taller and
                 every segment in it taller with it, which is how a long path
@@ -254,11 +277,12 @@ export function SegmentedControl<T extends string>({
                 the option's accessible name is never the elided one.
               */
               'whitespace-nowrap',
-              !wrap && option === widest ? 'min-w-0 truncate' : 'shrink-0',
+              // A glyph has no text to elide, so an icon segment never shrinks.
+              !wrap && option === widest && option.icon === undefined ? 'min-w-0 truncate' : 'shrink-0',
               'focus-visible:ring-1 focus-visible:ring-brand',
               selected
                 ? 'bg-active text-ink'
-                : 'text-muted hover:bg-hover hover:text-ink',
+                : cn(option.icon === undefined ? 'text-muted' : 'text-subtle', 'hover:bg-hover hover:text-ink'),
               dead && 'cursor-not-allowed',
               /*
                 The hover overrides must not reach the *selected* segment.
@@ -273,9 +297,16 @@ export function SegmentedControl<T extends string>({
               !disabled && dead && 'opacity-50',
             )}
           >
-            {option.label}
+            {option.icon === undefined ? option.label : <Icon name={option.icon} size={14} />}
             {option.alert === true ? (
-              <span aria-hidden className="ml-1.5 inline-block size-1.5 shrink-0 rounded-full bg-red" />
+              <span
+                aria-hidden
+                className={cn(
+                  'inline-block size-1.5 shrink-0 rounded-full bg-red',
+                  // Beside a label it trails the text; on a glyph it sits in the corner.
+                  option.icon === undefined ? 'ml-1.5' : 'absolute top-0.5 right-0.5',
+                )}
+              />
             ) : null}
           </button>
         );

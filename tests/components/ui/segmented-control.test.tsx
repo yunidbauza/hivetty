@@ -218,4 +218,40 @@ describe('SegmentedControl', () => {
     expect(screen.getByRole('radio', { name: 'Checks, failing' })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'A' })).toBeInTheDocument();
   });
+
+  describe('icon', () => {
+    const ICON_OPTIONS = [
+      { value: 'source', label: 'Source', icon: 'ph-code' },
+      { value: 'preview', label: 'Preview', icon: 'ph-eye' },
+    ] as const;
+
+    it('draws the glyph instead of the label, which stays the name and the tooltip', () => {
+      render(<SegmentedControl label="View" value="source" onChange={() => {}} options={ICON_OPTIONS} />);
+
+      for (const option of ICON_OPTIONS) {
+        const radio = screen.getByRole('radio', { name: option.label });
+        expect(radio.querySelector('svg')).toBeInTheDocument();
+        expect(radio).not.toHaveTextContent(option.label);
+        expect(radio).toHaveAttribute('title', option.label);
+      }
+    });
+
+    it('still names an alerted icon segment as failing', () => {
+      render(<SegmentedControl label="Tab" value="a" onChange={() => {}} options={[{ value: 'a', label: 'Checks', icon: 'ph-code', alert: true }]} />);
+      expect(screen.getByRole('radio', { name: 'Checks, failing' })).toBeInTheDocument();
+    });
+
+    it('drops the track when every option is an icon', () => {
+      render(<SegmentedControl label="View" value="source" onChange={() => {}} options={ICON_OPTIONS} />);
+      expect(screen.getByRole('radiogroup')).not.toHaveClass('border');
+      expect(screen.getByRole('radio', { name: 'Source' })).toHaveClass('size-[22px]', 'shrink-0');
+    });
+
+    it('keeps the track and the pills for a group without icons', () => {
+      renderControl();
+      expect(screen.getByRole('radiogroup')).toHaveClass('border', 'rounded-full', 'bg-panel-2');
+      expect(screen.getByRole('radio', { name: 'Dark' })).toHaveClass('rounded-full', 'px-3', 'text-control');
+      expect(screen.getByRole('radio', { name: 'Dark' })).not.toHaveAttribute('title');
+    });
+  });
 });
