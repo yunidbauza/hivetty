@@ -11,8 +11,10 @@ import {
   HOOK_HEADER_TOKEN,
 } from '../../../electron/shared/hook-contract';
 import { LEDGER_POST_PATH } from '../../../electron/shared/ledger-contract';
+import { goToPlace } from '../fixtures/places';
 
-import { launchHive, resizeTo, writeProjectConfig } from './fixtures/hive-app';
+import { writeGhStub } from './fixtures/gh-stub';
+import { launchHive, resizeTo, seedShipTrack, writeProjectConfig } from './fixtures/hive-app';
 
 /**
  * HIVE-223: a stage the rails cannot crush. Electron only, because only a real
@@ -176,6 +178,51 @@ test('at the stage floor the session header and an arrival card stay inside the 
     await expect(page.getByTestId('session-header')).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByRole('region', { name: 'Session ended' })).toHaveCount(0);
     await expect(page.getByTestId('session-row').filter({ hasText: session })).toHaveCount(1);
+  } finally {
+    await app.close();
+  }
+});
+
+test('at the stage floor a PR page’s ship track and run bar stay inside the stage (HIVE-226)', async ({}, testInfo) => {
+  test.setTimeout(90_000);
+  const configPath = testInfo.outputPath('hive-config.json');
+  const stub = writeGhStub(testInfo.outputPath(''));
+  writeProjectConfig(configPath, {
+    id: PROJECT,
+    path: REAL_DIRECTORY, // a git checkout: `isRepo` needs a `.git` entry
+    env: { PATH: `${stub}:/usr/bin:/bin` },
+    importLoginEnv: false,
+  });
+  seedShipTrack(configPath);
+  const app = await launchHive({ userDataDir: testInfo.outputPath('user-data'), configPath });
+  try {
+    const page = await app.firstWindow();
+    await page.waitForSelector('nav[aria-label="Places"]');
+    await resizeTo(app, page, 1440);
+    await goToPlace(page, 'PRs');
+    // The stage auto-opens the first open PR once the sweep lands.
+    const track = page.getByRole('group', { name: 'Ship track' });
+    await expect(track).toBeVisible({ timeout: 20_000 });
+
+    // Shrink the window until the stage sits on its floor: chrome is everything that is not <main>.
+    // The PR page has no session panel and the list overlays under 1,200px, so the 1,100px window
+    // minimum keeps its stage far above 520px; the floor is reached by lifting that minimum here.
+    // Chrome is measured under 1,200px, where the list no longer takes a column.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setMinimumSize(400, 600));
+    await resizeTo(app, page, 1100);
+    const chrome = (await page.evaluate(() => window.innerWidth)) - (await width(page, 'main'));
+    await resizeTo(app, page, Math.ceil(STAGE_MIN + chrome));
+    await expect.poll(() => width(page, 'main')).toBeLessThanOrEqual(STAGE_MIN + 2);
+    await expect.poll(() => width(page, 'main')).toBeGreaterThanOrEqual(STAGE_MIN - 1);
+
+    // The run bar is the Checks tab's; the track sits above every tab.
+    await page.getByRole('main').getByRole('radio', { name: /^Checks/ }).click();
+    const runBar = page.getByTestId('run-bar');
+    await expect(runBar).toBeVisible({ timeout: 20_000 });
+    for (const box of [track, runBar]) {
+      expect(await box.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(0);
+      await expectInsideStage(page, box);
+    }
   } finally {
     await app.close();
   }
