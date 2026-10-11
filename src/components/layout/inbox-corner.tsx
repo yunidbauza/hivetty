@@ -43,6 +43,7 @@ export function InboxCorner({ stage, viewKey }: InboxCornerProps) {
 
   return (
     <div
+      // max-w-[calc(100%-3rem)]: an untested guard. The cards fit the 520px stage floor without it; no e2e reaches a stage narrow enough to need it (HIVE-226).
       className="pointer-events-none absolute right-6 z-20 flex max-w-[calc(100%-3rem)] flex-col items-end gap-3.5"
       style={{ bottom }}
     >

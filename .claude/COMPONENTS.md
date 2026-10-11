@@ -173,7 +173,7 @@ contract for their owning story, not existing code.
 | `KeyHint` | `ui/key-hint.tsx` | 041 (also 043) | `keys: string[]`, `label: string` | planned |
 | `SecretField` | `ui/secret-field.tsx` | **HIVE-67** | `label: string`, `value: string`, `onChange(value: string): void`, `onCommit?(): void`, `placeholder?: string`, `hint?: string`, `className?: string` | **built** |
 | `SplitHandle` | `ui/split-handle.tsx` | **explorer** | `axis: 'horizontal' \| 'vertical'`, `containerRef: RefObject<HTMLElement>`, `label: string`, `value: number`, `onValue(value: number): void`, `min?`, `max?`, `step?`, `onReset?(): void`, `grip?: boolean`, `className?: string` | **built** |
-| `Button` | `ui/button.tsx` | **HIVE-118** | `variant?: 'primary' \| 'secondary' \| 'danger' \| 'ghost'`, `size?: 'sm' \| 'md'`, plus `ButtonHTMLAttributes<HTMLButtonElement>` | **built** |
+| `Button` | `ui/button.tsx` | **HIVE-118**, HIVE-225 | `variant?: 'primary' \| 'secondary' \| 'danger' \| 'ghost'`, `size?: 'sm' \| 'md'`, `pending?: boolean` (sets `aria-disabled` and `aria-busy` and swallows the click, so focus stays on the button while a call runs; HIVE-225), plus `ButtonHTMLAttributes<HTMLButtonElement>` | **built** |
 | `SearchBox` | `ui/search-box.tsx` | **HIVE-192** | `label: string`, `value: string`, `onChange(value: string): void`, `onClear(): void` | **built** |
 
 Rules for all of them:
