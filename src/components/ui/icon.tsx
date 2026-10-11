@@ -16,6 +16,8 @@ import {
   ChatCircleDots,
   CheckCircle,
   Clock,
+  Code,
+  Columns,
   Cube,
   Database,
   Detective,
@@ -209,6 +211,10 @@ const GLYPHS: Record<string, PhosphorIcon> = {
   'ph-funnel': Funnel,
   'ph-shield-check': ShieldCheck,
   'ph-fire': Fire,
+
+  // The markdown view toggle: source and split (preview is `ph-eye`, above).
+  'ph-code': Code,
+  'ph-columns': Columns,
 };
 
 /**

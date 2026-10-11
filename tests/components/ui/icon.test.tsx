@@ -79,6 +79,9 @@ describe('Icon', () => {
     // map did not carry, so they rendered as the unknown-name question mark.
     'ph-arrows-clockwise',
     'ph-robot',
+    // The markdown view toggle's source and split segments.
+    'ph-code',
+    'ph-columns',
   ])('maps the fixture icon %s to its own glyph', (name) => {
     const { container: named } = render(<Icon name={name} />);
     const { container: fallback } = render(<Icon name="ph-unmapped" />);
