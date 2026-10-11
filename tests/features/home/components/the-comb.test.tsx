@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Session } from '@/types/entity';
 import type { AgentSummary } from '@shared/agent-contract';
-import { TheComb, tooltipLeft } from '@features/home/components/the-comb';
+import { TheComb, TOOLTIP_MAX_W, TOOLTIP_SPARE, tooltipLeft } from '@features/home/components/the-comb';
 import { COMB_W, layoutComb } from '@lib/swarm/comb';
 import { useAppearanceStore } from '@stores/appearance-store';
 import { useHiveStore } from '@stores/hive-store';
@@ -282,9 +282,19 @@ describe('TheComb — the cells that fold others (decision D6)', () => {
 describe('tooltipLeft (HIVE-225)', () => {
   it('keeps a 240px tooltip inside the canvas at the 1100px window scale', () => {
     const k = 0.75;
-    expect(tooltipLeft(COMB_W - 10, k) + 240).toBeLessThanOrEqual(COMB_W * k);
+    expect(tooltipLeft(COMB_W - 10, k) + TOOLTIP_MAX_W).toBeLessThanOrEqual(COMB_W * k);
   });
   it('sits 18 canvas units right of a cell away from the edge', () => {
     expect(tooltipLeft(100, 0.5)).toBe(59);
+  });
+
+  it('never places the tooltip left of the canvas, however narrow (HIVE-226)', () => {
+    const k = 100 / COMB_W; // a 100px canvas, narrower than the tooltip itself
+    expect(tooltipLeft(COMB_W - 10, k)).toBe(0);
+  });
+
+  it('keeps the tooltip TOOLTIP_SPARE short of the right edge', () => {
+    const k = 0.75;
+    expect(tooltipLeft(COMB_W - 10, k)).toBe(COMB_W * k - TOOLTIP_MAX_W - TOOLTIP_SPARE);
   });
 });
