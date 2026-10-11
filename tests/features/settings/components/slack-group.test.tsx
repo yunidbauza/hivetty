@@ -715,4 +715,12 @@ describe('real-time events (HIVE-124)', () => {
 
     expect(await screen.findByText(/#no-such-channel/)).toBeInTheDocument();
   });
+
+  it('keeps the loading placeholder out of the status region’s speech (HIVE-226)', () => {
+    status.mockReturnValue(new Promise<SlackStatus>(() => {}));
+    readSlackSocketState.mockResolvedValue({ tokens: NO_TOKENS, socket: { kind: 'off' } });
+    configSnapshot = { slack: { socketMode: false, commanders: [] } };
+    render(<SlackGroup agents={[]} />);
+    expect(screen.getByText('…', { selector: 'p' })).toHaveAttribute('aria-hidden', 'true');
+  });
 });

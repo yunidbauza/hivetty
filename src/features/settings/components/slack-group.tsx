@@ -1040,10 +1040,10 @@ export function SlackGroup({ agents }: SlackGroupProps) {
         <div className="h-px bg-border-soft" />
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Always mounted: the Test's verdict lands in the caption, and a live region that mounts with its text is not reliably announced (HIVE-225). */}
+          {/* Always mounted: the Test's verdict lands in the caption, and a live region that mounts with its text is not reliably announced (HIVE-225). The load placeholder is aria-hidden: only a result is worth announcing (HIVE-226). */}
           <div role="status">
             {status === null ? (
-              <p className="text-ui-sm text-subtle">…</p>
+              <p aria-hidden="true" className="text-ui-sm text-subtle">…</p>
             ) : (
               <Caption status={status} agents={agents} testError={testError} />
             )}
