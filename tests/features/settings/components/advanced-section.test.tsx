@@ -39,6 +39,12 @@ vi.mock('@/lib/project-config', async (importOriginal) => {
   };
 });
 
+const readUpdateStatus = vi.fn();
+vi.mock('@/lib/updates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/updates')>();
+  return { ...actual, readUpdateStatus: () => readUpdateStatus(), checkForUpdates: vi.fn() };
+});
+
 const CONFIG_PATH = '/Users/me/.hive/config.json';
 
 const info = (over: Partial<AppInfo> = {}): AppInfo => ({
@@ -78,6 +84,7 @@ beforeEach(() => {
   revealConfigFile.mockResolvedValue(undefined);
   resetConfigToTemplate.mockResolvedValue(undefined);
   reloadProjectConfig.mockResolvedValue([]);
+  readUpdateStatus.mockResolvedValue(null);
   install();
 });
 
@@ -511,5 +518,19 @@ describe('announceLine (HIVE-226)', () => {
     expect(announceLine(at({ state: 'available' }))).toBe('Version 1.2.0 is available.');
     expect(announceLine(at({ state: 'ready' }))).toBe('Version 1.2.0 is ready — restart to install.');
     expect(announceLine(at({ state: 'error', error: 'offline' }))).toBe('The last check did not complete.');
+  });
+
+  it('shows the download step but announces nothing, then announces the result', async () => {
+    readUpdateStatus.mockResolvedValue(at({ state: 'downloading', percent: 40 }));
+    const { unmount } = render(<AdvancedSection />);
+    const visible = await screen.findByText(/Downloading 1\.2\.0…/);
+    expect(visible.closest('[role="status"]')).toBeNull();
+    expect(screen.getByTestId('update-announce')).toHaveTextContent(/^$/);
+    unmount();
+
+    readUpdateStatus.mockResolvedValue(at({ state: 'ready' }));
+    render(<AdvancedSection />);
+    await screen.findByText(/is ready — restart to install\. ·/);
+    expect(screen.getByTestId('update-announce')).toHaveTextContent('Version 1.2.0 is ready — restart to install.');
   });
 });
