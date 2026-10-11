@@ -50,4 +50,10 @@ describe('PlanGlyph', () => {
     expect(glyph).toHaveClass('h-4', 'min-w-4', 'px-0.5', 'rounded-full');
     expect(glyph).not.toHaveClass('size-4');
   });
+
+  it('keeps a done task a circle: its check never widens the ring (HIVE-226)', () => {
+    render(<PlanGlyph index={11} status="completed" />);
+
+    expect(screen.getByRole('img', { name: 'Task 12, done' })).toHaveClass('size-4');
+  });
 });
