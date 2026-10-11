@@ -245,6 +245,7 @@ describe('SegmentedControl', () => {
       render(<SegmentedControl label="View" value="source" onChange={() => {}} options={ICON_OPTIONS} />);
       expect(screen.getByRole('radiogroup')).not.toHaveClass('border');
       expect(screen.getByRole('radio', { name: 'Source' })).toHaveClass('size-[22px]', 'shrink-0');
+      expect(screen.getByRole('radio', { name: 'Preview' })).toHaveClass('text-subtle');
     });
 
     it('keeps the track and the pills for a group without icons', () => {

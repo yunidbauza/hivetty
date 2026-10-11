@@ -301,11 +301,12 @@ export function SegmentedControl<T extends string>({
             {option.alert === true ? (
               <span
                 aria-hidden
-                className={cn(
-                  'inline-block size-1.5 shrink-0 rounded-full bg-red',
-                  // Beside a label it trails the text; on a glyph it sits in the corner.
-                  option.icon === undefined ? 'ml-1.5' : 'absolute top-0.5 right-0.5',
-                )}
+                // Beside a label it trails the text; on a glyph it sits in the corner.
+                className={
+                  option.icon === undefined
+                    ? 'ml-1.5 inline-block size-1.5 shrink-0 rounded-full bg-red'
+                    : 'absolute top-0.5 right-0.5 inline-block size-1.5 shrink-0 rounded-full bg-red'
+                }
               />
             ) : null}
           </button>
