@@ -20,7 +20,7 @@ export function RunBar({ pushes, shown, files, onShow }: { pushes: Push[]; shown
   // useRelativeTime spells "4m" or "now"; the bar reads it as a sentence.
   const started = age === 'now' ? 'just now' : `${age} ago`;
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-soft px-6 py-3 text-control">
+    <div data-testid="run-bar" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border-soft px-6 py-3 text-control">
       <span className="tabular-nums text-ink">{`Run #${String(shown.number)}`}</span>
       <span className="min-w-0 truncate text-muted">{`on ${shown.sha.slice(0, 7)} · started ${started}`}</span>
       <span className="flex gap-[3px]">
