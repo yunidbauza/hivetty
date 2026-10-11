@@ -3,9 +3,9 @@ import { useMarkdownView } from '@features/editor/hooks/use-markdown-view';
 import type { MarkdownView } from '@stores/editor-store';
 
 const VIEW_OPTIONS: readonly SegmentedOption<MarkdownView>[] = [
-  { value: 'source', label: 'Source' },
-  { value: 'preview', label: 'Preview' },
-  { value: 'split', label: 'Split' },
+  { value: 'source', label: 'Source', icon: 'ph-code' },
+  { value: 'preview', label: 'Preview', icon: 'ph-eye' },
+  { value: 'split', label: 'Split', icon: 'ph-columns' },
 ];
 
 /** Source · Preview · Split, for the active markdown file. Nothing otherwise. */

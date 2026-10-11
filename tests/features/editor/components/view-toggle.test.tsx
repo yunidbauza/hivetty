@@ -36,4 +36,16 @@ describe('ViewToggle', () => {
         ?.view,
     ).toBe('split');
   });
+
+  it('draws each view as a glyph, named and titled by its label', async () => {
+    await act(async () => useEditorStore.getState().openFile('demo', 'README.md'));
+    render(<ViewToggle />);
+
+    for (const name of ['Source', 'Preview', 'Split']) {
+      const radio = screen.getByRole('radio', { name });
+      expect(radio.textContent).toBe('');
+      expect(radio).toHaveAttribute('title', name);
+      expect(radio.querySelector('svg')).toBeInTheDocument();
+    }
+  });
 });

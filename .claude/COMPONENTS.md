@@ -634,6 +634,7 @@ so runs and jobs are read only while it is shown.
 - **`JobSteps`** is the shown job, with Re-run failed, Open the log, and "<holder> has it" (`holderIcon`). **`JobLog`** shows the cut log, toned by `classifyLogLine`.
 - **No runs and no other checks** reads "No checks on <sha>".
 - A tab can carry `SegmentedOption.alert`, a red dot that reads ", failing".
+- `SegmentedOption.icon` renders a glyph-only, track-less segment, label as name and tooltip.
 
 ### The Timeline tab: `<PrTimeline />`, `<TimelineLane />`, `<TimeBuckets />`
 
