@@ -572,6 +572,25 @@ describe('ServerModeGroup', () => {
 
       expect(pairDevice).not.toHaveBeenCalled();
     });
+
+    it('announces a failed pairing through an always-mounted status region (HIVE-226)', async () => {
+      vi.mocked(pairDevice).mockResolvedValueOnce({ error: 'A device named "Laptop" already exists.' });
+      render(<ServerModeGroup enabled={false} bind={DEFAULT_BIND} devices={[]} remote={DEFAULT_REMOTE} localRemote={null}
+      attachedServer={null}
+      attachedServerName={null}
+      serving={false}
+    />);
+      const region = screen.getByTestId('pair-status');
+      expect(region).toHaveAttribute('role', 'status');
+      expect(region).toBeEmptyDOMElement();
+
+      await userEvent.type(screen.getByLabelText(/device name/i), 'Laptop');
+      await userEvent.click(screen.getByRole('button', { name: /^pair$/i }));
+
+      expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
+      expect(screen.getByTestId('pair-status')).toBe(region); // the same node, never remounted
+      expect(region).toHaveTextContent(/already exists/i);
+    });
   });
 
   /**
@@ -1943,7 +1962,8 @@ describe('ServerModeGroup', () => {
         settle({ switched: { ok: false, reason: 'connect-failed', message: 'ECONNREFUSED' }, changed: null });
       });
       expect(button).toHaveFocus();
-      expect(screen.getByRole('status')).toHaveTextContent(/ECONNREFUSED/);
+      // Two status regions now (the link result and the pairing error, HIVE-226); the result lands in one of them.
+      expect(screen.getByText(/ECONNREFUSED/).closest('[role="status"]')).not.toBeNull();
     });
 
     it('offers the local exit in both, and it detaches', async () => {

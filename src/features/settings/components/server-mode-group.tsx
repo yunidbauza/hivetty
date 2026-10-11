@@ -1309,9 +1309,10 @@ export function ServerModeGroup({
           </Button>
         </div>
 
-        {pairError ? (
-          <p className="text-ui-sm text-red">{pairError}</p>
-        ) : null}
+        {/* Always mounted: a pairing error lands here, and a live region that mounts with its text is not reliably announced (HIVE-226). */}
+        <div role="status" data-testid="pair-status" className="empty:-mt-2">
+          {pairError ? <p className="text-ui-sm text-red">{pairError}</p> : null}
+        </div>
 
         {justPaired ? (
           <div className="flex flex-col gap-1 rounded-md border border-border bg-panel-2 p-2.5">
