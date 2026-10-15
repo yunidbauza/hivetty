@@ -179,6 +179,22 @@ describe('TerminalSurface', () => {
       expect(fitAddon.fit).toHaveBeenCalledTimes(2);
     });
 
+    it('tells the pty the size a font change fitted to', () => {
+      // The box did not move, so the resize observer never fires: this refit is
+      // the only thing that can carry the new geometry to the child process.
+      const { transport } = fakeTransport();
+      const { rerender } = render(
+        <TerminalSurface transport={transport} palette={TERM} />,
+      );
+      (transport.resize as ReturnType<typeof vi.fn>).mockClear();
+
+      terminal().cols = 96;
+      terminal().rows = 30;
+      rerender(<TerminalSurface transport={transport} palette={TERM} fontSize={16} />);
+
+      expect(transport.resize).toHaveBeenCalledWith(96, 30);
+    });
+
     it('applies the options to a hidden surface but does not fit it', () => {
       const { transport } = fakeTransport();
       const { rerender } = render(
@@ -700,6 +716,8 @@ describe('TerminalSurface', () => {
         <TerminalSurface transport={first.transport} palette={TERM} />,
       );
       rerender(<TerminalSurface transport={second.transport} palette={TERM} />);
+      // The reveal on mount reported to the transport current at the time.
+      (first.transport.resize as ReturnType<typeof vi.fn>).mockClear();
 
       trigger();
 
@@ -1577,6 +1595,73 @@ describe('TerminalSurface', () => {
       } finally {
         elsewhere.remove();
       }
+    });
+
+    /**
+     * The return-to-a-session corruption.
+     *
+     * The two renderers size a cell differently — the DOM renderer keeps the
+     * fractional glyph width, WebGL floors it to a device pixel — so one box
+     * fits a column or more fewer under DOM. Fitting on reveal *before* WebGL
+     * came back reflowed the buffer one column narrow for a frame; a Claude
+     * repaint landing in that frame moved its cursor up onto wrapped border
+     * fragments, and the pty, never told, never asked for a full redraw.
+     */
+    it('takes its renderer back before it fits on reveal', () => {
+      const { transport } = fakeTransport();
+      const { rerender } = render(
+        <TerminalSurface transport={transport} palette={TERM} visible={false} />,
+      );
+      const [fitAddon] = fitAddonInstances as MockFitAddon[];
+
+      rerender(<TerminalSurface transport={transport} palette={TERM} visible />);
+
+      const attachedAt = terminal().loadAddon.mock.calls.findIndex(
+        ([addon]) => addon === webglAddonInstances[0],
+      );
+      const attachOrder = terminal().loadAddon.mock.invocationCallOrder[attachedAt]!;
+      const fitOrders = fitAddon!.fit.mock.invocationCallOrder;
+
+      expect(attachedAt).toBeGreaterThanOrEqual(0);
+      expect(fitOrders.length).toBeGreaterThan(0);
+      expect(fitOrders.every((order) => order > attachOrder)).toBe(true);
+    });
+
+    it('tells the pty the size it fitted to on reveal', () => {
+      /**
+       * Not left to the resize observer. When the observer fires before the
+       * reveal effect, it measures under the DOM renderer and reports that;
+       * the reveal fit is then the last word on the size, and a last word the
+       * pty never hears is the mismatch this whole fix is about.
+       */
+      const { transport } = fakeTransport();
+      const { rerender } = render(
+        <TerminalSurface transport={transport} palette={TERM} visible={false} />,
+      );
+      expect(transport.resize).not.toHaveBeenCalled();
+
+      terminal().cols = 140;
+      terminal().rows = 37;
+      rerender(<TerminalSurface transport={transport} palette={TERM} visible />);
+
+      expect(transport.resize).toHaveBeenLastCalledWith(140, 37);
+    });
+
+    it('refits and reports when a lost context hands it back to DOM', () => {
+      // Same cell-width change, mid-session: without a refit the terminal keeps
+      // a column count measured for a renderer it no longer has.
+      const { transport } = fakeTransport();
+      render(<TerminalSurface transport={transport} palette={TERM} readOnly={false} />);
+      const [fitAddon] = fitAddonInstances as MockFitAddon[];
+      const fitsBefore = fitAddon!.fit.mock.calls.length;
+      (transport.resize as ReturnType<typeof vi.fn>).mockClear();
+
+      webglAddonInstances[0]!.emitContextLoss();
+
+      const disposedAt = webglAddonInstances[0]!.dispose.mock.invocationCallOrder[0]!;
+      expect(fitAddon!.fit.mock.calls.length).toBe(fitsBefore + 1);
+      expect(fitAddon!.fit.mock.invocationCallOrder.at(-1)!).toBeGreaterThan(disposedAt);
+      expect(transport.resize).toHaveBeenCalledWith(80, 24);
     });
 
     it('drops its context-loss listener on unmount', () => {

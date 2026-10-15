@@ -352,6 +352,18 @@ function fitPreservingBottom({ terminal, fitAddon }: Instance) {
 }
 
 /**
+ * Refit, then tell the backend the size it fitted to.
+ *
+ * The two always travel together: a fit the pty never hears leaves the child
+ * process drawing for one width while xterm wraps at another, and nothing
+ * after it would ever reconcile the two. Same visibility rule as the fit.
+ */
+function fitAndReport(instance: Instance, transport: TerminalTransport) {
+  fitPreservingBottom(instance);
+  transport.resize(instance.terminal.cols, instance.terminal.rows);
+}
+
+/**
  * A real terminal, fed by a transport and nothing else.
  *
  * This component is the reason the seam exists: it has no idea what a session
@@ -781,8 +793,7 @@ export function TerminalSurface({
      */
     const resizeObserver = new ResizeObserver(() => {
       if (!visibleRef.current) return;
-      fitPreservingBottom({ terminal, fitAddon });
-      transportRef.current.resize(terminal.cols, terminal.rows);
+      fitAndReport({ terminal, fitAddon }, transportRef.current);
     });
     resizeObserver.observe(container);
 
@@ -832,9 +843,10 @@ export function TerminalSurface({
    * The refit is not optional and not defensive: font family and size change
    * the measured cell, so without it the terminal keeps the old `cols`/`rows`,
    * reports stale dimensions to its transport, and renders into a box that no
-   * longer matches. `fitPreservingBottom` is the same helper the resize
-   * observer uses, for the same reason — a reader parked at the end of a
-   * transcript should stay there.
+   * longer matches. `fitAndReport` is the same helper the resize observer
+   * uses, for the same reason — a reader parked at the end of a transcript
+   * should stay there — and it reports, because nothing else will: the box did
+   * not change size, so the observer never fires for a font change.
    *
    * `scrollback` needs no refit (it changes buffer depth, not geometry) but
    * shares the effect: three assignments and one fit is cheaper than two
@@ -845,7 +857,7 @@ export function TerminalSurface({
    * visibility.** Appearance is forwarded to all kept-alive surfaces, not just
    * the active one, so this effect runs on hidden terminals too, where there is
    * no box to measure and fitting would shred the buffer ({@link visibleRef}).
-   * The visibility effect already re-fits on reveal, which is where the geometry
+   * The reveal effect already re-fits on reveal, which is where the geometry
    * actually exists to measure.
    */
   const appearanceRef = useRef({ fontFamily, fontSize, scrollback });
@@ -874,7 +886,7 @@ export function TerminalSurface({
     terminal.options.fontFamily = fontFamily;
     terminal.options.fontSize = fontSize;
     terminal.options.scrollback = scrollback;
-    if (visible) fitPreservingBottom(instance);
+    if (visible) fitAndReport(instance, transportRef.current);
   }, [instance, fontFamily, fontSize, scrollback, visible]);
 
   /** Backend output in, keystrokes out. */
@@ -947,11 +959,48 @@ export function TerminalSurface({
   }, [instance, transport, readOnly]);
 
   /**
-   * The only place a fit is requested outside the resize observer.
+   * Reveal: the renderer first, then the fit, then the keyboard.
    *
    * Covers both the first paint and every later reveal: a hidden surface has no
    * geometry to measure, so a terminal fitted while hidden would render at the
-   * wrong size for the rest of its life.
+   * wrong size for the rest of its life. One effect rather than three, because
+   * the order of the three is the bug this shape exists to rule out.
+   *
+   * ## The renderer, attached to the visible interactive terminal only
+   *
+   * The DOM renderer was the right default for fixture transcripts and is the
+   * wrong one for a live pty streaming a build log — it allocates elements per
+   * cell. But WebGL contexts are a **capped, process-wide** resource (browsers
+   * commonly allow ~16), and this app can hold a dozen live terminals at once.
+   * Attaching one per instance would exhaust the pool and start silently
+   * killing the oldest contexts.
+   *
+   * So the addon follows visibility rather than lifetime: exactly one context
+   * exists, on the terminal the user is looking at. Hidden kept-alive instances
+   * (story 042) keep their buffers and give up their GPU context, which costs
+   * nothing — nothing is painting them.
+   *
+   * Read-only surfaces stay on DOM. They render a recording, once.
+   *
+   * ## Why it comes back before the fit
+   *
+   * The two renderers size a cell differently: the DOM renderer keeps the
+   * glyph's fractional device width, WebGL floors it to a whole device pixel.
+   * The same box therefore fits a column or more *fewer* under DOM — 139
+   * against 140 at the default font on a Retina screen. When the fit ran
+   * first, every return to a session reflowed the buffer one column narrow and
+   * the resize observer reflowed it back a frame later. The pty heard neither,
+   * so a Claude repaint landing in between moved its cursor up onto wrapped
+   * fragments of its own prompt box, and with no SIGWINCH coming it never
+   * redrew the damage: stray border lines and a shifted caret until the window
+   * was resized. Measure with the renderer that will paint.
+   *
+   * ## And the pty hears the fit
+   *
+   * The resize observer usually reports the same size a frame later, but not
+   * always last: when it fires before this effect it measures under DOM and
+   * reports that. This fit is the final word on the geometry, so it reports
+   * too. An unchanged size costs nothing — the pty host drops it.
    *
    * ## And the keyboard follows the fit (story 108)
    *
@@ -969,9 +1018,76 @@ export function TerminalSurface({
    */
   useEffect(() => {
     if (!instance || !visible) return;
-    fitPreservingBottom(instance);
-    if (!readOnly) instance.terminal.focus();
+    const { terminal } = instance;
+
+    let addon: WebglAddon | null = null;
+    let lost: { dispose: () => void } | null = null;
+
+    if (!readOnly) {
+      const webgl = new WebglAddon();
+      addon = webgl;
+
+      /**
+       * A lost context is not an error to report, it is a renderer to stop using.
+       *
+       * Contexts are lost on GPU driver resets and when too many exist. Without
+       * this the terminal simply stops painting — which looks exactly like a
+       * frozen session, and sends the user hunting for a hung process that is
+       * running perfectly. Disposing the addon drops xterm back to the DOM
+       * renderer with the buffer intact — and with DOM's wider cells, so the
+       * geometry is measured again for the renderer now painting it.
+       *
+       * ## And the keyboard survives the renderer swap (HIVE-53)
+       *
+       * Swapping renderers must not cost the user their caret. It does not today:
+       * a forced `webglcontextlost` was driven against a live session and focus
+       * stayed on the xterm textarea, because disposing the addon touches the
+       * canvases and not the helper textarea. **This re-assertion therefore fixes
+       * nothing that is currently broken** — it makes an accidental property an
+       * intentional one, so a future renderer change cannot quietly take the
+       * keyboard away mid-command.
+       *
+       * Conditional on having held focus, and that condition is the whole point.
+       * Nine of ten terminals in this app are hidden kept-alive instances; one
+       * that grabbed the caret because its GPU context went away would yank the
+       * user out of whatever they were typing into.
+       *
+       * Its reach is narrow, and worth stating rather than leaving to be
+       * discovered: focusing an already-focused element is a no-op, so this only
+       * ever *does* anything if a future `dispose()` blurs the textarea
+       * synchronously, inside this callback. A change that blurred it a
+       * microtask or a frame later would slip past — catching that would mean
+       * re-asserting on a timer, which is a worse trade than it sounds, because
+       * a deferred `focus()` can land after the user has deliberately clicked
+       * somewhere else.
+       */
+      lost = webgl.onContextLoss(() => {
+        const hadFocus = document.activeElement === terminal.textarea;
+        addon?.dispose();
+        addon = null;
+        fitAndReport(instance, transportRef.current);
+        if (hadFocus) terminal.focus();
+      });
+
+      try {
+        terminal.loadAddon(webgl);
+      } catch {
+        // No WebGL2 at all — a software-rendering VM, a blocklisted driver. The
+        // DOM renderer is still there and still correct, just slower.
+        webgl.dispose();
+        addon = null;
+      }
+    }
+
+    fitAndReport(instance, transportRef.current);
+    if (!readOnly) terminal.focus();
+
+    return () => {
+      lost?.dispose();
+      addon?.dispose();
+    };
   }, [instance, visible, readOnly]);
+
 
   /**
    * Reveal reads the box at once; hiding says so once (HIVE-135).
@@ -1027,84 +1143,6 @@ export function TerminalSurface({
     instance.terminal.options.disableStdin = ended;
     instance.terminal.options.cursorBlink = !ended;
   }, [instance, readOnly, ended]);
-
-  /**
-   * The WebGL renderer, attached to the visible interactive terminal only.
-   *
-   * The DOM renderer was the right default for fixture transcripts and is the
-   * wrong one for a live pty streaming a build log — it allocates elements per
-   * cell. But WebGL contexts are a **capped, process-wide** resource (browsers
-   * commonly allow ~16), and this app can hold a dozen live terminals at once.
-   * Attaching one per instance would exhaust the pool and start silently
-   * killing the oldest contexts.
-   *
-   * So the addon follows visibility rather than lifetime: exactly one context
-   * exists, on the terminal the user is looking at. Hidden kept-alive instances
-   * (story 042) keep their buffers and give up their GPU context, which costs
-   * nothing — nothing is painting them.
-   *
-   * Read-only surfaces stay on DOM. They render a recording, once.
-   */
-  useEffect(() => {
-    if (!instance || readOnly || !visible) return;
-    const { terminal } = instance;
-
-    let addon: WebglAddon | null = new WebglAddon();
-
-    /**
-     * A lost context is not an error to report, it is a renderer to stop using.
-     *
-     * Contexts are lost on GPU driver resets and when too many exist. Without
-     * this the terminal simply stops painting — which looks exactly like a
-     * frozen session, and sends the user hunting for a hung process that is
-     * running perfectly. Disposing the addon drops xterm back to the DOM
-     * renderer with the buffer intact.
-     *
-     * ## And the keyboard survives the renderer swap (HIVE-53)
-     *
-     * Swapping renderers must not cost the user their caret. It does not today:
-     * a forced `webglcontextlost` was driven against a live session and focus
-     * stayed on the xterm textarea, because disposing the addon touches the
-     * canvases and not the helper textarea. **This re-assertion therefore fixes
-     * nothing that is currently broken** — it makes an accidental property an
-     * intentional one, so a future renderer change cannot quietly take the
-     * keyboard away mid-command.
-     *
-     * Conditional on having held focus, and that condition is the whole point.
-     * Nine of ten terminals in this app are hidden kept-alive instances; one
-     * that grabbed the caret because its GPU context went away would yank the
-     * user out of whatever they were typing into.
-     *
-     * Its reach is narrow, and worth stating rather than leaving to be
-     * discovered: focusing an already-focused element is a no-op, so this only
-     * ever *does* anything if a future `dispose()` blurs the textarea
-     * synchronously, inside this callback. A change that blurred it a
-     * microtask or a frame later would slip past — catching that would mean
-     * re-asserting on a timer, which is a worse trade than it sounds, because
-     * a deferred `focus()` can land after the user has deliberately clicked
-     * somewhere else.
-     */
-    const lost = addon.onContextLoss(() => {
-      const hadFocus = document.activeElement === terminal.textarea;
-      addon?.dispose();
-      addon = null;
-      if (hadFocus) terminal.focus();
-    });
-
-    try {
-      terminal.loadAddon(addon);
-    } catch {
-      // No WebGL2 at all — a software-rendering VM, a blocklisted driver. The
-      // DOM renderer is still there and still correct, just slower.
-      addon.dispose();
-      addon = null;
-    }
-
-    return () => {
-      lost.dispose();
-      addon?.dispose();
-    };
-  }, [instance, readOnly, visible]);
 
   /**
    * Clicking a live terminal focuses it.
