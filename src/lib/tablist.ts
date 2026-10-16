@@ -7,9 +7,11 @@ import type { KeyboardEvent } from 'react';
  * Stateless, so it works in a component that returns before its tabs exist
  * (`session-panel.tsx`). It focuses the target tab and *clicks* it, so each tab's
  * own `onClick` stays the one place selection happens. Tabs may be nested: the
- * editor wraps each tab beside its × button.
+ * editor wraps each tab beside its × button. A modified key is left alone, so
+ * Cmd+Arrow and friends keep their own meaning (HIVE-226).
  */
 export function onTablistKeyDown(event: KeyboardEvent<HTMLElement>): void {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   const list = event.currentTarget.closest('[role="tablist"]');
   if (list === null) return;
   const tabs = [...list.querySelectorAll<HTMLElement>('[role="tab"]')];

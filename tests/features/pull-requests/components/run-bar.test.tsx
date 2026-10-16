@@ -46,4 +46,9 @@ describe('RunBar', () => {
     expect(text).toHaveClass('min-w-0', 'truncate');
     expect(text.parentElement).toHaveClass('flex-wrap', 'gap-y-1', 'min-w-0');
   });
+
+  it('carries a test id the narrow-stage e2e finds it by (HIVE-226)', () => {
+    render(<RunBar pushes={pushes} shown={pushes[2]!} files={[]} onShow={() => {}} />);
+    expect(screen.getByTestId('run-bar')).toContainElement(screen.getByText('Run #2207'));
+  });
 });

@@ -65,7 +65,7 @@ export function AgentTile({ icon, tone, live, size = 'md' }: AgentTileProps) {
       {live > 1 ? (
         <b
           // tint-exempt: a solid count badge, past the tint scale
-          className="absolute -top-1 -right-1.5 grid size-[17px] place-items-center rounded-full bg-[color-mix(in_srgb,var(--cc-green)_45%,transparent)] tabular-nums text-micro text-ink">
+          className="absolute -top-1 -right-1.5 grid h-[17px] min-w-[17px] place-items-center rounded-full px-1 bg-[color-mix(in_srgb,var(--cc-green)_45%,transparent)] tabular-nums text-micro text-ink">
           {live}
         </b>
       ) : null}

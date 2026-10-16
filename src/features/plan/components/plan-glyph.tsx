@@ -33,7 +33,9 @@ export function PlanGlyph({ index, status, proposed = false }: PlanGlyphProps) {
       role="img"
       aria-label={`Task ${String(index + 1)}, ${label}`}
       className={cn(
-        'inline-grid size-4 shrink-0 place-items-center rounded-full border-[1.5px] tabular-nums text-micro leading-none font-semibold',
+        'inline-grid shrink-0 place-items-center rounded-full border-[1.5px] tabular-nums text-micro leading-none font-semibold',
+        // A number grows the ring into a pill past nine (HIVE-226); the check keeps today's circle.
+        done ? 'size-4' : 'h-4 min-w-4 px-0.5',
         done && 'border-green bg-green text-panel',
         status === 'in_progress' && 'border-green text-green motion-safe:animate-ccpulse',
         status === 'pending' && 'border-term-track text-subtle',

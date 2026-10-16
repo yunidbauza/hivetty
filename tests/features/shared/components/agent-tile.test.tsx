@@ -34,6 +34,13 @@ describe('AgentTile', () => {
     expect(tile('working', 2).querySelector('b')).toHaveTextContent('2');
   });
 
+  it('grows its count into a pill for two digits instead of crowding the badge (HIVE-226)', () => {
+    const badge = tile('working', 12).querySelector('b');
+    expect(badge).toHaveTextContent('12');
+    expect(badge).toHaveClass('h-[17px]', 'min-w-[17px]', 'px-1', 'rounded-full');
+    expect(badge).not.toHaveClass('size-[17px]');
+  });
+
   it('is decoration, hidden from assistive tech', () => {
     expect(tile('resting')).toHaveAttribute('aria-hidden', 'true');
   });

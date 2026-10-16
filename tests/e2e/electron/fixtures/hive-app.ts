@@ -12,6 +12,8 @@ import {
 
 import { goToOvermind, overmindNewSession } from '../../fixtures/places';
 
+import { STUB_PR, STUB_REPO } from './gh-stub';
+
 /**
  * The Electron fixture — the ONLY place this suite touches Electron-specific
  * Playwright API (story 085).
@@ -335,7 +337,13 @@ const STUB_CLAUDE_COMMAND = 'true; false';
  */
 export function writeProjectConfig(
   configPath: string,
-  { id, name, path }: { id: string; name?: string; path: string },
+  {
+    id,
+    name,
+    path,
+    env,
+    importLoginEnv,
+  }: { id: string; name?: string; path: string; env?: Record<string, string>; importLoginEnv?: boolean },
 ): void {
   writeFileSync(
     configPath,
@@ -343,8 +351,54 @@ export function writeProjectConfig(
       version: 2,
       shell: '/bin/sh',
       claudeCommand: STUB_CLAUDE_COMMAND,
+      ...(env === undefined ? {} : { env }),
+      ...(importLoginEnv === undefined ? {} : { importLoginEnv }),
       projects: [{ id, name: name ?? id, path, icon: 'ph-cube' }],
     }),
+  );
+}
+
+const pad = (value: number): string => String(value).padStart(2, '0');
+
+/** `2026-08-28`, local time, as the ledger store names its day files. */
+const ledgerDay = (at: Date): string =>
+  `${String(at.getFullYear())}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+
+/** The store's id for an entry written at `ms`: `20260828-141530-0001`, local time. */
+const ledgerId = (ms: number): string => {
+  const at = new Date(ms);
+  return `${ledgerDay(at).replaceAll('-', '')}-${pad(at.getHours())}${pad(at.getMinutes())}${pad(at.getSeconds())}-0001`;
+};
+
+/**
+ * One shipper visit to the stub PR, eight days long and still held (HIVE-226),
+ * written into **today's** ledger file: the store loads only today and
+ * yesterday, so a backdated entry lives in today's file under a backdated id.
+ * No `release` and no `closed`, so the PR page draws the long ship track.
+ */
+export function seedShipTrack(configPath: string, now = Date.now()): void {
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const pr = { repo: STUB_REPO, pr: STUB_PR };
+  const visit: [age: number, kind: 'claim' | 'post', body: string, meta: Record<string, unknown>][] = [
+    [8 * DAY, 'claim', '', { task: `${STUB_REPO}#${String(STUB_PR)}` }],
+    [8 * DAY - HOUR, 'post', 'self-review', { ...pr, stage: 'self-review' }],
+    [6 * DAY, 'post', 'fix-self', { ...pr, stage: 'fix-self' }],
+    [4 * DAY, 'post', 'ready', { ...pr, stage: 'ready' }],
+    [2 * DAY, 'post', 'ci', { ...pr, stage: 'ci' }],
+    [DAY, 'post', 'findings', { ...pr, stage: 'findings' }],
+    [HOUR, 'post', 'approval', { ...pr, stage: 'approval' }],
+  ];
+  const file = join(dirname(configPath), 'ledger', `${ledgerDay(new Date(now))}.jsonl`);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(
+    file,
+    visit
+      .map(([age, kind, body, meta]) => {
+        const ts = now - age;
+        return `${JSON.stringify({ id: ledgerId(ts), ts, from: 'shipper', kind, body, meta })}\n`;
+      })
+      .join(''),
   );
 }
 

@@ -50,4 +50,14 @@ describe('onTablistKeyDown (HIVE-225)', () => {
     expect(unhandled).toBe(true); // not default-prevented
     expect(onPick).not.toHaveBeenCalled();
   });
+
+  it.each(['metaKey', 'ctrlKey', 'altKey', 'shiftKey'] as const)('leaves a %s-modified arrow alone', (modifier) => {
+    const onPick = vi.fn();
+    render(<Strip onPick={onPick} />);
+    tab('Two').focus();
+    const unhandled = fireEvent.keyDown(tab('Two'), { key: 'ArrowRight', [modifier]: true });
+    expect(unhandled).toBe(true); // not default-prevented
+    expect(tab('Two')).toHaveFocus();
+    expect(onPick).not.toHaveBeenCalled();
+  });
 });

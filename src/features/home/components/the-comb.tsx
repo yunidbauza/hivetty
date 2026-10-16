@@ -18,8 +18,13 @@ export const toCombInput = (e: CombEntity): CombInput => ({
   progress: e.total ? (e.done ?? 0) / e.total : undefined,
 });
 
-/** The tooltip's left edge in px: beside the cell, never past the canvas's right edge (its 240px max width and 8px spare). */
-export const tooltipLeft = (x: number, k: number): number => Math.min((x + 18) * k, COMB_W * k - 248);
+/** The tooltip's widest, and the gap it keeps from the canvas's right edge. */
+export const TOOLTIP_MAX_W = 240;
+export const TOOLTIP_SPARE = 8;
+
+/** The tooltip's left edge in px: beside the cell, never past the canvas's right edge, never left of its left edge (HIVE-226). */
+export const tooltipLeft = (x: number, k: number): number =>
+  Math.max(0, Math.min((x + 18) * k, COMB_W * k - TOOLTIP_MAX_W - TOOLTIP_SPARE));
 
 const WORD_CLASS: Record<CellState, string> = {
   morphing: 'text-green', summons: 'text-amber-text', failed: 'text-red', burrowed: 'text-subtle', terminal: 'text-muted',
@@ -29,8 +34,8 @@ function CombTooltip({ text, left, top }: { text: CellText; left: number; top: n
   return (
     <div
       role="tooltip"
-      className="pointer-events-none absolute z-10 grid max-w-[240px] gap-0.5 rounded-lg border border-border bg-panel-2 px-2.5 py-2 text-control text-ink shadow-lg"
-      style={{ left, top }}
+      className="pointer-events-none absolute z-10 grid gap-0.5 rounded-lg border border-border bg-panel-2 px-2.5 py-2 text-control text-ink shadow-lg"
+      style={{ left, top, maxWidth: TOOLTIP_MAX_W }}
     >
       <b>{text.title}</b>
       {text.word && text.state ? (

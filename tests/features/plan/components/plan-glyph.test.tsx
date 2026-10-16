@@ -42,4 +42,18 @@ describe('PlanGlyph', () => {
 
     expect(screen.getByRole('img', { name: 'Task 1, done' })).toBeInTheDocument();
   });
+
+  it('grows into a pill for two digits instead of crowding its ring (HIVE-226)', () => {
+    render(<PlanGlyph index={11} status="pending" />);
+
+    const glyph = screen.getByRole('img', { name: 'Task 12, pending' });
+    expect(glyph).toHaveClass('h-4', 'min-w-4', 'px-0.5', 'rounded-full');
+    expect(glyph).not.toHaveClass('size-4');
+  });
+
+  it('keeps a done task a circle: its check never widens the ring (HIVE-226)', () => {
+    render(<PlanGlyph index={11} status="completed" />);
+
+    expect(screen.getByRole('img', { name: 'Task 12, done' })).toHaveClass('size-4');
+  });
 });

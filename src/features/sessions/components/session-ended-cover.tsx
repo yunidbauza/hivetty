@@ -52,6 +52,7 @@ export function SessionEndedCover({ session }: { session: Session }) {
     <div data-testid="session-ended-cover" className="absolute inset-0 z-10 flex items-center justify-center bg-scrim">
       <section
         aria-label="Session ended"
+        // max-w: an untested guard. The 420px card fits the 520px stage floor with or without it; it only bites below about 452px, which no e2e can reach (HIVE-226).
         className="relative w-[420px] max-w-[calc(100%-2rem)] rounded-lg border border-border-soft bg-panel p-5 shadow-lg"
       >
         <button
