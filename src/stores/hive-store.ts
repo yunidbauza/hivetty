@@ -148,6 +148,7 @@ import {
   type JiraTransition,
 } from '@shared/jira-contract';
 import {
+  LEDGER_ASK_TTL_MS,
   LEDGER_MEMORY_CAP,
   OVERMIND,
   type LedgerEntry,
@@ -808,9 +809,10 @@ interface HiveState {
    * here would never come back.
    *
    * `closed` is the snapshot's `closedAsks` (HIVE-198), merged into the
-   * closed set the same way.
+   * closed set the same way. `open` is its `openAsks`, read from main's whole
+   * log, so an ask older than the snapshot's entries still reaches the mirror.
    */
-  hydrateLedger: (entries: LedgerEntry[], closed?: readonly string[]) => void;
+  hydrateLedger: (entries: LedgerEntry[], closed?: readonly string[], open?: readonly OpenAsk[]) => void;
   /** One entry landed — append it to the tail. */
   ledgerAppend: (entry: LedgerEntry) => void;
   /** One session's plan changed; `null` means it has none any more (HIVE-179). */
@@ -1061,6 +1063,24 @@ const withClosed = (closed: ReadonlySet<string>, entries: readonly LedgerEntry[]
   const found = closedAskThreads(entries);
   if ([...found].every((thread) => closed.has(thread))) return closed;
   return new Set([...closed, ...found]);
+};
+
+/**
+ * The mirror's cap, with open asks exempt.
+ *
+ * A busy day writes more than {@link LEDGER_MEMORY_CAP} entries, and an ask
+ * cut by recency alone left its inbox card with nothing to answer through
+ * while the asker kept waiting on it. An ask older than the cut stays until it
+ * closes or expires; there are only ever a handful, so the mirror stays bounded.
+ */
+const capLedger = (entries: LedgerEntry[], closed: ReadonlySet<string>): LedgerEntry[] => {
+  const cut = entries.length - LEDGER_MEMORY_CAP;
+  if (cut <= 0) return entries;
+  const expired = Date.now() - LEDGER_ASK_TTL_MS;
+  const open = entries
+    .slice(0, cut)
+    .filter((entry) => entry.kind === 'ask' && !closed.has(entry.id) && entry.ts > expired);
+  return [...open, ...entries.slice(cut)];
 };
 
 /**
@@ -2001,7 +2021,11 @@ const ATTACH_SNAPSHOT_HANDLERS: Partial<
   [CH.agentsList]: (value, store) =>
     store.hydrateAgents((value as AgentsSnapshot).agents),
   [CH.ledgerList]: (value, store) =>
-    store.hydrateLedger((value as LedgerSnapshot).entries, (value as LedgerSnapshot).closedAsks),
+    store.hydrateLedger(
+      (value as LedgerSnapshot).entries,
+      (value as LedgerSnapshot).closedAsks,
+      (value as LedgerSnapshot).openAsks,
+    ),
   [CH.plansList]: (value, store) => store.hydratePlans((value as PlansSnapshot).plans),
   [CH.changedFilesList]: (value, store) =>
     store.hydrateChangedFiles((value as ChangedFilesSnapshot).sessions),
@@ -3971,8 +3995,10 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       },
     })),
 
-  hydrateLedger: (entries, closed = []) =>
+  hydrateLedger: (snapshot, closed = [], open = []) =>
     set((state) => {
+      // `open`/`ageMs` are derived at read time and go stale in a mirror.
+      const entries = [...snapshot, ...open.map(({ open: _open, ageMs: _ageMs, ...ask }) => ask)];
       /**
        * Union, not replacement — `hydrateNotifs`' reason, with one difference
        * that makes it sharper.
@@ -3988,32 +4014,29 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * `since` and the store's own load-time sort already rely on.
        */
       const seen = new Set(state.ledger.map((entry) => entry.id));
-      const merged = [
-        ...state.ledger,
-        ...entries.filter((entry) => !seen.has(entry.id)),
-      ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      // `add` as it goes: an open ask is usually in the snapshot's entries too.
+      const fresh = entries.filter((entry) => !seen.has(entry.id) && seen.add(entry.id));
+      const merged = [...state.ledger, ...fresh].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      /*
+        The snapshot's own closed threads first (HIVE-198): a close older
+        than main's tail is in neither `entries` nor the mirror, and a
+        window opened after it would otherwise count the ask as open.
+      */
+      const closedAsks = withClosed(
+        closed.every((thread) => state.closedAsks.has(thread))
+          ? state.closedAsks
+          : new Set([...state.closedAsks, ...closed]),
+        entries,
+      );
 
-      return {
-        ledger: merged.slice(-LEDGER_MEMORY_CAP),
-        /*
-          The snapshot's own closed threads first (HIVE-198): a close older
-          than main's tail is in neither `entries` nor the mirror, and a
-          window opened after it would otherwise count the ask as open.
-        */
-        closedAsks: withClosed(
-          closed.every((thread) => state.closedAsks.has(thread))
-            ? state.closedAsks
-            : new Set([...state.closedAsks, ...closed]),
-          entries,
-        ),
-      };
+      return { ledger: capLedger(merged, closedAsks), closedAsks };
     }),
 
   ledgerAppend: (entry) =>
-    set((state) => ({
-      ledger: [...state.ledger, entry].slice(-LEDGER_MEMORY_CAP),
-      closedAsks: withClosed(state.closedAsks, [entry]),
-    })),
+    set((state) => {
+      const closedAsks = withClosed(state.closedAsks, [entry]);
+      return { ledger: capLedger([...state.ledger, entry], closedAsks), closedAsks };
+    }),
 
   answerAsk: async (thread, body, meta) =>
     window.hive?.ledger.answer({

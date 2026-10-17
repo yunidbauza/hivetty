@@ -56,6 +56,22 @@ describe('useLedgerSync', () => {
     });
   });
 
+  it('hands the snapshot’s open asks to the store', async () => {
+    const ask = { ...entry('q1'), kind: 'ask', ts: Date.now(), open: true, ageMs: 0 };
+    (window as { hive?: unknown }).hive = {
+      ledger: {
+        list: vi.fn().mockResolvedValue({ entries: [], openAsks: [ask], claims: {} }),
+        onChanged: vi.fn().mockReturnValue(() => {}),
+      },
+    };
+
+    renderHook(() => useLedgerSync());
+
+    await waitFor(() => {
+      expect(useHiveStore.getState().ledger.map((found) => found.id)).toEqual(['q1']);
+    });
+  });
+
   it('appends what the push channel delivers', async () => {
     let deliver: ((entry: LedgerEntry) => void) | undefined;
     (window as { hive?: unknown }).hive = {

@@ -19,7 +19,7 @@ import type {
   RunSummary,
 } from '@shared/agent-contract';
 import type { RemoteLinkStatus } from '@shared/ipc-contract';
-import { LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
+import { LEDGER_ASK_TTL_MS, LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
 import { isDesktop } from '@config/runtime';
 import {
   projectConfigSnapshot,
@@ -5470,6 +5470,66 @@ describe('the ledger slice', () => {
     expect(kept).toHaveLength(LEDGER_MEMORY_CAP);
     expect(kept[kept.length - 1].id).toBe('zzzzz');
     expect(kept[0].id).toBe('00001');
+  });
+
+  /**
+   * An open ask outlives the cap. A busy day writes more than the cap holds
+   * (476 shipper events in 20h on one machine), and an ask pushed out of the
+   * mirror left its inbox card with no controls while the asker waited on it.
+   */
+  describe('an open ask past the cap', () => {
+    const NOW = 1_800_000_000_000;
+    const posts = (count: number) =>
+      Array.from({ length: count }, (_, index) => entry({ id: `p${String(index).padStart(5, '0')}`, ts: NOW }));
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => vi.useRealTimers());
+
+    it('keeps it when appends push it out', () => {
+      useHiveStore.getState().hydrateLedger([entry({ id: 'a0', kind: 'ask', ts: NOW })]);
+      posts(LEDGER_MEMORY_CAP).forEach((post) => useHiveStore.getState().ledgerAppend(post));
+
+      const kept = useHiveStore.getState().ledger;
+      expect(kept[0].id).toBe('a0');
+      expect(kept).toHaveLength(LEDGER_MEMORY_CAP + 1);
+    });
+
+    it('keeps it when a hydrate pushes it out', () => {
+      useHiveStore.getState().hydrateLedger([entry({ id: 'a0', kind: 'ask', ts: NOW }), ...posts(LEDGER_MEMORY_CAP)]);
+
+      expect(useHiveStore.getState().ledger[0].id).toBe('a0');
+    });
+
+    it('drops it once it is answered', () => {
+      useHiveStore.getState().hydrateLedger([entry({ id: 'a0', kind: 'ask', ts: NOW })]);
+      useHiveStore.getState().ledgerAppend(entry({ id: 'a1', kind: 'answer', thread: 'a0', ts: NOW }));
+      posts(LEDGER_MEMORY_CAP).forEach((post) => useHiveStore.getState().ledgerAppend(post));
+
+      expect(useHiveStore.getState().ledger.some((found) => found.id === 'a0')).toBe(false);
+    });
+
+    it('drops it once it has expired', () => {
+      useHiveStore
+        .getState()
+        .hydrateLedger([entry({ id: 'a0', kind: 'ask', ts: NOW - LEDGER_ASK_TTL_MS - 1 }), ...posts(LEDGER_MEMORY_CAP)]);
+
+      expect(useHiveStore.getState().ledger.some((found) => found.id === 'a0')).toBe(false);
+    });
+
+    it('recovers one only the snapshot’s open asks still name', () => {
+      useHiveStore
+        .getState()
+        .hydrateLedger(posts(3), [], [{ ...entry({ id: 'a0', kind: 'ask', ts: NOW }), kind: 'ask', open: true, ageMs: 5 }]);
+
+      const kept = useHiveStore.getState().ledger;
+      expect(kept.map((found) => found.id)).toEqual(['a0', 'p00000', 'p00001', 'p00002']);
+      // The derived fields stay with the snapshot; the mirror holds plain entries.
+      expect(kept[0]).not.toHaveProperty('ageMs');
+    });
   });
 
   it('filters entries through the shared query rules', () => {
