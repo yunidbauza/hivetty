@@ -148,7 +148,6 @@ import {
   type JiraTransition,
 } from '@shared/jira-contract';
 import {
-  LEDGER_ASK_TTL_MS,
   LEDGER_MEMORY_CAP,
   OVERMIND,
   type LedgerEntry,
@@ -1070,16 +1069,16 @@ const withClosed = (closed: ReadonlySet<string>, entries: readonly LedgerEntry[]
  *
  * A busy day writes more than {@link LEDGER_MEMORY_CAP} entries, and an ask
  * cut by recency alone left its inbox card with nothing to answer through
- * while the asker kept waiting on it. An ask older than the cut stays until it
- * closes or expires; there are only ever a handful, so the mirror stays bounded.
+ * while the asker kept waiting on it. An ask older than the cut stays until
+ * `closed` names it. That covers expiry too: main's sweep writes an overmind
+ * event `closedAskThreads` counts, so no clock here second-guesses a held
+ * ask's week or a shorter `meta.ttlMs`. Few asks are open at once, so the
+ * mirror stays bounded.
  */
 const capLedger = (entries: LedgerEntry[], closed: ReadonlySet<string>): LedgerEntry[] => {
   const cut = entries.length - LEDGER_MEMORY_CAP;
   if (cut <= 0) return entries;
-  const expired = Date.now() - LEDGER_ASK_TTL_MS;
-  const open = entries
-    .slice(0, cut)
-    .filter((entry) => entry.kind === 'ask' && !closed.has(entry.id) && entry.ts > expired);
+  const open = entries.slice(0, cut).filter((entry) => entry.kind === 'ask' && !closed.has(entry.id));
   return [...open, ...entries.slice(cut)];
 };
 

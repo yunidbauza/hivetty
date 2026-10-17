@@ -7,7 +7,7 @@
 >   `editor-store` (buffers).
 > - Only `appearance-store` persists, to `localStorage`.
 > - Components read through named selector hooks, never the store object or `getState()`.
-> - The ledger mirror merges by id and is capped at 500. Notifications cap at 50.
+> - The ledger mirror merges by id and is capped at 500, open asks exempt. Notifications cap at 50.
 > - The fleet boots empty; last run's ended sessions arrive from main.
 
 <picture>
@@ -117,11 +117,13 @@ whose authority lives in the other process, and that shapes both of its actions:
   permanently — the hook mounts once at the composition root and never remounts,
   so there is no second hydrate to recover it. Entries are kept sorted by `id`,
   which is fixed-width and sorts as a string in write order.
-- **`hydrateLedger(entries, closed?)`** also merges the snapshot's
+- **`hydrateLedger(entries, closed?, open?)`** also merges the snapshot's
   `closedAsks` (HIVE-198) into the closed set. `LedgerSnapshot.closedAsks` is
   every ask thread closed anywhere in main's log: a window opened after an
   ask's closing entry left the tail would otherwise count it open in the pill
   and the dock. Optional on the wire, so an older peer still speaks the shape.
+  `open` is the snapshot's `openAsks`, main's reading of the whole log, so an
+  ask older than the snapshot's entries still reaches the mirror.
 - **`ledgerAppend(entry)`** is the push channel's only entry point. Nothing in
   the renderer writes to this slice directly; a write goes out over IPC and comes
   back on the channel, so the mirror can only ever hold what the log holds.
@@ -133,23 +135,23 @@ openness or claims is stored. They call the same pure functions in
 log, which is what stops "what counts as an open ask" from having two
 definitions.
 
-**The rule cannot drift; the input can, and does.** `useLedgerSync` throws
-away the `openAsks` main computed over the *whole* log and keeps only
-`snapshot.entries`, and both `hydrateLedger` and `ledgerAppend` then trim the
-mirror to the newest 500 entries (`LEDGER_MEMORY_CAP`). So an ask that is
-genuinely still open — unanswered, and inside its 24h TTL — but older than the
-500 newest entries has been evicted from the mirror, and `useOpenAskCount`
-simply will not see it. `useThread(id)` loses an evicted ask
-the same way and shows the replies without the question. On a quiet machine 500
-entries is days of correspondence and the mirror and the log agree; on a busy
-one the renderer's view is **capped and best-effort**, and the authoritative
-answer is the one main gives — `window.hive.ledger.list()` with a query, which
-reads the real log.
+**The rule cannot drift; the input can.** Both `hydrateLedger` and
+`ledgerAppend` trim the mirror to the newest 500 entries
+(`LEDGER_MEMORY_CAP`), with one exemption: an ask older than the cut stays
+until the closed set names it. A busy day writes more than 500 entries, and an
+ask cut by recency alone left its inbox card with no controls while its asker
+waited. Expiry needs no clock here: main's sweep writes an overmind event that
+`closedAskThreads` counts as a close, so a held ask's week and a shorter
+`meta.ttlMs` are main's to decide. Everything else in the mirror is **capped
+and best-effort**: `useThread(id)` can still lose an answered thread's
+question, and the authoritative answer is the one main gives —
+`window.hive.ledger.list()` with a query, which reads the real log.
 
-Storing `openAsks` would not fix it and is not the trade on offer: derived
-values are computed in selectors, never stored, everywhere in this codebase, and
-a stored copy would go stale the moment an answer landed. A consumer that must
-be right about an old ask asks main.
+The snapshot's `openAsks` enter the mirror as plain entries, their derived
+`open`/`ageMs` stripped: openness itself is never stored. Derived values are
+computed in selectors everywhere in this codebase, and a stored copy would go
+stale the moment an answer landed. A consumer that must be right about an old
+thread asks main.
 
 The deep-dive is [`docs/agents-and-ledger.md`](agents-and-ledger.md).
 

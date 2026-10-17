@@ -19,7 +19,7 @@ import type {
   RunSummary,
 } from '@shared/agent-contract';
 import type { RemoteLinkStatus } from '@shared/ipc-contract';
-import { LEDGER_ASK_TTL_MS, LEDGER_MEMORY_CAP, type LedgerEntry } from '@shared/ledger-contract';
+import { LEDGER_ASK_TTL_MS, LEDGER_MEMORY_CAP, OVERMIND, type LedgerEntry } from '@shared/ledger-contract';
 import { isDesktop } from '@config/runtime';
 import {
   projectConfigSnapshot,
@@ -5512,12 +5512,26 @@ describe('the ledger slice', () => {
       expect(useHiveStore.getState().ledger.some((found) => found.id === 'a0')).toBe(false);
     });
 
-    it('drops it once it has expired', () => {
-      useHiveStore
-        .getState()
-        .hydrateLedger([entry({ id: 'a0', kind: 'ask', ts: NOW - LEDGER_ASK_TTL_MS - 1 }), ...posts(LEDGER_MEMORY_CAP)]);
+    it('drops it once main has retired it as expired', () => {
+      useHiveStore.getState().hydrateLedger([
+        entry({ id: 'a0', kind: 'ask', ts: NOW }),
+        entry({ id: 'e0', from: OVERMIND, kind: 'event', ts: NOW, meta: { expired: 'a0' } }),
+        ...posts(LEDGER_MEMORY_CAP),
+      ]);
 
       expect(useHiveStore.getState().ledger.some((found) => found.id === 'a0')).toBe(false);
+    });
+
+    /*
+      Main alone decides expiry: a held ask (`meta.after`) stays open up to a
+      week, a released one ages from its release, and `meta.ttlMs` can shorten
+      it. A renderer-side clock would drop an ask main still reports open.
+    */
+    it('keeps a held ask past a day, while main still holds it open', () => {
+      const held = entry({ id: 'a0', kind: 'ask', ts: NOW - 2 * LEDGER_ASK_TTL_MS, meta: { after: 'acme/nova#4' } });
+      useHiveStore.getState().hydrateLedger([held, ...posts(LEDGER_MEMORY_CAP)]);
+
+      expect(useHiveStore.getState().ledger[0].id).toBe('a0');
     });
 
     it('recovers one only the snapshot’s open asks still name', () => {
