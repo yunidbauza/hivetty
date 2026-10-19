@@ -259,6 +259,23 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.fileAt).toBe(fileAt);
   });
 
+  it('keeps a newer plan-mode plan at a Stop when the plan file is unchanged', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+    // A finished file plan is the only one a plan-mode plan replaces.
+    writeFileSync(file, PLAN_TEXT.replaceAll('- [ ]', '- [x]'));
+    await plans.onTool(fileCall());
+    await plans.onTool(planMode('1. Fresh\n2. Newer'));
+    expect(plans.get('sess-01')?.source).toBe('plan-mode');
+    send.mockClear();
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(plans.get('sess-01')?.source).toBe('plan-mode');
+  });
+
   it('reads nothing at a Stop for a session with no plan file', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });

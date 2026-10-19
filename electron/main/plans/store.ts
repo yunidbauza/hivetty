@@ -104,8 +104,9 @@ export function createPlans({
     }
     const last = planFiles.get(call.entityId);
     const shown = plans.get(call.entityId);
-    // Unchanged and still on screen: nothing to publish, and its time stands.
-    if (shown?.source === 'plan-file' && shown.file === read.file && last?.text === read.text) return;
+    // Unchanged and a plan on screen, whatever its source: nothing to publish,
+    // its time stands, and a newer plan is not displaced by the old file.
+    if (shown !== undefined && last?.file === read.file && last.text === read.text) return;
     const tasks = parsePlanFile(read.text);
     if (tasks.length === 0) return;
     const at = now();
