@@ -455,6 +455,13 @@ startup and merges an allowlist — `PATH`, `GH_TOKEN`, `GITHUB_TOKEN` — back 
 `process.env`. `main/index.ts` starts it before the handlers are registered and
 never awaits it, so a slow rc file cannot delay the first window.
 
+A failed probe is tried again 30 seconds, 2 minutes and 10 minutes later. After a
+cold boot the shell can outrun its 5-second timeout, and a `PATH` left as
+launchd's refuses every agent wake for want of `claude` until the app is
+relaunched. A retry replaces the memoised status only once it starts, so no
+reader waits on the delay. The pty host forked before a late success keeps the
+old `PATH`; sessions run in a login shell, so they do not depend on it.
+
 **`process.env` is the seam on purpose.** Every consumer already reads it lazily,
 at call time — the `gh` probe, `resolveGit`, the command diagnostic, and the base
 environment of every session — so repairing the one value they derive from fixes

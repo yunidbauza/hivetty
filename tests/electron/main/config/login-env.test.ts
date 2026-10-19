@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   importLoginEnv,
@@ -13,6 +13,7 @@ import {
   resetLoginEnvImport,
   runLoginShell,
   startLoginEnvImport,
+  type RunLoginShell,
 } from '../../../../electron/main/config/login-env';
 import {
   LOGIN_ENV_DELIMITER,
@@ -562,6 +563,57 @@ describe('startLoginEnvImport', () => {
     await loginEnvStatus();
 
     expect(target.PATH).toBe(['/opt/homebrew/bin', '/usr/bin'].join(delimiter));
+  });
+
+  /*
+    A probe that fails at boot used to fail for the life of the app. After a
+    cold boot the login shell outran its timeout, `PATH` stayed launchd's, and
+    every agent wake was refused for want of `claude` until a relaunch (10-17).
+  */
+  it('retries a failed import later, so a probe that timed out at boot still repairs PATH', async () => {
+    vi.useFakeTimers();
+    try {
+      const target: NodeJS.ProcessEnv = { PATH: '/usr/bin' };
+      let calls = 0;
+      const run: RunLoginShell = () => {
+        calls += 1;
+        if (calls === 1) return Promise.reject(new Error('Command failed: timed out'));
+        return Promise.resolve({ stdout: transcript(['PATH=/opt/homebrew/bin']) });
+      };
+
+      const first = await startLoginEnvImport({ enabled: true, shell: '/bin/zsh', target, run, cwd: dir });
+
+      expect(first.error).not.toBeNull();
+      expect(target.PATH).toBe('/usr/bin');
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect((await loginEnvStatus()).error).toBeNull();
+      expect(target.PATH).toBe(['/opt/homebrew/bin', '/usr/bin'].join(delimiter));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying after its last attempt', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const run: RunLoginShell = () => {
+        calls += 1;
+        return Promise.reject(new Error('Command failed: timed out'));
+      };
+
+      await startLoginEnvImport({ enabled: true, shell: '/bin/zsh', target: { PATH: '/usr/bin' }, run, cwd: dir });
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+      const settled = calls;
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000);
+
+      expect(settled).toBeGreaterThan(1);
+      expect(calls).toBe(settled);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers "disabled" when nothing ever started an import', async () => {
