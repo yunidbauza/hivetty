@@ -231,6 +231,95 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
   });
 
+  /*
+    A tick made by a shell edit fires no Write or Edit hook, so the turn's end
+    re-reads the file the session last read (the 0 of 4 panel, 10-19).
+  */
+  it('re-reads the session plan file at a Stop, so a shell edit reaches the panel', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await plans.onTool(fileCall());
+
+    writeFileSync(file, PLAN_TEXT.replace('- [ ] two', '- [x] two'));
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
+  });
+
+  it('publishes nothing at a Stop when the plan file is unchanged', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+    await plans.onTool(fileCall());
+    const fileAt = plans.get('sess-01')?.fileAt;
+    send.mockClear();
+    vi.advanceTimersByTime(60_000);
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(plans.get('sess-01')?.fileAt).toBe(fileAt);
+  });
+
+  it('keeps a newer plan-mode plan at a Stop when the plan file is unchanged', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+    // A finished file plan is the only one a plan-mode plan replaces.
+    writeFileSync(file, PLAN_TEXT.replaceAll('- [ ]', '- [x]'));
+    await plans.onTool(fileCall());
+    await plans.onTool(planMode('1. Fresh\n2. Newer'));
+    expect(plans.get('sess-01')?.source).toBe('plan-mode');
+    send.mockClear();
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(plans.get('sess-01')?.source).toBe('plan-mode');
+  });
+
+  /*
+    A file read while a live task-tools plan holds the panel is turned away by
+    rank. Its text must not count as shown, or the unchanged-file skip keeps
+    it hidden after that plan finishes (acr on #331).
+  */
+  it('shows a plan file a live task-tools plan turned away, once that plan finishes', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    plans.onTool(create('1', 'A'));
+    await plans.onTool(fileCall());
+    expect(plans.get('sess-01')?.source).toBe('task-tools');
+
+    plans.onTool(update('1', 'completed'));
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.source).toBe('plan-file');
+  });
+
+  /*
+    A file turned away by rank is re-read at every Stop. Its time is when it
+    was written, so an unchanged re-read must not restamp it, or the label a
+    task-tools plan carries drifts to the last turn end (acr on #332).
+  */
+  it('keeps a turned-away plan file\'s time across Stops while its text is unchanged', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    plans.onTool(create('1', 'A'));
+    await plans.onTool(fileCall());
+    const written = Date.now();
+
+    vi.advanceTimersByTime(60_000);
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    plans.onTool(create('2', 'B'));
+
+    expect(plans.get('sess-01')?.fileAt).toBe(written);
+  });
+
+  it('reads nothing at a Stop for a session with no plan file', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('reads a truncated write the same way', async () => {
     const plans = createPlans({ send: vi.fn() });
 

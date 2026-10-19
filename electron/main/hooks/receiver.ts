@@ -1968,6 +1968,25 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       }
     }
 
+    /*
+      A turn's end, so the store re-reads the session's plan file: a step
+      ticked by a shell edit fires no Write or Edit to hand over above. `Stop`
+      is the main agent's only; a subagent's is `SubagentStop`.
+    */
+    if (event === 'Stop') {
+      try {
+        onPlanTool({
+          entityId,
+          toolName: 'Stop',
+          toolInput: undefined,
+          toolResponse: undefined,
+          ...(typeof cwd === 'string' && cwd !== '' ? { cwd } : {}),
+        });
+      } catch (cause) {
+        console.error('[hive] onPlanTool threw; the plan missed one re-read:', cause);
+      }
+    }
+
     /**
      * The intent goes out **before** the status (HIVE-78).
      *

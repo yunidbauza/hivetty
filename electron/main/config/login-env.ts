@@ -359,10 +359,36 @@ export async function importLoginEnv({
  */
 let inFlight: Promise<LoginEnvStatus> | null = null;
 
+/**
+ * When a failed import is tried again, after the first.
+ *
+ * A probe that failed used to stay failed for the life of the app. After a
+ * cold boot a login shell can outrun {@link TIMEOUT_MS} while it answers in
+ * under two seconds a minute later, and with `PATH` left as launchd's every
+ * agent wake was refused for want of `claude` until a relaunch (10-17). A
+ * retry swaps `inFlight` only once it starts, so a reader is never held
+ * behind a delay.
+ */
+const RETRY_DELAYS_MS = [30_000, 120_000, 600_000];
+
+let retrying: ReturnType<typeof setTimeout> | undefined;
+
 export function startLoginEnvImport(
   options: ImportLoginEnvOptions,
 ): Promise<LoginEnvStatus> {
-  inFlight ??= importLoginEnv(options);
+  const attempt = (n: number): Promise<LoginEnvStatus> =>
+    importLoginEnv(options).then((status) => {
+      const delay = RETRY_DELAYS_MS[n];
+      if (status.error !== null && delay !== undefined) {
+        retrying = setTimeout(() => {
+          inFlight = attempt(n + 1);
+        }, delay);
+        retrying.unref?.();
+      }
+      return status;
+    });
+
+  inFlight ??= attempt(0);
   return inFlight;
 }
 
@@ -389,5 +415,7 @@ export async function loginEnvStatus(): Promise<LoginEnvStatus> {
 
 /** Test seam: forget the memoised import so the next call starts a fresh one. */
 export function resetLoginEnvImport(): void {
+  clearTimeout(retrying);
+  retrying = undefined;
   inFlight = null;
 }

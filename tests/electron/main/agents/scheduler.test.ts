@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createScheduler, triggerFor } from '../../../../electron/main/agents/scheduler';
 import { createAgentState } from '../../../../electron/main/agents/state';
@@ -47,6 +47,8 @@ describe('createScheduler', () => {
    * which it was could not drive that difference.
    */
   let refuse: 'working' | 'paused' | 'saturated' | 'invalid' | false;
+  /** The `reason` a refusal carries, as `RunTracker` gives one for `invalid`. */
+  let refuseReason: string | undefined;
   /**
    * Refuses `'saturated'` on the one `run` call whose zero-based index
    * matches, and lets every other call through (HIVE-128). What `flush`'s
@@ -86,7 +88,13 @@ describe('createScheduler', () => {
 
         if (reenter) scheduler.onRunClosed(name);
         if (refuseAfter === call) return { started: false, refused: 'saturated' };
-        if (refuse !== false) return { started: false, refused: refuse };
+        if (refuse !== false) {
+          return {
+            started: false,
+            refused: refuse,
+            ...(refuseReason === undefined ? {} : { reason: refuseReason }),
+          };
+        }
         if (liveLanes?.has(options?.lane ?? 'standing') === true) return { started: false, refused: 'working' };
 
         woke.push({
@@ -139,6 +147,7 @@ describe('createScheduler', () => {
     appendOk = true;
     schedules = new Map();
     refuse = false;
+    refuseReason = undefined;
     refuseAfter = undefined;
     runCalls = 0;
     parallel = 1;
@@ -1137,6 +1146,8 @@ describe('createScheduler', () => {
     it.each(['working', 'paused', 'asking'] as const)(
       'takes no scheduled wake while %s',
       (status) => {
+        // Asking on an open ask: one with none left is stale, and resumes.
+        entries.push(entry({ from: AGENT, to: 'overmind', ts: NOON - 1_000 }));
         state.patch(AGENT, { status, nextRunAt: NOON });
         schedules.set(AGENT, { wake: every5m });
 
@@ -1152,6 +1163,7 @@ describe('createScheduler', () => {
       spends it as a single catch-up wake — the same path the boot case takes.
     */
     it('leaves an asking agent its stale next run, to spend when it resumes', () => {
+      entries.push(entry({ from: AGENT, to: 'overmind', ts: NOON - 1_000 }));
       state.patch(AGENT, { status: 'asking', nextRunAt: NOON - 60_000 });
       schedules.set(AGENT, { wake: every5m });
 
@@ -1444,6 +1456,8 @@ describe('createScheduler', () => {
       state.patch(AGENT, {
         pendingWake: [{ id: 'a1', kind: 'ask', from: 'overmind' }],
       });
+      // The sweep's retry is refused, so the queue is still standing at the tick.
+      refuseAfter = runCalls;
 
       tick();
 
@@ -1814,6 +1828,109 @@ describe('createScheduler', () => {
 
       expect(state.read(AGENT).skipsSinceRun).toBe(1);
       expect(state.read(AGENT).nextRunAt).toBe(NOON + 300_000);
+    });
+  });
+
+  /*
+    A refused wake used to wait for a run close, a resume or a boot. An
+    `asking` agent gets none of those, and the tick skipped it too, so a
+    single refusal stranded its queue for good (the Slack agent, 10-17).
+  */
+  describe('a refused wake with no run close coming', () => {
+    const asked: LedgerEntry = {
+      id: 'a21',
+      ts: 0,
+      from: AGENT,
+      to: 'overmind',
+      kind: 'ask',
+      ref: 'a21',
+      body: 'send this reply?',
+    };
+    const expiry: LedgerEntry = {
+      id: 'e1',
+      ts: LEDGER_ASK_TTL_MS,
+      from: 'overmind',
+      to: AGENT,
+      kind: 'event',
+      thread: 'a21',
+      body: 'ask a21 expired',
+      meta: { expired: 'a21' },
+    };
+
+    it('retries the queue on the next tick, so an asking agent hears its expiry', () => {
+      entries = [asked];
+      clock = LEDGER_ASK_TTL_MS;
+      state.patch(AGENT, { status: 'asking' });
+      refuse = 'invalid';
+      scheduler.start();
+      tick();
+
+      expect(woke).toEqual([]);
+      expect(state.read(AGENT).pendingWake).toEqual([
+        { kind: 'expired', id: 'a21', from: 'overmind', ref: 'a21' },
+      ]);
+
+      entries = [asked, expiry];
+      refuse = false;
+      tick();
+
+      expect(woke).toEqual([
+        { name: AGENT, trigger: 'ledger', extra: 'expired a21 from overmind — your ask a21 expired unanswered' },
+      ]);
+      expect(state.read(AGENT).pendingWake).toEqual([]);
+    });
+
+    it('never retries a paused agent', () => {
+      state.patch(AGENT, {
+        status: 'paused',
+        pendingWake: [{ kind: 'ask', id: 'a9', from: 'overmind' }],
+      });
+      scheduler.start();
+      tick();
+
+      expect(runCalls).toBe(0);
+      expect(state.read(AGENT).pendingWake).toHaveLength(1);
+    });
+
+    it('returns an asking agent with no open ask to its schedule', () => {
+      const NOON = new Date(2026, 9, 19, 12).getTime();
+
+      clock = NOON;
+      entries = [asked, expiry];
+      state.patch(AGENT, { status: 'asking', nextRunAt: NOON - 60_000, lastRunAt: NOON - 600_000 });
+      schedules.set(AGENT, { wake: { everyMs: 300_000, check: 'always', on: [] } });
+      scheduler.start();
+      tick();
+
+      expect(state.read(AGENT).status).toBe('sleeping');
+      expect(pushed).toContain(AGENT);
+      expect(woke).toEqual([{ name: AGENT, trigger: 'interval' }]);
+    });
+
+    it('leaves an agent asking while its ask is open', () => {
+      clock = 1_000;
+      entries = [asked];
+      state.patch(AGENT, { status: 'asking' });
+      scheduler.start();
+      tick();
+
+      expect(state.read(AGENT).status).toBe('asking');
+    });
+
+    it('warns a refusal reason once, not every tick', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      state.patch(AGENT, { pendingWake: [{ kind: 'ask', id: 'a9', from: 'overmind' }] });
+      refuse = 'invalid';
+      refuseReason = 'The MCP config has not been written yet.';
+      scheduler.start();
+      tick();
+      tick();
+
+      expect(runCalls).toBe(3);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('The MCP config has not been written yet.'));
+      warn.mockRestore();
     });
   });
 
