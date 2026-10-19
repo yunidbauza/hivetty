@@ -293,6 +293,24 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.source).toBe('plan-file');
   });
 
+  /*
+    A file turned away by rank is re-read at every Stop. Its time is when it
+    was written, so an unchanged re-read must not restamp it, or the label a
+    task-tools plan carries drifts to the last turn end (acr on #332).
+  */
+  it('keeps a turned-away plan file\'s time across Stops while its text is unchanged', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    plans.onTool(create('1', 'A'));
+    await plans.onTool(fileCall());
+    const written = Date.now();
+
+    vi.advanceTimersByTime(60_000);
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    plans.onTool(create('2', 'B'));
+
+    expect(plans.get('sess-01')?.fileAt).toBe(written);
+  });
+
   it('reads nothing at a Stop for a session with no plan file', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });

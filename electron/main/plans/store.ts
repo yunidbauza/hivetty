@@ -50,7 +50,7 @@ export function createPlans({
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
   const refused = new Set<string>();
   /** The last plan file each session read, kept across sources and a finished plan's replacement (HIVE-201). */
-  const planFiles = new Map<string, { file: string; at: number; text?: string }>();
+  const planFiles = new Map<string, { file: string; at: number; read: string; text?: string }>();
 
   const publish = (entityId: string, plan: SessionPlan | null): void => {
     send(CH.planChanged, { entityId, plan } satisfies PlanChangedEvent);
@@ -109,13 +109,16 @@ export function createPlans({
     if (shown !== undefined && last?.file === read.file && last.text === read.text) return;
     const tasks = parsePlanFile(read.text);
     if (tasks.length === 0) return;
-    const at = now();
+    // When the file was written, not when it was last re-read: a turned-away
+    // file is re-read at every Stop, and its time must not drift with them.
+    const at = last?.file === read.file && last.read === read.text ? last.at : now();
     const current = plans.get(call.entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
     planFiles.set(call.entityId, {
       file: read.file,
       at,
+      read: read.text,
       ...(accepts(current, 'plan-file') ? { text: read.text } : {}),
     });
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
