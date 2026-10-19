@@ -4939,6 +4939,14 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
     expect(planCalls).toEqual([]);
   });
 
+  it('hands a Stop to onPlanTool, so the store re-reads the plan file a shell edit changed', async () => {
+    await post({ session_id: '43fa9e8a-46e9-4c16-9b5c-549db8c85ef8', cwd: '/repo', hook_event_name: 'Stop', stop_hook_active: false });
+
+    expect(planCalls).toEqual([
+      { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: '/repo' },
+    ]);
+  });
+
   it('ignores the PreToolUse of a plan-file write', async () => {
     await post(toolBody('Write', { file_path: PLAN_PATH, content: 'x' }, {}, 'PreToolUse'));
 

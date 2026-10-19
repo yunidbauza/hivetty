@@ -50,7 +50,7 @@ export function createPlans({
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
   const refused = new Set<string>();
   /** The last plan file each session read, kept across sources and a finished plan's replacement (HIVE-201). */
-  const planFiles = new Map<string, { file: string; at: number }>();
+  const planFiles = new Map<string, { file: string; at: number; text: string }>();
 
   const publish = (entityId: string, plan: SessionPlan | null): void => {
     send(CH.planChanged, { entityId, plan } satisfies PlanChangedEvent);
@@ -102,10 +102,14 @@ export function createPlans({
       }
       return;
     }
+    const last = planFiles.get(call.entityId);
+    const shown = plans.get(call.entityId);
+    // Unchanged and still on screen: nothing to publish, and its time stands.
+    if (shown?.source === 'plan-file' && shown.file === read.file && last?.text === read.text) return;
     const tasks = parsePlanFile(read.text);
     if (tasks.length === 0) return;
     const at = now();
-    planFiles.set(call.entityId, { file: read.file, at });
+    planFiles.set(call.entityId, { file: read.file, at, text: read.text });
     const current = plans.get(call.entityId);
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     offer(call.entityId, 'plan-file', {
@@ -122,6 +126,15 @@ export function createPlans({
   return {
     onTool(call) {
       if (call.toolName === 'Write' || call.toolName === 'Edit') return readPlan(call);
+      /*
+        A turn's end re-reads the plan file the session last read. A step
+        ticked by a shell edit fires no Write or Edit hook, and the panel sat
+        at 0 of 4 on a finished plan until one did.
+      */
+      if (call.toolName === 'Stop') {
+        const record = planFiles.get(call.entityId);
+        return record === undefined ? undefined : readPlan({ ...call, toolInput: { file_path: record.file } });
+      }
       if (call.toolName === 'ExitPlanMode') {
         // Source 3: plan mode's approved plan, every task proposed. claude
         // 2.1.270's PostToolUse sends `tool_input: {}` and the plan in

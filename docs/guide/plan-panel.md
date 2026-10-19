@@ -47,7 +47,9 @@ higher one in this list wins:
 2. **A `hive:plan` file.** When the session writes or edits a plan in its
    repository's `.hive/plans/` folder, the plan's tasks show up. `hive:work-on`
    and `hive:goal-on` both write one, so their sessions always have a plan.
-   The file must sit under the folder the session is working in. A builder
+   The file must sit under the folder the session is working in. It is read
+   again at the end of every turn, so a step ticked some other way, from a
+   shell command or by hand, still shows. A builder
    agent working that plan ticks them off through the ledger as it goes:
    in progress when it starts a task, done when the task's commit lands.
 3. **Plan mode.** When you approve Claude's plan in plan mode, its steps show

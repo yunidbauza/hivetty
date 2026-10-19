@@ -3,7 +3,8 @@ import type { PlanTask, PlanTaskStatus, SessionPlan } from '@shared/plan-contrac
 /**
  * One main-agent `PostToolUse` of a plan tool, as the hook receiver hands it
  * over (HIVE-179). The receiver has already filtered out Pre, subagents and
- * truncated bodies; this module only folds.
+ * truncated bodies; this module only folds. A `Stop` comes through here too,
+ * as `toolName: 'Stop'`, so the store re-reads the session's plan file.
  */
 export interface PlanToolCall {
   entityId: string;

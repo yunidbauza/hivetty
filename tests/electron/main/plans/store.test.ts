@@ -231,6 +231,43 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
   });
 
+  /*
+    A tick made by a shell edit fires no Write or Edit hook, so the turn's end
+    re-reads the file the session last read (the 0 of 4 panel, 10-19).
+  */
+  it('re-reads the session plan file at a Stop, so a shell edit reaches the panel', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await plans.onTool(fileCall());
+
+    writeFileSync(file, PLAN_TEXT.replace('- [ ] two', '- [x] two'));
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
+  });
+
+  it('publishes nothing at a Stop when the plan file is unchanged', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+    await plans.onTool(fileCall());
+    const fileAt = plans.get('sess-01')?.fileAt;
+    send.mockClear();
+    vi.advanceTimersByTime(60_000);
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+    expect(plans.get('sess-01')?.fileAt).toBe(fileAt);
+  });
+
+  it('reads nothing at a Stop for a session with no plan file', async () => {
+    const send = vi.fn();
+    const plans = createPlans({ send });
+
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it('reads a truncated write the same way', async () => {
     const plans = createPlans({ send: vi.fn() });
 
