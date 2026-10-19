@@ -276,6 +276,23 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.source).toBe('plan-mode');
   });
 
+  /*
+    A file read while a live task-tools plan holds the panel is turned away by
+    rank. Its text must not count as shown, or the unchanged-file skip keeps
+    it hidden after that plan finishes (acr on #331).
+  */
+  it('shows a plan file a live task-tools plan turned away, once that plan finishes', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    plans.onTool(create('1', 'A'));
+    await plans.onTool(fileCall());
+    expect(plans.get('sess-01')?.source).toBe('task-tools');
+
+    plans.onTool(update('1', 'completed'));
+    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.source).toBe('plan-file');
+  });
+
   it('reads nothing at a Stop for a session with no plan file', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });
