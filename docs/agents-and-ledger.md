@@ -461,6 +461,13 @@ and an unbuildable command without ever reaching `onRunClosed`. A refusal is a
 delivery deferred, not a question lost; an immediate wake that is refused queues
 for the same reason.
 
+Deferred needs something to come back for it. A refused wake on an agent that
+is not `working` has no run close coming, and an `asking` one has no tick
+either, so the minute sweep retries every queue but a `working`, `paused` or
+spent-out agent's. The same sweep moves an `asking` agent with no open ask back
+to `sleeping`, so its schedule resumes. An `invalid` refusal is warned in the
+main log once per reason; the queue waits for the next minute.
+
 `stop()` sets a flag that every entry point honours, not just the interval. Both
 teardowns call it **before** `RunTracker.closeAll`, which finalizes each live run
 synchronously and so re-enters `onRunClosed` — where a flush would spawn a fresh

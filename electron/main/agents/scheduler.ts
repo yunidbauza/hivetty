@@ -477,7 +477,32 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     for (const [name, agent] of Object.entries(deps.state.all())) {
       if (agent.today?.capped !== true || agent.today.day === dayKey(now)) continue;
       deps.state.patch(name, { today: { day: dayKey(now), runs: 0, usd: 0 } });
-      if (agent.status !== 'paused') flush(name);
+    }
+
+    /*
+      Every queue is retried here, once a minute. A wake refused for any reason
+      but a live run has no run close coming to flush it, and an `asking` agent
+      gets no tick either, so one refusal used to strand its queue until a
+      person pressed run (the Slack agent, 10-17). A refusal puts the queue
+      back, so a retry that fails again costs nothing.
+
+      An `asking` agent whose asks have all closed or expired is waiting on
+      nobody. Its next run would say so; while that run is refused, the row
+      would read `asking` forever and the tick would skip its schedule.
+
+      A working agent's run close flushes it, and a day spent out waits for
+      the reset above, so neither is retried.
+    */
+    const asking = new Set(openAsks(entries, now).map((ask) => ask.from));
+
+    for (const [name, agent] of Object.entries(deps.state.all())) {
+      if (agent.status === 'paused' || agent.status === 'working') continue;
+      if (agent.status === 'asking' && !asking.has(name)) {
+        deps.state.patch(name, { status: 'sleeping' });
+        deps.pushStatus(name);
+      }
+      if (agent.today?.capped === true && agent.today.day === dayKey(now)) continue;
+      flush(name);
     }
   };
 
@@ -823,6 +848,29 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   const setQueue = (name: string, lane: string, queue: PendingWakeEntry[]): void => {
     deps.state.patchLane(name, lane, { pendingWake: queue });
   };
+  /** The last refusal warned per agent, so a retry each minute says it once. */
+  const warned = new Map<string, string>();
+
+  /**
+   * Say why a wake could not start, once per reason. Only a refusal that does
+   * not end on its own: a live run or a pause is a wait, and the budget posts
+   * its own card. The queue keeps the wake either way.
+   */
+  const noteStart = (name: string, started: RunStart): RunStart => {
+    if (started.started) {
+      warned.delete(name);
+    } else if (!isQueueableRefusal(started.refused)) {
+      const said = `${started.refused}: ${started.reason ?? 'no reason given'}`;
+
+      if (warned.get(name) !== said) {
+        warned.set(name, said);
+        console.warn(`[hive] ${name} could not wake (${said}); retrying each minute`);
+      }
+    }
+
+    return started;
+  };
+
   /** A standing wake keeps its three-argument shape; another lane names itself. */
   const runOnLane = (
     name: string,
@@ -830,9 +878,12 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
     extra: string | undefined,
     lane: string,
   ): RunStart =>
-    lane === STANDING_LANE
-      ? deps.run(name, trigger, extra)
-      : deps.run(name, trigger, extra, { lane });
+    noteStart(
+      name,
+      lane === STANDING_LANE
+        ? deps.run(name, trigger, extra)
+        : deps.run(name, trigger, extra, { lane }),
+    );
 
   /**
    * Take one lane's queue and wake once for all of it.
@@ -884,7 +935,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
 
     for (const job of jobs) {
       if (!refused) {
-        const started = deps.run(name, jobTrigger(job.kind), job.text, { job: true });
+        const started = noteStart(name, deps.run(name, jobTrigger(job.kind), job.text, { job: true }));
 
         if (started.started) continue;
         refused = true;
