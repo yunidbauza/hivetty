@@ -5590,7 +5590,8 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         return { prChecks: { ...state.prChecks, [key]: { ...entry, logs: { ...entry.logs, [jobId]: log } } } };
       });
 
-    write({ state: 'loading' });
+    // A retry leaves the failed entry in place, so its "Try again" stays mounted and spins; only a first read shows the skeleton.
+    if (known === undefined) write({ state: 'loading' });
     const result = await readJobLog({ owner, repo, id: jobId });
     write(result?.ok === true ? { state: 'ok', log: result.value } : { state: 'failed', problem: result === null ? BRIDGE_ERROR : result.error.message });
   },

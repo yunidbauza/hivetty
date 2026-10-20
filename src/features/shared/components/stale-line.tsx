@@ -18,7 +18,7 @@ export function StaleLine({
   service: string;
   failedAt: number | undefined;
   readAt: number | null;
-  onRetry: () => void;
+  onRetry: () => Promise<void>;
 }) {
   const message =
     failedAt === undefined || readAt === null
