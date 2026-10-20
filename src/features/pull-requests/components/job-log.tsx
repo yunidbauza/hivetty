@@ -11,7 +11,7 @@ const TONE: Record<LogTone, string> = { muted: 'text-muted', fail: 'text-red', p
  * A failed job's log, cut to the failure in main (HIVE-206): passing lines
  * muted, the failure and its marked source line red, gh's prefixes gone.
  */
-export function JobLog({ entry, onRetry }: { entry: PrLogEntry | undefined; onRetry: () => void }) {
+export function JobLog({ entry, onRetry }: { entry: PrLogEntry | undefined; onRetry: () => Promise<void> }) {
   if (entry?.state === 'failed') return <div className="pt-3"><SourceProblem message={entry.problem ?? 'Could not read the log.'} onRetry={onRetry} /></div>;
   if (entry?.state !== 'ok' || entry.log === undefined) {
     return (
