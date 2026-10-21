@@ -471,6 +471,24 @@ const CASES = [
         "import { cn } from '@lib/utils';\nimport { useState } from 'react';\n\nexport const probe = cn(String(useState));\n",
     },
   },
+  {
+    name: 'zone: electron/main/harness/ may not import electron/main/sessions/ (HIVE-233)',
+    rule: 'import/no-restricted-paths',
+    files: {
+      'electron/main/sessions/probe-target.ts': 'export const core = 1;\n',
+      'electron/main/harness/claude-code/probe.ts':
+        "import { core } from '../../sessions/probe-target';\nexport const probe = core;\n",
+    },
+  },
+  {
+    name: 'zone: electron/main/sessions/ may not import electron/main/harness/claude-code/ (HIVE-233)',
+    rule: 'import/no-restricted-paths',
+    files: {
+      'electron/main/harness/claude-code/probe-target.ts': 'export const adapter = 1;\n',
+      'electron/main/sessions/probe.ts':
+        "import { adapter } from '../harness/claude-code/probe-target';\nexport const probe = adapter;\n",
+    },
+  },
 
   // Inverse cases — these must stay legal.
   {
@@ -535,6 +553,20 @@ const CASES = [
       'electron/main/probe-target.ts': 'export const main = 1;\n',
       'electron/remote-host/probe.ts':
         "import { main } from '../main/probe-target';\nexport const probe = main;\n",
+    },
+  },
+  /**
+   * The registry is the adapter's one door (HIVE-233). The sealing zone's target
+   * is an extglob (`electron/main/!(harness)/**`); this proves it did not also
+   * seal `harness/` itself.
+   */
+  {
+    name: 'ALLOWED: electron/main/harness/ may import electron/main/harness/claude-code/ (HIVE-233)',
+    rule: null,
+    files: {
+      'electron/main/harness/claude-code/probe-target.ts': 'export const adapter = 1;\n',
+      'electron/main/harness/probe.ts':
+        "import { adapter } from './claude-code/probe-target';\nexport const probe = adapter;\n",
     },
   },
 ];
