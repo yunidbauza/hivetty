@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -287,6 +287,11 @@ describe('TicketTab links (HIVE-202)', () => {
     expect(waits).toHaveTextContent('Waits on1✓1');
     const blocks = screen.getByRole('button', { name: /^Blocks/ });
     expect(blocks).toHaveTextContent('Blocks1◌1');
+    // The glyph is its own node, spaced off its count, so "✓1" never reads as one mark.
+    const glyph = within(waits).getByText('✓');
+    expect(glyph).toHaveAttribute('aria-hidden', 'true');
+    expect(glyph.parentElement).toHaveTextContent(/^✓1$/);
+    expect(glyph.parentElement).toHaveClass('gap-0.5');
     expect(blocks).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('button', { name: /^Relates to/ })).not.toBeInTheDocument();
 

@@ -58,7 +58,7 @@ describe('Ticket tab selectors (HIVE-202)', () => {
       items: [[{ text: 'works', marks: [] }]],
     });
     expect(renderHook(() => useLatestComment('HIVE-7')).result.current?.id).toBe('2');
-    expect(renderHook(() => useEpicLabel('HIVE-7')).result.current).toBe('HIVE-161 · Workflow · 9/14');
+    expect(renderHook(() => useEpicLabel('HIVE-7')).result.current).toEqual({ text: 'HIVE-161 · Workflow', progress: '9/14' });
   });
 
   it('the links model is the same object across renders while its inputs hold', () => {

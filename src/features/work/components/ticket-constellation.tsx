@@ -1,6 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useId, useMemo } from 'react';
 
-import type { LinkArcs, LinkedTicket } from '@/lib/ticket-links';
+import type { EpicLabel, LinkArcs, LinkedTicket } from '@/lib/ticket-links';
 import { cn } from '@/lib/utils';
 
 import { type CellState, type Edge, layoutConstellation, type Point, VIEW } from '@features/work/constellation';
@@ -87,16 +87,27 @@ export function TicketConstellation({
 }: {
   me: string;
   arcs: LinkArcs;
-  epicLabel: string | null;
+  epicLabel: EpicLabel | null;
   pr: number | null;
   onOpenTicket: (key: string) => void;
   onOpenArc: (arc: 'waitsOn' | 'blocks') => void;
 }) {
-  const layout = useMemo(() => layoutConstellation({ me, arcs, epicLabel, pr }), [me, arcs, epicLabel, pr]);
+  const layout = useMemo(() => layoutConstellation({ me, arcs, pr }), [me, arcs, pr]);
   // Two constellations on one screen must not share marker ids.
   const arrowId = `cc-arrow-${useId().replace(/[^a-zA-Z0-9]/g, '')}`;
 
   return (
+    <div className="flex flex-col">
+      {/* HTML, not SVG text: a long epic truncates with its progress kept, instead of being cut at both edges. */}
+      {epicLabel ? (
+        <p
+          className="flex min-w-0 gap-2 text-micro"
+          title={epicLabel.progress ? `${epicLabel.text} · ${epicLabel.progress}` : epicLabel.text}
+        >
+          <span className="min-w-0 flex-1 truncate text-brand">{epicLabel.text}</span>
+          {epicLabel.progress ? <span className="shrink-0 tabular-nums text-muted">{epicLabel.progress}</span> : null}
+        </p>
+      ) : null}
     <svg
       viewBox={`0 0 ${String(VIEW.width)} ${String(VIEW.height)}`}
       className="h-[272px] w-full"
@@ -132,16 +143,6 @@ export function TicketConstellation({
         className="text-subtle"
         opacity={0.6}
       />
-      {layout.epicLabel ? (
-        <text
-          x={layout.epicLabel.x}
-          y={layout.epicLabel.y}
-          textAnchor="middle"
-          className="fill-current text-micro text-brand"
-        >
-          {layout.epicLabel.text}
-        </text>
-      ) : null}
       {layout.edges.map((edge, i) => (
         <line
           // Edges have no identity of their own; their order is the layout's.
@@ -266,5 +267,6 @@ export function TicketConstellation({
         />
       </g>
     </svg>
+    </div>
   );
 }

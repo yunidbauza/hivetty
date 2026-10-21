@@ -7,7 +7,9 @@ import type { JiraStatusCategory } from '@shared/jira-contract';
  * artifact's `constellation()` (round 8, v18): the ticket at the centre of its
  * epic's ring, what it waits on on the upper arc, what waits on it on the
  * lower, related tickets as beads on the ring's left, its PR to the right.
- * The component draws exactly this; nothing here knows about the DOM.
+ * The component draws exactly this; nothing here knows about the DOM. The
+ * epic's caption is not here: it is HTML above the drawing, where it can
+ * truncate instead of being clipped by the viewBox.
  */
 
 export const VIEW = { width: 296, height: 300 } as const;
@@ -78,14 +80,12 @@ export interface ConstellationInput {
   /** The ticket's own key. */
   me: string;
   arcs: LinkArcs;
-  epicLabel: string | null;
   /** The session's PR number, or null. */
   pr: number | null;
 }
 
 export interface ConstellationLayout {
   ring: Point & { r: number };
-  epicLabel: (Point & { text: string }) | null;
   centre: Point & { r: number; label: string; blocked: boolean };
   cells: Cell[];
   hops: HopCell[];
@@ -209,7 +209,6 @@ export function layoutConstellation(input: ConstellationInput): ConstellationLay
 
   return {
     ring: { ...CENTRE, r: RING_R },
-    epicLabel: input.epicLabel === null ? null : { x: CENTRE.x, y: 14, text: input.epicLabel },
     centre: { ...CENTRE, r: CENTRE_R, label: shortKey(me, me), blocked: cells.some((one) => one.open) },
     cells,
     hops,

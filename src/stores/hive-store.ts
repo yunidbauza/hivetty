@@ -94,6 +94,7 @@ import {
 } from '@lib/ticket-activity';
 import {
   type Criteria,
+  type EpicLabel,
   epicLabel,
   isBlocks,
   parseCriteria,
@@ -8992,12 +8993,12 @@ export const useTicketCriteria = (ticketKey: string): Criteria => {
 export const useLatestComment = (ticketKey: string): JiraComment | undefined =>
   useHiveStore((state) => state.ticketDetails[ticketKey]?.comments?.at(-1));
 
-/** The ring's label, only for an epic (HIVE-202, D6). */
-export const useEpicLabel = (ticketKey: string): string | null =>
-  useHiveStore((state) => {
-    const entry = state.ticketDetails[ticketKey];
-    return epicLabel(entry?.detail?.parent, entry?.epicProgress);
-  });
+/** The ring's caption, only for an epic (HIVE-202, D6). Memoised: the selector would mint an object per call. */
+export const useEpicLabel = (ticketKey: string): EpicLabel | null => {
+  const parent = useHiveStore((state) => state.ticketDetails[ticketKey]?.detail?.parent);
+  const progress = useHiveStore((state) => state.ticketDetails[ticketKey]?.epicProgress);
+  return useMemo(() => epicLabel(parent, progress), [parent, progress]);
+};
 
 /** Inbox unread count (stories 050, 021). */
 export const useUnreadCount = () =>

@@ -152,8 +152,9 @@ function TicketLinks({ ticketKey, sessionId }: { ticketKey: string; sessionId: s
                   <b className="tabular-nums text-ink">{tickets.length}</b>
                   <span className="flex-1" />
                   {GLYPH.filter(([category]) => model.counts[arc][category] > 0).map(([category, glyph]) => (
-                    <span key={category} className="tabular-nums text-micro">
-                      {`${glyph}${String(model.counts[arc][category])}`}
+                    <span key={category} className="inline-flex items-center gap-0.5 tabular-nums text-micro">
+                      <span aria-hidden="true">{glyph}</span>
+                      {model.counts[arc][category]}
                     </span>
                   ))}
                   <CaretDown size={12} aria-hidden className={cn(openArc === arc && 'rotate-180')} />
