@@ -18,7 +18,7 @@ export const CENTRE = { x: 148, y: 150 } as const;
 const ARC_R = 80;
 const RING_R = 128;
 const CENTRE_R = 26;
-const HOP_R = 114;
+const HOP_R = 117;
 const HOP_CELL_R = 9;
 const STEP = 26;
 const BEAD_STEP = 16;
@@ -58,6 +58,8 @@ export interface HopCell extends Point {
   state: CellState;
   label: string;
   labelAt: Point;
+  /** The label reads away from the hexagon the hop hangs off. */
+  anchor: 'start' | 'end';
   ticket: LinkedTicket;
 }
 
@@ -103,6 +105,17 @@ export const polar = (angle: number, r: number): Point => ({
   x: CENTRE.x + r * Math.cos(rad(angle)),
   y: CENTRE.y + r * Math.sin(rad(angle)),
 });
+
+/** A pointy-top hexagon's corner angles, as the component draws them. */
+const CORNERS = [30, 90, 150, 210, 270, 330];
+
+/** The corner of the hexagon at `at` that faces `toward`, `pad` beyond its outline. */
+export function facingCorner(at: Point, r: number, toward: Point, pad: number): Point {
+  const want = (Math.atan2(toward.y - at.y, toward.x - at.x) * 180) / Math.PI;
+  const off = (corner: number) => Math.abs((((want - corner) % 360) + 540) % 360 - 180);
+  const corner = CORNERS.reduce((best, one) => (off(one) < off(best) ? one : best));
+  return { x: at.x + (r + pad) * Math.cos(rad(corner)), y: at.y + (r + pad) * Math.sin(rad(corner)) };
+}
 
 /** Keys in the ticket's own project drop the prefix: 188, not HIVE-188. */
 export function shortKey(key: string, me: string): string {
@@ -163,17 +176,21 @@ export function layoutConstellation(input: ConstellationInput): ConstellationLay
     edges.push({ from: polar(angle, 28), to: { x: one.x, y: one.y - r - 1 }, kind: 'out' });
     const next = isRest(item) ? undefined : item.next;
     if (next !== undefined && arcs.total <= SECOND_HOP_MAX_LINKS) {
-      const hop = polar(angle + STEP, HOP_R);
+      // Half a slot outward from the arc's middle, so a hop never lands behind its neighbour.
+      const hopAngle = angle + (angle >= 90 ? STEP / 2 : -STEP / 2);
+      const hop = polar(hopAngle, HOP_R);
+      const left = hop.x < one.x;
       hops.push({
         ...hop,
-        angle: angle + STEP,
+        angle: hopAngle,
         r: HOP_CELL_R,
         state: STATE[next.statusCategory],
         label: shortKey(next.key, me),
-        labelAt: { x: hop.x + 14, y: hop.y + 4 },
+        labelAt: { x: hop.x + (left ? -13 : 13), y: hop.y + 4 },
+        anchor: left ? 'end' : 'start',
         ticket: next,
       });
-      edges.push({ from: { x: one.x + 8, y: one.y + 4 }, to: { x: hop.x - 8, y: hop.y - 3 }, kind: 'far' });
+      edges.push({ from: facingCorner(one, r, hop, 1.5), to: facingCorner(hop, HOP_CELL_R, one, 2.5), kind: 'far' });
     }
   }
 

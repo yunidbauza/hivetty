@@ -39,7 +39,7 @@ describe('layoutConstellation — the artifact densities', () => {
       ['194', 'blocks', 90, 11, 'todo'],
     ]);
     expect(layout.hops).toHaveLength(1);
-    expect(layout.hops[0]).toMatchObject({ label: '196', r: 9, angle: 116 });
+    expect(layout.hops[0]).toMatchObject({ label: '196', r: 9, angle: 103 });
     expect(layout.edges.map((e) => e.kind)).toEqual(['in', 'out', 'far']);
   });
 
@@ -65,6 +65,42 @@ describe('layoutConstellation — the artifact densities', () => {
     const layout = layoutConstellation({ me: 'HIVE-140', arcs: arcs({ waitsOn: [t('HIVE-111', 'done')], blocks, relates: [t('HIVE-124', 'done')] }), pr: null });
     expect(angles(layout.cells.filter((c) => c.arc === 'blocks'))).toEqual([30, 54, 78, 102, 126, 150]);
     expect(layout.hops).toEqual([]);
+  });
+});
+
+describe('second hops, corner to corner (layout A)', () => {
+  const dist = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+  /** Degrees between the rays a→b and a→c. */
+  const between = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) => {
+    const turn = Math.atan2(c.y - a.y, c.x - a.x) - Math.atan2(b.y - a.y, b.x - a.x);
+    return Math.abs((((turn * 180) / Math.PI + 540) % 360) - 180);
+  };
+
+  it.each([1, 2, 3, 4])('%i blocker(s): each far edge runs from the facing corner to the facing corner, and nothing overlaps', (n) => {
+    const blocks = Array.from({ length: n }, (_, i) => ({ ...t(`HIVE-${String(345 + i)}`), next: t(`HIVE-${String(240 + i)}`) }));
+    const layout = layoutConstellation({ me: 'HIVE-235', arcs: arcs({ waitsOn: [t('HIVE-234', 'done')], blocks }), pr: null });
+    const far = layout.edges.filter((edge) => edge.kind === 'far');
+    const blockers = layout.cells.filter((cell) => cell.arc === 'blocks');
+    expect(layout.hops).toHaveLength(n);
+
+    layout.hops.forEach((hop, i) => {
+      const cell = blockers[i]!;
+      const edge = far[i]!;
+      // Leaves its own hexagon at the corner facing the hop (corners are 60° apart, so within 30°)...
+      expect(dist(edge.from, cell)).toBeGreaterThanOrEqual(cell.r);
+      expect(dist(edge.from, cell)).toBeLessThanOrEqual(cell.r + 2);
+      expect(between(cell, edge.from, hop)).toBeLessThanOrEqual(30);
+      // ...and lands on the hop's corner facing back.
+      expect(dist(edge.to, hop)).toBeGreaterThanOrEqual(hop.r);
+      expect(dist(edge.to, hop)).toBeLessThanOrEqual(hop.r + 3);
+      expect(between(hop, edge.to, cell)).toBeLessThanOrEqual(30);
+      // The hop's label sits on its outer side, away from the hexagon it hangs off.
+      expect(Math.sign(hop.labelAt.x - hop.x)).toBe(Math.sign(hop.x - cell.x));
+      expect(hop.anchor).toBe(hop.x < cell.x ? 'end' : 'start');
+      // No hop sits on a cell or on another hop.
+      for (const other of layout.cells) expect(dist(hop, other)).toBeGreaterThan(hop.r + other.r + 4);
+      for (const other of layout.hops) if (other !== hop) expect(dist(hop, other)).toBeGreaterThan(2 * hop.r + 4);
+    });
   });
 });
 

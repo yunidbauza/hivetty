@@ -124,6 +124,13 @@ describe('TicketConstellation (HIVE-202)', () => {
     expect(view.container.querySelector('svg')).not.toHaveTextContent('HIVE-161');
   });
 
+  it("a second hop's label reads away from the hexagon it hangs off", () => {
+    draw();
+
+    // HIVE-194 sits at the bottom; its hop HIVE-196 steps out to the left, so its key ends at the hop.
+    expect(screen.getByText('196')).toHaveAttribute('text-anchor', 'end');
+  });
+
   it('colours through currentColor, never a raw hex', () => {
     const { container } = draw({ epicLabel: { text: 'E' }, pr: 313 });
 

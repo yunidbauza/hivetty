@@ -215,7 +215,12 @@ export function TicketConstellation({
             fill="none"
             strokeDasharray={hop.state === 'todo' ? '2 2' : undefined}
           />
-          <text x={hop.labelAt.x} y={hop.labelAt.y} className="fill-current tabular-nums text-micro text-muted">
+          <text
+            x={hop.labelAt.x}
+            y={hop.labelAt.y}
+            textAnchor={hop.anchor}
+            className="fill-current tabular-nums text-micro text-muted"
+          >
             {hop.label}
           </text>
         </Node>
