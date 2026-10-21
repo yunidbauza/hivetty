@@ -4051,11 +4051,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       return { ledger: capLedger(merged, closedAsks), closedAsks };
     }),
 
-  ledgerAppend: (entry) =>
+  ledgerAppend: (entry) => {
     set((state) => {
       const closedAsks = withClosed(state.closedAsks, [entry]);
       return { ledger: capLedger([...state.ledger, entry], closedAsks), closedAsks };
-    }),
+    });
+    /*
+      An entry naming a PR is the shipper (or a session) reporting a move gh
+      made outside this app: marked ready, merged. Sweep now rather than at the
+      next tick; the sweep shares one in flight, so a burst is one `gh` call.
+    */
+    if (entry.meta?.pr !== undefined) void get().refreshPrs();
+  },
 
   answerAsk: async (thread, body, meta) =>
     window.hive?.ledger.answer({
