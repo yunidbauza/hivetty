@@ -5,10 +5,10 @@ import {
   DONE_PATH,
   HOOK_ENV_RECEIVER_URL,
   doneCommand,
-} from '../../../../electron/shared/hook-contract';
-import { RESERVED_SKILL_NAME } from '../../../../electron/shared/skills-contract';
+} from '../../../../../electron/shared/hook-contract';
+import { RESERVED_SKILL_NAME } from '../../../../../electron/shared/skills-contract';
 
-import { doneSkill } from '../../../../electron/main/skills/done-skill';
+import { doneSkill } from '../../../../../electron/main/harness/claude-code/done-skill';
 
 /**
  * The frontmatter's `key: value` lines, with the value exactly as emitted.

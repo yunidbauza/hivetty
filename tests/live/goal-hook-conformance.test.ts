@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { writePluginDir } from '../../electron/main/skills/plugin';
+import { writePluginDir } from '../../electron/main/harness/claude-code/plugin';
 import { readUserSkills } from '../../electron/main/skills/read';
 
 /**

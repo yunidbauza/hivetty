@@ -60,6 +60,7 @@ import {
 } from '../container/generated';
 import { createPathMap } from '../container/path-map';
 import { sessionRoot } from '../fs/session-roots';
+import type { PreparedFiles } from '../harness/port';
 import { createHarnessRegistry } from '../harness/registry';
 import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
@@ -67,7 +68,6 @@ import { ticketKeysFromBranch } from '../hooks/ticket-intent';
 import { createStatusTracker } from '../hooks/tracker';
 import { createPtyIpc, type PtyIpc, type ResumeResult } from '../ipc/pty';
 import type { SurfaceId } from '../ipc/surfaces';
-import type { McpRuntime } from '../mcp';
 import { createPlans, type Plans } from '../plans';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
 import type { SkillsRuntime } from '../skills';
@@ -136,13 +136,6 @@ export interface SessionsOptions {
    * plugin could not be written" — both omit the flag.
    */
   skills?: SkillsRuntime;
-  /**
-   * The generated MCP config, when the app has one (HIVE-112).
-   *
-   * Optional for the reason `skills` is: absent is supported, not degraded. A
-   * session without it is an ordinary `claude` that cannot reach the ledger.
-   */
-  mcp?: McpRuntime;
   /**
    * The uuid pinned as `--session-id` on a spawn (HIVE-61).
    *
@@ -258,6 +251,12 @@ interface OpenRequest {
   projectId: string;
   cols: number;
   rows: number;
+  /**
+   * The harness files this spawn launches with, as `prepareSession` in `ipc/index.ts` left them
+   * (HIVE-235). Absent means none: no `--settings`, `--plugin-dir` or `--mcp-config`. Carried
+   * across a restart, which reuses the request.
+   */
+  files?: PreparedFiles;
   /**
    * The session's first instruction, delivered after the bootstrap (story 097).
    *
@@ -532,7 +531,6 @@ export function createSessions(options: SessionsOptions): Sessions {
     maxSessions = MAX_SESSIONS,
     hooks,
     skills,
-    mcp,
     newSessionUuid = randomUUID,
     branchReader,
     history,
@@ -2242,11 +2240,11 @@ export function createSessions(options: SessionsOptions): Sessions {
     const runtime = effectiveRuntime(snapshot, project);
 
     /*
-      Resolved before the command is assembled, because it is the one argument
-      that depends on something the renderer told us about *itself* rather than
-      about the session.
+      The hook settings file, resolved by `prepareSession` (`ipc/index.ts`)
+      after its writes and carried on the request (HIVE-235), so the path this
+      command names is the one the rewrite just finished.
     */
-    const settingsPath = hooks?.settingsPathFor();
+    const settingsPath = request.files?.settingsPath ?? null;
 
     /**
      * The generated plugin, read but **not** regenerated here (HIVE-96).
@@ -2256,18 +2254,18 @@ export function createSessions(options: SessionsOptions): Sessions {
      * two rapid opens of the same entity both pass the guard and both spawn —
      * which is the single most destructive thing this layer can do.
      *
-     * So the regeneration happens one level up, in the `session:open` handler,
-     * which is already asynchronous and runs before this is reached. See
-     * `ipc/index.ts`.
+     * So the regeneration happens one level up, in `prepareSession`
+     * (`ipc/index.ts`), which is already asynchronous, runs before this is
+     * reached, and hands the resolved path in on the request (HIVE-235).
      */
-    const pluginDir = skills?.pluginDirPath() ?? null;
+    const pluginDir = request.files?.pluginDir ?? null;
 
     /**
-     * The ledger tools (HIVE-112). Resolved here for the same reason
-     * `pluginDir` is: it is main's own path, chosen at spawn, and it never
-     * crosses IPC.
+     * The ledger tools (HIVE-112). Resolved by `prepareSession` after
+     * `mcp.start()` for the same reason `pluginDir` is: it is main's own path,
+     * chosen before spawn, and it never crosses IPC (HIVE-235).
      */
-    const mcpConfig = mcp?.configPathFor() ?? null;
+    const mcpConfig = request.files?.mcpConfig ?? null;
 
     /**
      * A container project is launched from HIVE-132's container-flavoured set,

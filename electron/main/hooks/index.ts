@@ -34,12 +34,13 @@ import {
   writeSessionContainerFiles,
   writeSharedContainerFiles,
 } from '../container/generated';
+import type { HookTransport } from '../harness/port';
+import { sessionAdapter } from '../harness/registry';
 import type { Ledger } from '../ledger';
 import type { PlanToolCall } from '../plans';
 
 import { withHostAlias } from './container-origin';
 import { createReceiver, type Receiver } from './receiver';
-import { type HookTransport, writeAgentSettings, writeHookSettings } from './settings';
 
 /**
  * The hook pipeline, as one thing the session layer can hold (HIVE-62).
@@ -354,6 +355,7 @@ export interface HookRuntime {
 }
 
 export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
+  const files = sessionAdapter().prepare;
   const {
     userDataPath,
     port,
@@ -563,7 +565,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           both in locals until the second `await` resolves is what keeps that
           window from opening.
         */
-        const newSettingsPath = await writeHookSettings(
+        const newSettingsPath = await files.sessionSettings(
           userDataPath,
           url,
           /*
@@ -595,7 +597,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           this exact receiver, so a widened bind refuses its http hooks exactly
           as it refuses the interactive set's.
         */
-        const newAgentSettingsPath = await writeAgentSettings(
+        const newAgentSettingsPath = await files.agentSettings(
           userDataPath,
           url,
           created.readyUrl ?? undefined,
@@ -639,7 +641,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           flight when `stop` runs cannot bring `settingsPath` back to life.
         */
         rewrite = async () => {
-          await writeHookSettings(
+          await files.sessionSettings(
             userDataPath,
             url,
             sessionMetrics() ? (created.metricsUrl ?? undefined) : undefined,
@@ -919,12 +921,4 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
 }
 
 export { createReceiver } from './receiver';
-export {
-  hookSettings,
-  metricsScript,
-  statusLineSettings,
-  writeHookSettings,
-  HOOK_SETTINGS_DIR,
-  METRICS_SCRIPT_FILE,
-} from './settings';
 export { parseMetrics } from './metrics';

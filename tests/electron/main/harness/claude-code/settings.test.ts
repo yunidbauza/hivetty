@@ -13,8 +13,8 @@ import {
   HOOK_STATUS,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
-} from '../../../../electron/shared/hook-contract';
-import { METRICS_REFRESH_SECONDS } from '../../../../electron/shared/metrics-contract';
+} from '../../../../../electron/shared/hook-contract';
+import { METRICS_REFRESH_SECONDS } from '../../../../../electron/shared/metrics-contract';
 import {
   AGENT_SETTINGS_FILE,
   agentSettings,
@@ -24,8 +24,8 @@ import {
   statusLineSettings,
   writeAgentSettings,
   writeHookSettings,
-} from '../../../../electron/main/hooks/settings';
-import { doneSkill } from '../../../../electron/main/skills/done-skill';
+} from '../../../../../electron/main/harness/claude-code/settings';
+import { doneSkill } from '../../../../../electron/main/harness/claude-code/done-skill';
 
 /**
  * The settings file and the receiver are two halves of one contract (HIVE-62).

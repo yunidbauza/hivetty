@@ -11,12 +11,10 @@ import {
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
 } from '@shared/hook-contract';
-import { MCP_PATH, MCP_SERVER_NAME } from '@shared/mcp-contract';
+import { MCP_PATH } from '@shared/mcp-contract';
 
-import {
-  containerHiveServerSpec,
-  containerMcpConfig,
-} from '../../../../electron/main/mcp/container-config';
+import { containerMcpConfig } from '../../../../electron/main/harness/claude-code/mcp-config';
+import { containerHiveServerSpec } from '../../../../electron/main/mcp/container-config';
 
 describe('containerHiveServerSpec — exec-env', () => {
   it('addresses the receiver through the environment, never a resolved host', () => {
@@ -87,19 +85,5 @@ describe('containerHiveServerSpec — rewrite', () => {
     expect(() => containerHiveServerSpec('rewrite')).toThrow(
       /rewrite needs resolved values/,
     );
-  });
-});
-
-describe('containerMcpConfig', () => {
-  it('names the server `hive`, which is what makes tools `mcp__hive__*`', () => {
-    const parsed = JSON.parse(containerMcpConfig('exec-env')) as {
-      mcpServers: Record<string, unknown>;
-    };
-
-    expect(Object.keys(parsed.mcpServers)).toEqual([MCP_SERVER_NAME]);
-  });
-
-  it('ends with a newline, like every other generated file', () => {
-    expect(containerMcpConfig('exec-env').endsWith('}\n')).toBe(true);
   });
 });

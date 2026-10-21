@@ -18,11 +18,12 @@ import {
   type SkillsSnapshot,
 } from '@shared/skills-contract';
 
+import { sessionAdapter } from '../harness/registry';
+
 import { readInstalledPluginNames } from './available';
 import { copyInto } from './import';
 import { importSkill as importPackage, isSkillPackage } from './import-skill';
 import { PLUGIN_DIR, isSkillManifest, resolveInSkill, skillsRoot } from './paths';
-import { writePluginDir } from './plugin';
 import { readUserSkills, type SkillsRead } from './read';
 
 /**
@@ -231,7 +232,7 @@ export function createSkillsRuntime({
     const read = await readUserSkills(skillsRoot());
 
     try {
-      await writePluginDir(pluginRoot, version, read, doneUrl?.() ?? null);
+      await sessionAdapter().prepare.plugin(pluginRoot, version, read, doneUrl?.() ?? null);
       written = true;
     } catch (cause) {
       /**

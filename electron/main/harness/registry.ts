@@ -8,6 +8,13 @@ const adapters: Record<HarnessId, HarnessAdapter> = {
   'claude-code': claudeCodeAdapter,
 };
 
+/**
+ * The adapter the app's shared runtimes write for (HIVE-235). The hooks, skills and MCP runtimes
+ * are app-wide rather than per entity, so `harnessOf` has nothing to answer them with.
+ * Phase 1: Claude Code.
+ */
+export const sessionAdapter = (): HarnessAdapter => adapters['claude-code'];
+
 export interface HarnessRegistry {
   adapterFor(id: HarnessId): HarnessAdapter;
   /** The harness driving an entity, or `undefined` for a plain terminal or a command. */

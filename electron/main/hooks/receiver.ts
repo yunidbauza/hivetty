@@ -406,7 +406,7 @@ export interface Receiver {
    *
    * Same socket and same token as {@link Receiver.url}. Read by the skills
    * runtime, which bakes it into the generated skill exactly as the status line
-   * script bakes {@link Receiver.metricsUrl} — see `skills/done-skill.ts` for
+   * script bakes {@link Receiver.metricsUrl} — see `harness/claude-code/done-skill.ts` for
    * why that beats a third environment variable.
    */
   readonly doneUrl: string | null;

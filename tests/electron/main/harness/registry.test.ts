@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
-import { createHarnessRegistry } from '../../../../electron/main/harness/registry';
+import { createHarnessRegistry, sessionAdapter } from '../../../../electron/main/harness/registry';
 
 /** Stands in for the sessions closure, which alone knows what an entity is. */
 const agentSessions = new Set(['sess-01']);
@@ -27,5 +27,9 @@ describe('harness registry', () => {
     expect(adapter).toBe(claudeCodeAdapter);
     expect(adapter.id).toBe('claude-code');
     expect(adapter.capabilities).toEqual({});
+  });
+
+  it('hands the shared runtimes the Claude Code adapter (phase 1)', () => {
+    expect(sessionAdapter()).toBe(claudeCodeAdapter);
   });
 });

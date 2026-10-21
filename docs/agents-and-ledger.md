@@ -1,7 +1,7 @@
 # Agents and the ledger
 
 **Scope:** two things that belong together — the **ledger**, one append-only log
-every party in Hive TTY reads from and writes to, and the **agent definition**,
+every party in HiveTTY reads from and writes to, and the **agent definition**,
 the file that makes a party an agent in the first place.
 
 Load this when working on `electron/main/ledger/`, `electron/main/agents/`,
@@ -12,11 +12,11 @@ two ledger routes, the renderer's mirrors of either (`use-ledger-sync.ts`,
 Agents, or the Agents panel and `src/features/agents/`.
 
 > **TL;DR**
-> - The ledger is one append-only log, `~/.hive/ledger/YYYY-MM-DD.jsonl`, one file per day.
+> - The ledger is one append-only log, `~/.hivetty/ledger/YYYY-MM-DD.jsonl`, one file per day.
 > - Every party posts, asks, answers, claims and releases by appending; nothing is edited.
 > - `from` is never read from a request; identity comes from IPC or the session token.
 > - An entry to a live session arrives as a `📒` marker at an idle, empty prompt.
-> - An agent is `~/.hive/agents/<name>/AGENT.md`; each wake is one resumed `claude -p`.
+> - An agent is `~/.hivetty/agents/<name>/AGENT.md`; each wake is one resumed `claude -p`.
 > - `tools:` is a fence: anything else becomes a permission ask in the inbox.
 
 <picture>
@@ -51,11 +51,11 @@ party X actually say" a question with more than one honest answer.
 
 ## On disk
 
-Entries live under `~/.hive/ledger/`, one file per **local calendar day**:
+Entries live under `~/.hivetty/ledger/`, one file per **local calendar day**:
 `YYYY-MM-DD.jsonl`, one JSON object per line. Local time, not UTC, because
 "today" is the user's day, not the server's — there is no server.
 
-This sits beside `~/.hive/config.json`, not under Electron's `userData`. The
+This sits beside `~/.hivetty/config.json`, not under Electron's `userData`. The
 same reasoning `desktop-architecture.md` gives for the config file applies
 here with more force: a correspondence log between a person and their agents
 belongs somewhere the person can open, `grep`, and back up, not inside an
@@ -98,7 +98,7 @@ A read that fails for any reason other than the file not existing (EACCES, EIO)
 is warned about rather than treated as an empty day, because "empty" would also
 leave the sequence counter at zero while ids for this second already exist in
 the file, which is precisely the collision the reseed exists to prevent. And a
-*write* that fails — ENOSPC, a `~/.hive` moved out from under the app — comes
+*write* that fails — ENOSPC, a `~/.hivetty` moved out from under the app — comes
 back from `Ledger.append` as a refusal value (`500`, with the cause named)
 rather than as a throw, for the reason `LedgerResult` is a value at all: a
 throw reaches the HTTP caller as a bodyless 500 and the IPC caller as a
@@ -231,7 +231,7 @@ is an empty `204`, so it prints nothing, and a marker's context prints whole.
 Two things follow. No party-authored byte reaches a pty from delivery any more:
 the truncation to one line and the control-character stripping that used to
 be `deliver.ts`'s security boundary went with the body, which now travels as
-JSON the model reads. And the hook `timeout` in `electron/main/hooks/settings.ts`
+JSON the model reads. And the hook `timeout` in `electron/main/harness/claude-code/settings.ts`
 is 3 s with a new reason: the prompt waits behind the hook, and the reply now
 matters, so the number bounds what a stalled main process can add to a prompt
 rather than hiding a dead one (it cannot; a refused connection is drawn at
@@ -521,8 +521,8 @@ or `failed`. Both err toward a late or an extra standing wake, never a lost
 entry.
 
 **Lane directories, claims and prompts (HIVE-188).** The standing lane runs in
-`~/.hive/work/<agent>/`, so files already there stay the standing lane's. Every
-other lane runs in `~/.hive/work/<agent>/lanes/<key>/`, with the key passed
+`~/.hivetty/work/<agent>/`, so files already there stay the standing lane's. Every
+other lane runs in `~/.hivetty/work/<agent>/lanes/<key>/`, with the key passed
 through `encodeURIComponent` (`repo%3Aa%2Fb`). That encoding is one-to-one, so
 two lanes never share a directory. A closed thread lane keeps its record and
 directory for a day, then the sweep removes both. A release is refused when
@@ -951,7 +951,7 @@ there over every visit, and its holder: `acr` or `fixer` when the shipper asked
 one about the PR during the visit (by `meta.pr` + `meta.repo`, or `slug#n` in the
 ask's body), else `shipper`. `prEvents` is every entry naming the PR, for the
 Conversation's Everything; `reviewUrls` is acr's `meta.review_url`s, so a GitHub
-review written through Hive TTY shows as acr; `prOpener` is who sent the
+review written through HiveTTY shows as acr; `prOpener` is who sent the
 shipper's intake ask. `mergeAsk(open, slug, n)` returns the shipper's open
 `gh pr merge … --repo` permission card itself (`mergeWaiting` is
 `mergeAsk(...) !== undefined`): the page's Merge answers that card with
@@ -1064,8 +1064,8 @@ already has.
 
 ## The MCP host
 
-Every `claude` session Hive TTY launches is handed `--mcp-config` pointing at
-a generated file (`electron/main/mcp/config.ts`) naming one server: the built
+Every `claude` session HiveTTY launches is handed `--mcp-config` pointing at
+a generated file (`electron/main/harness/claude-code/mcp-config.ts`) naming one server: the built
 output of `electron/mcp-host/`, run as `${execPath} out/main/mcp-host.js`
 with `ELECTRON_RUN_AS_NODE=1` so the app's own binary runs it as plain Node
 instead of booting Chromium. `claude` starts one host process per session and
@@ -1088,7 +1088,7 @@ guarantee: the receiver's per-launch token is shared by every session it
 spawns, so a model with shell access could still `curl` the
 receiver directly using another session's header value. Closing that is
 tracked separately, not attempted here. If any of the three is missing — the
-process was started outside Hive TTY, or by hand in a plain terminal —
+process was started outside HiveTTY, or by hand in a plain terminal —
 `createHandlers` still lists all sixteen tools (so
 `/mcp` shows a connected server, not a broken one) but every *call* answers
 with a sentence explaining why the ledger is out of reach, rather than the
@@ -1169,7 +1169,7 @@ here is a definition the user wrote on their own machine, so a name, a
 description and a tool grant disclose nothing the user does not already own.
 
 **The source of truth is the disk.** There is no registration step and no index
-file. `registry.list()` re-reads `~/.hive/agents` on every call, so an agent
+file. `registry.list()` re-reads `~/.hivetty/agents` on every call, so an agent
 written a minute ago is discoverable on the very next tool call with no restart
 and nothing to keep in sync. The composition in `ipc/index.ts` reads through
 that rather than the cached `knownAgents` set beside it — that set is the party
@@ -1249,11 +1249,11 @@ server and reached by the same short names.
 it), `status`, `origin`, `autoMerge`, and `container.workspace` when the project
 runs in one. It exists so an ask body can say `the-hive` and the agent can turn
 that into a checkout path, and so the shipper reads auto-merge consent through
-a tool rather than by opening `~/.hive/config.json`. The projection
+a tool rather than by opening `~/.hivetty/config.json`. The projection
 (`projectsDirectoryFor`, beside `agentsDirectoryFor`) is a whitelist: `env`,
 `shell` and `claudeCommand` never cross.
 
-`mcp__hive__pr { repo: "owner/name", number }` answers Hive TTY's own
+`mcp__hive__pr { repo: "owner/name", number }` answers HiveTTY's own
 `PrRecord` for one PR, from the same GitHub sweep the PRs panel runs, run
 fresh on each call since main keeps no snapshot of it:
 `state`, `findings` (unresolved review threads), `checks`, `branch`, `url`,
@@ -1273,7 +1273,7 @@ honest defaults, an empty list and "not wired", so a receiver composed without
 a config (the live suites) still answers. Both are reads, and both are in the
 standing grants every agent holds.
 
-### Jira through Hive TTY: `mcp__hive__jira_get`, `jira_transition`, `jira_comment`, `jira_users`
+### Jira through HiveTTY: `mcp__hive__jira_get`, `jira_transition`, `jira_comment`, `jira_users`
 
 Three tools (HIVE-174), and a fourth (HIVE-216), over the Jira integration the Work tab already uses,
 through the token the app holds. An agent, or a container, reads and writes
@@ -1312,11 +1312,11 @@ comment, and a comment may be mentions alone with `markdown` empty. The account 
 come from `jira_users { query }`, a read over `/rest/api/3/user/search` that answers
 up to eight active people, each an `accountId` and a `displayName`.
 
-**Via Hive TTY (HIVE-216).** When the receiver's caller header names a known agent
+**Via HiveTTY (HIVE-216).** When the receiver's caller header names a known agent
 that is not also a session, the comment is posted with the comment property
 `hive.via = { agent }`; a session's comment, and every renderer comment, carries
 none, and no payload can set it. `jira.comments` reads it back
-(`expand=properties`) as `JiraComment.via`, keeping only Hive TTY's key and a valid
+(`expand=properties`) as `JiraComment.via`, keeping only HiveTTY's key and a valid
 agent name, and the ticket page draws it. It is a label for drawing, never a grant
 and never proof: anyone who can edit the issue can write a property, so nothing
 reads `via` to decide anything, and an agent reading `jira_get` should not either.
@@ -1361,7 +1361,7 @@ over the integration and defaulting to a "not wired" refusal.
 
 ## Agent definitions
 
-An agent is a file before it is anything else: `~/.hive/agents/<name>/AGENT.md`,
+An agent is a file before it is anything else: `~/.hivetty/agents/<name>/AGENT.md`,
 frontmatter over a markdown body, sitting beside `config.json`, `skills/` and
 `ledger/` for the reason all of those do — a definition is a document the person
 is invited to open, `grep` and back up, not an app-private artifact.
@@ -1372,7 +1372,7 @@ one headless `claude -p` child per wake (`electron/main/agents/waker.ts` spells
 the argv, `runs.ts` tracks the process), its `stream-json` stdout folded into
 run-log lines by `run-log.ts`, the run closed on the child's `'close'` event,
 and the session uuid, cost, turn count and outcome persisted to
-`~/.hive/ledger/agents.json` by `state.ts`.
+`~/.hivetty/ledger/agents.json` by `state.ts`.
 
 The Agents tab draws the run, and the schedule is real: `wake.every`,
 `wake.at`, `wake.days` and `wake.quiet` are not declaration only — the
@@ -1413,7 +1413,7 @@ starts a comment" silently truncates the first:
 
 ### What `wake.on` names, and who names it
 
-Three shapes, and all three strings are **Hive TTY's** rather than any external
+Three shapes, and all three strings are **HiveTTY's** rather than any external
 service's — which matters most for the middle one, because it reads like a Slack
 event name and is not one.
 
@@ -1421,7 +1421,7 @@ event name and is not one.
 | --- | --- |
 | `ledger` | An `ask` or `answer` whose `to` is this agent wakes it, whoever wrote it: the overmind through the console's `ask` verb, a terminal session through `ledger_ask`, or another agent through the same tools. A broadcast (no `to`) wakes nobody — parties read those on their own schedule. |
 | `slack.mention` | *Search my mentions on the wakes this agent already takes.* Slack's real `app_mention` fires for mentions of a Slack **app**, never of a person, so there is no push to subscribe to. It adds no wakes of its own. |
-| `slack.app_mention` | A genuine push trigger: Slack's own `app_mention`, for mentions of Hive TTY's app. Requires Socket Mode on and both tokens stored. An `@hive <agent> <task>` from an allow-listed author is a task run instead; see below. |
+| `slack.app_mention` | A genuine push trigger: Slack's own `app_mention`, for mentions of HiveTTY's app. Requires Socket Mode on and both tokens stored. An `@hive <agent> <task>` from an allow-listed author is a task run instead; see below. |
 | `slack.channel:#name` | A genuine push trigger, requiring Socket Mode and the app being a member of that channel. Inert without it. |
 
 `ledger` is the one worth understanding before turning it off, because its
@@ -1485,7 +1485,7 @@ a server arrived by, a token does **not** transfer between routes — a server
 named `slack` in a `--mcp-config` file reports `needs-auth` even when an
 identical URL is already authorised under a plugin's own delivery, because the
 two keys differ and Claude Code has no way to know they name the same service.
-This is why Hive TTY cannot piggyback on a plugin-based Slack sign-in the user
+This is why HiveTTY cannot piggyback on a plugin-based Slack sign-in the user
 already has and needs its own sign-in flow (`signInToSlack`, `login.ts`). `tools`
 decides which of the tools that exist may run unattended, and it is worth
 wording as *without asking* rather than *allowed*. Naming a system while
@@ -1620,13 +1620,13 @@ why `tests/live/agent-conformance.test.ts` names every tool its probe could
 plausibly touch.
 
 **`skills` is a declaration, not a sandbox.** This is the honest framing and it
-was arrived at the hard way. It was validated against `~/.hive/skills` alone,
+was arrived at the hard way. It was validated against `~/.hivetty/skills` alone,
 which was wrong in both directions: an agent is a `claude -p` process on the
 user's machine, so it loads their `~/.claude/skills` and their installed plugins
 whether or not the definition names them — and on a fresh install, where
-`~/.hive/skills` is empty, the field refused *every* name a person could type.
+`~/.hivetty/skills` is empty, the field refused *every* name a person could type.
 
-`skills/available.ts` therefore resolves three roots — `~/.hive/skills`,
+`skills/available.ts` therefore resolves three roots — `~/.hivetty/skills`,
 `~/.claude/skills`, and each `installPath` in
 `~/.claude/plugins/installed_plugins.json`, whose skills are namespaced
 `plugin:skill`. The registry rather than a glob over the plugin cache, because
@@ -1638,7 +1638,7 @@ A Hive skill is its whole *folder* rather than a single SKILL.md, and that
 change deliberately did not reach here. This module resolves **names**, and a name is
 what an agent definition declares — the contents of the folder behind it are the
 plugin mirror's business, and `~/.claude/skills` and installed plugins are
-directories Hive TTY reads and never manages.
+directories HiveTTY reads and never manages.
 
 Making it a real sandbox would mean `--restricted`, which ignores the user's
 settings sources entirely — and would therefore cut off exactly the external
@@ -1646,14 +1646,14 @@ skills the widening exists to allow. That trade was declined: the wake
 command carries `--setting-sources ""` instead, which stops the user's own
 `settings.json` (and the `permissions.defaultMode: "auto"` a developer machine
 routinely carries) from leaking into an unattended turn, while `--settings`
-still applies alongside it so Hive TTY's own hooks keep firing. The skills stay
+still applies alongside it so HiveTTY's own hooks keep firing. The skills stay
 reachable and the field stays a declaration.
 
 Two details worth knowing before changing `available.ts`:
 
 - **`isSkillFolder`, not `entry.isDirectory()`.** `readdir` reports `lstat`
   semantics, so a symlinked skill folder answers `false` — and a personal skills
-  folder is *more* likely to be symlinked than Hive TTY's, because that is how
+  folder is *more* likely to be symlinked than HiveTTY's, because that is how
   dotfile repos carry skills. `read.ts` fixed this once and the helper is shared
   rather than copied, so it cannot be fixed twice and broken a third time.
 - **A user-scoped install beats the array order.** `installed_plugins.json` lists
@@ -1690,7 +1690,7 @@ grants nothing and schedules a refresh; its merge raises the card, once.
 
 A fence needs **two halves**, and neither works alone. `permissions.ask:
 ["*"]`, written into the agent-only settings file (`agentSettings`,
-`electron/main/hooks/settings.ts`) — never `hookSettings`, which carries no
+`electron/main/harness/claude-code/settings.ts`) — never `hookSettings`, which carries no
 `ask` rule and would run an agent with no fence at all — is the *trigger*: the
 only thing, measured against `claude` 2.1.251, that makes a permission check
 fire under `-p` at all. `--permission-prompt-tool mcp__hive__approve`
@@ -1732,7 +1732,7 @@ which is why `approve` never lets a thrown error surface as an MCP error:
 every path through `approve` itself returns a `decision(...)` instead. The one
 place a permission prompt still answers with `isError: true` is the
 unreachable-environment branch in `electron/mcp-host/host.ts`, which refuses
-*every* call — `approve` included — when the host was started outside Hive TTY.
+*every* call — `approve` included — when the host was started outside HiveTTY.
 That is deliberate and safe precisely because `isError` fails closed: a Hive
 that is not running denies rather than allows.
 
@@ -2105,7 +2105,7 @@ container:
   runtime: docker          # docker | podman | /absolute/path/to/a/runtime
   name: devbox             # the running container, as `<runtime> exec` names it
   command: claude          # optional; the binary inside
-  workspace: /work         # container-side path of ~/.hive/work/<name>; the run's cwd
+  workspace: /work         # container-side path of ~/.hivetty/work/<name>; the run's cwd
   hive_dir: /hive          # container-side path of <userData>/hive
   env_arg: -e {name}={value}   # optional
   host_alias: host.docker.internal  # optional; the receiver's global alias
@@ -2200,12 +2200,12 @@ switching between them cannot change a byte.
 ### What the app seeds into this folder (HIVE-162)
 
 `resources/agents/<name>/AGENT.md` and `resources/skills/<name>/` ship with the
-app and are copied into `~/.hive` at registration by `electron/main/seed/`.
+app and are copied into `~/.hivetty` at registration by `electron/main/seed/`.
 The rule is one line and every branch of `seed.ts` serves it: **the user's
 edits win.** A file is copied when absent and never seeded before, left absent
 when the manifest says it was seeded once (a deletion is an edit), overwritten
 only when the copy on disk is byte-identical to what the last seed wrote
-(`~/.hive/.seed.json` holds that hash per file), and otherwise left alone. A
+(`~/.hivetty/.seed.json` holds that hash per file), and otherwise left alone. A
 shipped file that is later dropped from `resources/` is never deleted.
 
 `AGENT.md` and `SKILL.md` are the exception to "left alone": an edited one is
@@ -2235,7 +2235,7 @@ version its old whole-file hash names, else the best-matching one, with any
 value matching some shipped version counted as untouched. A file with no base
 at all stays the user's. `files` in the manifest only ever names shipped
 bytes, so an older build still reads a merged file as the user's. Nothing
-is written through a symlink at any depth below `~/.hive`; a linked `skills/`,
+is written through a symlink at any depth below `~/.hivetty`; a linked `skills/`,
 a linked skill folder or a linked folder inside one each stop the write. A
 file's mode travels with it.
 
@@ -2259,7 +2259,7 @@ HIVE-166's grant or the fence's card decides each merge, and
 `matches`, and pins every shipped icon to the Settings list so none draws as
 a question mark. The builder (HIVE-170) takes a plan by `ledger_ask` from the
 session that planned it, builds it task by task in a worktree under
-`~/.hive/work/builder/` with `execute`'s drift check after each task, opens
+`~/.hivetty/work/builder/` with `execute`'s drift check after each task, opens
 the draft PR, and asks the shipper. A question the plan does not answer goes
 to the job's `reply-to` party, the planning session first, and the live suite
 proves that addressing across two wakes (`asks the party its job named`).
@@ -2276,7 +2276,7 @@ commit`).
 The fixer (HIVE-169) takes a PR and its findings by `ledger_ask`,
 works on the branch where it is already checked out (git allows one worktree
 per branch, and the builder's may still stand) or in a worktree of its own
-under `~/.hive/work/fixer/` (detached at the branch's tip, since the person's
+under `~/.hivetty/work/fixer/` (detached at the branch's tip, since the person's
 own checkout may hold the branch and is never an agent's), and answers `clean`
 or `blocked`; a judgment call goes to the ask's `reply-to` party with options.
 It claims `<owner>/<repo>#<N> findings`, a key of its own, because the shipper
@@ -2486,7 +2486,7 @@ only the renderer has it.
 - [`.claude/COMPONENTS.md`](../.claude/COMPONENTS.md) — why the disabled
   *Run now* button uses a native `title` rather than a Radix tooltip: the app
   mounts no `TooltipProvider`.
-- [`docs/desktop-architecture.md`](desktop-architecture.md) — the `~/.hive/`
+- [`docs/desktop-architecture.md`](desktop-architecture.md) — the `~/.hivetty/`
   vs. `userData` split the ledger's location follows, and the receiver's
   broader security posture (loopback-only, per-launch token, closed route
   set).

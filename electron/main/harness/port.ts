@@ -1,14 +1,18 @@
-import type { ResolvedContainer } from '@shared/config-contract';
+import type { ContainerFreshness, ResolvedContainer } from '@shared/config-contract';
 import type { Capabilities, HarnessId } from '@shared/harness-contract';
+import type { HookIdentity } from '@shared/hook-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
 
+import type { ContainerOrigins } from '../container/layout';
 import type { PathMap } from '../container/path-map';
+import type { McpConfigOptions } from '../mcp/config';
+import type { SkillsRead } from '../skills/read';
 
 /**
  * The port every harness adapter implements (HIVE-233).
  *
  * Methods arrive with the stories that move code behind them: `launch`
- * (HIVE-234, landed), `prepare` (HIVE-235), `readHook` (HIVE-236–238),
+ * (HIVE-234, landed), `prepare` (HIVE-235, landed), `readHook` (HIVE-236–238),
  * `record` and `meters` (HIVE-239), `deliverContext` (HIVE-240). See
  * `docs/harness-architecture.md`.
  */
@@ -17,6 +21,67 @@ export interface HarnessAdapter {
   readonly capabilities: Capabilities;
   /** The command line, stripped env and submit delay a session starts with (HIVE-234). */
   launch(spec: LaunchSpec): LaunchPlan;
+  /** What a session needs written before it starts (HIVE-235). */
+  readonly prepare: HarnessFiles;
+}
+
+/**
+ * How a status hook reaches the receiver.
+ *
+ * `http` on the host. `command` for a set that runs inside a container
+ * (HIVE-137), where the binary refuses an http hook to `host.docker.internal`
+ * — see `statusCommand` in `@shared/hook-contract` for the measurement.
+ * The core picks it from the bound host (HIVE-134).
+ */
+export type HookTransport = 'http' | 'command';
+
+/** The paths `prepareSession` hands `spawn`, for `LaunchSpec` (HIVE-235). Absent means no flag. */
+export interface PreparedFiles {
+  settingsPath?: string;
+  pluginDir?: string;
+  mcpConfig?: string;
+}
+
+/** One container set's harness files, written into a directory the caller already made (HIVE-235). */
+export interface ContainerSetInput {
+  origins: ContainerOrigins;
+  freshness: ContainerFreshness;
+  /** `0600` when `identity` bakes a token, `0644` otherwise; the caller decides. */
+  mode: number;
+  identity?: HookIdentity;
+  /** Where the set is visible inside the container, when that differs from `root`. */
+  containerRoot?: string;
+  /** The run a `rewrite` set belongs to, when it is an agent's. */
+  run?: string;
+}
+
+/**
+ * The files a harness needs on disk before it starts (HIVE-235), by purpose. The core's runtimes
+ * call these at the moments they always have; they own when, the adapter owns what.
+ */
+export interface HarnessFiles {
+  /** The interactive session's settings file. Answers its path. */
+  sessionSettings(
+    userDataPath: string,
+    url: string,
+    metricsUrl?: string,
+    readyUrl?: string,
+    transport?: HookTransport,
+    enabledPlugins?: Record<string, boolean>,
+  ): Promise<string>;
+  /** The headless agent's settings file. Answers its path. */
+  agentSettings(
+    userDataPath: string,
+    url: string,
+    readyUrl?: string,
+    transport?: HookTransport,
+  ): Promise<string>;
+  /** The skills source rendered into the harness's plugin directory, `/done` included. */
+  plugin(pluginRoot: string, version: string, read: SkillsRead, doneUrl?: string | null): Promise<void>;
+  /** One container set's harness files. */
+  containerSet(root: string, input: ContainerSetInput): Promise<void>;
+  /** The session `--mcp-config` file. */
+  mcpConfig(path: string, options: McpConfigOptions): Promise<void>;
 }
 
 /**

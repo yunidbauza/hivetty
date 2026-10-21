@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createReceiver } from '../../electron/main/hooks/receiver';
-import { metricsScript } from '../../electron/main/hooks/settings';
+import { metricsScript } from '../../electron/main/harness/claude-code/settings';
 import {
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,

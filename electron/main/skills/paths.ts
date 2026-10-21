@@ -11,7 +11,7 @@ import { contains } from '../fs/contains';
  * Two roots, and they are deliberately not the same place. `~/.hive/skills` is
  * the **user's** — hand-editable, backed up with their dotfiles, and the thing
  * Settings writes. `<userData>/hive/plugin` is the **app's** — regenerated from
- * the first, never edited by hand, and disposable. `hooks/settings.ts` draws the
+ * the first, never edited by hand, and disposable. `harness/claude-code/settings.ts` draws the
  * same line for the same reason.
  */
 

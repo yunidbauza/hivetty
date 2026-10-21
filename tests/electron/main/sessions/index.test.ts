@@ -340,7 +340,7 @@ describe('what a session runs', () => {
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
     });
 
-    themed.open({ ...OPEN });
+    themed.open({ ...OPEN, files: { settingsPath: '/userData/hive/claude-hooks.settings.json' } });
     const sessionId = mintedFor('hero-refresh');
 
     emitData({ sessionId, chunk: '$ ' });
@@ -348,13 +348,46 @@ describe('what a session runs', () => {
     vi.advanceTimersByTime(150);
     vi.advanceTimersByTime(SUBMIT);
 
-    expect(asked).toBe(1);
+    expect(asked).toBe(0);
     const written = vi
       .mocked(supervisor.write)
       .mock.calls.map(([, data]) => data)
       .join('');
     expect(written).toContain('claude-hooks.settings.json');
     expect(written).not.toContain('settings.light.json');
+  });
+
+  it('launches with the paths the request carries, and asks no runtime for them (HIVE-235)', () => {
+    const instance = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      userDataPath: USER_DATA_PATH,
+      newSessionUuid: () => TEST_UUID,
+    });
+
+    instance.open({
+      ...OPEN,
+      files: {
+        settingsPath: '/userData/hive/claude-hooks.settings.json',
+        pluginDir: '/userData/hive/plugin',
+        mcpConfig: '/userData/hive/hive.mcp.json',
+      },
+    });
+    const sessionId = mintedFor('hero-refresh');
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(SUBMIT);
+
+    const written = vi
+      .mocked(supervisor.write)
+      .mock.calls.map(([, data]) => data)
+      .join('');
+    expect(written).toContain("--settings '/userData/hive/claude-hooks.settings.json'");
+    expect(written).toContain("--plugin-dir '/userData/hive/plugin'");
+    expect(written).toContain("--mcp-config '/userData/hive/hive.mcp.json'");
   });
 
   /**
@@ -3098,9 +3131,6 @@ describe('container spawn (HIVE-133)', () => {
         },
         stop: () => Promise.resolve(),
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
-      mcp: {
-        configPathFor: () => join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
-      } as unknown as Parameters<typeof createSessions>[0]['mcp'],
       skills: {
         sync: () => Promise.resolve({ names: [] }),
         pluginDirPath: () => join(USER_DATA_PATH, 'hive', 'plugin'),
@@ -3108,7 +3138,14 @@ describe('container spawn (HIVE-133)', () => {
     });
     created.push(instance);
 
-    instance.open(OPEN);
+    instance.open({
+      ...OPEN,
+      files: {
+        settingsPath: join(USER_DATA_PATH, 'hive', CONTAINER_SETTINGS_FILE),
+        pluginDir: join(USER_DATA_PATH, 'hive', 'plugin'),
+        mcpConfig: join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
+      },
+    });
     const sessionId = mintedFor('hero-refresh');
 
     emitData({ sessionId, chunk: '$ ' });
@@ -3408,10 +3445,18 @@ describe('container spawn (HIVE-133)', () => {
     });
     created.push(instance);
 
-    instance.open(OPEN);
+    const request = {
+      ...OPEN,
+      files: {
+        settingsPath: join(USER_DATA_PATH, 'hive', CONTAINER_SETTINGS_FILE),
+        pluginDir: join(USER_DATA_PATH, 'hive', 'plugin'),
+        mcpConfig: join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
+      },
+    };
+    instance.open(request);
     const first = mintedFor('hero-refresh');
 
-    const restart = instance.restart(OPEN);
+    const restart = instance.restart(request);
     await Promise.resolve();
     emitExit({ sessionId: first, exitCode: 0 });
 

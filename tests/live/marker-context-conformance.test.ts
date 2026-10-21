@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createReceiver, type Receiver } from '../../electron/main/hooks/receiver';
-import { hookSettings, type HookTransport } from '../../electron/main/hooks/settings';
+import { hookSettings } from '../../electron/main/harness/claude-code/settings';
+import type { HookTransport } from '../../electron/main/harness/port';
 import { readTranscript as readScreen } from '../../electron/main/integrations/slack/tty';
 import { createLedger } from '../../electron/main/ledger';
 import { ledgerMarker } from '../../electron/shared/ledger-contract';

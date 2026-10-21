@@ -14,6 +14,8 @@ import {
 import { METRICS_REFRESH_SECONDS } from '@shared/metrics-contract';
 import { ONCE_ONLY_TOOLS } from '@shared/permission-rules';
 
+import type { HookTransport } from '../port';
+
 /**
  * The settings file the app hands every session (HIVE-62, HIVE-79).
  *
@@ -211,15 +213,6 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)
  * what makes a host session's file and an `exec-env` container's file the same
  * code path differing by their URL alone.
  */
-/**
- * How a status hook reaches the receiver.
- *
- * `http` on the host. `command` for a set that runs inside a container
- * (HIVE-137), where the binary refuses an http hook to `host.docker.internal`
- * — see {@link statusCommand} for the measurement.
- */
-export type HookTransport = 'http' | 'command';
-
 export function hookSettings(
   url: string,
   readyUrl?: string,
@@ -328,7 +321,7 @@ export function hookSettings(
     /*
       No grant, deliberately (HIVE-93). `/done`'s `curl` is authorised by
       `allowed-tools` in the generated skill's own frontmatter instead — see
-      `skills/done-skill.ts`. This file merges above the user's scope, so a
+      `harness/claude-code/done-skill.ts`. This file merges above the user's scope, so a
       grant written here is one they can neither see among their own settings
       nor revoke; the skill's frontmatter puts the authorisation three lines
       above the command it authorises, in a file they can read.

@@ -18,7 +18,7 @@ with why it is not a behaviour change.
 | --- | --- | --- |
 | The contract | `electron/shared/harness-contract.ts` | `HarnessId` (`'claude-code'` only, for now) and `Capabilities`. Types only. |
 | The port | `electron/main/harness/port.ts` | `HarnessAdapter`: `id`, `capabilities`, and the methods stories add. |
-| The registry | `electron/main/harness/registry.ts` | `createHarnessRegistry({ isAgentSession })` → `{ adapterFor, harnessOf }`. |
+| The registry | `electron/main/harness/registry.ts` | `createHarnessRegistry({ isAgentSession })` → `{ adapterFor, harnessOf }`, and `sessionAdapter()` for the shared runtimes. |
 | Adapter #1 | `electron/main/harness/claude-code/` | `claudeCodeAdapter`. |
 
 ### The port grows by story
@@ -26,7 +26,7 @@ with why it is not a behaviour change.
 | Method | Story |
 | --- | --- |
 | `launch` | HIVE-234 (landed) |
-| `prepare` | HIVE-235 |
+| `prepare` | HIVE-235 (landed) |
 | `readHook` | HIVE-236 – HIVE-238 |
 | `record`, `meters` | HIVE-239 |
 | `deliverContext` | HIVE-240 |
@@ -60,6 +60,38 @@ every side effect keeps its old place after it.
 `shellQuote`, the `{env}` expansion (`container-command.ts`) and the host↔container path
 map live in `electron/main/container/`, not `sessions/`: the adapter needs them, fence 2
 forbids it `sessions/**`, and the headless agent waker uses them too.
+
+### prepare
+
+`prepare: HarnessFiles` (HIVE-235) is the files a harness needs on disk before it starts,
+named by purpose: `sessionSettings`, `agentSettings`, `plugin`, `containerSet` and
+`mcpConfig`. Claude Code's table points at the writers that moved into
+`harness/claude-code/` with byte-identical output: `settings.ts` (session and agent
+settings, the status line script), `plugin.ts` and `done-skill.ts`, `mcp-config.ts`
+(the host stdio and container HTTP `--mcp-config` files), and `container-files.ts`
+(what each file in a container set says).
+
+- **The adapter owns what; the core owns when.** The shared runtimes (`hooks`, `skills`,
+  `mcp`, `container/generated.ts`) reach the writers through `sessionAdapter()` in
+  `harness/registry.ts`. They keep their own queues, memoisation and failure policy:
+  the settings-rewrite queue, the plugin-prune chain, the MCP memo, the container-removal
+  wait. These runtimes are app-wide, not per entity, so `harnessOf` has nothing to answer
+  them with. Phase 1's `sessionAdapter()` is Claude Code.
+- **One spawn-time sequence.** `prepareSession` in `ipc/index.ts` runs what `ptySpawn` and
+  `ptyRestart` used to order by hand: `skills.sync()`, `hooks.rewriteSettings()`,
+  `mcp.start()`, then for a spawn the container removal wait and the per-session container
+  write. It returns `PreparedFiles` (`settingsPath`, `pluginDir`, `mcpConfig`; absent means
+  no flag), which travels on `OpenRequest.files` into `spawn`. `spawn` no longer asks a
+  runtime for a path. A restart leaves its container write to `restartOnce`, in the window
+  after the old process exits.
+- **`container/layout.ts` is a leaf.** It holds the container set's filenames and
+  `ContainerOrigins`, re-exported from `generated.ts`. `generated.ts` imports the registry
+  and the adapter's `container-files.ts` needs the filenames, so the names live where
+  `registry → claude-code → container` cannot cycle back.
+- **Not moved (HIVE-336):** the `~/.claude` readers in `skills/paths.ts` and
+  `skills/available.ts`, `PLUGIN_DIR`, and `agents/**`, which only ever receive paths. The
+  server descriptors (`hiveServerSpec`, `containerHiveServerSpec`) stay in `mcp/` because
+  the agent path shares them.
 
 ### The registry
 
@@ -103,3 +135,5 @@ Both are `import/no-restricted-paths` zones in `eslint.config.mjs`, and
    `scripts/verify-boundaries.mjs`.
 5. Teach `harnessOf` how the core says which harness an entity runs. Phase 1 answers
    `'claude-code'` for every agent session.
+6. Implement `prepare`: a `HarnessFiles` table writing the files the harness reads at
+   launch. `sessionAdapter()` decides which adapter the shared runtimes write for.

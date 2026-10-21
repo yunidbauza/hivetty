@@ -153,7 +153,7 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
  * above.
  *
  * What that costs was measured in the same runs, one session each, and it is
- * why the ten-second `timeout` in `electron/main/hooks/settings.ts` loses its
+ * why the ten-second `timeout` in `electron/main/harness/claude-code/settings.ts` loses its
  * rationale the moment a response carries context:
  *
  * ```
@@ -480,7 +480,7 @@ export const DONE_PATH = '/done';
  * grants (HIVE-93).
  *
  * **One builder, two callers, on purpose** — and both of them are
- * `skills/done-skill.ts`: `active()` spells the command out in the body, and
+ * `harness/claude-code/done-skill.ts`: `active()` spells the command out in the body, and
  * `frontmatter()` wraps the same string in `allowed-tools`. (An earlier version
  * put the grant in the app-generated settings file instead; that file merges
  * above the user's own scope, so the permission was invisible and unrevokable

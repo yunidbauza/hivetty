@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createReceiver } from '../../electron/main/hooks/receiver';
 import { createLedger } from '../../electron/main/ledger';
-import { containerMcpConfig } from '../../electron/main/mcp/container-config';
+import { containerMcpConfig } from '../../electron/main/harness/claude-code/mcp-config';
 import {
   HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_RUN,
