@@ -6,14 +6,16 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  doneCommand,
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,
-  HOOK_EVENTS,
-  HOOK_STATUS,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
 } from '../../../../../electron/shared/hook-contract';
+import {
+  doneCommand,
+  HOOK_EVENTS,
+  HOOK_STATUS,
+} from '../../../../../electron/main/harness/claude-code/hook-vocabulary';
 import { METRICS_REFRESH_SECONDS } from '../../../../../electron/shared/metrics-contract';
 import {
   AGENT_SETTINGS_FILE,
@@ -98,7 +100,7 @@ describe('hookSettings', () => {
    *
    * The http handler above is subscribed to every event including this one, and
    * **`SessionStart` is the one that never arrives** — measured twice against
-   * real binaries and recorded in `hook-contract.ts`. So this event, alone,
+   * real binaries and recorded in `hook-vocabulary.ts`. So this event, alone,
    * carries a second handler of a different type, and these assertions are what
    * stop the map builder being "simplified" back into one entry per event.
    */

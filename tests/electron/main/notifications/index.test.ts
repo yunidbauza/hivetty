@@ -275,7 +275,7 @@ describe('the Notification hook', () => {
 
 /**
  * HIVE-81: `idle_prompt` now reports the status `idle`, not `waiting` — see
- * `hook-contract.ts`'s `NOTIFICATION_TYPE_STATUS`. The inbox row it raises is
+ * `hook-vocabulary.ts`'s `NOTIFICATION_TYPE_STATUS`. The inbox row it raises is
  * routed off the hook *event*, independently of that status, which is the
  * split these tests pin down.
  */

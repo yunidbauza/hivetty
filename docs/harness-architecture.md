@@ -27,7 +27,7 @@ with why it is not a behaviour change.
 | --- | --- |
 | `launch` | HIVE-234 (landed) |
 | `prepare` | HIVE-235 (landed) |
-| `readHook` | HIVE-236 – HIVE-238 |
+| `readHook`, `contextReply` | HIVE-236 (landed); HIVE-237 – HIVE-238 change what it says |
 | `record`, `meters` | HIVE-239 |
 | `deliverContext` | HIVE-240 |
 
@@ -114,6 +114,26 @@ adapter is a compile error, not a runtime miss.
 
 Outside `electron/main/harness/**` and the contract's `HarnessId` type, nothing names
 `claude-code`.
+
+## The hook body (HIVE-236)
+
+The receiver (`electron/main/hooks/receiver.ts`) owns the socket: authentication, the body
+cap, the routes, and which lane a hook is on. A hook from an entity session is on the
+`session` lane; one from an agent's headless run is on the `agent` lane, decided before a
+byte of the body is read.
+
+`readHook({ lane, entityId, body, truncated })` turns a Claude body into an ordered list
+of `HookEffect`s and calls nothing. The receiver dispatches them to its callbacks in that
+order, and decides what a prompt means: a ledger marker, a ticket intent, the first-prompt
+name. `contextReply` is the adapter's wrapper for a marker's context reply.
+
+The session lane reads with `harnesses.adapterFor(harnesses.harnessOf(id))`, and falls back
+to `sessionAdapter()` when `harnessOf` answers `undefined`. The agent lane always reads with
+`sessionAdapter()`, whose `prepare.agentSettings` wrote its hooks. The Claude vocabulary
+(the subscribed events, their statuses, the notification types, the reply shape and the
+curl command hooks) lives in `harness/claude-code/hook-vocabulary.ts`, behind fence 1.
+`StatusHookEvent` and `HookNotificationType` stay in `@shared/hook-contract` as literal
+unions until HIVE-237.
 
 ## The fences
 

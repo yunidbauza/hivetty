@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { HOOK_EVENTS, HOOK_STATUS, hookContextReply } from '@shared/hook-contract';
+import {
+  HOOK_EVENTS,
+  HOOK_STATUS,
+  hookContextReply,
+  NOTIFICATION_TYPE_STATUS,
+  NOTIFICATION_TYPES,
+} from '../../../../../electron/main/harness/claude-code/hook-vocabulary';
 
 describe('hook contract', () => {
   it('types the context reply a hook may carry (HIVE-138)', () => {
@@ -23,5 +29,9 @@ describe('hook contract', () => {
       if (event === 'SessionEnd') continue;
       expect(HOOK_STATUS[event]).toBeDefined();
     }
+  });
+
+  it('lists exactly the notification types the status map reads', () => {
+    expect([...NOTIFICATION_TYPES].sort()).toEqual(Object.keys(NOTIFICATION_TYPE_STATUS).sort());
   });
 });

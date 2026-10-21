@@ -35,7 +35,7 @@ import {
   writeSharedContainerFiles,
 } from '../container/generated';
 import type { HookTransport } from '../harness/port';
-import { sessionAdapter } from '../harness/registry';
+import { sessionAdapter, type HarnessRegistry } from '../harness/registry';
 import type { Ledger } from '../ledger';
 import type { PlanToolCall } from '../plans';
 
@@ -175,6 +175,8 @@ export interface HookHandlers {
    * `ReceiverOptions.knowsAgent` for the argument in full.
    */
   knowsAgent: (entityId: string) => boolean;
+  /** The harness registry, so the receiver reads each session's hooks with its own adapter (HIVE-236). */
+  harnesses?: HarnessRegistry;
   /**
    * Who else is on this machine (HIVE-127).
    *
@@ -442,6 +444,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
     async start({
       knowsSession,
       knowsAgent,
+      harnesses,
       onAgentsList,
       onProjectsList,
       onProjectAutoMerge,
@@ -496,6 +499,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onJira,
         knowsSession,
         knowsAgent,
+        ...(harnesses === undefined ? {} : { harnesses }),
         /*
           `port` stays the test override it has always been and wins when given,
           so a spec that pins a port is not fighting a config default. Config

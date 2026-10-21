@@ -489,6 +489,15 @@ const CASES = [
         "import { adapter } from '../harness/claude-code/probe-target';\nexport const probe = adapter;\n",
     },
   },
+  {
+    name: 'zone: electron/main/hooks/ may not import the Claude hook vocabulary (HIVE-236)',
+    rule: 'import/no-restricted-paths',
+    files: {
+      'electron/main/harness/claude-code/probe-target.ts': 'export const vocabulary = 1;\n',
+      'electron/main/hooks/probe.ts':
+        "import { vocabulary } from '../harness/claude-code/probe-target';\nexport const probe = vocabulary;\n",
+    },
+  },
 
   // Inverse cases — these must stay legal.
   {

@@ -1019,6 +1019,8 @@ export function createSessions(options: SessionsOptions): Sessions {
       `knowsSession` consults the live registry per call.
     */
     knowsAgent: (entityId) => agentNames().has(entityId),
+    // What reads each session's hook body (HIVE-236); this closure owns the registry.
+    harnesses,
     /*
       The peer directory (HIVE-127). Asked per call, like `knowsAgent` above
       and for the same reason: a definition can be written while the app runs,
@@ -1219,7 +1221,7 @@ export function createSessions(options: SessionsOptions): Sessions {
        *
        * `/clear` starts a new one under a new id, and the only hook that
        * carries that id — `SessionStart` — never reaches the receiver (see
-       * `hook-contract.ts`). So the history cannot learn it, and keeping the
+       * `harness/claude-code/hook-vocabulary.ts`). So the history cannot learn it, and keeping the
        * old one would let a later `--resume` reopen the conversation the user
        * deliberately ended. Dropped, so a restored row for this terminal opens
        * as a fresh session instead.

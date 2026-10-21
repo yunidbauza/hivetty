@@ -10,6 +10,8 @@ import {
   writeSessionContainerFiles,
   writeSharedContainerFiles,
 } from '../../../../../electron/main/container/generated';
+import { claudeCodeAdapter } from '../../../../../electron/main/harness/claude-code';
+import { readHook } from '../../../../../electron/main/harness/claude-code/hooks';
 import { writeMcpConfig } from '../../../../../electron/main/harness/claude-code/mcp-config';
 import { writePluginDir } from '../../../../../electron/main/harness/claude-code/plugin';
 import {
@@ -125,5 +127,12 @@ describe('the files a Claude Code session is launched with', () => {
       scriptPath: '/Applications/HiveTTY.app/Contents/Resources/app.asar/out/mcp-host/index.js',
     });
     expect(await tree()).toMatchSnapshot();
+  });
+});
+
+it('reads hooks and wraps context the Claude way (HIVE-236)', () => {
+  expect(claudeCodeAdapter.readHook).toBe(readHook);
+  expect(claudeCodeAdapter.contextReply('ctx')).toEqual({
+    hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'ctx' },
   });
 });

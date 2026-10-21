@@ -1,6 +1,7 @@
 import type { ContainerFreshness, ResolvedContainer } from '@shared/config-contract';
 import type { Capabilities, HarnessId } from '@shared/harness-contract';
-import type { HookIdentity } from '@shared/hook-contract';
+import type { HookAgentEvent, HookIdentity, HookStatusEvent } from '@shared/hook-contract';
+import type { PlanToolCall } from '@shared/plan-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
 
 import type { ContainerOrigins } from '../container/layout';
@@ -12,8 +13,9 @@ import type { SkillsRead } from '../skills/read';
  * The port every harness adapter implements (HIVE-233).
  *
  * Methods arrive with the stories that move code behind them: `launch`
- * (HIVE-234, landed), `prepare` (HIVE-235, landed), `readHook` (HIVE-236–238),
- * `record` and `meters` (HIVE-239), `deliverContext` (HIVE-240). See
+ * (HIVE-234, landed), `prepare` (HIVE-235, landed), `readHook` (HIVE-236, landed;
+ * HIVE-237–238 change what it says), `record` and `meters` (HIVE-239),
+ * `deliverContext` (HIVE-240). See
  * `docs/harness-architecture.md`.
  */
 export interface HarnessAdapter {
@@ -23,6 +25,10 @@ export interface HarnessAdapter {
   launch(spec: LaunchSpec): LaunchPlan;
   /** What a session needs written before it starts (HIVE-235). */
   readonly prepare: HarnessFiles;
+  /** A hook body read into effects, in the order the receiver acts on them (HIVE-236). */
+  readHook(input: HookInput): HookReading;
+  /** The response body that hands `text` to the model as context, for a prompt hook (HIVE-138). */
+  contextReply(text: string): unknown;
 }
 
 /**
@@ -30,7 +36,7 @@ export interface HarnessAdapter {
  *
  * `http` on the host. `command` for a set that runs inside a container
  * (HIVE-137), where the binary refuses an http hook to `host.docker.internal`
- * — see `statusCommand` in `@shared/hook-contract` for the measurement.
+ * — see `statusCommand` in `claude-code/hook-vocabulary.ts` for the measurement.
  * The core picks it from the bound host (HIVE-134).
  */
 export type HookTransport = 'http' | 'command';
@@ -256,4 +262,32 @@ export interface LaunchPlan {
   stripEnv: readonly string[];
   /** The bootstrap's gap between the text and its `\r` (HIVE-63). */
   submitDelayMs: number;
+}
+
+/** Which side of the receiver a hook arrived on: an entity session, or an agent's headless run (HIVE-236). */
+export type HookLane = 'session' | 'agent';
+
+/** One thing a hook body says, in the order the receiver acts on it (HIVE-236). */
+export type HookEffect =
+  | { kind: 'status'; event: HookStatusEvent }
+  | { kind: 'agent'; event: HookAgentEvent }
+  | { kind: 'cleared' }
+  | { kind: 'plan'; call: PlanToolCall; reread?: true }
+  | { kind: 'file-edit' }
+  | { kind: 'prompt'; text?: string; conversation?: string };
+
+/** A body that did not parse is `malformed`; empty `effects` means answer 204 and publish nothing. */
+export interface HookReading {
+  malformed?: true;
+  effects: HookEffect[];
+  /** Running background-task kinds with no reading; the receiver warns once per kind. */
+  unknownTaskTypes?: string[];
+}
+
+/** What a hook body is read from (HIVE-236): its lane, the entity it names, and whether it was cut at the cap. */
+export interface HookInput {
+  lane: HookLane;
+  entityId: string;
+  body: string;
+  truncated: boolean;
 }

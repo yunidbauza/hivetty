@@ -16,9 +16,11 @@ import {
 import { PR_PATH } from '../../../../electron/shared/github-contract';
 import { JIRA_GET_PATH } from '../../../../electron/shared/jira-contract';
 import {
+  HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_TOKEN,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
+  HOOK_PATH,
   READY_PATH,
 } from '../../../../electron/shared/hook-contract';
 
@@ -1114,5 +1116,44 @@ describe('rewriteSettings (HIVE-176)', () => {
 
     const written = JSON.parse(await readFile(runtime.settingsPathFor()!, 'utf8'));
     expect(written.enabledPlugins).toEqual({ 'b@m': false });
+  });
+});
+
+describe('the receiver reads hooks through the harness registry (HIVE-236)', () => {
+  let dir: string;
+  let runtime: HookRuntime | undefined;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'hive-hooks-harness-'));
+  });
+
+  afterEach(async () => {
+    await runtime?.stop();
+    runtime = undefined;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('hands the harness registry to the receiver', async () => {
+    const harnessOf = vi.fn(() => undefined);
+    runtime = createHookRuntime({
+      userDataPath: dir,
+      sessionMetrics: () => false,
+      ledger: createLedger({ dir, knowsParty: () => true }),
+    });
+    await runtime.start({ ...noopHandlers, harnesses: { harnessOf, adapterFor: vi.fn() } });
+
+    const env = runtime.envFor('sess-a');
+    const res = await fetch(`${env[HOOK_ENV_RECEIVER_URL] as string}${HOOK_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: env[HOOK_ENV_TOKEN] as string,
+        [HOOK_HEADER_SESSION]: 'sess-a',
+      },
+      body: JSON.stringify({ hook_event_name: 'Stop' }),
+    });
+
+    expect(res.status).toBe(204);
+    expect(harnessOf).toHaveBeenCalledWith('sess-a');
   });
 });

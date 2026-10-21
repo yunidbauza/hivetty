@@ -4,11 +4,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DONE_PATH,
   HOOK_ENV_RECEIVER_URL,
-  doneCommand,
 } from '../../../../../electron/shared/hook-contract';
 import { RESERVED_SKILL_NAME } from '../../../../../electron/shared/skills-contract';
 
 import { doneSkill } from '../../../../../electron/main/harness/claude-code/done-skill';
+import { doneCommand } from '../../../../../electron/main/harness/claude-code/hook-vocabulary';
 
 /**
  * The frontmatter's `key: value` lines, with the value exactly as emitted.

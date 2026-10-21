@@ -33,7 +33,6 @@ import {
   HOOK_HEADER_TOKEN,
   HOOK_MAX_BODY_BYTES,
   type HookAgentEvent,
-  type HookContextReply,
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '../../../../electron/shared/hook-contract';
@@ -53,7 +52,9 @@ import {
   type SessionMetrics,
 } from '../../../../electron/shared/metrics-contract';
 import { createLedger, type Ledger } from '../../../../electron/main/ledger';
+import type { HookContextReply } from '../../../../electron/main/harness/claude-code/hook-vocabulary';
 import { createReceiver, type Receiver } from '../../../../electron/main/hooks/receiver';
+import { sessionAdapter, type HarnessRegistry } from '../../../../electron/main/harness/registry';
 import type { PlanToolCall } from '../../../../electron/main/plans';
 
 /**
@@ -5126,5 +5127,56 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
     expect(response.status).toBe(204);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('onFileTool threw'), expect.any(Error));
     error.mockRestore();
+  });
+});
+
+describe('hook receiver: reads through the harness registry (HIVE-236)', () => {
+  const startWith = async (harnesses: HarnessRegistry) => {
+    const events: HookStatusEvent[] = [];
+    const r = createReceiver({
+      onCleared: () => {},
+      onEvent: (event) => events.push(event),
+      onPlanTool: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      onMetrics: () => {},
+      ...noLedger,
+      harnesses,
+    });
+    const at = (await r.start()) as string;
+    const res = await fetch(at, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: r.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: JSON.stringify({ hook_event_name: 'Stop' }),
+    });
+    await r.stop();
+    return { events, status: res.status };
+  };
+
+  it("reads a session's hook with the adapter its harness names", async () => {
+    const readHook = vi.fn(sessionAdapter().readHook);
+    const adapterFor = vi.fn(() => ({ ...sessionAdapter(), readHook }));
+    const harnessOf = vi.fn(() => 'claude-code' as const);
+    const { events, status } = await startWith({ adapterFor, harnessOf });
+    expect(status).toBe(204);
+    expect(harnessOf).toHaveBeenCalledWith('sess-01');
+    expect(adapterFor).toHaveBeenCalledWith('claude-code');
+    expect(readHook).toHaveBeenCalledWith(expect.objectContaining({ lane: 'session', entityId: 'sess-01' }));
+    expect(events.map((e) => e.event)).toEqual(['Stop']);
+  });
+
+  it('still reads a hook when the registry names no harness (phase 1)', async () => {
+    const adapterFor = vi.fn();
+    const { events } = await startWith({ adapterFor, harnessOf: () => undefined });
+    expect(adapterFor).not.toHaveBeenCalled();
+    expect(events.map((e) => e.event)).toEqual(['Stop']);
   });
 });

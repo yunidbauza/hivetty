@@ -1056,7 +1056,7 @@ describe('status', () => {
 
   /**
    * HIVE-81: `idle_prompt` reports `idle`, not `waiting` (`NOTIFICATION_TYPE_STATUS`
-   * in `hook-contract.ts`). This layer does not compute that mapping — the
+   * in `hook-vocabulary.ts`). This layer does not compute that mapping — the
    * receiver does — but it must pass whatever the receiver decided straight
    * through rather than reinterpreting it.
    */

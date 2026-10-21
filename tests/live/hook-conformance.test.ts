@@ -13,8 +13,8 @@ import {
   createNotifier,
   createNotificationHub,
 } from '../../electron/main/notifications';
+import { NOTIFICATION_TYPE_STATUS } from '../../electron/main/harness/claude-code/hook-vocabulary';
 import {
-  NOTIFICATION_TYPE_STATUS,
   type HookNotificationType,
   type IdleDetail,
   type ObservedStatus,
