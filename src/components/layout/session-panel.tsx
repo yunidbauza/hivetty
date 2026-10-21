@@ -3,6 +3,8 @@ import { useCallback, type ReactNode, type RefObject } from 'react';
 
 import { useNarrowWindow } from '@/hooks/use-narrow-window';
 import { useOpenFileAt } from '@/hooks/use-open-file-at';
+import { usePrRefresh } from '@/hooks/use-pr-refresh';
+import { useTicketRefresh } from '@/hooks/use-ticket-refresh';
 import { cn } from '@/lib/utils';
 import { isSession, isTerminal, terminalOf, type Session, type Terminal } from '@/types/entity';
 import type { FlapTone } from '@/types/pull-request';
@@ -145,6 +147,13 @@ export function SessionPanel({ rowRef }: { rowRef: RefObject<HTMLElement | null>
   const setTab = useSetSessionPanelTab();
   const width = useSessionPanelWidth();
   const setWidth = useSetSessionPanelWidth();
+  /*
+    The Ticket and PR tabs and the PR fact read the list sweeps' copies, and
+    those sweeps run only while something shows them. One shared timer per
+    source, so a Work or PR list mounted beside this is still one sweep.
+  */
+  useTicketRefresh();
+  usePrRefresh();
   const narrow = useNarrowWindow();
   const { openPath } = useOpenFileAt();
 

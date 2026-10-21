@@ -330,6 +330,38 @@ describe('reloadTicketTransitions (HIVE-203)', () => {
   });
 });
 
+describe('a moved status re-reads the transitions (live ticket status)', () => {
+  const moved: JiraIssue = { ...issue, key: 'HIVE-7', status: 'Done', statusCategory: 'done' };
+
+  it('an updated, a swept or a re-read issue whose status moved re-reads that ticket’s transitions', async () => {
+    await state().loadTicketDetail('HIVE-7', 'tab');
+    await state().loadTicketDetail('HIVE-8', 'tab');
+
+    vi.clearAllMocks();
+    state().updateTicket(moved);
+    expect(readJiraTransitions).toHaveBeenCalledExactlyOnceWith({ key: 'HIVE-7' });
+
+    vi.clearAllMocks();
+    state().hydrateTickets([{ ...moved, status: 'In Review', statusCategory: 'in-progress' }], false);
+    expect(readJiraTransitions).toHaveBeenCalledExactlyOnceWith({ key: 'HIVE-7' });
+
+    vi.clearAllMocks();
+    state().setTicketDetailIssue({ ...issue, status: 'In Progress', statusCategory: 'in-progress' });
+    expect(readJiraTransitions).toHaveBeenCalledExactlyOnceWith({ key: 'HIVE-8' });
+  });
+
+  it('an unchanged status, or a ticket no reader holds, reads nothing', async () => {
+    await state().loadTicketDetail('HIVE-7', 'tab');
+    vi.clearAllMocks();
+
+    state().updateTicket({ ...issue, key: 'HIVE-7', status: 'In Progress', statusCategory: 'in-progress', summary: 'Renamed' });
+    useHiveStore.setState({ ticketDetails: {} });
+    state().updateTicket(moved);
+
+    expect(readJiraTransitions).not.toHaveBeenCalled();
+  });
+});
+
 describe('setTicketDetailIssue (HIVE-203)', () => {
   it('replaces the issue the slice read for itself', async () => {
     await state().loadTicketDetail('HIVE-8', 'page');

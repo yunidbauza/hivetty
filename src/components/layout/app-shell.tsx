@@ -9,6 +9,7 @@ import { useProjectWatcher } from '@features/explorer/hooks/use-project-watcher'
 import { useSessionStatus } from '@features/sessions/hooks/use-session-status';
 import { useNotificationActivate } from '@features/settings/hooks/use-notification-activate';
 import { useAgentsSync } from '@features/shared/hooks/use-agents-sync';
+import { useJiraIssueSync } from '@features/shared/hooks/use-jira-issue-sync';
 import { useLedgerSync } from '@features/shared/hooks/use-ledger-sync';
 import { WhatsNew } from '@features/whats-new/components/whats-new';
 import { useAppChords } from '@hooks/use-app-chords';
@@ -55,6 +56,9 @@ export function AppShell() {
    * one listener per card for one channel.
    */
   useLedgerSync();
+
+  /** Install every issue main reports moved, whoever moved it: one broadcast channel again. */
+  useJiraIssueSync();
 
   /**
    * Keep the fleet's agents in step with `~/.hive/agents` (HIVE-114).
