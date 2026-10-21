@@ -145,10 +145,16 @@ export function parseCriteria(description: readonly AdfBlock[] | undefined): Cri
   return { kind: 'description', blocks: [...description] };
 }
 
-/** The ring's label: only an epic gets one (D6). */
-export function epicLabel(parent: JiraParentRef | null | undefined, progress?: EpicProgress): string | null {
+/** The ring's caption: key · summary, and done/total apart so truncating the text never drops it. */
+export interface EpicLabel {
+  text: string;
+  progress?: string;
+}
+
+/** The ring's caption: only an epic gets one (D6). */
+export function epicLabel(parent: JiraParentRef | null | undefined, progress?: EpicProgress): EpicLabel | null {
   if (!parent || parent.issueType?.toLowerCase() !== 'epic') return null;
-  const head = `${parent.key} · ${parent.summary}`;
-  if (progress === undefined) return head;
-  return `${head} · ${String(progress.done)}/${String(progress.total)}${progress.capped ? '+' : ''}`;
+  const text = `${parent.key} · ${parent.summary}`;
+  if (progress === undefined) return { text };
+  return { text, progress: `${String(progress.done)}/${String(progress.total)}${progress.capped ? '+' : ''}` };
 }

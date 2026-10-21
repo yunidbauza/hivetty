@@ -94,6 +94,7 @@ import {
 } from '@lib/ticket-activity';
 import {
   type Criteria,
+  type EpicLabel,
   epicLabel,
   isBlocks,
   parseCriteria,
@@ -2141,6 +2142,26 @@ function dropLeftPrs<T>(
   return Object.fromEntries(Object.entries(details).filter(([key]) => !gone.has(key)));
 }
 
+/** Where a reader finds a ticket's status: the list's copy, else the issue its detail read. */
+const statusOf = (state: HiveState, key: string): string | undefined =>
+  state.tickets.find((ticket) => ticket.key === key)?.status ?? state.ticketDetails[key]?.issue?.status;
+
+/**
+ * Run a write over the ticket copies, then re-read the transitions of every
+ * held ticket whose status it moved: Jira's transitions are per status, so
+ * "Move to" from the old ones steps from where the ticket no longer stands.
+ */
+function movingTickets(get: () => HiveState, keys: readonly string[], write: () => void): void {
+  const before = get();
+  write();
+  const after = get();
+  for (const key of keys) {
+    if (after.ticketDetails[key] !== undefined && statusOf(before, key) !== statusOf(after, key)) {
+      void after.reloadTicketTransitions(key);
+    }
+  }
+}
+
 /**
  * Read one ticket's parts and merge each as it lands (HIVE-203, keyed by HIVE-202).
  *
@@ -4031,11 +4052,18 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
       return { ledger: capLedger(merged, closedAsks), closedAsks };
     }),
 
-  ledgerAppend: (entry) =>
+  ledgerAppend: (entry) => {
     set((state) => {
       const closedAsks = withClosed(state.closedAsks, [entry]);
       return { ledger: capLedger([...state.ledger, entry], closedAsks), closedAsks };
-    }),
+    });
+    /*
+      An entry naming a PR is the shipper (or a session) reporting a move gh
+      made outside this app: marked ready, merged. Sweep now rather than at the
+      next tick; the sweep shares one in flight, so a burst is one `gh` call.
+    */
+    if (entry.meta?.pr !== undefined) void get().refreshPrs();
+  },
 
   answerAsk: async (thread, body, meta) =>
     window.hive?.ledger.answer({
@@ -5264,21 +5292,23 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * ticket→session link lives on `Session.ticket`, which this never touches.
    */
   hydrateTickets: (issues, capped) =>
-    set((state) => {
-      const tickets = issues.map(toTicket);
+    movingTickets(get, issues.map((issue) => issue.key), () =>
+      set((state) => {
+        const tickets = issues.map(toTicket);
 
-      const source = state.ticketSource;
-      const settled =
-        source.kind === 'live' && !source.stale && source.capped === capped;
+        const source = state.ticketSource;
+        const settled =
+          source.kind === 'live' && !source.stale && source.capped === capped;
 
-      return {
-        tickets: sameTickets(tickets, state.tickets) ? state.tickets : tickets,
-        ticketSource: settled
-          ? source
-          : { kind: 'live', stale: false, capped },
-        ticketsReadAt: Date.now(),
-      };
-    }),
+        return {
+          tickets: sameTickets(tickets, state.tickets) ? state.tickets : tickets,
+          ticketSource: settled
+            ? source
+            : { kind: 'live', stale: false, capped },
+          ticketsReadAt: Date.now(),
+        };
+      }),
+    ),
 
   /**
    * A read failed — **staleness over emptiness**.
@@ -5355,14 +5385,16 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
    * obligation rather than satisfying it (HIVE-73).
    */
   updateTicket: (issue) =>
-    set((state) => {
-      const at = state.tickets.findIndex((ticket) => ticket.key === issue.key);
-      if (at === -1) return state;
+    movingTickets(get, [issue.key], () =>
+      set((state) => {
+        const at = state.tickets.findIndex((ticket) => ticket.key === issue.key);
+        if (at === -1) return state;
 
-      const next = [...state.tickets];
-      next[at] = toTicket(issue);
-      return { tickets: next };
-    }),
+        const next = [...state.tickets];
+        next[at] = toTicket(issue);
+        return { tickets: next };
+      }),
+    ),
 
   /**
    * Read one ticket for a reader (HIVE-203, keyed by HIVE-202).
@@ -5631,11 +5663,13 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
   },
 
   setTicketDetailIssue: (issue) =>
-    set((state) => {
-      const entry = state.ticketDetails[issue.key];
-      if (entry?.issue === undefined) return state;
-      return { ticketDetails: { ...state.ticketDetails, [issue.key]: { ...entry, issue: toTicket(issue) } } };
-    }),
+    movingTickets(get, [issue.key], () =>
+      set((state) => {
+        const entry = state.ticketDetails[issue.key];
+        if (entry?.issue === undefined) return state;
+        return { ticketDetails: { ...state.ticketDetails, [issue.key]: { ...entry, issue: toTicket(issue) } } };
+      }),
+    ),
 
   /**
    * Read the configured query and install the answer (HIVE-69).
@@ -8959,12 +8993,12 @@ export const useTicketCriteria = (ticketKey: string): Criteria => {
 export const useLatestComment = (ticketKey: string): JiraComment | undefined =>
   useHiveStore((state) => state.ticketDetails[ticketKey]?.comments?.at(-1));
 
-/** The ring's label, only for an epic (HIVE-202, D6). */
-export const useEpicLabel = (ticketKey: string): string | null =>
-  useHiveStore((state) => {
-    const entry = state.ticketDetails[ticketKey];
-    return epicLabel(entry?.detail?.parent, entry?.epicProgress);
-  });
+/** The ring's caption, only for an epic (HIVE-202, D6). Memoised: the selector would mint an object per call. */
+export const useEpicLabel = (ticketKey: string): EpicLabel | null => {
+  const parent = useHiveStore((state) => state.ticketDetails[ticketKey]?.detail?.parent);
+  const progress = useHiveStore((state) => state.ticketDetails[ticketKey]?.epicProgress);
+  return useMemo(() => epicLabel(parent, progress), [parent, progress]);
+};
 
 /** Inbox unread count (stories 050, 021). */
 export const useUnreadCount = () =>

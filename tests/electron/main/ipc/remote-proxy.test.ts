@@ -64,7 +64,7 @@ vi.mock('../../../../electron/main/notifications/activate-here', () => ({
  *
  * The three channel lists below are derived from `FRAME_KIND` — the same
  * table `registerRemoteProxy` itself walks — but the counts asserted against
- * them (124, 6, 29, 130) are literals, not read back off the derived lists.
+ * them (124, 6, 30, 130) are literals, not read back off the derived lists.
  * `tests/shared/remote-contract.test.ts:82,125` pins the same four numbers
  * independently. A channel added to the contract without a home in this file
  * fails a count here, which is the point: a self-referential assertion could
@@ -239,7 +239,7 @@ describe('registerRemoteProxy', () => {
   });
 
   it('binds no handler for an event channel', () => {
-    expect(eventChannels.length).toBe(29);
+    expect(eventChannels.length).toBe(30);
 
     registerRemoteProxy({ client: fakeClient(), broadcaster: fakeBroadcaster() });
 
@@ -345,7 +345,7 @@ describe('registerRemoteProxy', () => {
    * the very first one that isn't `pty:data`.
    */
   it('pumps a client event into the broadcaster on the same channel', () => {
-    expect(eventChannels.length).toBe(29);
+    expect(eventChannels.length).toBe(30);
 
     const client = fakeClient();
     const broadcaster = fakeBroadcaster();

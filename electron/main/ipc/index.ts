@@ -260,7 +260,7 @@ import { answerPrLookup } from '../integrations/github/lookup';
 import { runAsync, type RunAsync } from '../integrations/github/run';
 import { createJira } from '../integrations/jira';
 import { credentialFile } from '../integrations/jira/auth';
-import { jiraToolsFor } from '../integrations/jira/tools';
+import { announceIssueWrites, jiraToolsFor } from '../integrations/jira/tools';
 import { createSlackBridge, type SlackBridge } from '../integrations/slack/bridge';
 import { openSlackSocket, openSlackWeb } from '../integrations/slack/clients';
 import { signInToSlack, signOutOfSlack } from '../integrations/slack/login';
@@ -3959,13 +3959,16 @@ export function registerIpcHandlers(
    * Electron is 43, so it is there. Wrapped rather than passed by reference so
    * `this` cannot matter and the seam stays a plain function.
    */
-  const jira = createJira({
-    store: safeStorage,
-    file: credentialFile(join(app.getPath('userData'), 'jira-credential.bin')),
-    env: process.env,
-    config: getConfig,
-    fetch: (url, init) => globalThis.fetch(url, init),
-  });
+  const jira = announceIssueWrites(
+    createJira({
+      store: safeStorage,
+      file: credentialFile(join(app.getPath('userData'), 'jira-credential.bin')),
+      env: process.env,
+      config: getConfig,
+      fetch: (url, init) => globalThis.fetch(url, init),
+    }),
+    (issue) => send(CH.jiraIssueChanged, issue),
+  );
 
   /**
    * The device credential this machine was handed when it attached to

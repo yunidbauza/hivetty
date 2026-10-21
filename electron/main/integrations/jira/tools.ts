@@ -26,6 +26,28 @@ export type JiraToolSource = Pick<
   | 'searchUsers'
 >;
 
+/**
+ * The integration with its two issue writes announced: every issue a
+ * transition or an assign re-read goes to `onIssue`, whoever asked. One wrap
+ * at construction, so the Work page's "Move to" and an agent's
+ * `jira_transition` both reach every surface showing the ticket, and a write
+ * path added later cannot forget to.
+ */
+export function announceIssueWrites<T extends Pick<Jira, 'applyTransition' | 'assignToMe'>>(
+  jira: T,
+  onIssue: (issue: JiraIssue) => void,
+): T {
+  const heard = (result: JiraResult<JiraIssue>): JiraResult<JiraIssue> => {
+    if (result.ok) onIssue(result.value);
+    return result;
+  };
+  return {
+    ...jira,
+    applyTransition: async (request) => heard(await jira.applyTransition(request)),
+    assignToMe: async (request) => heard(await jira.assignToMe(request)),
+  };
+}
+
 const same = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
