@@ -875,6 +875,15 @@ describe('ui verb routes to its channel (HIVE-81)', () => {
 });
 
 describe('subscriptions', () => {
+  it('jira.onIssueChanged hands the pushed issue over, payload only', () => {
+    const callback = vi.fn();
+    (jira().onIssueChanged as (cb: unknown) => () => void)(callback);
+
+    listeners.get(CH.jiraIssueChanged)?.[0]?.({}, { key: 'HIVE-7', status: 'Done' });
+
+    expect(callback).toHaveBeenCalledWith({ key: 'HIVE-7', status: 'Done' });
+  });
+
   it('returns a disposer that removes exactly one listener', () => {
     const disposeA = pty().onData(vi.fn()) as () => void;
     pty().onData(vi.fn());

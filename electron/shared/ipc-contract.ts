@@ -491,6 +491,13 @@ export const CH = {
   jiraTransitions: 'jira:transitions',
   jiraApplyTransition: 'jira:apply-transition',
   /**
+   * A **push**: the issue a transition or an assign re-read, from any caller —
+   * the UI's "Move to", an agent's or a session's `jira_transition`. Without
+   * it a surface showing the ticket kept the status of its last sweep, and
+   * "Move to" offered a step from a status the ticket had already left.
+   */
+  jiraIssueChanged: 'jira:issue-changed',
+  /**
    * The conversation and the links (HIVE-71).
    *
    * `jiraAddComment` is the epic's second write, and the only one that carries
@@ -2675,6 +2682,8 @@ export interface HiveBridge {
     ): Promise<JiraResult<JiraComment>>;
     /** Active people on the site matching a query, up to eight (HIVE-216). The query is guarded in main. */
     users(request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>>;
+    /** Every issue a transition or an assign re-read, whoever asked: an agent, a session, this window. */
+    onIssueChanged(callback: (issue: JiraIssue) => void): () => void;
   };
   /**
    * Slack — the MCP server (HIVE-123) and socket mode (HIVE-124).
