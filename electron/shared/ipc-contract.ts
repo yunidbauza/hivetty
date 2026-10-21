@@ -1262,6 +1262,7 @@ export const EVENT_CHANNELS = [
   CH.notificationsActivate,
   CH.fsChanged,
   CH.ledgerChanged,
+  CH.jiraIssueChanged,
   CH.planChanged,
   CH.changedFilesChanged,
   CH.agentsChanged,
