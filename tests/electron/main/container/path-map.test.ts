@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createPathMap } from '../../../../electron/main/sessions/path-map';
+import { createPathMap } from '../../../../electron/main/container/path-map';
 
 const map = createPathMap({
   projectPath: '/Users/dev/Projects/the-hive',

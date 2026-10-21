@@ -1,7 +1,10 @@
 import type { HarnessAdapter } from '../port';
 
-/** Adapter #1. Empty in phase 1's first story; HIVE-234 onward fills it. */
+import { launch } from './launch';
+
+/** Adapter #1. `launch` arrived with HIVE-234; later stories add the rest. */
 export const claudeCodeAdapter: HarnessAdapter = {
   id: 'claude-code',
   capabilities: {},
+  launch,
 };

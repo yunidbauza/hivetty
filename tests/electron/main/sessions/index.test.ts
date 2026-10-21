@@ -3586,6 +3586,29 @@ describe('terminals', () => {
     expect(sessions.entities()).not.toContain('term-01');
   });
 
+  it('publishes no terminal ending for a command, which has no harness either (HIVE-234)', () => {
+    sessions.openCommand({
+      entityId: 'hive.clone',
+      cwd: '/Users/me/Projects',
+      file: 'git',
+      args: ['clone', '--progress', '--', 'https://x/y.git', 'y'],
+      cols: 80,
+      rows: 24,
+      onExit: () => {},
+    });
+    emitExit({ sessionId: mintedFor('hive.clone'), exitCode: 0 });
+    emitError({ sessionId: mintedFor('hive.clone'), message: 'late' });
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
+  it('publishes no terminal ending when a session’s spawn fails (HIVE-234)', () => {
+    sessions.open(OPEN);
+    emitError({ sessionId: mintedFor('hero-refresh'), message: 'could not start /bin/zsh' });
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
   it('reports lost when the host went away', () => {
     sessions.openTerminal(TERMINAL);
     emitLost({ sessionId: mintedFor('term-01') });

@@ -25,7 +25,7 @@ with why it is not a behaviour change.
 
 | Method | Story |
 | --- | --- |
-| `launch` | HIVE-234 |
+| `launch` | HIVE-234 (landed) |
 | `prepare` | HIVE-235 |
 | `readHook` | HIVE-236 – HIVE-238 |
 | `record`, `meters` | HIVE-239 |
@@ -37,14 +37,45 @@ with why it is not a behaviour change.
 interface). A field lands only with the story that consumes it, and becomes an
 `interface` then. No field is added for a harness that does not exist yet.
 
+### launch
+
+`launch(spec: LaunchSpec): LaunchPlan` (HIVE-234). Both types live on the port, beside
+`ContainerSpawn`, so the core can build one and read the other without importing the
+adapter.
+
+- **`LaunchSpec` is what the core knows:** the configured `command` (`claudeCommand`,
+  `{env}` placeholder and all), `model`, `effort`, `name`, `task`, `sessionUuid` plus
+  `resume`, the three paths (`settingsPath`, `pluginDir`, `mcpConfig`),
+  `subscriptionAuth`, and a `ContainerSpawn` for a container project.
+- **`LaunchPlan` is what it gets back:** `command` for `bootstrap.arm` to type into the
+  login shell, `stripEnv` for the spawn to remove from the pty environment, and
+  `submitDelayMs` for the bootstrap's text-then-`\r` split (HIVE-63).
+
+Claude Code's `launch` (`harness/claude-code/launch.ts`) wraps `sessionCommand`, which
+moved there verbatim, and owns `SUBMIT_DELAY_MS`. `sessions/index.ts` makes the plan
+**before** `startProcess`, so the spawn's `stripEnv` comes from it. Only pure resolution
+(paths, the hook env, the container map, the session uuid) is hoisted above the spawn;
+every side effect keeps its old place after it.
+
+`shellQuote`, the `{env}` expansion (`container-command.ts`) and the host↔container path
+map live in `electron/main/container/`, not `sessions/`: the adapter needs them, fence 2
+forbids it `sessions/**`, and the headless agent waker uses them too.
+
 ### The registry
 
 `harnessOf(entityId)` answers `'claude-code'` for an agent session and `undefined` for a
 plain terminal or a command (story 102). Only the sessions closure knows which an entity
 is: ids are minted by the renderer, so a prefix proves nothing. The fence below stops
 `harness/**` from importing `sessions/**`, so the core passes the fact in as
-`isAgentSession`. HIVE-234 makes that the single source for the distinction, replacing
+`isAgentSession`. HIVE-234 made that the single source for the distinction, replacing
 `terminalEntities` in `electron/main/sessions/index.ts`.
+
+`sessions/index.ts` answers `isAgentSession` from a positive `agentSessions` set: `spawn`
+adds the entity before its process starts, and `settleExit` removes it. A failed spawn
+does not remove it, because a session whose spawn failed was never a terminal. A
+terminal is `harnessOf(id) === undefined` and not a command, since `harnessOf` is
+`undefined` for both. So the `ptySpawn`/`ptySpawnTerminal` split now means harness
+session versus plain terminal.
 
 `adapterFor(id)` indexes a `Record<HarnessId, HarnessAdapter>`, so a `HarnessId` with no
 adapter is a compile error, not a runtime miss.

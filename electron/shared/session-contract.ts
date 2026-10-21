@@ -955,35 +955,6 @@ export const BOOTSTRAP_DEBOUNCE_MS = 150;
 export const BOOTSTRAP_FALLBACK_MS = 5_000;
 
 /**
- * How long to wait between writing a stage's text and writing its `\r` (HIVE-63).
- *
- * The bug this fixes: a stage used to go in as a **single** write,
- * `` `${command}\r` ``, and Claude Code's TUI applies paste detection to input
- * that arrives in one fast chunk. Above a size threshold the whole write is
- * treated as a paste, and the trailing carriage return is inserted as a literal
- * newline inside the input box instead of submitting it. The session then sits
- * there looking idle, holding a task nobody can see it was given.
- *
- * Stage one never hit it — `claude --model … && exit` is short and fixed. Stage
- * two writes the **task**, which is arbitrary-length user text, so the defect
- * only ever appeared on the stage where it is hardest to notice.
- *
- * The boundary was measured against `claude` 2.1.222 by bisection, submitting a
- * single write and watching the title glyph for the spinner that means the turn
- * started: **submits at ≤62 characters, swallowed at ≥65** — a 64-byte chunk
- * heuristic. The number is recorded because it explains the bug, not because
- * anything depends on it: the fix splits *every* stage's write rather than
- * branching on a length, since a threshold read off one release is exactly the
- * kind of constant that goes stale without anyone noticing.
- *
- * Splitting the write is what fixes it: the text arrives as a paste (which is
- * fine — that is what it is), and the `\r` arrives separately as a keystroke,
- * which is unambiguously "submit". The delay only has to outlast the TUI's own
- * paste-coalescing window, not any model work, which is why it is short.
- */
-export const SUBMIT_DELAY_MS = 300;
-
-/**
  * Why a session could not start.
  *
  * A closed set, each member naming something the *user* can act on. A generic
