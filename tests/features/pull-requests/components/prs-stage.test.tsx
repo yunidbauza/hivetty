@@ -1,5 +1,5 @@
 import { act, render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PrsStage } from '@features/pull-requests/components/prs-stage';
 import { useHiveStore } from '@stores/hive-store';
@@ -11,12 +11,17 @@ beforeEach(() => {
   useUiStore.getState().reset();
   useHiveStore.setState({
     loadPrDetail: () => Promise.resolve(),
+    refreshPrs: vi.fn(() => Promise.resolve()),
     prSource: { kind: 'live', stale: false, repos: 1 },
     prs: [
       prRecord({ number: 10, title: 'Quiet one', checks: 'passing', findings: 0 }),
       prRecord({ number: 11, title: 'Needs me', checks: 'failing', mine: true }),
     ],
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const shown = () => screen.getByRole('region', { name: /^Pull request #/ }).getAttribute('aria-label');
@@ -39,6 +44,17 @@ describe('PrsStage', () => {
     useHiveStore.setState({ prs: [] });
     render(<PrsStage />);
     expect(screen.getByRole('heading', { name: 'The Hatchery is quiet' })).toBeInTheDocument();
+  });
+
+  it('keeps sweeping gh while the Hatchery is quiet and no list is drawn', async () => {
+    vi.useFakeTimers();
+    const refreshPrs = vi.fn(() => Promise.resolve());
+    useHiveStore.setState({ prs: [], refreshPrs });
+    render(<PrsStage />);
+    expect(screen.getByRole('heading', { name: 'The Hatchery is quiet' })).toBeInTheDocument();
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(refreshPrs).toHaveBeenCalledTimes(2);
   });
 
   it('shows the empty Hatchery when only hatched (merged) PRs are left', () => {
