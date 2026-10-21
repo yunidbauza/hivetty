@@ -59,7 +59,12 @@ beforeEach(() => {
   useHiveStore.getState().reset();
   useUiStore.getState().reset();
   seedDemoFleet();
-  useHiveStore.setState({ tickets: [ticket, { ...ticket, key: 'GRAC-3022', title: 'Other' }], prs: [], ledger: [] });
+  useHiveStore.setState({
+    tickets: [ticket, { ...ticket, key: 'GRAC-3022', title: 'Other' }],
+    prs: [],
+    ledger: [],
+    refreshTickets: vi.fn(() => Promise.resolve()),
+  });
   readJiraDetail.mockResolvedValue(ok(paragraph('The description')));
   readJiraComments.mockResolvedValue(ok({ comments: [], total: 0 }));
   readJiraTransitions.mockResolvedValue(ok([]));
@@ -112,6 +117,17 @@ describe('WorkStage (HIVE-203)', () => {
 
     expect(screen.getByRole('heading', { name: "Jira isn't connected" })).toBeInTheDocument();
     expect(screen.queryByText('Pick a ticket')).toBeNull();
+  });
+
+  it('keeps sweeping Jira while nothing is assigned and no list is drawn', async () => {
+    vi.useFakeTimers();
+    const refreshTickets = vi.fn(() => Promise.resolve());
+    useHiveStore.setState({ ticketSource: { kind: 'live', stale: false, capped: false }, tickets: [], refreshTickets });
+    render(<WorkStage />);
+    expect(screen.getByRole('heading', { name: 'No tickets for you' })).toBeInTheDocument();
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(refreshTickets).toHaveBeenCalledTimes(2);
   });
 
   it('still shows an open ticket when nothing is listed (HIVE-211)', async () => {

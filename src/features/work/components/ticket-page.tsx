@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 
 import { createPoller } from '@/hooks/create-poller';
 import { useDetailsDrawer } from '@/hooks/use-details-drawer';
+import { useTicketRefresh } from '@/hooks/use-ticket-refresh';
 import type { Ticket } from '@/types/ticket';
 
 import { SkeletonBar } from '@features/shared/components/skeleton-bar';
@@ -198,8 +199,13 @@ export function TicketPage({ ticketKey }: { ticketKey: string }) {
  * The Work place's stage (HIVE-203, D3): the shown ticket's page
  * (`useShownTicket`: the last one, else the next, else the first), or a prompt
  * to pick one while the list is still loading. With nothing to list it says why instead (HIVE-211).
+ *
+ * It subscribes to the ticket sweep as well as the panel: an empty live list
+ * draws no panel, and the sweep stopped with it, so a ticket assigned later
+ * never arrived. The poller shares one timer, so both mounted is one sweep.
  */
 export function WorkStage() {
+  useTicketRefresh();
   const key = useShownTicket();
   const listed = useWorkListed();
 
