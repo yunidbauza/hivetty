@@ -1020,13 +1020,13 @@ describe('hook receiver', () => {
   });
 
   it.each([
-    ['SessionStart', 'idle'],
-    ['UserPromptSubmit', 'working'],
-    ['PermissionRequest', 'waiting'],
-    ['Elicitation', 'waiting'],
-    ['PostToolUse', 'working'],
-    ['Stop', 'idle'],
-  ])('maps %s to %s', async (event, status) => {
+    ['SessionStart', { kind: 'session-start' }],
+    ['UserPromptSubmit', { kind: 'prompt' }],
+    ['PermissionRequest', { kind: 'waiting', reason: 'permission' }],
+    ['Elicitation', { kind: 'waiting', reason: 'input' }],
+    ['PostToolUse', { kind: 'tool-end' }],
+    ['Stop', { kind: 'turn-end' }],
+  ])('maps %s to %j', async (event, signal) => {
     const response = await post({ hook_event_name: event, session_id: 'uuid' });
     expect(response.status).toBe(204);
     /*
@@ -1035,14 +1035,14 @@ describe('hook receiver', () => {
       across a `/clear` — which starts a new conversation in the same pty under
       an id nothing else tells main about.
     */
-    expect(events).toEqual([{ entityId: 'sess-01', event, status, sessionUuid: 'uuid' }]);
+    expect(events).toEqual([{ entityId: 'sess-01', signal, sessionUuid: 'uuid' }]);
   });
 
   it('omits the conversation uuid when the payload carried none', async () => {
     // Absence is the honest answer, the same discipline `cwd` follows.
     await post({ hook_event_name: 'Stop' });
 
-    expect(events).toEqual([{ entityId: 'sess-01', event: 'Stop', status: 'idle' }]);
+    expect(events).toEqual([{ entityId: 'sess-01', signal: { kind: 'turn-end' } }]);
   });
 
   /**
@@ -1061,7 +1061,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
         toolName: 'Bash',
         toolUseId: 'toolu_01',
         runInBackground: true,
@@ -1076,7 +1076,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'SubagentStart', agentId: 'a828e337' });
+      expect(events[0]).toMatchObject({ signal: { kind: 'subagent-start' }, agentId: 'a828e337' });
     });
 
     /**
@@ -1099,8 +1099,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'PermissionRequest',
-          status: 'waiting',
+          signal: { kind: 'waiting', reason: 'permission' },
           toolName: 'Write',
         },
       ]);
@@ -1134,7 +1133,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
         backgroundShells: ['bcy0lrc5b'],
       });
     });
@@ -1152,7 +1151,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'Stop', backgroundShells: [] });
+      expect(events[0]).toMatchObject({ signal: { kind: 'turn-end' }, backgroundShells: [] });
     });
 
     it('says nothing for an event that carries no list at all', async () => {
@@ -1173,7 +1172,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'SubagentStop',
+        signal: { kind: 'subagent-end' },
         agentId: 'a95ea9629a0d69ec6',
         backgroundShells: ['bcy0lrc5b'],
       });
@@ -1319,7 +1318,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'Stop', status: 'idle' });
+      expect(events[0]).toMatchObject({ signal: { kind: 'turn-end' } });
       expect(events[0]).not.toHaveProperty('backgroundShells');
     });
   });
@@ -1512,14 +1511,14 @@ describe('hook receiver', () => {
      * already ended, and `idle` is what the session already was.
      */
     it.each([
-      ['idle_prompt', 'idle'],
-      ['permission_prompt', 'waiting'],
+      ['idle_prompt', { kind: 'notice', reason: 'idle' }],
+      ['permission_prompt', { kind: 'notice', reason: 'permission' }],
     ])(
-      'maps %s to %s, carrying the type through',
-      async (notificationType, status) => {
+      'maps %s to %j, carrying the type through',
+      async (type, signal) => {
         const response = await post({
           hook_event_name: 'Notification',
-          notification_type: notificationType,
+          notification_type: type,
           message: 'Claude is waiting for your input',
         });
 
@@ -1527,9 +1526,7 @@ describe('hook receiver', () => {
         expect(events).toEqual([
           {
             entityId: 'sess-01',
-            event: 'Notification',
-            status,
-            notificationType,
+            signal,
           },
         ]);
       },
@@ -1574,9 +1571,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'Notification',
-          status: 'idle',
-          notificationType: 'idle_prompt',
+          signal: { kind: 'notice', reason: 'idle' },
         },
       ]);
     });
@@ -1627,7 +1622,7 @@ describe('hook receiver', () => {
       expect(text).toContain('"intent":"ship it"');
       expect(text).toContain(`thread "${ref}"`);
       // The prompt still counts as the session working.
-      expect(events.map((e) => e.event)).toEqual(['UserPromptSubmit']);
+      expect(events.map((e) => e.signal)).toEqual([{ kind: 'prompt' }]);
       expect(events[0]?.sessionUuid).toBe('u1');
     });
 
@@ -1776,7 +1771,7 @@ describe('hook receiver', () => {
 
     expect(response.status).toBe(204);
     expect(events).toEqual([
-      { entityId: 'sess-01', event: 'PermissionRequest', status: 'waiting' },
+      { entityId: 'sess-01', signal: { kind: 'waiting', reason: 'permission' } },
     ]);
   });
 
@@ -1812,8 +1807,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'Stop',
-          status: 'idle',
+          signal: { kind: 'turn-end' },
           cwd: '/repo/.claude/worktrees/incorp-332',
         },
       ]);
@@ -1830,7 +1824,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events).toEqual([
-        { entityId: 'sess-01', event: 'Stop', status: 'idle' },
+        { entityId: 'sess-01', signal: { kind: 'turn-end' } },
       ]);
     });
 
@@ -1848,8 +1842,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'PermissionRequest',
-          status: 'waiting',
+          signal: { kind: 'waiting', reason: 'permission' },
           cwd: '/repo/worktree',
         },
       ]);
@@ -2269,7 +2262,7 @@ describe('the token binds to one session (HIVE-112)', () => {
 
     expect(response.status).toBe(ok);
     // The hook route's 204 is an acceptance only if the event got through.
-    if (name === '/hook') expect(events.map((e) => e.event)).toEqual(['Stop']);
+    if (name === '/hook') expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
   });
 
   it.each(ROUTES)('refuses an unknown, garbage token on $name', async ({ url, body, refused }) => {
@@ -2629,8 +2622,7 @@ describe('the agent id space (HIVE-115)', () => {
     expect(agentEvents).toEqual([
       {
         entityId: AGENT,
-        event: 'Stop',
-        status: 'idle',
+        signal: { kind: 'turn-end' },
         sessionUuid: 'f9589d3c-8987-4f7d-ba2f-537952d2633c',
       },
     ]);
@@ -2653,8 +2645,7 @@ describe('the agent id space (HIVE-115)', () => {
     expect(agentEvents).toEqual([
       {
         entityId: AGENT,
-        event: 'Stop',
-        status: 'idle',
+        signal: { kind: 'turn-end' },
         sessionUuid: 'f9589d3c-8987-4f7d-ba2f-537952d2633c',
       },
     ]);
@@ -2677,14 +2668,14 @@ describe('the agent id space (HIVE-115)', () => {
     await postAs(AGENT, { hook_event_name: 'Stop', background_tasks: tasks });
 
     expect(agentEvents).toEqual([
-      { entityId: AGENT, event: 'Stop', status: 'idle', backgroundWork: expected },
+      { entityId: AGENT, signal: { kind: 'turn-end' }, backgroundWork: expected },
     ]);
   });
 
   it('omits the uuid rather than inventing one when the payload has none', async () => {
     await postAs(AGENT, { hook_event_name: 'Stop' });
 
-    expect(agentEvents).toEqual([{ entityId: AGENT, event: 'Stop', status: 'idle' }]);
+    expect(agentEvents).toEqual([{ entityId: AGENT, signal: { kind: 'turn-end' } }]);
   });
 
   /**
@@ -4839,7 +4830,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
     const response = await postAs('sess-01', pick('PostToolUse', false));
 
     expect(response.status).toBe(204);
-    expect(events.map((event) => event.event)).toEqual(['PostToolUse']);
+    expect(events.map((event) => event.signal)).toEqual([{ kind: 'tool-end' }]);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining('onPlanTool threw'),
       expect.any(Error),
@@ -5170,13 +5161,13 @@ describe('hook receiver: reads through the harness registry (HIVE-236)', () => {
     expect(harnessOf).toHaveBeenCalledWith('sess-01');
     expect(adapterFor).toHaveBeenCalledWith('claude-code');
     expect(readHook).toHaveBeenCalledWith(expect.objectContaining({ lane: 'session', entityId: 'sess-01' }));
-    expect(events.map((e) => e.event)).toEqual(['Stop']);
+    expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
   });
 
   it('still reads a hook when the registry names no harness (phase 1)', async () => {
     const adapterFor = vi.fn();
     const { events } = await startWith({ adapterFor, harnessOf: () => undefined });
     expect(adapterFor).not.toHaveBeenCalled();
-    expect(events.map((e) => e.event)).toEqual(['Stop']);
+    expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
   });
 });

@@ -1,3 +1,5 @@
+import type { StatusSignal } from './harness-contract';
+
 /**
  * What Claude Code's hooks tell the app about a session (HIVE-62).
  *
@@ -27,30 +29,6 @@
  * only source that says what happened, when it happened, and for which session.
  */
 
-/**
- * Events that say what the agent is *doing*.
- *
- * `SessionEnd` is excluded because it is a **lifecycle** event, not a status:
- * it reports a boundary between two conversations, and there is no honest
- * `ObservedStatus` to map it to. Expressed as a type rather than a comment so
- * the status map in `harness/claude-code/hook-vocabulary.ts` cannot be given a
- * bogus entry for it.
- *
- * Spelled out rather than derived since HIVE-236: the list is the Claude adapter's
- * (`harness/claude-code/hook-vocabulary.ts`), behind a fence. HIVE-237 retires this union.
- */
-export type StatusHookEvent =
-  | 'SessionStart'
-  | 'UserPromptSubmit'
-  | 'PermissionRequest'
-  | 'Elicitation'
-  | 'PreToolUse'
-  | 'PostToolUse'
-  | 'SubagentStart'
-  | 'SubagentStop'
-  | 'Notification'
-  | 'Stop';
-
 /** What is still running while the main agent is not (HIVE-83). */
 export type IdleDetail = 'agents' | 'script';
 
@@ -66,9 +44,9 @@ export type IdleDetail = 'agents' | 'script';
  * (HIVE-93). The reason is unchanged and is the point of the type: no hook
  * observes `done`. It is *declared* — by the user typing `/done`, or by a skill
  * handing off to it — and a declaration is not an observation. Keeping it out
- * of this union is what stops the status map in
- * `harness/claude-code/hook-vocabulary.ts` from being given an entry
- * that would quietly let some Claude Code event mean "the work is finished".
+ * of this union is what stops any mapping from a hook to a status from being
+ * given an entry that would quietly let some Claude Code event mean "the work
+ * is finished".
  *
  * What carries it instead is `SessionFinishedEvent` in `session-contract.ts`,
  * on a channel of its own — the one place main speaks about a session having
@@ -76,9 +54,6 @@ export type IdleDetail = 'agents' | 'script';
  * carries `done` at all.
  */
 export type ObservedStatus = 'working' | 'waiting' | 'idle' | 'terminated';
-
-/** Claude's notification types this app reads. The list lives in the adapter (HIVE-236); HIVE-237 retires this. */
-export type HookNotificationType = 'idle_prompt' | 'permission_prompt';
 
 /**
  * The header carrying the Hive's own session id.
@@ -216,22 +191,8 @@ export const HOOK_MAX_BODY_BYTES = 64 * 1024;
 /** What the receiver hands the rest of main once a POST validates. */
 export interface HookStatusEvent {
   entityId: string;
-  event: StatusHookEvent;
-  status: ObservedStatus;
-  /**
-   * Which kind of interruption, for a `Notification` event only.
-   *
-   * On the event rather than folded into `event` because the two answer
-   * different questions and only one of them is a status: `event` says *which
-   * hook spoke*, which is what makes `waiting` distinguishable at all, and this
-   * says *what it said*. Flattening them into a widened `StatusHookEvent` would
-   * put synthetic members into a union whose whole value is that it names real
-   * Claude Code events.
-   *
-   * Absent for every other event, which is the same discipline `cwd` follows:
-   * absence is the honest answer, not a default.
-   */
-  notificationType?: HookNotificationType;
+  /** What the hook says the session is doing, in the core's words (HIVE-237). The tracker derives the status. */
+  signal: StatusSignal;
   /**
    * The directory the agent is working in, as the payload reported it (HIVE-78).
    *
@@ -347,7 +308,7 @@ export interface HookStatusEvent {
  *
  * It extends the session shape rather than replacing it because everything on
  * that shape is still true here: an agent's headless turn raises the same
- * events, in the same vocabulary, with the same `cwd` and tool identity. Only
+ * signals, with the same `cwd` and tool identity. Only
  * {@link HookAgentEvent.sessionUuid} is new, and only agents have a use for it.
  */
 export interface HookAgentEvent extends HookStatusEvent {

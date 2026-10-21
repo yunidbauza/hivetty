@@ -11,49 +11,49 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-1';
 
-    expect(t.apply({ entityId: e, event: 'UserPromptSubmit' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'prompt' } })).toEqual({
       status: 'working',
     });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'A', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'A', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'B',
       toolName: 'AskUserQuestion',
     });
     expect(
-      t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'AskUserQuestion' }),
+      t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'question' }, toolName: 'AskUserQuestion' }),
     ).toEqual({ status: 'waiting' });
 
     // The sibling. This is the event that used to say `working`.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'A', toolName: 'Bash' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'A', toolName: 'Bash' }),
     ).toEqual({ status: 'waiting' });
 
     // The blocked tool itself. This one really does unblock.
     expect(
       t.apply({
         entityId: e,
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
         toolUseId: 'B',
         toolName: 'AskUserQuestion',
       }),
     ).toEqual({ status: 'working' });
 
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({ status: 'idle' });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({ status: 'idle' });
   });
 
   it('reports idle (agents) when the turn ended and a subagent is live', () => {
     const t = createStatusTracker();
     const e = 'sess-2';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'X' });
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'X' });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({
       status: 'idle',
       detail: 'agents',
     });
-    expect(t.apply({ entityId: e, event: 'SubagentStop', agentId: 'X' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'subagent-end' }, agentId: 'X' })).toEqual({
       status: 'idle',
     });
   });
@@ -62,11 +62,11 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-3';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'X' });
-    t.apply({ entityId: e, event: 'Stop' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'X' });
+    t.apply({ entityId: e, signal: { kind: 'turn-end' } });
     // An internal helper agent, never announced.
-    expect(t.apply({ entityId: e, event: 'SubagentStop', agentId: 'phantom' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'subagent-end' }, agentId: 'phantom' })).toEqual({
       status: 'idle',
       detail: 'agents',
     });
@@ -81,22 +81,22 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'S', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'S', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'S',
       toolName: 'Bash',
       runInBackground: true,
     });
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({
       status: 'idle',
       detail: 'script',
     });
     // Without a list, the inference's only way out: the re-invoke that
     // collects the result.
-    expect(t.apply({ entityId: e, event: 'UserPromptSubmit' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'prompt' } })).toEqual({
       status: 'working',
     });
   });
@@ -116,20 +116,20 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4a';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'S', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'S', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'S',
       toolName: 'Bash',
       runInBackground: true,
     });
     // The agent collected the output itself, still inside the turn.
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'R', toolName: 'Read' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'R', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'R', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'R', toolName: 'Read' });
 
-    expect(t.apply({ entityId: e, event: 'Stop', backgroundShells: [] })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: [] })).toEqual({
       status: 'idle',
     });
     expect(t.held(e).bgShells).toBe(0);
@@ -139,31 +139,31 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4b';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'S', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'S', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'S',
       toolName: 'Bash',
       runInBackground: true,
     });
 
     expect(
-      t.apply({ entityId: e, event: 'Stop', backgroundShells: ['bcy0lrc5b'] }),
+      t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: ['bcy0lrc5b'] }),
     ).toEqual({ status: 'idle', detail: 'script' });
     // A phantom `SubagentStop` carries the same list and changes nothing.
     expect(
       t.apply({
         entityId: e,
-        event: 'SubagentStop',
+        signal: { kind: 'subagent-end' },
         agentId: 'phantom',
         backgroundShells: ['bcy0lrc5b'],
       }),
     ).toEqual({ status: 'idle', detail: 'script' });
     // And the `Stop` after the re-invoke, once it has exited.
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    expect(t.apply({ entityId: e, event: 'Stop', backgroundShells: [] })).toEqual({
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: [] })).toEqual({
       status: 'idle',
     });
   });
@@ -181,31 +181,31 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4c';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'S', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'S', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'S',
       toolName: 'Bash',
       runInBackground: true,
     });
-    t.apply({ entityId: e, event: 'Stop', backgroundShells: ['bcy0lrc5b'] });
+    t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: ['bcy0lrc5b'] });
 
     // The user types while the shell runs. The inference forgets it here.
-    expect(t.apply({ entityId: e, event: 'UserPromptSubmit' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'prompt' } })).toEqual({
       status: 'working',
     });
     expect(t.held(e).bgShells).toBe(0);
 
     // …and this `Stop` would have read as a true idle. The list corrects it.
     expect(
-      t.apply({ entityId: e, event: 'Stop', backgroundShells: ['bcy0lrc5b'] }),
+      t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: ['bcy0lrc5b'] }),
     ).toEqual({ status: 'idle', detail: 'script' });
 
     // The shell's own re-invoke, and the one true idle of the stretch.
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    expect(t.apply({ entityId: e, event: 'Stop', backgroundShells: [] })).toEqual({
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: [] })).toEqual({
       status: 'idle',
     });
   });
@@ -219,9 +219,9 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4d';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     expect(
-      t.apply({ entityId: e, event: 'Stop', backgroundShells: ['bnnydgra2'] }),
+      t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: ['bnnydgra2'] }),
     ).toEqual({ status: 'idle', detail: 'script' });
     expect(t.held(e).bgShells).toBe(1);
   });
@@ -237,15 +237,15 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4f';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'X' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'X' });
     expect(
-      t.apply({ entityId: e, event: 'Stop', backgroundShells: [] }),
+      t.apply({ entityId: e, signal: { kind: 'turn-end' }, backgroundShells: [] }),
     ).toEqual({ status: 'idle', detail: 'agents' });
     expect(
       t.apply({
         entityId: e,
-        event: 'SubagentStop',
+        signal: { kind: 'subagent-end' },
         agentId: 'X',
         backgroundShells: [],
       }),
@@ -256,17 +256,17 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-4e';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'S', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'S', toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'S',
       toolName: 'Bash',
       runInBackground: true,
     });
     // A truncated `Stop` body: no list reached the tracker.
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({
       status: 'idle',
       detail: 'script',
     });
@@ -275,8 +275,7 @@ describe('createStatusTracker', () => {
     expect(
       t.apply({
         entityId: e,
-        event: 'Notification',
-        notificationType: 'idle_prompt',
+        signal: { kind: 'notice', reason: 'idle' },
       }),
     ).toEqual({ status: 'idle', detail: 'script' });
   });
@@ -285,12 +284,12 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-5';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'X' });
-    t.apply({ entityId: e, event: 'Stop' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'X' });
+    t.apply({ entityId: e, signal: { kind: 'turn-end' } });
     t.apply({
       entityId: e,
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'C',
       toolName: 'Bash',
       agentId: 'X',
@@ -298,7 +297,7 @@ describe('createStatusTracker', () => {
     expect(
       t.apply({
         entityId: e,
-        event: 'PermissionRequest',
+        signal: { kind: 'waiting', reason: 'permission' },
         toolName: 'Bash',
         agentId: 'X',
       }),
@@ -309,12 +308,12 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-6';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     // No PreToolUse: the body was truncated past `tool_use_id`.
-    expect(t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Write' })).toEqual(
+    expect(t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Write' })).toEqual(
       { status: 'waiting' },
     );
-    expect(t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Write' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Write' })).toEqual({
       status: 'working',
     });
   });
@@ -323,17 +322,16 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-7';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'B', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'B', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
     t.apply({
       entityId: e,
-      event: 'Notification',
-      notificationType: 'permission_prompt',
+      signal: { kind: 'notice', reason: 'permission' },
     });
     // One block, released by the one tool.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'B', toolName: 'Bash' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'B', toolName: 'Bash' }),
     ).toEqual({ status: 'working' });
   });
 
@@ -350,20 +348,19 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-9';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'B', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'B', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
     // Answered before the echo arrives.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'B', toolName: 'Bash' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'B', toolName: 'Bash' }),
     ).toEqual({ status: 'working' });
 
     // The delayed echo must not re-block a session that has moved on.
     expect(
       t.apply({
         entityId: e,
-        event: 'Notification',
-        notificationType: 'permission_prompt',
+        signal: { kind: 'notice', reason: 'permission' },
       }),
     ).toEqual({ status: 'working' });
   });
@@ -372,13 +369,12 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-10';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     // No PermissionRequest was observed at all — the echo is the only signal.
     expect(
       t.apply({
         entityId: e,
-        event: 'Notification',
-        notificationType: 'permission_prompt',
+        signal: { kind: 'notice', reason: 'permission' },
       }),
     ).toEqual({ status: 'waiting' });
   });
@@ -395,19 +391,18 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-13';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'A', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'A', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'A', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'A', toolName: 'Bash' });
 
     // B's own PermissionRequest POST never arrives.
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'C', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'C', toolName: 'Write' });
 
     expect(
       t.apply({
         entityId: e,
-        event: 'Notification',
-        notificationType: 'permission_prompt',
+        signal: { kind: 'notice', reason: 'permission' },
       }),
     ).toEqual({ status: 'waiting' });
   });
@@ -421,16 +416,15 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-14';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'A', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'A', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'A', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'A', toolName: 'Bash' });
 
     expect(
       t.apply({
         entityId: e,
-        event: 'Notification',
-        notificationType: 'permission_prompt',
+        signal: { kind: 'notice', reason: 'permission' },
       }),
     ).toEqual({ status: 'working' });
   });
@@ -446,14 +440,14 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-11';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    expect(t.apply({ entityId: e, event: 'Elicitation' })).toEqual({
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    expect(t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'input' } })).toEqual({
       status: 'waiting',
     });
 
     // A large Write elsewhere in the batch, truncated past `tool_use_id`.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Write' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Write' }),
     ).toEqual({ status: 'waiting' });
   });
 
@@ -461,15 +455,15 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-12';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'A', toolName: 'Write' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'B', toolName: 'Write' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Write' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'A', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'B', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Write' });
 
     // Both blocked entries are named `Write` — ambiguous, so neither clears.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Write' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Write' }),
     ).toEqual({ status: 'waiting' });
   });
 
@@ -477,11 +471,11 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-8';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'X' });
-    t.apply({ entityId: e, event: 'Stop' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'X' });
+    t.apply({ entityId: e, signal: { kind: 'turn-end' } });
     t.reset(e);
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({ status: 'idle' });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({ status: 'idle' });
   });
 
   /**
@@ -501,19 +495,19 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-15';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     // Truncated past tool_use_id *and* tool_name: nothing to record.
-    t.apply({ entityId: e, event: 'PreToolUse' });
-    expect(t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Write' })).toEqual(
+    t.apply({ entityId: e, signal: { kind: 'tool-start' } });
+    expect(t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Write' })).toEqual(
       { status: 'waiting' },
     );
 
     // The user approves; the tool runs and finishes, also truncated.
-    expect(t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Write' })).toEqual({
+    expect(t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Write' })).toEqual({
       status: 'working',
     });
 
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({ status: 'idle' });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({ status: 'idle' });
   });
 
   /**
@@ -534,12 +528,12 @@ describe('createStatusTracker', () => {
       silence in the probe. So the `PreToolUse` entry can only be cleared at the
       next prompt, never by an event of its own.
     */
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     for (const id of ['A', 'B', 'C']) {
-      t.apply({ entityId: e, event: 'PreToolUse', toolUseId: id, toolName: 'Bash' });
-      t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
+      t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: id, toolName: 'Bash' });
+      t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
       // The user hits Escape. Nothing arrives. The next thing is them typing.
-      t.apply({ entityId: e, event: 'UserPromptSubmit' });
+      t.apply({ entityId: e, signal: { kind: 'prompt' } });
     }
 
     // Three escaped prompts, nothing retained — not three entries, nor one.
@@ -557,19 +551,19 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-17';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'S' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'S' });
     t.apply({
       entityId: e,
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'T',
       toolName: 'Bash',
       agentId: 'S',
     });
-    t.apply({ entityId: e, event: 'Stop' });
+    t.apply({ entityId: e, signal: { kind: 'turn-end' } });
 
     // A second subagent finishing re-invokes the agent while S's tool runs on.
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     expect(t.held(e)).toEqual({
       outstanding: 1,
       blocked: 0,
@@ -580,7 +574,7 @@ describe('createStatusTracker', () => {
     // And it still pairs when it completes.
     t.apply({
       entityId: e,
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'T',
       toolName: 'Bash',
       agentId: 'S',
@@ -602,22 +596,22 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-23';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'S' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'S' });
     t.apply({
       entityId: e,
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'T',
       toolName: 'Bash',
       agentId: 'S',
     });
     expect(
-      t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash', agentId: 'S' }),
+      t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash', agentId: 'S' }),
     ).toEqual({ status: 'waiting' });
     expect(t.held(e)).toEqual({ outstanding: 1, blocked: 1, agents: 1, bgShells: 0 });
 
     // Another subagent's result re-invokes the agent. Nobody answered anything.
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     expect(t.held(e)).toEqual({ outstanding: 0, blocked: 0, agents: 1, bgShells: 0 });
   });
 
@@ -631,9 +625,9 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-18';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'R', toolName: 'Read' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'R', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Read' });
 
     expect(t.held(e).outstanding).toBe(0);
   });
@@ -642,10 +636,10 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-19';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'R1', toolName: 'Read' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'R2', toolName: 'Read' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'R1', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'R2', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Read' });
 
     // Two candidates: releasing either would be a guess about which finished.
     expect(t.held(e).outstanding).toBe(2);
@@ -662,26 +656,26 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-22';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
     // The small one: `tool_use_id` survives, so it is recorded.
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'SMALL', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'SMALL', toolName: 'Write' });
     // The big one: truncated past `tool_use_id`, so nothing is recorded for it.
-    t.apply({ entityId: e, event: 'PreToolUse', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolName: 'Write' });
 
     // The big one finishes first, also truncated. SMALL is the only *recorded*
     // Write — and it is emphatically not the one that just completed.
-    t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Write' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Write' });
     expect(t.held(e).outstanding).toBe(1);
 
     // Which matters because SMALL is what the permission is about. If it were
     // gone, this resolves to UNPAIRED and nothing can ever clear it.
-    expect(t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Write' })).toEqual(
+    expect(t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Write' })).toEqual(
       { status: 'waiting' },
     );
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'SMALL', toolName: 'Write' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'SMALL', toolName: 'Write' }),
     ).toEqual({ status: 'working' });
-    expect(t.apply({ entityId: e, event: 'Stop' })).toEqual({ status: 'idle' });
+    expect(t.apply({ entityId: e, signal: { kind: 'turn-end' } })).toEqual({ status: 'idle' });
   });
 
   /**
@@ -698,27 +692,27 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-20';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'SubagentStart', agentId: 'S' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'subagent-start' }, agentId: 'S' });
     // One tool in each: the subagent's, and the main agent's.
     t.apply({
       entityId: e,
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'SUB',
       toolName: 'Read',
       agentId: 'S',
     });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'MAIN', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'MAIN', toolName: 'Read' });
 
     // Truncated, so indistinguishable in origin. Neither may be retired — and
     // in particular this must not retire MAIN, which is still running.
-    t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Read' });
     expect(t.held(e).outstanding).toBe(2);
 
     // Once the subagent is gone, the ambiguity is too.
-    t.apply({ entityId: e, event: 'SubagentStop', agentId: 'S' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'SUB', toolName: 'Read' });
-    t.apply({ entityId: e, event: 'PostToolUse', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'subagent-end' }, agentId: 'S' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'SUB', toolName: 'Read' });
+    t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolName: 'Read' });
     expect(t.held(e).outstanding).toBe(0);
   });
 
@@ -731,19 +725,19 @@ describe('createStatusTracker', () => {
     const t = createStatusTracker();
     const e = 'sess-21';
 
-    t.apply({ entityId: e, event: 'UserPromptSubmit' });
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'OLD', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'prompt' } });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'OLD', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
     // OLD is blocked. A second Bash starts and blocks too.
-    t.apply({ entityId: e, event: 'PreToolUse', toolUseId: 'NEW', toolName: 'Bash' });
-    t.apply({ entityId: e, event: 'PermissionRequest', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'tool-start' }, toolUseId: 'NEW', toolName: 'Bash' });
+    t.apply({ entityId: e, signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
 
     // Answering NEW leaves OLD blocked: two distinct blocks, not one.
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'NEW', toolName: 'Bash' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'NEW', toolName: 'Bash' }),
     ).toEqual({ status: 'waiting' });
     expect(
-      t.apply({ entityId: e, event: 'PostToolUse', toolUseId: 'OLD', toolName: 'Bash' }),
+      t.apply({ entityId: e, signal: { kind: 'tool-end' }, toolUseId: 'OLD', toolName: 'Bash' }),
     ).toEqual({ status: 'working' });
   });
 });

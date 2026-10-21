@@ -13,9 +13,12 @@ import {
   createNotifier,
   createNotificationHub,
 } from '../../electron/main/notifications';
-import { NOTIFICATION_TYPE_STATUS } from '../../electron/main/harness/claude-code/hook-vocabulary';
 import {
-  type HookNotificationType,
+  noticeSignal,
+  type NOTIFICATION_TYPES,
+  toSignal,
+} from '../../electron/main/harness/claude-code/hook-vocabulary';
+import {
   type IdleDetail,
   type ObservedStatus,
 } from '../../electron/shared/hook-contract';
@@ -122,7 +125,7 @@ import type { SessionStatusEvent } from '../../electron/shared/session-contract'
  *
  * The two scenarios above only ever have one tool outstanding, so nothing
  * distinguishes "the status derived per-event" from "the status derived from
- * what the session actually is" — `receiver.ts`'s own `HOOK_STATUS` fallback
+ * what the session actually is" — the old per-event status fallback
  * happens to agree with `hooks/tracker.ts` in both of them. A **parallel**
  * batch is the only thing that can tell them apart: `PostToolUse` maps to
  * `working` unconditionally at the receiver, so a test that reads status
@@ -208,7 +211,7 @@ const RUN = process.env.HIVE_LIVE_HOOK_PROOF === '1';
 interface Scenario {
   scenario: string;
   prompt: string;
-  type: HookNotificationType | null;
+  type: (typeof NOTIFICATION_TYPES)[number] | null;
   status: ObservedStatus;
   idleDetail?: IdleDetail;
   /** Every inbox row the run raises, in order (HIVE-89 widened this from one). */
@@ -217,7 +220,7 @@ interface Scenario {
    * How many toasts this scenario's row is expected to produce.
    *
    * Not derivable from `kinds` inside this file — see the literal-not-derived
-   * discipline `NOTIFICATION_TYPE_STATUS` follows above. `session.blocked` is
+   * discipline the notice-signal assertion follows above. `session.blocked` is
    * `defaultDelivery: 'both'`; `session.input_needed` is deliberately
    * `'inbox'` only (HIVE-83's Task 5) — a row still lands and the badge still
    * counts it, but no toast. The live run is what caught this file's own
@@ -266,6 +269,11 @@ interface Scenario {
  */
 interface TestStatusEvent extends SessionStatusEvent {
   toolUseId?: string;
+  /**
+   * Test-only for the same reason (HIVE-237): `SessionStatusEvent` no longer
+   * carries it, but pairing a block with its tool still needs the name.
+   */
+  toolName?: string;
   /** Also test-only, and for the same reason — see `Scenario.backgroundsAShell`. */
   runInBackground?: boolean;
 }
@@ -354,7 +362,7 @@ const scenarios: Scenario[] = [
     prompt: 'say ok, nothing else',
     type: 'idle_prompt',
     /**
-     * Asserted as a literal, not read back out of `NOTIFICATION_TYPE_STATUS`
+     * Asserted as a literal, not read back out of the adapter's `noticeSignal`
      * (the review's third point).
      *
      * This file's whole job is to pin the app's beliefs against what the real
@@ -615,8 +623,8 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
       });
 
       /**
-       * A real tracker, one per run. `receiver.ts`'s own `HOOK_STATUS` is a
-       * per-event fallback only — the honest, id-paired status is what
+       * A real tracker, one per run. The hook's own signal is a per-event
+       * reading only — the honest, id-paired status is what
        * `hooks/tracker.ts` derives, which is what `sessions/index.ts` publishes
        * (HIVE-83). Reading `e.status` straight off the receiver here would
        * report every `PostToolUse` as `working` regardless of what else is
@@ -646,7 +654,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         onEvent: (e) => {
           const derived = statusTracker.apply({
             entityId: e.entityId,
-            event: e.event,
+            signal: e.signal,
             ...(e.toolUseId === undefined ? {} : { toolUseId: e.toolUseId }),
             ...(e.toolName === undefined ? {} : { toolName: e.toolName }),
             ...(e.agentId === undefined ? {} : { agentId: e.agentId }),
@@ -656,18 +664,12 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
             ...(e.backgroundShells === undefined
               ? {}
               : { backgroundShells: e.backgroundShells }),
-            ...(e.notificationType === undefined
-              ? {}
-              : { notificationType: e.notificationType }),
           });
 
           publish({
             entityId: e.entityId,
             status: derived.status,
-            event: e.event,
-            ...(e.notificationType === undefined
-              ? {}
-              : { notificationType: e.notificationType }),
+            signal: e.signal,
             ...(e.toolName === undefined ? {} : { toolName: e.toolName }),
             ...(derived.detail === undefined
               ? {}
@@ -767,9 +769,9 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         // already set `idle`, with nothing blocked, so it stays `idle` and the
         // inbox row is what carries the signal instead.
         const waited = statuses.findIndex(
-          (s) => s.status === expectedStatus && s.event === 'Notification',
+          (s) => s.status === expectedStatus && s.signal?.kind === 'notice',
         );
-        expect(statuses[waited]?.notificationType).toBe(expectedType);
+        expect(statuses[waited]?.signal).toEqual(noticeSignal(expectedType));
 
         /*
           The shared mapping still agrees with what the binary just did.
@@ -777,7 +779,10 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
           editing the constant fails here instead of quietly moving the
           expectation with it.
         */
-        expect(NOTIFICATION_TYPE_STATUS[expectedType]).toBe(expectedStatus);
+        expect(noticeSignal(expectedType)).toEqual({
+          kind: 'notice',
+          reason: expectedType === 'idle_prompt' ? 'idle' : 'permission',
+        });
 
         /**
          * A session **leaves** `waiting`, and what takes it out is the
@@ -801,15 +806,15 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
           // `PreToolUse` with that name carries the id it was opened under
           // (`hooks/tracker.ts`'s own `resolve()` does the same walk).
           const blockedName = statuses.find(
-            (s) => s.event === 'PermissionRequest',
+            (s) => s.signal?.kind === 'waiting',
           )?.toolName;
           const blockedToolUseId = statuses.find(
-            (s) => s.event === 'PreToolUse' && s.toolName === blockedName,
+            (s) => s.signal?.kind === 'tool-start' && s.toolName === blockedName,
           )?.toolUseId;
           expect(blockedToolUseId).toBeDefined();
 
           const postToolUseEvents = after.filter(
-            (s) => s.event === 'PostToolUse',
+            (s) => s.signal?.kind === 'tool-end',
           );
           // The blocked tool really did complete — otherwise the loop below
           // would pass vacuously on a run where nothing ever answered it.
@@ -855,7 +860,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
 
         // The main agent's own `Stop`, while the subagent or the background
         // shell is still running.
-        const stopIdx = statuses.findIndex((s) => s.event === 'Stop');
+        const stopIdx = statuses.findIndex((s) => s.signal?.kind === 'turn-end');
         expect(stopIdx).toBeGreaterThanOrEqual(0);
         expect(statuses[stopIdx]?.status).toBe(expectedStatus);
         expect(statuses[stopIdx]?.idleDetail).toBe(expectedIdleDetail);
@@ -869,7 +874,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         if (backgroundsAShell === true) {
           expect(
             statuses.some(
-              (s) => s.event === 'PostToolUse' && s.runInBackground === true,
+              (s) => s.signal?.kind === 'tool-end' && s.runInBackground === true,
             ),
           ).toBe(true);
         }
@@ -903,7 +908,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
           .slice(stopIdx)
           .find((s) => s.idleDetail === undefined);
         expect(cleared).toBeDefined();
-        expect(cleared?.event).toBe(clearedBy);
+        expect(cleared?.signal).toEqual(toSignal(clearedBy as NonNullable<typeof clearedBy>));
 
         /**
          * The `session.idle` row landed on a true idle, never on the main
@@ -915,7 +920,7 @@ describe.skipIf(!RUN)('real claude -> receiver -> notifier -> hub', () => {
         const raisedAt = raisedAtIndex[0];
         expect(raisedAt).toBeDefined();
         const edge = statuses[raisedAt as number];
-        expect(edge?.event).toBe('Stop');
+        expect(edge?.signal).toEqual({ kind: 'turn-end' });
         expect(edge?.status).toBe('idle');
         expect(edge?.idleDetail).toBeUndefined();
         expect(raisedAt as number).toBeGreaterThanOrEqual(

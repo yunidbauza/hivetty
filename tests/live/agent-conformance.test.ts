@@ -1625,7 +1625,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
 
     // 2. The Stop hook came back, under the **agent's** name — and nothing at
     //    all arrived on the session register.
-    const stops = agentEvents.filter((event) => event.event === 'Stop');
+    const stops = agentEvents.filter((event) => event.signal.kind === 'turn-end');
 
     expect(stops.length).toBeGreaterThan(0);
     expect(stops.every((stop) => stop.entityId === NAME)).toBe(true);

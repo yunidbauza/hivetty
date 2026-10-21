@@ -12,12 +12,11 @@ import {
   type ProjectConfig,
 } from '@shared/config-contract';
 import type { PrLookup, PrLookupReply } from '@shared/github-contract';
+import type { StatusSignal } from '@shared/harness-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
-  type HookNotificationType,
   type IdleDetail,
   type ObservedStatus,
-  type StatusHookEvent,
 } from '@shared/hook-contract';
 import {
   CH,
@@ -1038,19 +1037,20 @@ export function createSessions(options: SessionsOptions): Sessions {
      * Everything `onEvent` does below — the status tracker, `publishHookStatus`,
      * the finish arming, the branch read, the history record — is about a pty,
      * and an agent has none. So this handler does one thing and refuses to grow
-     * a second: `Stop` is what tells the run tracker a turn ended, and it is
-     * the only event a wake acts on today. The rest arrive so the receiver can
-     * answer them rather than 404 a run's own hooks, and are ignored until
+     * a second: a `turn-end` (Claude's `Stop`) is what tells the run tracker a
+     * turn ended, and it is the only signal a wake acts on today. The rest
+     * arrive so the receiver can answer them rather than 404 a run's own
+     * hooks, and are ignored until
      * HIVE-116 has somewhere to draw them.
      *
      * `event.sessionUuid` rides along rather than being dropped. Without it a
-     * `Stop` is keyed by the agent's name alone, which every run that agent
+     * turn's end is keyed by the agent's name alone, which every run that agent
      * ever makes shares — so a late one could arm the stall watchdog against
      * the *next* run and SIGTERM a healthy process. Forwarding the uuid is what
-     * lets the tracker refuse a `Stop` that is not about the run it is holding.
+     * lets the tracker refuse a turn's end that is not about the run it is holding.
      */
     onAgentEvent: (event) => {
-      if (event.event === 'Stop') {
+      if (event.signal.kind === 'turn-end') {
         onAgentTurnEnded?.(event.entityId, event.sessionUuid, event.backgroundWork);
       }
     },
@@ -1078,7 +1078,7 @@ export function createSessions(options: SessionsOptions): Sessions {
        */
       const derived = statusTracker.apply({
         entityId: event.entityId,
-        event: event.event,
+        signal: event.signal,
         ...(event.toolUseId === undefined ? {} : { toolUseId: event.toolUseId }),
         ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
         ...(event.agentId === undefined ? {} : { agentId: event.agentId }),
@@ -1088,38 +1088,28 @@ export function createSessions(options: SessionsOptions): Sessions {
         ...(event.backgroundShells === undefined
           ? {}
           : { backgroundShells: event.backgroundShells }),
-        ...(event.notificationType === undefined
-          ? {}
-          : { notificationType: event.notificationType }),
       });
 
-      publishHookStatus(
-        event.entityId,
-        derived.status,
-        event.event,
-        event.notificationType,
-        derived.detail,
-        event.toolName,
-      );
+      publishHookStatus(event.entityId, derived.status, event.signal, derived.detail);
 
       /**
        * `/done`'s two turning points, both of them events on this stream
        * (HIVE-93).
        *
-       * `Stop` is the end of a turn, and the app's only reliable signal that the
+       * A turn's end (`turn-end`) is the app's only reliable signal that the
        * REPL is back at an empty prompt — so it is when a declared finish is
-       * acted on. `SubagentStop` deliberately is not: a helper agent finishing
-       * says nothing about the session.
+       * acted on. A `subagent-end` deliberately is not: a helper agent
+       * finishing says nothing about the session.
        *
-       * `UserPromptSubmit` is the opposite turning point — the user went back to
+       * A `prompt` is the opposite turning point — the user went back to
        * work, which withdraws a declaration nothing has acted on yet.
        *
        * Both sit after the status publish so a session that is closing still
        * reports the turn it just finished; its last live status stays truthful
        * right up until the exit replaces it.
        */
-      if (event.event === 'Stop') closeFinished(event.entityId);
-      else if (event.event === 'UserPromptSubmit') disarmFinish(event.entityId);
+      if (event.signal.kind === 'turn-end') closeFinished(event.entityId);
+      else if (event.signal.kind === 'prompt') disarmFinish(event.entityId);
       /**
        * The branch read is deliberately **after** the status (HIVE-78).
        *
@@ -1157,7 +1147,7 @@ export function createSessions(options: SessionsOptions): Sessions {
 
       if (event.cwd !== undefined) {
         /**
-         * `Stop` reads **fresh** (HIVE-78).
+         * A turn's end reads **fresh** (HIVE-78).
          *
          * It is the end of a turn — the moment the agent has finished whatever
          * it was doing, and the last event that will fire until the user types
@@ -1166,7 +1156,7 @@ export function createSessions(options: SessionsOptions): Sessions {
          * old branch until the *next* prompt, which is exactly the window in
          * which the user looks at it. Every other event still pays the floor.
          */
-        void publishBranch(event.entityId, event.cwd, event.event === 'Stop');
+        void publishBranch(event.entityId, event.cwd, event.signal.kind === 'turn-end');
       }
     },
     onTicketIntent: (event) =>
@@ -1297,38 +1287,18 @@ export function createSessions(options: SessionsOptions): Sessions {
     entityId: string,
     status: ObservedStatus,
     /**
-     * The hook that produced this status, when one did (HIVE-75).
+     * What the hook that produced this status said, when one did (HIVE-75, HIVE-237).
      *
-     * Passed straight through rather than interpreted here. The session layer's
-     * job is to say what a session is doing; deciding that a `PermissionRequest`
-     * deserves a different notification than an `Elicitation` is the hub's, and
-     * putting that judgement here would give the sessions layer an opinion
-     * about the inbox it has managed to avoid having so far.
+     * Passed straight through; deciding what it means for the inbox is the hub's.
      */
-    event?: StatusHookEvent,
-    /**
-     * What kind of interruption, when `event` is `Notification`.
-     *
-     * Passed through for the reason `event` is: the hub decides that a
-     * `permission_prompt` is already covered by the `PermissionRequest` ahead of
-     * it and an `idle_prompt` is not, and that judgement has no business here.
-     */
-    notificationType?: HookNotificationType,
+    signal?: StatusSignal,
     /**
      * What is still running while the main agent is not (HIVE-83).
      *
-     * Passed through for the same reason `event` is: the session layer says
+     * Passed through for the same reason `signal` is: the session layer says
      * what a session is doing, and the renderer decides how to draw it.
      */
     idleDetail?: IdleDetail,
-    /**
-     * The tool a `PermissionRequest` named, when it named one (HIVE-83).
-     *
-     * Passed through for the same reason `event` is: telling `AskUserQuestion`
-     * apart from any other blocking tool is the notification hub's judgement,
-     * not the session layer's.
-     */
-    toolName?: string,
   ): void {
     /**
      * The history's `status` is documented as the *last known* one, and until
@@ -1372,10 +1342,8 @@ export function createSessions(options: SessionsOptions): Sessions {
     send(CH.sessionStatus, {
       entityId,
       status,
-      ...(event === undefined ? {} : { event }),
-      ...(notificationType === undefined ? {} : { notificationType }),
+      ...(signal === undefined ? {} : { signal }),
       ...(idleDetail === undefined ? {} : { idleDetail }),
-      ...(toolName === undefined ? {} : { toolName }),
     } satisfies SessionStatusEvent);
   }
 
@@ -1728,13 +1696,11 @@ export function createSessions(options: SessionsOptions): Sessions {
   function publishHookStatus(
     entityId: string,
     status: ObservedStatus,
-    event?: StatusHookEvent,
-    notificationType?: HookNotificationType,
+    signal?: StatusSignal,
     idleDetail?: IdleDetail,
-    toolName?: string,
   ): void {
     hookDriven.add(entityId);
-    publishStatus(entityId, status, event, notificationType, idleDetail, toolName);
+    publishStatus(entityId, status, signal, idleDetail);
   }
 
   /**

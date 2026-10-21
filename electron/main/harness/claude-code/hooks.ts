@@ -6,9 +6,8 @@ import type { HookEffect, HookInput, HookReading } from '../port';
 import {
   CLEAR_REASON,
   HOOK_EVENTS,
-  HOOK_STATUS,
-  isHookNotificationType,
-  NOTIFICATION_TYPE_STATUS,
+  noticeSignal,
+  toSignal,
   type HookEvent,
 } from './hook-vocabulary';
 
@@ -272,9 +271,11 @@ function readAgent(entityId: string, body: string, truncated: boolean): HookRead
     about a conversation, and a run's lifecycle is the *process* — which
     `runs.ts` watches on 'close' and 'exit', where the exit code is. There is
     nothing this could add that is not already known more accurately a moment
-    later, and `HOOK_STATUS` has no entry for it by construction.
+    later, and `toSignal` takes no `SessionEnd` by construction.
   */
   if (event === 'SessionEnd') return { effects: [] };
+  // `Notification` never fires headless (above), and an agent acts on nothing but a turn's end.
+  if (event === 'Notification') return { effects: [] };
 
   return {
     effects: [
@@ -282,8 +283,7 @@ function readAgent(entityId: string, body: string, truncated: boolean): HookRead
         kind: 'agent',
         event: {
           entityId,
-          event,
-          status: HOOK_STATUS[event],
+          signal: toSignal(event),
           // Absent rather than empty when the payload did not carry one, the same
           // discipline every optional field on the session event follows.
           ...(typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {}),
@@ -505,18 +505,9 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
    * someone makes, not a guess this code makes on their behalf.
    */
   if (event === 'Notification') {
-    if (!isHookNotificationType(notificationType)) return reading([]);
-    effects.push({
-      kind: 'status',
-      event: {
-        entityId,
-        event,
-        status: NOTIFICATION_TYPE_STATUS[notificationType],
-        notificationType,
-        ...cwdField,
-        ...uuidField,
-      },
-    });
+    const signal = noticeSignal(notificationType);
+    if (signal === undefined) return reading([]);
+    effects.push({ kind: 'status', event: { entityId, signal, ...cwdField, ...uuidField } });
     return reading(effects);
   }
 
@@ -524,8 +515,7 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
     kind: 'status',
     event: {
       entityId,
-      event,
-      status: HOOK_STATUS[event],
+      signal: toSignal(event, toolName),
       ...uuidField,
       /**
        * Absent rather than empty when the payload did not carry one. The

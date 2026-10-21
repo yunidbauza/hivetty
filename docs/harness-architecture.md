@@ -130,10 +130,10 @@ name. `contextReply` is the adapter's wrapper for a marker's context reply.
 The session lane reads with `harnesses.adapterFor(harnesses.harnessOf(id))`, and falls back
 to `sessionAdapter()` when `harnessOf` answers `undefined`. The agent lane always reads with
 `sessionAdapter()`, whose `prepare.agentSettings` wrote its hooks. The Claude vocabulary
-(the subscribed events, their statuses, the notification types, the reply shape and the
+(the subscribed events, their mapping to `StatusSignal`, the notification types, the reply shape and the
 curl command hooks) lives in `harness/claude-code/hook-vocabulary.ts`, behind fence 1.
-`StatusHookEvent` and `HookNotificationType` stay in `@shared/hook-contract` as literal
-unions until HIVE-237.
+The core reads `StatusSignal` (`@shared/harness-contract`): the tracker, the inbox, `/done` and the
+`session:status` payload never see a Claude event name (HIVE-237).
 
 ## The fences
 

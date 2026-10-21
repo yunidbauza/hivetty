@@ -1,8 +1,7 @@
+import type { StatusSignal } from './harness-contract';
 import type {
-  HookNotificationType,
   IdleDetail,
   ObservedStatus,
-  StatusHookEvent,
   TicketIntentSource,
 } from './hook-contract';
 
@@ -66,30 +65,15 @@ export interface SessionStatusEvent {
   entityId: string;
   status: ObservedStatus;
   /**
-   * The hook that produced this status, when one did (HIVE-75).
+   * What the hook that produced this status said, when one did (HIVE-75, HIVE-237).
    *
-   * The renderer ignores it; the notification hub is the only reader. It is
-   * here rather than on a channel of its own because `waiting` is reachable
-   * from **two** hooks that mean different things to the user —
-   * `PermissionRequest` wants a yes, `Elicitation` wants a sentence — and the
-   * status deliberately collapses them. Without this field the inbox could only
-   * offer one row for both, which is a row that is wrong half the time.
-   *
-   * Optional, and absent for every pty-derived status, because `activity.ts`
-   * has no hook to name. Absent is the honest answer there, not a default.
+   * The renderer ignores it; the notification hub is the only reader. `waiting` is reachable for three reasons
+   * that mean different things to the user — a tool wants a yes, the agent asked a question, a server wants an
+   * answer — and the status deliberately collapses them; `notice` is the harness speaking after the fact, which
+   * raises a row (`idle`) or must not raise a second one (`permission`). Absent for every pty-derived status,
+   * because `activity.ts` has no hook to name.
    */
-  event?: StatusHookEvent;
-  /**
-   * Which kind of interruption, when `event` is `Notification`.
-   *
-   * The third hook that can produce `waiting`, and the one that needed a second
-   * field: `Notification` fires both for a permission prompt — six seconds
-   * behind the `PermissionRequest` that already announced it — and for
-   * "Claude is waiting for your input", once the idle wait elapses after a turn
-   * ended with nobody typing. One raises a row, the other must not raise a second, and the
-   * status alone cannot tell them apart.
-   */
-  notificationType?: HookNotificationType;
+  signal?: StatusSignal;
   /**
    * What is still running while the main agent is not (HIVE-83).
    *
@@ -98,19 +82,6 @@ export interface SessionStatusEvent {
    * keeps its five colours.
    */
   idleDetail?: IdleDetail;
-  /**
-   * The tool named by the event that produced this status, when there was one
-   * (HIVE-83).
-   *
-   * The receiver forwards it on every `PreToolUse` and `PostToolUse` too, not
-   * only `PermissionRequest` — it is whatever `tool_name` the hook payload
-   * carried. The renderer ignores it, same as `event` — the notification hub
-   * is the only reader, and only cares about the `PermissionRequest` case: it
-   * is what lets the hub tell `AskUserQuestion` (a real question) apart from
-   * any other tool waiting on a yes, now that both raise the same
-   * `session.blocked` kind and the row's copy is what carries the difference.
-   */
-  toolName?: string;
 }
 
 /**

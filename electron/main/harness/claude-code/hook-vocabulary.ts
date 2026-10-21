@@ -1,3 +1,4 @@
+import type { NoticeReason, StatusSignal } from '@shared/harness-contract';
 import {
   DONE_PATH,
   HOOK_ENV_RECEIVER_URL,
@@ -6,14 +7,11 @@ import {
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
   type HookIdentity,
-  type HookNotificationType,
-  type ObservedStatus,
-  type StatusHookEvent,
 } from '@shared/hook-contract';
 
 /**
- * Claude Code's hook vocabulary (HIVE-236): the events it is subscribed to, what each means
- * for status, its notification types and its reply shape. Adapter-owned and fenced: the core
+ * Claude Code's hook vocabulary (HIVE-236): the events it is subscribed to, the signal each
+ * maps to (HIVE-237), its notification types and its reply shape. Adapter-owned and fenced: the core
  * sees only `@shared/hook-contract`'s transport and event shapes.
  */
 
@@ -92,10 +90,6 @@ export const HOOK_EVENTS = [
 
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
-/** A `StatusHookEvent` the list lacks fails here; a list member the union lacks fails where readHook publishes it. */
-const statusEventsListed: [Exclude<StatusHookEvent, HookEvent>] extends [never] ? true : never = true;
-void statusEventsListed;
-
 /**
  * `SessionStart` is subscribed and does not arrive. Measured, not assumed.
  *
@@ -110,7 +104,7 @@ void statusEventsListed;
  * specific to `SessionStart` — plausibly a hook dispatched before the http
  * transport is up. It is left subscribed rather than removed: the entry costs
  * one key in a file the app writes once per launch, and a future release that
- * starts delivering it would mark a session {@link HOOK_STATUS}-driven from the
+ * starts delivering it would mark a session hook-driven from the
  * moment it opens, which is strictly better than the current floor.
  *
  * The consequence today is the thing worth knowing: a session is **not**
@@ -205,55 +199,6 @@ export const hookContextReply = (additionalContext: string): HookContextReply =>
 export const CLEAR_REASON = 'clear';
 
 /**
- * What each event means for the fleet view.
- *
- * `PermissionRequest` and `Elicitation` are the two ways Claude blocks on a
- * human — a tool needing approval, and an MCP server asking for input. They are
- * different mechanisms and the same fact about the session, so they map to the
- * same status rather than being distinguished for their own sake.
- *
- * `Stop` is `idle`, not `done`: the turn ended, which says nothing about whether
- * the work did. `/clear` is what says that, and it arrives as `SessionEnd` —
- * which is why this record is keyed on {@link StatusHookEvent} and cannot hold
- * an entry for it.
- */
-export const HOOK_STATUS: Record<Exclude<HookEvent, 'SessionEnd'>, ObservedStatus> = {
-  SessionStart: 'idle',
-  UserPromptSubmit: 'working',
-  PermissionRequest: 'waiting',
-  Elicitation: 'waiting',
-  /**
-   * Not a status on its own — see {@link NOTIFICATION_TYPE_STATUS}.
-   *
-   * `Notification` is the only subscribed event whose meaning depends on a
-   * second field, and the entry here is the *floor*: a type this build does not
-   * recognise still means Claude raised something at the user, and `waiting` is
-   * the honest reading of that. The receiver refuses to publish an unrecognised
-   * type anyway, so this value is reached only if that guard is ever relaxed.
-   *
-   * This floor is unchanged by `NOTIFICATION_TYPE_STATUS` splitting `idle_prompt`
-   * from `permission_prompt`: an unrecognised type has no per-type reading to
-   * fall back to, so `waiting` — Claude raised *something*, unread — is still
-   * the honest default for it.
-   */
-  Notification: 'waiting',
-  /**
-   * `PreToolUse` and `PostToolUse` are both `working` as a *fallback only*.
-   *
-   * Since HIVE-83 the status the renderer sees is derived by
-   * `hooks/tracker.ts` from what the session is, not looked up here. These
-   * entries survive so the record stays total and so a consumer that has no
-   * tracker still gets a defensible answer.
-   */
-  PreToolUse: 'working',
-  PostToolUse: 'working',
-  /** Bookkeeping only — the tracker decides what a live subagent means. */
-  SubagentStart: 'working',
-  SubagentStop: 'working',
-  Stop: 'idle',
-};
-
-/**
  * What Claude Code calls the thing it is interrupting the user about.
  *
  * Measured against 2.1.227 in a real pty, and the two observed values are the
@@ -284,43 +229,56 @@ export const HOOK_STATUS: Record<Exclude<HookEvent, 'SessionEnd'>, ObservedStatu
  */
 export const NOTIFICATION_TYPES = ['idle_prompt', 'permission_prompt'] as const;
 
-/** A `HookNotificationType` the list lacks fails here; a list member the union lacks fails where readHook publishes it. */
-const notificationTypesListed: [
-  Exclude<HookNotificationType, (typeof NOTIFICATION_TYPES)[number]>,
-] extends [never]
-  ? true
-  : never = true;
-void notificationTypesListed;
-
-export const isHookNotificationType = (
+const isNotificationType = (
   value: unknown,
-): value is HookNotificationType =>
+): value is (typeof NOTIFICATION_TYPES)[number] =>
   typeof value === 'string' &&
   (NOTIFICATION_TYPES as readonly string[]).includes(value);
 
-/**
- * What each recognised type means for the **status**, which is no longer the
- * same question as what it means for the **inbox**.
- *
- * `permission_prompt` is a session blocked on a human: a tool is waiting for a
- * yes and nothing proceeds until it gets one. `waiting` is the honest reading.
- *
- * `idle_prompt` is **not** that, and calling it `waiting` is what made the dot
- * lie. It fires once the idle wait elapses after `Stop`, when the turn is
- * already over and the agent is sitting at an empty prompt — nothing is blocked, and there is no
- * question outstanding. `Stop` set `idle` when the turn ended and `idle` is
- * what the session still is.
- *
- * The signal is not lost by this: it moves to where it belongs. The inbox row
- * is raised off the hook *event* in `notifications/index.ts`, independently of
- * the status, so "you walked away and your agent wants you" still reaches the
- * user — it just stops painting the fleet view amber for a session nobody is
- * waiting on.
- */
-export const NOTIFICATION_TYPE_STATUS: Record<(typeof NOTIFICATION_TYPES)[number], ObservedStatus> = {
-  idle_prompt: 'idle',
-  permission_prompt: 'waiting',
+/** The events whose signal is a property of the event alone. */
+type PlainSignalEvent = Exclude<HookEvent, 'SessionEnd' | 'Notification' | 'PermissionRequest' | 'Elicitation'>;
+
+/** The events {@link toSignal} reads: every subscribed one but the lifecycle `SessionEnd` and the two-field `Notification`. */
+export type SignalEvent = Exclude<HookEvent, 'SessionEnd' | 'Notification'>;
+
+const PLAIN_SIGNAL: Record<PlainSignalEvent, Exclude<StatusSignal['kind'], 'waiting' | 'notice'>> = {
+  SessionStart: 'session-start',
+  UserPromptSubmit: 'prompt',
+  PreToolUse: 'tool-start',
+  PostToolUse: 'tool-end',
+  SubagentStart: 'subagent-start',
+  SubagentStop: 'subagent-end',
+  Stop: 'turn-end',
 };
+
+const NOTICE_REASON: Record<(typeof NOTIFICATION_TYPES)[number], NoticeReason> = {
+  idle_prompt: 'idle',
+  permission_prompt: 'permission',
+};
+
+/**
+ * What a Claude event says, as a signal (HIVE-237). The only Claude knowledge the status path keeps.
+ *
+ * `PermissionRequest` and `Elicitation` both block on a human, by different mechanisms: a tool wanting a yes
+ * (the `AskUserQuestion` tool is the agent asking), and an MCP server wanting input. The reason keeps the three
+ * apart, because the inbox's words and the tracker's pairing both depend on which.
+ *
+ * `Stop` is `turn-end`, not an end of the work: the turn ended, which says nothing about whether the work did.
+ * `/clear` is what says that, and it arrives as `SessionEnd`, which is why {@link SignalEvent} excludes it.
+ */
+export function toSignal(event: SignalEvent, toolName?: unknown): StatusSignal {
+  if (event === 'PermissionRequest')
+    return { kind: 'waiting', reason: toolName === 'AskUserQuestion' ? 'question' : 'permission' };
+  if (event === 'Elicitation') return { kind: 'waiting', reason: 'input' };
+  return { kind: PLAIN_SIGNAL[event] };
+}
+
+/** A `Notification`'s signal, or `undefined` for a type this app has no reading of (see `readHook`). */
+export function noticeSignal(notificationType: unknown): StatusSignal | undefined {
+  return isNotificationType(notificationType)
+    ? { kind: 'notice', reason: NOTICE_REASON[notificationType] }
+    : undefined;
+}
 
 /**
  * The exact command `/done`'s body runs, and the exact rule its frontmatter

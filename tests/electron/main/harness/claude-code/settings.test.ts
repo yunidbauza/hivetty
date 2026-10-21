@@ -14,7 +14,6 @@ import {
 import {
   doneCommand,
   HOOK_EVENTS,
-  HOOK_STATUS,
 } from '../../../../../electron/main/harness/claude-code/hook-vocabulary';
 import { METRICS_REFRESH_SECONDS } from '../../../../../electron/shared/metrics-contract';
 import {
@@ -54,13 +53,12 @@ describe('hookSettings', () => {
    * `terminated` locks the user out of a working agent. Both remain true. What
    * changed is that the event no longer produces a status at all — it produces
    * `done` on its own channel, and only for `reason: 'clear'`. The guarantee
-   * that used to be expressed by not subscribing is now expressed by
-   * {@link StatusHookEvent}, which excludes it from the status map so no edit
-   * can quietly map it back onto `terminated`.
+   * that used to be expressed by not subscribing is now expressed by the
+   * adapter's `SignalEvent`, which excludes it from the signal mapping so no
+   * edit can quietly map it back onto `terminated` (HIVE-237).
    */
   it('subscribes SessionEnd, but never as a status', () => {
     expect(Object.keys(settings.hooks)).toContain('SessionEnd');
-    expect(Object.keys(HOOK_STATUS)).not.toContain('SessionEnd');
   });
 
   it('posts every event to the receiver over http', () => {
