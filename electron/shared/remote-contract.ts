@@ -209,6 +209,7 @@ export const FRAME_KIND = {
   [CH.githubRunJobs]: 'call',
   [CH.githubJobLog]: 'call',
   [CH.githubRerunFailed]: 'call',
+  [CH.githubUserRepos]: 'call',
   [CH.notificationsActivate]: 'event',
   [CH.notificationsNew]: 'event',
   /*
@@ -366,7 +367,7 @@ export const FRAME_KIND = {
  *   `mutate`-granted device could point a project at a directory it controls and
  *   then call a "read" to get code execution as the user on the server.
  * - `github:prs`, `github:search-prs`, `github:pr-detail`, `github:pr-comment`,
- *   `integrations:status` — spawn `gh`. The handler comment at
+ *   `github:user-repos`, `integrations:status` — spawn `gh`. The handler comment at
  *   `ipc/index.ts:1064` says of `integrations:status` that it
  *   "**executes `gh`**", which is as clear a statement as the codebase offers.
  * - `integrations:login-env` — spawns the login shell to snapshot its
@@ -507,6 +508,7 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.githubRunJobs]: 'execute',
   [CH.githubJobLog]: 'execute',
   [CH.githubRerunFailed]: 'execute',
+  [CH.githubUserRepos]: 'execute',
   [CH.notificationsActivate]: 'read',
   [CH.notificationsNew]: 'read',
   [CH.notificationsToast]: 'read',

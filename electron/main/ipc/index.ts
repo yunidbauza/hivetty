@@ -50,7 +50,7 @@ import type {
   SearchResults,
   WriteFileResult,
 } from '@shared/fs-contract';
-import type { GhResult, JobLog, PrDetail, PrRecord, PrRuns, PrsSnapshot, PrTimeline, RunJob } from '@shared/github-contract';
+import type { GhResult, JobLog, PrDetail, PrRecord, PrRuns, PrsSnapshot, PrTimeline, RunJob, UserReposSnapshot } from '@shared/github-contract';
 import {
   isRecord,
   parseAckRequest,
@@ -4131,6 +4131,12 @@ export function registerIpcHandlers(
     const request = parseRunRef(payload, 'rerunFailed');
     await loginEnvStatus();
     return github.rerunFailed(request);
+  });
+
+  handle(CH.githubUserRepos, async (): Promise<GhResult<UserReposSnapshot>> => {
+    // Same race as `github:prs` — see the note there.
+    await loginEnvStatus();
+    return github.userRepos();
   });
 
   handle(CH.jiraStatus, (): JiraStatus => jira.status());
