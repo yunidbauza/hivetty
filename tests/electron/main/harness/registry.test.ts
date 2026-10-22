@@ -26,7 +26,7 @@ describe('harness registry', () => {
     const adapter = registry.adapterFor('claude-code');
     expect(adapter).toBe(claudeCodeAdapter);
     expect(adapter.id).toBe('claude-code');
-    expect(adapter.capabilities).toEqual({});
+    expect(adapter.capabilities).toEqual({ resume: 'by-id', meters: true });
   });
 
   it('hands the shared runtimes the Claude Code adapter (phase 1)', () => {

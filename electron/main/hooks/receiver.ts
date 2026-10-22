@@ -86,7 +86,6 @@ import { sessionAdapter, type HarnessRegistry } from '../harness/registry';
 import { entryContext } from '../ledger/context';
 
 import { createOriginGuard, secretEquals } from './http-guard';
-import { parseMetrics } from './metrics';
 import { ticketKeyFromPrompt } from './ticket-intent';
 
 /**
@@ -867,6 +866,11 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     const refusal = rejectUnlessSession(headers);
     if (refusal !== null) return refusal;
 
+    const entityId = headers[HOOK_HEADER_SESSION] as string;
+    // A harness that reports no status line has no such route (HIVE-239).
+    const adapter = readerFor('session', entityId);
+    if (!adapter.capabilities.meters) return 404;
+
     /*
       A truncated status line body is not a payload this endpoint is for — see
       METRICS_MAX_BODY_BYTES. Answered 204 rather than 413 for the reason the
@@ -876,10 +880,10 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     */
     if (truncated) return 204;
 
-    const metrics = parseMetrics(body);
+    const metrics = adapter.meters(body);
     if (metrics === null) return 400;
 
-    onMetrics(headers[HOOK_HEADER_SESSION] as string, metrics);
+    onMetrics(entityId, metrics);
     return 204;
   }
 

@@ -19,6 +19,7 @@ import type {
 import type { StatusSignal } from '../../../../electron/shared/harness-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
 
+import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
 import type { RunAsync } from '../../../../electron/main/integrations/github/run';
 import type { PtyHostSupervisor } from '../../../../electron/main/pty-host/supervisor';
 import {
@@ -2057,6 +2058,23 @@ describe('the history', () => {
       vi.advanceTimersByTime(150);
       vi.advanceTimersByTime(SUBMIT);
     };
+
+    it('starts a new conversation for a harness that cannot resume by id (HIVE-239)', () => {
+      const caps = claudeCodeAdapter.capabilities;
+      caps.resume = 'none';
+      try {
+        const written: Written[] = [];
+        withHistory(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, resume: true });
+        settle(mintedFor('hero-refresh'));
+
+        const typed = vi.mocked(supervisor.write).mock.calls.map(([, text]) => text).join('\n');
+        expect(typed).toContain(`--session-id ${TEST_UUID}`);
+        expect(typed).not.toContain('--resume');
+        expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({ sessionUuid: TEST_UUID });
+      } finally {
+        caps.resume = 'by-id';
+      }
+    });
 
     it('resumes the conversation the history names, and says nothing twice', () => {
       const written: Written[] = [];

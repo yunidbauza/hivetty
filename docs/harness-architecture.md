@@ -29,14 +29,15 @@ with why it is not a behaviour change.
 | `prepare` | HIVE-235 (landed) |
 | `readHook`, `contextReply` | HIVE-236 (landed); HIVE-237 and HIVE-238 (landed) change what it says |
 | `foldEdits` | HIVE-238 (landed) |
-| `record`, `meters` | HIVE-239 |
+| `record`, `meters` | HIVE-239 (landed) |
 | `deliverContext` | HIVE-240 |
 
 ### Capabilities: build one, shape for three
 
-`Capabilities` starts empty (`Record<never, never>`, since lint rejects an empty
-interface). A field lands only with the story that consumes it, and becomes an
-`interface` then. No field is added for a harness that does not exist yet.
+`Capabilities` is an interface; each field landed with the story whose core code reads it.
+`resume: 'by-id' | 'none'` (HIVE-239) gates the spawn's `history.resumable` lookup;
+`meters: boolean` (HIVE-239) gates the receiver's `/statusline` route (404 when false).
+No field is added for a harness that does not exist yet.
 
 ### launch
 
@@ -143,6 +144,15 @@ plan-file writes into a `PlanOp` (`task-created`, `task-updated`, `task-deleted`
 `plan-file-reread`. The plans store applies ops and never sees a Claude tool name or field.
 The changed-files reader keeps its incremental transcript read and hands the lines to
 `adapter.foldEdits`, which owns the transcript's format.
+
+### record and meters
+
+`record: HarnessRecord` (HIVE-239) is where a harness keeps a conversation: `transcriptPath(cwd, uuid)`,
+`hasTranscript(cwd, uuid)` (the history's `--resume` check, through `sessionAdapter()` because history rows
+carry no harness), `titleOrigin(cwd, uuid, name)` (rename or the harness's own guess) and `nameFromTitle(title)`
+(the harness's reading of an OSC title; the scanner in `sessions/title.ts` stays generic and takes it as an
+argument, since `harness/**` may not import `sessions/**`). `meters(body)` reads a status-line body into the
+neutral `SessionMetrics`. Claude Code's live in `claude-code/{record,title-origin,title,metrics}.ts`.
 
 ## The fences
 

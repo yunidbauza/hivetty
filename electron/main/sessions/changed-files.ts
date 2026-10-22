@@ -6,7 +6,6 @@
  * So main reads the transcript itself, from where the last read stopped.
  */
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
 
 import type { ChangedFile, ChangedFilesEvent, ChangedFilesSnapshot } from '@shared/changed-files-contract';
@@ -14,8 +13,6 @@ import { CH } from '@shared/ipc-contract';
 
 import type { FileTally, HarnessAdapter } from '../harness/port';
 import { sessionAdapter } from '../harness/registry';
-
-import { transcriptPath } from './title-origin';
 
 export type { FileTally };
 
@@ -41,14 +38,12 @@ interface SessionState {
  */
 export function createChangedFiles({
   send,
-  home = homedir(),
   transcriptOf,
   rootOf,
   /** The harness that wrote the session's transcript (HIVE-238). Phase 1: Claude Code. */
   adapterOf = () => sessionAdapter(),
 }: {
   send: (channel: string, payload: unknown) => void;
-  home?: string;
   /** The session's live transcript, from the receiver's `transcripts` map. */
   transcriptOf: (entityId: string) => { cwd: string; sessionUuid: string } | undefined;
   /** The Files tree's root, absolute and realpath'd; `null` with no project. */
@@ -81,7 +76,7 @@ export function createChangedFiles({
     if (generationOf(entityId) !== generation) return;
     const transcript = transcriptOf(entityId);
     if (transcript === undefined) return;
-    const path = transcriptPath(home, transcript.cwd, transcript.sessionUuid);
+    const path = adapterOf(entityId).record.transcriptPath(transcript.cwd, transcript.sessionUuid);
     if (path === null) return;
     let state = sessions.get(entityId);
     if (state === undefined) {

@@ -5170,4 +5170,56 @@ describe('hook receiver: reads through the harness registry (HIVE-236)', () => {
     expect(adapterFor).not.toHaveBeenCalled();
     expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
   });
+
+  const postMetrics = async (harnesses: HarnessRegistry) => {
+    const metrics: unknown[] = [];
+    const r = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onPlan: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      onMetrics: (_id, m) => metrics.push(m),
+      ...noLedger,
+      harnesses,
+    });
+    await r.start();
+    const res = await fetch(r.metricsUrl as string, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: r.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: JSON.stringify(VALID_METRICS),
+    });
+    await r.stop();
+    return { metrics, status: res.status };
+  };
+
+  it("reads a session's status line with the adapter its harness names (HIVE-239)", async () => {
+    const meters = vi.fn(sessionAdapter().meters);
+    const adapterFor = vi.fn(() => ({ ...sessionAdapter(), meters }));
+    const { metrics, status } = await postMetrics({ adapterFor, harnessOf: () => 'claude-code' as const });
+    expect(status).toBe(204);
+    expect(meters).toHaveBeenCalledWith(JSON.stringify(VALID_METRICS));
+    expect(metrics).toHaveLength(1);
+  });
+
+  it('refuses a status line from a harness without meters (HIVE-239)', async () => {
+    const meters = vi.fn(sessionAdapter().meters);
+    const adapterFor = vi.fn(() => ({
+      ...sessionAdapter(),
+      capabilities: { ...sessionAdapter().capabilities, meters: false },
+      meters,
+    }));
+    const { metrics, status } = await postMetrics({ adapterFor, harnessOf: () => 'claude-code' as const });
+    expect(status).toBe(404);
+    expect(meters).not.toHaveBeenCalled();
+    expect(metrics).toEqual([]);
+  });
 });

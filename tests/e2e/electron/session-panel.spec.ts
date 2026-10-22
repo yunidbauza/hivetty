@@ -11,7 +11,7 @@ import {
   HOOK_HEADER_TOKEN,
   HOOK_PATH,
 } from '../../../electron/shared/hook-contract';
-import { claudeProjectDir } from '../../../electron/main/sessions/title-origin';
+import { claudeProjectDir } from '../../../electron/main/harness/claude-code/title-origin';
 import { launchHive, writeProjectConfig } from './fixtures/hive-app';
 
 /**

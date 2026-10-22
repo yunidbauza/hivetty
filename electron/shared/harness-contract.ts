@@ -9,12 +9,18 @@
 export type HarnessId = 'claude-code';
 
 /**
- * What a harness can do. Empty on purpose ("build one, shape for three"): each
- * story adds only the fields it consumes. `Record<never, never>` rather than an
- * empty interface, which `no-empty-object-type` rejects; the first field turns
- * it into an `interface`.
+ * What a harness can do ("build one, shape for three"). A field lands only with the
+ * story whose core code reads it (HIVE-239 brought the first two).
  */
-export type Capabilities = Record<never, never>;
+export interface Capabilities {
+  /**
+   * `by-id`: a stopped conversation reopens under the uuid it was pinned with, so the
+   * spawn asks the history for one. `none`: every spawn starts a new conversation.
+   */
+  resume: 'by-id' | 'none';
+  /** The harness posts a status line that the receiver's `/statusline` route reads into metrics. */
+  meters: boolean;
+}
 
 /** Why a session is blocked on a human (HIVE-237): a tool wants a yes, the agent asked, or a server wants input. */
 export type WaitingReason = 'permission' | 'question' | 'input';

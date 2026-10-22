@@ -4482,7 +4482,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * once the row has a name that came from somewhere better: the session's
        * first prompt, or a person typing `/rename`. Main separates those two
        * from the guess by reading the transcript Claude records the difference
-       * in — see `sessions/title-origin.ts`, because the OSC-0 channel this
+       * in — see `harness/claude-code/title-origin.ts`, because the OSC-0 channel this
        * arrives on cannot tell them apart.
        *
        * A pinned ticket row is covered by this rather than exempted from it.

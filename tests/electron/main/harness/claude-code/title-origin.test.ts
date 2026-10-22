@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   claudeProjectDir,
   createTitleOriginReader,
-} from '../../../../electron/main/sessions/title-origin';
+} from '../../../../../electron/main/harness/claude-code/title-origin';
 
 /**
  * Telling a `/rename` apart from Claude's own auto-title (first-prompt naming).

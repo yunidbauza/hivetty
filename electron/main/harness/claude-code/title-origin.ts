@@ -2,6 +2,8 @@ import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import type { TitleVerdict } from '../port';
+
 /**
  * Telling a `/rename` apart from Claude's own auto-title (first-prompt naming).
  *
@@ -64,15 +66,6 @@ import { join } from 'node:path';
  * again on the next repaint. The ambiguity resolves itself within a frame or two
  * without a timer anywhere.
  */
-
-/** What wrote a title, as far as the transcript can say. */
-type TitleVerdict =
-  /** A `custom-title` record carries exactly this name — the user renamed. */
-  | 'rename'
-  /** An `ai-title` record carries exactly this name — Claude guessed. */
-  | 'agent'
-  /** No record for this name yet: not written, not readable, not there. */
-  | 'unknown';
 
 /**
  * How much of the end of a transcript is read.

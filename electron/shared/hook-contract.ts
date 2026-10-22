@@ -221,7 +221,7 @@ export interface HookStatusEvent {
    *
    * It is what names the transcript, `~/.claude/projects/<escaped-cwd>/<uuid>.jsonl`,
    * which is the only place a `/rename` is distinguishable from Claude's own
-   * `ai-title` — see `sessions/title-origin.ts`.
+   * `ai-title` — see `harness/claude-code/title-origin.ts`.
    *
    * Optional on the same terms as {@link cwd}: it is read off a payload this app
    * does not control, and its absence means one title goes unclassified rather

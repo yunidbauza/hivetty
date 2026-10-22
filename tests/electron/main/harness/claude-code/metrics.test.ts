@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 
-import { parseMetrics } from '../../../../electron/main/hooks/metrics';
+import { parseMetrics } from '../../../../../electron/main/harness/claude-code/metrics';
 
 /**
  * The payload is produced by another program on a schedule this app does not

@@ -59,7 +59,7 @@ import {
 } from '../container/generated';
 import { createPathMap } from '../container/path-map';
 import { sessionRoot } from '../fs/session-roots';
-import type { PreparedFiles } from '../harness/port';
+import type { HarnessAdapter, PreparedFiles } from '../harness/port';
 import { createHarnessRegistry, sessionAdapter } from '../harness/registry';
 import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
@@ -78,7 +78,6 @@ import { createBranchReader, resolveGit, type BranchReaderOptions } from './git'
 import type { SessionHistory } from './history';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
-import { createTitleOriginReader } from './title-origin';
 
 /**
  * Sessions: what a terminal actually *is* in this app (story 096).
@@ -655,6 +654,11 @@ export function createSessions(options: SessionsOptions): Sessions {
    */
   const isTerminal = (entityId: string): boolean =>
     harnesses.harnessOf(entityId) === undefined && !commandEntities.has(entityId);
+  /** The adapter for an entity: its harness's, else the shared one (HIVE-236's fallback). */
+  const adapterOf = (entityId: string): HarnessAdapter => {
+    const harness = harnesses.harnessOf(entityId);
+    return harness === undefined ? sessionAdapter() : harnesses.adapterFor(harness);
+  };
 
   function settleCommand(entityId: string, result: CommandExit): void {
     const onExit = commandExit.get(entityId);
@@ -818,10 +822,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     send,
     transcriptOf: (entityId) => transcripts.get(entityId),
     rootOf: changedFilesRoot,
-    adapterOf: (entityId) => {
-      const harness = harnesses.harnessOf(entityId);
-      return harness === undefined ? sessionAdapter() : harnesses.adapterFor(harness);
-    },
+    adapterOf,
   });
 
   /**
@@ -858,8 +859,6 @@ export function createSessions(options: SessionsOptions): Sessions {
    * it was already being reported as in the meantime.
    */
   const MAX_TITLE_LOOKUPS = 8;
-
-  const titleOrigin = createTitleOriginReader();
 
   /**
    * Reads `git rev-parse` for a directory, cached and rate-limited (HIVE-78).
@@ -1732,7 +1731,7 @@ export function createSessions(options: SessionsOptions): Sessions {
 
     let reader = titles.get(entityId);
     if (reader === undefined) {
-      reader = createTitleReader();
+      reader = createTitleReader(adapterOf(entityId).record.nameFromTitle);
       titles.set(entityId, reader);
     }
     for (const name of reader.read(chunk)) {
@@ -1758,7 +1757,7 @@ export function createSessions(options: SessionsOptions): Sessions {
    * (first-prompt naming).
    *
    * The two are identical on the OSC-0 channel, so the answer comes from the
-   * transcript — see `title-origin.ts` for why Claude's own record is the only
+   * transcript — see `harness/claude-code/title-origin.ts` for why Claude's own record is the only
    * honest source, and why its `ai-title` is a guess about the wrong moment.
    *
    * ## Why an `unknown` is not cached
@@ -1785,7 +1784,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     const transcript = transcripts.get(entityId);
     if (transcript === undefined) return 'agent';
 
-    const verdict = titleOrigin.classify(transcript.cwd, transcript.sessionUuid, name);
+    const verdict = adapterOf(entityId).record.titleOrigin(transcript.cwd, transcript.sessionUuid, name);
     const settled = verdict !== 'unknown';
 
     /*
@@ -2379,6 +2378,10 @@ export function createSessions(options: SessionsOptions): Sessions {
     const spawnMcpConfig =
       containerSet === null ? mcpConfig : join(containerSet, CONTAINER_MCP_FILE);
 
+    // An agent session from here on, spawn failed or not — see `agentSessions`.
+    agentSessions.add(request.entityId);
+    const adapter = harnesses.adapterFor(harnesses.harnessOf(request.entityId)!);
+
     /**
      * Hoisted out of the `sessionCommand` call it used to sit inside (HIVE-87).
      *
@@ -2394,15 +2397,14 @@ export function createSessions(options: SessionsOptions): Sessions {
      * there is nothing to pick up — no history, no record, no uuid, or an id
      * this run began — and the request degrades to the plain spawn it would
      * otherwise have been. The renderer asked to resume; main decides whether
-     * it can.
+     * it can. A harness that cannot resume by id (HIVE-239) always starts afresh.
      */
     const resumeUuid =
-      request.resume === true ? history?.resumable(request.entityId) : undefined;
+      request.resume === true && adapter.capabilities.resume === 'by-id'
+        ? history?.resumable(request.entityId)
+        : undefined;
     const resume = resumeUuid !== undefined;
     const sessionUuid = resumeUuid ?? newSessionUuid();
-
-    // An agent session from here on, spawn failed or not — see `agentSessions`.
-    agentSessions.add(request.entityId);
     /**
      * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
      * login shell with it and the session settles to `done`. See its own
@@ -2415,7 +2417,7 @@ export function createSessions(options: SessionsOptions): Sessions {
      * story at all — so a session started as Haiku with low effort opened as
      * Opus and said so on the meta bar.
      */
-    const plan = harnesses.adapterFor(harnesses.harnessOf(request.entityId)!).launch({
+    const plan = adapter.launch({
       command: runtime.claudeCommand,
       ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.effort === undefined ? {} : { effort: request.effort }),

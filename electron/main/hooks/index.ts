@@ -925,4 +925,3 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
 }
 
 export { createReceiver } from './receiver';
-export { parseMetrics } from './metrics';

@@ -4,8 +4,10 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
+import { createClaudeRecord } from '../../../../electron/main/harness/claude-code/record';
+import { claudeProjectDir } from '../../../../electron/main/harness/claude-code/title-origin';
 import { createChangedFiles } from '../../../../electron/main/sessions/changed-files';
-import { claudeProjectDir } from '../../../../electron/main/sessions/title-origin';
 import { CH } from '../../../../electron/shared/ipc-contract';
 
 const editLine = (filePath: string, lines: string[], extra: Record<string, unknown> = {}) =>
@@ -42,7 +44,7 @@ describe('createChangedFiles (HIVE-201)', () => {
     send,
     files: createChangedFiles({
       send,
-      home,
+      adapterOf: () => ({ ...claudeCodeAdapter, record: createClaudeRecord(home) }),
       transcriptOf: () => transcript,
       rootOf: () => Promise.resolve('/repo'),
     }),
@@ -124,7 +126,7 @@ describe('createChangedFiles (HIVE-201)', () => {
     let release: (root: string) => void = () => {};
     const files = createChangedFiles({
       send,
-      home,
+      adapterOf: () => ({ ...claudeCodeAdapter, record: createClaudeRecord(home) }),
       transcriptOf: () => transcript,
       rootOf: () => {
         roots += 1;
@@ -168,7 +170,7 @@ describe('createChangedFiles (HIVE-201)', () => {
     const send = vi.fn();
     const files = createChangedFiles({
       send,
-      home,
+      adapterOf: () => ({ ...claudeCodeAdapter, record: createClaudeRecord(home) }),
       transcriptOf: () => transcript,
       rootOf: () => Promise.resolve('/wt/feat'),
     });
@@ -181,7 +183,7 @@ describe('createChangedFiles (HIVE-201)', () => {
     const send = vi.fn();
     const files = createChangedFiles({
       send,
-      home,
+      adapterOf: () => ({ ...claudeCodeAdapter, record: createClaudeRecord(home) }),
       transcriptOf: () => transcript,
       rootOf: () => Promise.resolve(null),
     });
