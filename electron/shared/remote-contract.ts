@@ -68,8 +68,9 @@ import { isThisMachineAction } from './notification-contract';
  * 12 → 13 (HIVE-207): `CH` gained `github:pr-diff`, `github:pr-thread` and `github:pr-viewed`; `PrDetail` gained `files`.
  * 13 → 14 (HIVE-208): `CH` gained `github:pr-timeline`.
  * 14 → 15: `CH` gained `jira:issue-changed` (#336).
+ * 15 → 16: `CH` gained `github:user-repos` (the clone picker).
  */
-export const REMOTE_PROTOCOL_VERSION = 15;
+export const REMOTE_PROTOCOL_VERSION = 16;
 
 /**
  * What a frame is for.
