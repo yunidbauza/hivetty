@@ -78,6 +78,22 @@ describe('createBuilderProgress', () => {
     expect(plans.get('sess-01')?.build?.askId).toBe('A1');
   });
 
+  it("links an ask that names its plan only in the body, as work-on's ask text does", () => {
+    progress.onEntry(
+      ask({ meta: { intent: 'wait for the builder' }, body: 'Build X\nrepo: /repo\nplan: .hive/plans/p.md\nship: yes' }),
+    );
+    progress.onEntry(post(1));
+
+    expect(plans.get('sess-01')?.build?.askId).toBe('A1');
+    expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+  });
+
+  it('never links a body plan line on an ask whose meta names another stage', () => {
+    progress.onEntry(ask({ meta: { stage: 'intake' }, body: 'plan: .hive/plans/p.md' }));
+
+    expect(plans.get('sess-01')?.build).toBeUndefined();
+  });
+
   it("ticks tasks from the builder's posts: started, then done", () => {
     progress.onEntry(ask());
 

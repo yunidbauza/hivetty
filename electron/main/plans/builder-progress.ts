@@ -24,8 +24,9 @@ interface Link {
  * Main never reads a file on the ledger's word: an ask links only to a plan
  * the session already holds from its own plan file.
  *
- * - **Link.** A `build` ask naming `meta.plan` from a known session whose
- *   current plan is that plan file sets `build: building`.
+ * - **Link.** A `build` ask naming `meta.plan` (or, with no `meta.stage`, a
+ *   body `plan:` line) from a known session whose current plan is that plan
+ *   file sets `build: building`.
  * - **Ticks.** A `build` post from the builder in the ask's thread, with an
  *   integer `meta.task`: `state: 'started'` is in progress, otherwise done.
  * - **End.** An answer in the thread: `failed:` or `blocked:` marks the build
@@ -56,8 +57,15 @@ export function createBuilderProgress({
   };
 
   function link(entry: LedgerEntry, meta: Record<string, unknown>): void {
-    const planPath = meta.plan;
-    if (meta.stage !== 'build' || typeof planPath !== 'string' || !knowsSession(entry.from)) return;
+    /*
+      A session sometimes sends the ask with `plan:` only in its body, meta
+      reduced to `intent` (INCORP-620). The body's line counts when meta names
+      no stage: the suffix match below still confines it to the session's own
+      plan file.
+    */
+    const bodyPlan = meta.stage === undefined ? /^plan:\s*(\S+)\s*$/m.exec(entry.body)?.[1] : undefined;
+    const planPath = meta.plan ?? bodyPlan;
+    if ((meta.stage ?? 'build') !== 'build' || typeof planPath !== 'string' || !knowsSession(entry.from)) return;
     /*
       A broadcast ask is never linked: nobody could tick it, and the ledger
       lets any party answer a thread with no `to` — so any session or agent
