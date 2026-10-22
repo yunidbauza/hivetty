@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { JiraIssue, JiraResult, JiraTransition } from '../../../../../electron/shared/jira-contract';
-import { jiraToolsFor, type JiraToolSource } from '../../../../../electron/main/integrations/jira/tools';
+import { announceIssueWrites, jiraToolsFor, type JiraToolSource } from '../../../../../electron/main/integrations/jira/tools';
 
 const issue = (over: Partial<JiraIssue> = {}): JiraIssue => ({
   key: 'HIVE-7',
@@ -201,5 +201,39 @@ describe('jiraToolsFor (HIVE-174)', () => {
     const jira = source();
     expect(await jiraToolsFor(jira).users({ query: 'da' })).toEqual(ok([{ accountId: 'a1', displayName: 'Dana' }]));
     expect(jira.searchUsers).toHaveBeenCalledWith({ query: 'da' });
+  });
+});
+
+describe('announceIssueWrites (live ticket status)', () => {
+  it('hands the issue an applied transition or an assign re-read to the listener, and nothing for a refusal', async () => {
+    const heard: JiraIssue[] = [];
+    const jira = announceIssueWrites(
+      source({
+        applyTransition: vi
+          .fn()
+          .mockResolvedValueOnce(ok(issue({ status: 'In Progress', statusCategory: 'in-progress' })))
+          .mockResolvedValueOnce(refused('timed out')),
+      }),
+      (one) => heard.push(one),
+    );
+
+    await jira.applyTransition({ key: 'HIVE-7', transitionId: '21' });
+    await jira.applyTransition({ key: 'HIVE-7', transitionId: '21' });
+    await jira.assignToMe({ key: 'HIVE-7' });
+
+    expect(heard.map((one) => [one.status, one.assignee])).toEqual([
+      ['In Progress', null],
+      ['In Progress', 'Me'],
+    ]);
+  });
+
+  it('the agent tool path announces through it too; a skipped move announces nothing', async () => {
+    const heard: JiraIssue[] = [];
+    const tools = jiraToolsFor(announceIssueWrites(source(), (one) => heard.push(one)));
+
+    await tools.transition({ key: 'HIVE-7', status: 'In Progress' });
+    await tools.transition({ key: 'HIVE-7', status: 'To Do' });
+
+    expect(heard.map((one) => one.status)).toEqual(['In Progress']);
   });
 });

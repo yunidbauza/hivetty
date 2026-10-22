@@ -92,6 +92,22 @@ describe('pickTab', () => {
   });
 });
 
+describe('SessionPanel keeps the statuses it shows current (live ticket status)', () => {
+  it('sweeps Jira and gh while it is mounted alone, with no Work or PR list drawn', async () => {
+    vi.useFakeTimers();
+    const refreshTickets = vi.fn(() => Promise.resolve());
+    const refreshPrs = vi.fn(() => Promise.resolve());
+    useHiveStore.setState({ refreshTickets, refreshPrs });
+    render(<SessionPanel rowRef={createRef()} />);
+
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    vi.useRealTimers();
+
+    expect(refreshTickets).toHaveBeenCalledTimes(2);
+    expect(refreshPrs).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('SessionPanel (HIVE-201)', () => {
   beforeEach(() => {
     // The seeded session works on a ticket; these are about Plan and Files alone.

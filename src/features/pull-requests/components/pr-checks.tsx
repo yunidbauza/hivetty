@@ -55,7 +55,7 @@ export function PrChecks({ pr, detail }: { pr: Pr; detail: PrDetail }) {
 
   const others = detail.checks.filter((check) => check.app !== 'github-actions');
   const push = pushes.find((p) => p.sha === sha) ?? pushes.at(-1);
-  const retry = () => void loadPrChecks(pr.owner, pr.repo, pr.n, branch, sha ?? undefined);
+  const retry = () => loadPrChecks(pr.owner, pr.repo, pr.n, branch, sha ?? undefined);
 
   if (entry?.runs === undefined) {
     if (entry?.state === 'failed') return <div className="px-6 pt-4"><SourceProblem message={entry.problem ?? 'Could not read the checks.'} onRetry={retry} /></div>;
@@ -114,7 +114,7 @@ export function PrChecks({ pr, detail }: { pr: Pr; detail: PrDetail }) {
               return result.ok ? null : result.error.message;
             }}
           />
-          {failedJob === null ? <div /> : <JobLog entry={entry.logs[failedJob]} onRetry={() => void loadJobLog(pr.owner, pr.repo, pr.n, failedJob)} />}
+          {failedJob === null ? <div /> : <JobLog entry={entry.logs[failedJob]} onRetry={() => loadJobLog(pr.owner, pr.repo, pr.n, failedJob)} />}
         </div>
       )}
     </div>

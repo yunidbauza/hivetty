@@ -47,7 +47,7 @@ import { useClearPrSearch, usePrPageActions, usePrSearchOpen, usePrSearchTerm, u
  */
 
 /** The stale line reads its own time, so only it re-renders on a sweep (HIVE-211, D5). */
-function PrsStaleLine({ failedAt, onRetry }: { failedAt: number | undefined; onRetry: () => void }) {
+function PrsStaleLine({ failedAt, onRetry }: { failedAt: number | undefined; onRetry: () => Promise<void> }) {
   const readAt = usePrsReadAt();
   return <StaleLine service="GitHub" failedAt={failedAt} readAt={readAt} onRetry={onRetry} />;
 }
@@ -58,7 +58,7 @@ function SourceNotice({
   onRetry,
 }: {
   source: PrSource;
-  onRetry: () => void;
+  onRetry: () => Promise<void>;
 }) {
   // The skeleton below is the whole message while the first sweep is out.
   if (source.kind === 'loading') return null;
@@ -304,7 +304,7 @@ export function PrsPanel() {
   return (
     <PrsLayout header={header} listRef={pull.ref}>
       <PullIndicator distance={pull.distance} phase={pull.phase} />
-      <SourceNotice source={source} onRetry={() => void refresh()} />
+      <SourceNotice source={source} onRetry={refresh} />
       {live.map(draw)}
       {hatched.length > 0 ? (
         <>

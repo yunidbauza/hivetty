@@ -114,7 +114,7 @@ function LivePr({ sessionId, row }: { sessionId: string; row: HatcheryRow }) {
           <div className="pt-3">
             <SourceProblem
               message={entry.problem ?? 'Could not read this pull request.'}
-              onRetry={() => void load(pr.owner, pr.repo, pr.n)}
+              onRetry={() => load(pr.owner, pr.repo, pr.n)}
             />
           </div>
         ) : (

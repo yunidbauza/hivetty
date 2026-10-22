@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { LinkArcs, LinkedTicket } from '@/lib/ticket-links';
+import type { EpicLabel, LinkArcs, LinkedTicket } from '@/lib/ticket-links';
 import { TicketConstellation } from '@features/work/components/ticket-constellation';
 import type { JiraStatusCategory } from '@shared/jira-contract';
 
@@ -16,7 +16,7 @@ const arcs = (over: Partial<LinkArcs>): LinkArcs => {
 
 const normal = arcs({ waitsOn: [t('HIVE-188', 'done')], blocks: [{ ...t('HIVE-194'), next: t('HIVE-196') }], relates: [t('HIVE-179', 'done')] });
 
-const draw = (over: { arcs?: LinkArcs; epicLabel?: string | null; pr?: number | null } = {}) => {
+const draw = (over: { arcs?: LinkArcs; epicLabel?: EpicLabel | null; pr?: number | null } = {}) => {
   const onOpenTicket = vi.fn();
   const onOpenArc = vi.fn();
   const view = render(
@@ -112,13 +112,27 @@ describe('TicketConstellation (HIVE-202)', () => {
     expect(screen.queryByText(/HIVE-161/)).not.toBeInTheDocument();
     unmount();
 
-    draw({ epicLabel: "HIVE-161 · The Hive's workflow · 9/14", pr: 313 });
-    expect(screen.getByText("HIVE-161 · The Hive's workflow · 9/14")).toBeInTheDocument();
+    const view = draw({ epicLabel: { text: "HIVE-161 · The Hive's workflow", progress: '9/14' }, pr: 313 });
     expect(screen.getByText('#313')).toBeInTheDocument();
+
+    // The caption is a line of text above the drawing: it truncates, keeps its progress, and is not clipped by the SVG.
+    const caption = screen.getByText("HIVE-161 · The Hive's workflow");
+    expect(caption).toHaveClass('truncate');
+    expect(caption.closest('svg')).toBeNull();
+    expect(caption.parentElement).toHaveAttribute('title', "HIVE-161 · The Hive's workflow · 9/14");
+    expect(caption.parentElement).toHaveTextContent(/9\/14$/);
+    expect(view.container.querySelector('svg')).not.toHaveTextContent('HIVE-161');
+  });
+
+  it("a second hop's label reads away from the hexagon it hangs off", () => {
+    draw();
+
+    // HIVE-194 sits at the bottom; its hop HIVE-196 steps out to the left, so its key ends at the hop.
+    expect(screen.getByText('196')).toHaveAttribute('text-anchor', 'end');
   });
 
   it('colours through currentColor, never a raw hex', () => {
-    const { container } = draw({ epicLabel: 'E', pr: 313 });
+    const { container } = draw({ epicLabel: { text: 'E' }, pr: 313 });
 
     expect(container.innerHTML).not.toMatch(/(fill|stroke)="#/);
   });

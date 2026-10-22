@@ -164,7 +164,7 @@ export function PrTimeline({ pr }: { pr: Pr }) {
   usePollTimeline(
     useCallback(() => load(pr.owner, pr.repo, pr.n).then(() => setNow(Date.now())), [load, pr.owner, pr.repo, pr.n]),
   );
-  const retry = () => void load(pr.owner, pr.repo, pr.n);
+  const retry = () => load(pr.owner, pr.repo, pr.n);
 
   if (model === null) {
     if (entry?.state === 'failed') {

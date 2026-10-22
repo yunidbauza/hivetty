@@ -120,7 +120,7 @@ export function PrPage({ row }: { row: HatcheryRow }) {
       ? undefined
       : (path: string, line: number) => void openPath(projectId, session?.id, path, { line });
 
-  const retry = () => void load(pr.owner, pr.repo, pr.n);
+  const retry = () => load(pr.owner, pr.repo, pr.n);
 
   // The properties sidebar folds into this below a 760px page (HIVE-223); above it the state is moot.
   const drawer = useDetailsDrawer();

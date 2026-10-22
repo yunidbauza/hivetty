@@ -728,6 +728,8 @@ const bridge: HiveBridge = {
     // HIVE-216: the @ picker's search.
     users: (request: JiraUsersRequest): Promise<JiraResult<JiraUser[]>> =>
       ipcRenderer.invoke(CH.jiraUsers, request),
+    onIssueChanged: (callback: (issue: JiraIssue) => void) =>
+      subscribe<JiraIssue>(CH.jiraIssueChanged, callback),
   },
   /*
     HIVE-123. Four verbs, none of them returning a credential — see the

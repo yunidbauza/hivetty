@@ -10,7 +10,7 @@ describe('StaleLine (HIVE-211)', () => {
   const failed = new Date('2026-10-03T10:42:00').getTime();
 
   it('names both times in an amber wash, and retries', async () => {
-    const onRetry = vi.fn();
+    const onRetry = vi.fn().mockResolvedValue(undefined);
     render(<StaleLine service="Jira" failedAt={failed} readAt={loaded} onRetry={onRetry} />);
     const line = screen.getByText(
       `Couldn't reach Jira at ${clockTime(failed)}. Showing what was loaded at ${clockTime(loaded)}.`,
@@ -25,7 +25,7 @@ describe('StaleLine (HIVE-211)', () => {
     [undefined, loaded],
     [failed, null],
   ])('falls back to the old sentence without both times (%s, %s)', (failedAt, readAt) => {
-    render(<StaleLine service="GitHub" failedAt={failedAt} readAt={readAt} onRetry={vi.fn()} />);
+    render(<StaleLine service="GitHub" failedAt={failedAt} readAt={readAt} onRetry={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('Could not reach GitHub. These may be out of date.')).toBeInTheDocument();
   });
 });

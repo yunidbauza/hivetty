@@ -183,10 +183,11 @@ describe('parseCriteria (HIVE-202)', () => {
 
 describe('epicLabel (D6)', () => {
   const epic = { key: 'HIVE-161', summary: "The Hive's workflow", issueType: 'Epic' };
-  it('key · summary · done/total; "+" when capped; no count before the read', () => {
-    expect(epicLabel(epic, { done: 9, total: 14, capped: false })).toBe("HIVE-161 · The Hive's workflow · 9/14");
-    expect(epicLabel(epic, { done: 120, total: 200, capped: true })).toBe("HIVE-161 · The Hive's workflow · 120/200+");
-    expect(epicLabel(epic)).toBe("HIVE-161 · The Hive's workflow");
+  it('key · summary, and done/total apart so truncating the text never drops it; "+" when capped; no count before the read', () => {
+    const text = "HIVE-161 · The Hive's workflow";
+    expect(epicLabel(epic, { done: 9, total: 14, capped: false })).toEqual({ text, progress: '9/14' });
+    expect(epicLabel(epic, { done: 120, total: 200, capped: true })).toEqual({ text, progress: '120/200+' });
+    expect(epicLabel(epic)).toEqual({ text });
   });
   it('null with no parent or a non-epic parent', () => {
     expect(epicLabel(null)).toBeNull();

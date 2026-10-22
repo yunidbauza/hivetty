@@ -6,12 +6,7 @@ import { BRIDGE_ERROR, cn } from '@/lib/utils';
 
 import { Button } from '@components/ui/button';
 import { CATEGORY_TEXT, STATUS_PILL } from '@features/work/ticket-presentation';
-import {
-  useNextTransition,
-  useReloadTicketTransitions,
-  useSetTicketDetailIssue,
-  useUpdateTicket,
-} from '@stores/hive-store';
+import { useNextTransition, useSetTicketDetailIssue, useUpdateTicket } from '@stores/hive-store';
 
 /**
  * "Move to [status]": the one step forward (HIVE-203, D6), shared by the
@@ -24,7 +19,6 @@ export function TicketNextAction({ ticketKey, className }: { ticketKey: string; 
   const next = useNextTransition(ticketKey);
   const updateTicket = useUpdateTicket();
   const setIssue = useSetTicketDetailIssue();
-  const reload = useReloadTicketTransitions();
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -37,9 +31,9 @@ export function TicketNextAction({ ticketKey, className }: { ticketKey: string; 
       setBusy(false);
       if (result === null) return setProblem(BRIDGE_ERROR);
       if (!result.ok) return setProblem(result.error.message);
+      // Each re-reads the transitions when the status moved: the next step is from where it stands now.
       updateTicket(result.value);
       setIssue(result.value);
-      void reload(ticketKey);
     });
   };
 

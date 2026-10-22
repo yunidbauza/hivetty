@@ -67,8 +67,9 @@ import { isThisMachineAction } from './notification-contract';
  * 11 → 12 (HIVE-206): `CH` gained `github:pr-runs`, `github:run-jobs`, `github:job-log` and `github:rerun-failed`; `PrCheck` gained `app` and `jobId`.
  * 12 → 13 (HIVE-207): `CH` gained `github:pr-diff`, `github:pr-thread` and `github:pr-viewed`; `PrDetail` gained `files`.
  * 13 → 14 (HIVE-208): `CH` gained `github:pr-timeline`.
+ * 14 → 15: `CH` gained `jira:issue-changed` (#336).
  */
-export const REMOTE_PROTOCOL_VERSION = 14;
+export const REMOTE_PROTOCOL_VERSION = 15;
 
 /**
  * What a frame is for.
@@ -182,6 +183,7 @@ export const FRAME_KIND = {
   [CH.jiraDetail]: 'call',
   [CH.jiraTransitions]: 'call',
   [CH.jiraApplyTransition]: 'call',
+  [CH.jiraIssueChanged]: 'event',
   [CH.jiraComments]: 'call',
   [CH.jiraLinks]: 'call',
   [CH.jiraAddComment]: 'call',
@@ -478,6 +480,7 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.jiraDetail]: 'read',
   [CH.jiraTransitions]: 'read',
   [CH.jiraApplyTransition]: 'mutate',
+  [CH.jiraIssueChanged]: 'read',
   [CH.jiraComments]: 'read',
   [CH.jiraLinks]: 'read',
   [CH.jiraAddComment]: 'mutate',

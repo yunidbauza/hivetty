@@ -64,7 +64,7 @@ import { useToggleWorkGroup, useWorkFolded, useWorkSearchTerm } from '@stores/ui
  */
 
 /** The stale line reads its own time, so only it re-renders on a sweep (HIVE-211, D5). */
-function TicketsStaleLine({ failedAt, onRetry }: { failedAt: number | undefined; onRetry: () => void }) {
+function TicketsStaleLine({ failedAt, onRetry }: { failedAt: number | undefined; onRetry: () => Promise<void> }) {
   const readAt = useTicketsReadAt();
   return <StaleLine service="Jira" failedAt={failedAt} readAt={readAt} onRetry={onRetry} />;
 }
@@ -75,7 +75,7 @@ function SourceNotice({
   onRetry,
 }: {
   source: TicketSource;
-  onRetry: () => void;
+  onRetry: () => Promise<void>;
 }) {
   // The skeleton below is the whole message while a read is in flight.
   if (source.kind === 'loading') return null;
@@ -266,10 +266,6 @@ export function WorkPanel() {
   useTicketRefresh();
   usePrRefresh();
 
-  const retry = () => {
-    void refresh();
-  };
-
   /*
     Overscrolling the top of the list forces a read, rather than waiting out
     the minute. Disabled while the first sweep is still running: there is no
@@ -351,7 +347,7 @@ export function WorkPanel() {
     <WorkLayout header={header} listRef={pull.ref}>
       <PullIndicator distance={pull.distance} phase={pull.phase} />
 
-      <SourceNotice source={source} onRetry={retry} />
+      <SourceNotice source={source} onRetry={refresh} />
 
       <TicketGroups />
 

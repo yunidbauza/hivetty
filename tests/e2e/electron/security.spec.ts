@@ -667,6 +667,11 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
      * request is made.
      */
     'links',
+    /*
+      `onIssueChanged`: a subscription, not a verb. Main pushes the issue a
+      transition or an assign re-read; the renderer can send nothing through it.
+    */
+    'onIssueChanged',
     'search',
     'setToken',
     'status',

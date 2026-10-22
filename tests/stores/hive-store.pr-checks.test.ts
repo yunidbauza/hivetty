@@ -112,6 +112,27 @@ describe('loadJobLog', () => {
     expect(readJobLog).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps a failed log in place while its retry is out, so the Try again button stays mounted', async () => {
+    readJobLog.mockResolvedValueOnce(refused('timeout'));
+    await state().loadJobLog('acme', 'nova-web', 482, 77);
+    let settle: (v: unknown) => void = () => undefined;
+    readJobLog.mockReturnValueOnce(new Promise((resolve) => { settle = resolve; }));
+    const retry = state().loadJobLog('acme', 'nova-web', 482, 77);
+    expect(state().prChecks[KEY]?.logs[77]).toEqual({ state: 'failed', problem: 'timeout' });
+    settle(ok({ lines: ['fixed'], truncated: false }));
+    await retry;
+    expect(state().prChecks[KEY]?.logs[77]).toMatchObject({ state: 'ok' });
+  });
+
+  it('still shows loading on a first read', async () => {
+    let settle: (v: unknown) => void = () => undefined;
+    readJobLog.mockReturnValueOnce(new Promise((resolve) => { settle = resolve; }));
+    const first = state().loadJobLog('acme', 'nova-web', 482, 77);
+    expect(state().prChecks[KEY]?.logs[77]).toEqual({ state: 'loading' });
+    settle(refused('x'));
+    await first;
+  });
+
   it('does nothing for a PR it holds no checks for', async () => {
     await state().loadJobLog('acme', 'nova-web', 1, 77);
     expect(readJobLog).not.toHaveBeenCalled();

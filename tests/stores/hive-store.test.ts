@@ -5421,6 +5421,17 @@ describe('the ledger slice', () => {
     expect(useHiveStore.getState().ledger.map((found) => found.id)).toEqual(['1', '2']);
   });
 
+  it('an entry naming a PR sweeps the PRs, so a stage the shipper moved shows at once; one without does not', () => {
+    const refreshPrs = vi.fn(() => Promise.resolve());
+    useHiveStore.setState({ refreshPrs });
+
+    useHiveStore.getState().ledgerAppend(entry({ id: '1' }));
+    expect(refreshPrs).not.toHaveBeenCalled();
+
+    useHiveStore.getState().ledgerAppend(entry({ id: '2', meta: { pr: 214, repo: 'yunidbauza/the-hive', stage: 'merge' } }));
+    expect(refreshPrs).toHaveBeenCalledOnce();
+  });
+
   /**
    * The hydrate/push race (HIVE-111 final review, finding 3).
    *

@@ -5,7 +5,7 @@ import { JobLog } from '@features/pull-requests/components/job-log';
 
 describe('JobLog', () => {
   it('draws the cut log, each line in its tone, an ellipsis when cut', () => {
-    render(<JobLog onRetry={() => {}} entry={{ state: 'ok', log: { truncated: true, lines: [
+    render(<JobLog onRetry={() => Promise.resolve()} entry={{ state: 'ok', log: { truncated: true, lines: [
       '  ✓ accepts a corporation (41 ms)', '  ✕ rejects a Delaware LLC (88 ms)', '    expect(received).toBe(expected)', 'Tests: 1 failed, 46 passed, 47 total',
     ] } }} />);
     expect(screen.getByText('…')).toBeInTheDocument();
@@ -16,12 +16,12 @@ describe('JobLog', () => {
   });
 
   it('shows a skeleton while reading', () => {
-    render(<JobLog onRetry={() => {}} entry={{ state: 'loading' }} />);
+    render(<JobLog onRetry={() => Promise.resolve()} entry={{ state: 'loading' }} />);
     expect(screen.getByRole('status', { name: 'Loading the log' })).toBeInTheDocument();
   });
 
   it('names a failed read and retries it', () => {
-    const onRetry = vi.fn();
+    const onRetry = vi.fn().mockResolvedValue(undefined);
     render(<JobLog onRetry={onRetry} entry={{ state: 'failed', problem: 'GitHub did not answer in time.' }} />);
     expect(screen.getByText('GitHub did not answer in time.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /try again/i }));

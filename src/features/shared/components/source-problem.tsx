@@ -1,15 +1,38 @@
 import { ArrowClockwise } from '@phosphor-icons/react';
+import { useState } from 'react';
 
-/** The way back from a source that failed: one button, one word, no menu. */
-export function RetryButton({ onRetry }: { onRetry: () => void }) {
+import { cn } from '@/lib/utils';
+
+/** Long enough that a retry failing at once still reads as having tried. */
+const MIN_SPIN_MS = 400;
+
+/**
+ * The way back from a source that failed: one button, one word, no menu.
+ *
+ * Spins until the retry settles, so a click is seen to have done something.
+ * Disabled meanwhile; the store already joins a second call to the sweep in
+ * flight, this just stops the button inviting one. Reduced motion needs no
+ * check here: `global.css` stops the spin, and the label still changes.
+ */
+export function RetryButton({ onRetry }: { onRetry: () => Promise<void> }) {
+  const [pending, setPending] = useState(false);
+
+  const retry = () => {
+    setPending(true);
+    const minSpin = new Promise((resolve) => setTimeout(resolve, MIN_SPIN_MS));
+    void Promise.allSettled([onRetry(), minSpin]).then(() => setPending(false));
+  };
+
   return (
     <button
       type="button"
-      onClick={onRetry}
+      onClick={retry}
+      disabled={pending}
+      aria-busy={pending}
       className="flex items-center gap-1 rounded-full border border-edge px-2 py-0.5 text-micro text-ink hover:bg-hover hover:text-ink"
     >
-      <ArrowClockwise size={11} />
-      Try again
+      <ArrowClockwise size={11} className={cn(pending && 'animate-spin')} />
+      {pending ? 'Trying…' : 'Try again'}
     </button>
   );
 }
@@ -27,7 +50,7 @@ export function SourceProblem({
   onRetry,
 }: {
   message: string;
-  onRetry: () => void;
+  onRetry: () => Promise<void>;
 }) {
   return (
     <div className="flex flex-col items-start gap-1 px-1 pb-1">
