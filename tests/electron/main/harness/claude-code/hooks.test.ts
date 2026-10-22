@@ -111,14 +111,14 @@ describe('readHook, plan, file and prompt effects (HIVE-236)', () => {
     const toolResponse = { task: { id: '1' } };
     expect(session(json({ hook_event_name: 'PostToolUse', cwd: '/r', tool_name: 'TaskCreate', tool_input: toolInput, tool_response: toolResponse })).effects)
       .toEqual([
-        { kind: 'plan', call: { entityId: 'sess-07', toolName: 'TaskCreate', toolInput, toolResponse, cwd: '/r' } },
+        { kind: 'plan', update: { entityId: 'sess-07', op: { kind: 'task-created', id: '1', title: 'x' }, cwd: '/r' } },
         status('tool-end'),
       ]);
   });
   it('hands a truncated plan-file Write over by path, counts the edit, then publishes', () => {
     expect(session('{"cwd":"/r","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/r/.hive/plans/p.md","content":"', true).effects)
       .toEqual([
-        { kind: 'plan', call: { entityId: 'sess-07', toolName: 'Write', toolInput: { file_path: '/r/.hive/plans/p.md' }, toolResponse: undefined, truncated: true, cwd: '/r' } },
+        { kind: 'plan', update: { entityId: 'sess-07', op: { kind: 'plan-file-touched', path: '/r/.hive/plans/p.md' }, cwd: '/r' } },
         { kind: 'file-edit' },
         status('tool-end'),
       ]);
@@ -142,7 +142,7 @@ describe('readHook, plan, file and prompt effects (HIVE-236)', () => {
   });
   it('re-reads the plan on Stop, then publishes', () => {
     expect(session(json({ hook_event_name: 'Stop', cwd: '/r' })).effects).toEqual([
-      { kind: 'plan', reread: true, call: { entityId: 'sess-07', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: '/r' } },
+      { kind: 'plan', update: { entityId: 'sess-07', op: { kind: 'plan-file-reread' }, cwd: '/r' } },
       status('turn-end'),
     ]);
   });

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import type { PlanToolCall } from '../../../../electron/main/plans';
+import type { PlanUpdate } from '../../../../electron/shared/plan-contract';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2219,8 +2219,8 @@ describe('/done', () => {
     statusOf: (entityId: string) => unknown;
     finishedFor: (entityId: string) => number;
     lastFinished: (entityId: string) => Record<string, unknown> | undefined;
-    /** Hand the store a main-agent task-tool call, as the receiver would (HIVE-179). */
-    planTool: (call: PlanToolCall) => void;
+    /** Hand the store a main-agent plan op, as the receiver would (HIVE-179, HIVE-238). */
+    planTool: (update: PlanUpdate) => void;
     /** Every `CH.planChanged` payload for the entity, in order. */
     planPushes: (entityId: string) => Record<string, unknown>[];
     /** Every `CH.sessionTerminalEnded` payload this harness sent. */
@@ -2232,7 +2232,7 @@ describe('/done', () => {
     let onEvent!: (event: HookStatusEvent) => void;
     let onDone!: (entityId: string) => void;
     let onCleared!: (entityId: string) => void;
-    let onPlanTool!: (call: PlanToolCall) => void;
+    let onPlan!: (call: PlanUpdate) => void;
 
     const instance = createSessions({
       supervisor,
@@ -2252,12 +2252,12 @@ describe('/done', () => {
           onEvent: (event: HookStatusEvent) => void;
           onDone: (entityId: string) => void;
           onCleared: (entityId: string) => void;
-          onPlanTool: (call: PlanToolCall) => void;
+          onPlan: (call: PlanUpdate) => void;
         }) => {
           onEvent = opts.onEvent;
           onDone = opts.onDone;
           onCleared = opts.onCleared;
-          onPlanTool = opts.onPlanTool;
+          onPlan = opts.onPlan;
           return Promise.resolve();
         },
         stop: () => Promise.resolve(),
@@ -2346,7 +2346,7 @@ describe('/done', () => {
               entry.payload.entityId === entityId,
           )
           .at(-1)?.payload,
-      planTool: (call) => onPlanTool(call),
+      planTool: (call) => onPlan(call),
       planPushes: (entityId) =>
         local
           .filter(
@@ -2366,11 +2366,9 @@ describe('/done', () => {
    * callback the three endings need.
    */
   describe('plans (HIVE-179)', () => {
-    const createAlpha = (entityId: string): PlanToolCall => ({
+    const createAlpha = (entityId: string): PlanUpdate => ({
       entityId,
-      toolName: 'TaskCreate',
-      toolInput: { subject: 'Alpha' },
-      toolResponse: { task: { id: '1', subject: 'Alpha' } },
+      op: { kind: 'task-created', id: '1', title: 'Alpha' },
     });
 
     const alphaPlan = (entityId: string) => ({
@@ -2413,9 +2411,7 @@ describe('/done', () => {
         h.open();
         await h.planTool({
           entityId: 'hero-refresh',
-          toolName: 'Write',
-          toolInput: { file_path: file },
-          toolResponse: undefined,
+          op: { kind: 'plan-file-touched', path: file },
           cwd: root,
         });
         expect(h.sessions.plans().plans[0]).toMatchObject({ source: 'plan-file', file });
@@ -2475,7 +2471,7 @@ describe('/done', () => {
       emitExit({ sessionId: first, exitCode: 0 });
       vi.advanceTimersByTime(8);
       await restarted;
-      h.planTool({ ...createAlpha('hero-refresh'), toolInput: { subject: 'Beta' } });
+      h.planTool({ ...createAlpha('hero-refresh'), op: { kind: 'task-created', id: '1', title: 'Beta' } });
 
       expect(h.sessions.plans()).toEqual({
         plans: [

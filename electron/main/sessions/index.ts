@@ -60,7 +60,7 @@ import {
 import { createPathMap } from '../container/path-map';
 import { sessionRoot } from '../fs/session-roots';
 import type { PreparedFiles } from '../harness/port';
-import { createHarnessRegistry } from '../harness/registry';
+import { createHarnessRegistry, sessionAdapter } from '../harness/registry';
 import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
 import { ticketKeysFromBranch } from '../hooks/ticket-intent';
@@ -818,6 +818,10 @@ export function createSessions(options: SessionsOptions): Sessions {
     send,
     transcriptOf: (entityId) => transcripts.get(entityId),
     rootOf: changedFilesRoot,
+    adapterOf: (entityId) => {
+      const harness = harnesses.harnessOf(entityId);
+      return harness === undefined ? sessionAdapter() : harnesses.adapterFor(harness);
+    },
   });
 
   /**
@@ -1166,7 +1170,7 @@ export function createSessions(options: SessionsOptions): Sessions {
         source: event.source,
       } satisfies SessionTicketIntentEvent),
     // The plan panel's source 1 (HIVE-179); the receiver already filtered.
-    onPlanTool: (call) => plans.onTool(call),
+    onPlan: (update) => plans.apply(update),
     // Changed files (HIVE-201): a main-agent edit re-reads the transcript.
     onFileTool: (entityId) => void changedFiles.onFileTool(entityId),
     /**

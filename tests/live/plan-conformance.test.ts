@@ -118,7 +118,7 @@ describe.skipIf(!enabled)('plan conformance (HIVE-179)', () => {
     });
     receiver = createReceiver({
       onEvent: () => {},
-      onPlanTool: (call) => plans.onTool(call),
+      onPlan: (update) => plans.apply(update),
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},

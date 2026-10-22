@@ -20,6 +20,7 @@ import {
 } from '@shared/hook-contract';
 import type { JiraToolHandlers } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
+import type { PlanUpdate } from '@shared/plan-contract';
 
 import {
   CONTAINER_AGENT_FILE,
@@ -37,7 +38,6 @@ import {
 import type { HookTransport } from '../harness/port';
 import { sessionAdapter, type HarnessRegistry } from '../harness/registry';
 import type { Ledger } from '../ledger';
-import type { PlanToolCall } from '../plans';
 
 import { withHostAlias } from './container-origin';
 import { createReceiver, type Receiver } from './receiver';
@@ -212,8 +212,8 @@ export interface HookHandlers {
    */
   onPromptName: (entityId: string, name: string) => void;
   onCleared: (entityId: string) => void;
-  /** A main-agent PostToolUse of a task tool (HIVE-179). See `ReceiverOptions.onPlanTool`. */
-  onPlanTool: (call: PlanToolCall) => void;
+  /** A main-agent plan op (HIVE-179, HIVE-238). See `ReceiverOptions.onPlan`. */
+  onPlan: (update: PlanUpdate) => void;
   /** A main-agent edit (HIVE-201). See `ReceiverOptions.onFileTool`. */
   onFileTool?: (entityId: string) => void;
   /** A session reported its context and rate-limit usage (HIVE-79). */
@@ -455,7 +455,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onTicketIntent,
       onPromptName,
       onCleared,
-      onPlanTool,
+      onPlan,
       onFileTool,
       onMetrics,
       onDone,
@@ -473,7 +473,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onTicketIntent,
         onPromptName,
         onCleared,
-        onPlanTool,
+        onPlan,
         ...(onFileTool === undefined ? {} : { onFileTool }),
         onMetrics,
         onDone,

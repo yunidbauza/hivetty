@@ -1,7 +1,8 @@
+import type { ChangeMark } from '@shared/changed-files-contract';
 import type { ContainerFreshness, ResolvedContainer } from '@shared/config-contract';
 import type { Capabilities, HarnessId } from '@shared/harness-contract';
 import type { HookAgentEvent, HookIdentity, HookStatusEvent } from '@shared/hook-contract';
-import type { PlanToolCall } from '@shared/plan-contract';
+import type { PlanUpdate } from '@shared/plan-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
 
 import type { ContainerOrigins } from '../container/layout';
@@ -14,7 +15,8 @@ import type { SkillsRead } from '../skills/read';
  *
  * Methods arrive with the stories that move code behind them: `launch`
  * (HIVE-234, landed), `prepare` (HIVE-235, landed), `readHook` (HIVE-236, landed;
- * HIVE-237–238 change what it says), `record` and `meters` (HIVE-239),
+ * HIVE-237 normalised its signals, HIVE-238 its plan ops), `foldEdits` (HIVE-238),
+ * `record` and `meters` (HIVE-239),
  * `deliverContext` (HIVE-240). See
  * `docs/harness-architecture.md`.
  */
@@ -29,6 +31,15 @@ export interface HarnessAdapter {
   readHook(input: HookInput): HookReading;
   /** The response body that hands `text` to the model as context, for a prompt hook (HIVE-138). */
   contextReply(text: string): unknown;
+  /** Transcript lines folded into per-file edit tallies, for the changed-files list (HIVE-201, HIVE-238). */
+  foldEdits(tallies: Map<string, FileTally>, lines: readonly string[]): Map<string, FileTally>;
+}
+
+/** One file's edits in a session, as the changed-files list counts them (HIVE-201). */
+export interface FileTally {
+  mark: ChangeMark;
+  added: number;
+  removed: number;
 }
 
 /**
@@ -272,7 +283,7 @@ export type HookEffect =
   | { kind: 'status'; event: HookStatusEvent }
   | { kind: 'agent'; event: HookAgentEvent }
   | { kind: 'cleared' }
-  | { kind: 'plan'; call: PlanToolCall; reread?: true }
+  | { kind: 'plan'; update: PlanUpdate }
   | { kind: 'file-edit' }
   | { kind: 'prompt'; text?: string; conversation?: string };
 

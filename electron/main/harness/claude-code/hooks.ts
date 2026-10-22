@@ -1,5 +1,5 @@
 import { HOOK_MAX_BODY_BYTES } from '@shared/hook-contract';
-import { isPlanFilePath, TASK_TOOL_NAMES, type PlanToolCall } from '@shared/plan-contract';
+import type { PlanOp } from '@shared/plan-contract';
 
 import type { HookEffect, HookInput, HookReading } from '../port';
 
@@ -10,6 +10,7 @@ import {
   toSignal,
   type HookEvent,
 } from './hook-vocabulary';
+import { planOpOf, TASK_TOOL_NAMES } from './plan-ops';
 
 /** Whether a string is one of the events the app subscribes to. */
 const isHookEvent = (value: unknown): value is HookEvent =>
@@ -428,33 +429,22 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
   */
   if (event === 'PostToolUse' && typeof toolName === 'string') {
     const callerAgent = truncated ? AGENT_ID_IN_PREFIX.exec(body)?.[1] : agentId;
-    let call: PlanToolCall | undefined;
+    let op: PlanOp | undefined;
     if (callerAgent === undefined) {
       if (toolName === 'Write' || toolName === 'Edit') {
         const filePath = truncated
           ? FILE_PATH_IN_PREFIX.exec(body)?.[1]
           : (toolInput as { file_path?: unknown } | null | undefined)?.file_path;
-        if (isPlanFilePath(filePath)) {
-          call = {
-            entityId,
-            toolName,
-            toolInput: { file_path: filePath },
-            toolResponse: undefined,
-            ...(truncated ? { truncated: true as const } : {}),
-            ...cwdField,
-          };
-        }
+        op = planOpOf(toolName, { file_path: filePath }, undefined);
       } else if (TASK_TOOL_NAMES.has(toolName) || toolName === 'ExitPlanMode') {
         if (!truncated) {
-          call = { entityId, toolName, toolInput, toolResponse, ...cwdField };
+          op = planOpOf(toolName, toolInput, toolResponse);
         } else if (toolName === 'ExitPlanMode') {
-          console.warn(
-            `[hive] plan mode plan over ${String(HOOK_MAX_BODY_BYTES)} bytes, dropped (${entityId})`,
-          );
+          console.warn(`[hive] plan mode plan over ${String(HOOK_MAX_BODY_BYTES)} bytes, dropped (${entityId})`);
         }
       }
     }
-    if (call !== undefined) effects.push({ kind: 'plan', call });
+    if (op !== undefined) effects.push({ kind: 'plan', update: { entityId, op, ...cwdField } });
     if (callerAgent === undefined && FILE_TOOL_NAMES.has(toolName)) effects.push({ kind: 'file-edit' });
   }
 
@@ -464,11 +454,7 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
     is the main agent's only; a subagent's is `SubagentStop`.
   */
   if (event === 'Stop') {
-    effects.push({
-      kind: 'plan',
-      reread: true,
-      call: { entityId, toolName: 'Stop', toolInput: undefined, toolResponse: undefined, ...cwdField },
-    });
+    effects.push({ kind: 'plan', update: { entityId, op: { kind: 'plan-file-reread' }, ...cwdField } });
   }
 
   /**

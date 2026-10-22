@@ -14,6 +14,7 @@ import { claudeCodeAdapter } from '../../../../../electron/main/harness/claude-c
 import { readHook } from '../../../../../electron/main/harness/claude-code/hooks';
 import { writeMcpConfig } from '../../../../../electron/main/harness/claude-code/mcp-config';
 import { writePluginDir } from '../../../../../electron/main/harness/claude-code/plugin';
+import { foldTranscriptLines } from '../../../../../electron/main/harness/claude-code/transcript-edits';
 import {
   writeAgentSettings,
   writeHookSettings,
@@ -134,5 +135,11 @@ it('reads hooks and wraps context the Claude way (HIVE-236)', () => {
   expect(claudeCodeAdapter.readHook).toBe(readHook);
   expect(claudeCodeAdapter.contextReply('ctx')).toEqual({
     hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'ctx' },
+  });
+});
+
+describe('claudeCodeAdapter (HIVE-238)', () => {
+  it('folds transcript edits', () => {
+    expect(claudeCodeAdapter.foldEdits).toBe(foldTranscriptLines);
   });
 });

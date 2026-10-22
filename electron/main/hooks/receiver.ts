@@ -78,7 +78,7 @@ import {
   METRICS_PATH,
   type SessionMetrics,
 } from '@shared/metrics-contract';
-import type { PlanToolCall } from '@shared/plan-contract';
+import type { PlanUpdate } from '@shared/plan-contract';
 import { sessionNameFromPrompt } from '@shared/session-contract';
 
 import type { HarnessAdapter, HookLane } from '../harness/port';
@@ -179,11 +179,11 @@ export interface ReceiverOptions {
    */
   onCleared: (entityId: string) => void;
   /**
-   * A main-agent PostToolUse of a task tool (HIVE-179). Session path only,
-   * whole bodies only, never a subagent's. A separate callback for the reason
+   * A main-agent plan op (HIVE-179, HIVE-238). Session path only, whole
+   * bodies only, never a subagent's. A separate callback for the reason
    * `onTicketIntent` is one: a plan is not a status.
    */
-  onPlanTool: (call: PlanToolCall) => void;
+  onPlan: (update: PlanUpdate) => void;
   /**
    * A main-agent PostToolUse of a file-editing tool (HIVE-201), whole or
    * truncated: `tool_name` survives the cut, and main re-reads the transcript
@@ -538,7 +538,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     onTicketIntent,
     onPromptName,
     onCleared,
-    onPlanTool,
+    onPlan,
     onFileTool,
     onMetrics,
     onDone,
@@ -1528,12 +1528,12 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         case 'plan':
           // A plan is a view: a throw in it must not cost the session the status after it.
           try {
-            onPlanTool(effect.call);
+            onPlan(effect.update);
           } catch (cause) {
             console.error(
-              effect.reread === true
-                ? '[hive] onPlanTool threw; the plan missed one re-read:'
-                : '[hive] onPlanTool threw; the plan missed one call:',
+              effect.update.op.kind === 'plan-file-reread'
+                ? '[hive] onPlan threw; the plan missed one re-read:'
+                : '[hive] onPlan threw; the plan missed one call:',
               cause,
             );
           }

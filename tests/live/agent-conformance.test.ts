@@ -1212,7 +1212,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       */
       onAgentsList: async (caller) =>
         agentsDirectoryFor(caller, await agentRegistry.list(), agentState.all()),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => undefined,
       onPromptName: () => {},
       onCleared: () => undefined,

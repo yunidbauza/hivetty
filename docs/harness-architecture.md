@@ -27,7 +27,8 @@ with why it is not a behaviour change.
 | --- | --- |
 | `launch` | HIVE-234 (landed) |
 | `prepare` | HIVE-235 (landed) |
-| `readHook`, `contextReply` | HIVE-236 (landed); HIVE-237 – HIVE-238 change what it says |
+| `readHook`, `contextReply` | HIVE-236 (landed); HIVE-237 and HIVE-238 (landed) change what it says |
+| `foldEdits` | HIVE-238 (landed) |
 | `record`, `meters` | HIVE-239 |
 | `deliverContext` | HIVE-240 |
 
@@ -134,6 +135,14 @@ to `sessionAdapter()` when `harnessOf` answers `undefined`. The agent lane alway
 curl command hooks) lives in `harness/claude-code/hook-vocabulary.ts`, behind fence 1.
 The core reads `StatusSignal` (`@shared/harness-contract`): the tracker, the inbox, `/done` and the
 `session:status` payload never see a Claude event name (HIVE-237).
+
+The plan effect carries a `PlanUpdate { entityId, op, cwd? }` (`@shared/plan-contract`,
+HIVE-238). `harness/claude-code/plan-ops.ts` reads Claude's task tools, plan mode and
+plan-file writes into a `PlanOp` (`task-created`, `task-updated`, `task-deleted`,
+`tasks-replaced`, `plan-proposed`, `plan-file-touched`), and a `Stop` becomes
+`plan-file-reread`. The plans store applies ops and never sees a Claude tool name or field.
+The changed-files reader keeps its incremental transcript read and hands the lines to
+`adapter.foldEdits`, which owns the transcript's format.
 
 ## The fences
 
