@@ -427,6 +427,12 @@ the single sentence "interval probe reporting in" and end your turn.
  * actually writes ("You will open a example.com page in the browser"), and the
  * shape a resumed wake stopped acting on before the wake prompt and the
  * preamble were taught to name it.
+ *
+ * `Read`, `Bash` and `Glob` are granted because a resumed wake that redoes the
+ * job looks first: it reads the file it remembers writing, or lists the
+ * directory when that file is gone, and an ungranted tool routes to a
+ * permission ask that ends the turn with nothing written (HIVE-348). None of
+ * them is named in the body, so a wake that skips the body still writes nothing.
  */
 const standingMd = (marker: string) => `---
 name: ${STANDING}
@@ -437,7 +443,7 @@ wake:
   every: 1m
   check: always
 autonomy: act
-tools: [Write, TodoWrite]
+tools: [Read, Write, Bash, Glob, TodoWrite]
 limits:
   turns: 8
   rotate_after: 50
