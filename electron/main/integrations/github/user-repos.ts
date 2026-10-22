@@ -1,6 +1,8 @@
-import type { UserRepo } from '../../../shared/github-contract';
+import type { GhResult, UserRepo } from '../../../shared/github-contract';
 
+import { classifyGhFailure, ghError } from './classify';
 import { NAME_WITH_OWNER } from './repos';
+import type { RunAsync } from './run';
 
 /**
  * The repositories the `gh` account can reach, for the clone picker.
@@ -112,4 +114,41 @@ export function parseUserRepos(
     .filter((row): row is UserRepoRow => row !== null);
 
   return { repos, total: totalCount };
+}
+
+export interface UserRepos {
+  list(): Promise<GhResult<{ repos: UserRepoRow[]; total: number }>>;
+}
+
+/**
+ * Uncached on purpose: one call per visit to the clone view is the budget, and
+ * a cached list would hide a repository created a minute ago.
+ */
+export function createUserRepos(ghPath: string, run: RunAsync): UserRepos {
+  return {
+    async list() {
+      let result;
+      try {
+        result = await run(ghPath, USER_REPOS_ARGS);
+      } catch {
+        // `repos.ts`'s reading: it was on the `PATH` moments ago, so this is
+        // the machine changing underneath the app.
+        return { ok: false, error: ghError('not-installed', 'Could not run `gh`.') };
+      }
+
+      if (result.code !== 0) {
+        return { ok: false, error: classifyGhFailure(result.stderr, result.timedOut) };
+      }
+
+      const parsed = parseUserRepos(result.stdout);
+      if (parsed === null) {
+        return {
+          ok: false,
+          error: ghError('unknown', 'GitHub returned a reply the Hive could not read.'),
+        };
+      }
+
+      return { ok: true, value: parsed };
+    },
+  };
 }
