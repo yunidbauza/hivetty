@@ -751,7 +751,7 @@ exports[`the files a Claude Code session is launched with > alias container set 
     "content": "#!/bin/sh
 # HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 
@@ -1227,7 +1227,7 @@ exports[`the files a Claude Code session is launched with > session rewrite cont
     "content": "#!/bin/sh
 # HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 curl -s -m 5 -o /dev/null \\
   -X POST 'http://host.docker.internal:60123/metrics' \\
   -H 'content-type: application/json' \\
@@ -1576,7 +1576,7 @@ exports[`the files a Claude Code session is launched with > session settings, co
     "content": "#!/bin/sh
 # HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 
@@ -2104,7 +2104,7 @@ exports[`the files a Claude Code session is launched with > session settings, ht
     "content": "#!/bin/sh
 # HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 
@@ -2463,7 +2463,7 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
     "content": "#!/bin/sh
 # HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 

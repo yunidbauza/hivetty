@@ -233,7 +233,3 @@ The wiring, in order:
    `'claude-code'` for every agent session.
 6. Implement `prepare`: a `HarnessFiles` table writing the files the harness reads at
    launch. `sessionAdapter()` decides which adapter the shared runtimes write for.
-
-## Known remainder
-
-`skills/paths.ts`'s `~/.claude` readers move in HIVE-345.

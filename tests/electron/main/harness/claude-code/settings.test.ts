@@ -651,7 +651,7 @@ describe('metricsScript — freshness (HIVE-132)', () => {
       `#!/bin/sh
 # The Hive — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 
