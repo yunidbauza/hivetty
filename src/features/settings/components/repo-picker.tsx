@@ -1,5 +1,14 @@
 import { MagnifyingGlass } from '@phosphor-icons/react';
-import { useId, useMemo, useState, type MouseEvent, type ReactNode } from 'react';
+import {
+  useId,
+  useMemo,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from 'react';
+
+import { cn } from '@/lib/utils';
 
 import { filterRepos, REPO_LIMIT, type RepoMatch } from '@features/settings/filter-repos';
 import { useUserRepos } from '@features/settings/hooks/use-user-repos';
@@ -29,9 +38,13 @@ const keepFocus = (event: MouseEvent): void => {
 };
 
 function RepoOption({
+  id,
+  active,
   match,
   onPick,
 }: {
+  id: string;
+  active: boolean;
   match: RepoMatch;
   onPick: (repo: UserRepo) => void;
 }) {
@@ -42,12 +55,16 @@ function RepoOption({
   return (
     <button
       type="button"
+      id={id}
       role="option"
-      aria-selected={false}
+      aria-selected={active}
       tabIndex={-1}
       onMouseDown={keepFocus}
       onClick={() => onPick(repo)}
-      className="flex w-full items-center gap-2 border-t border-border-soft px-3 py-1.5 text-left text-[12.5px] text-ink hover:bg-hover"
+      className={cn(
+        'flex w-full items-center gap-2 border-t border-border-soft px-3 py-1.5 text-left text-[12.5px] text-ink hover:bg-hover',
+        active && 'bg-active',
+      )}
     >
       <span className="min-w-0 flex-1 truncate">
         <span className="text-muted">{repo.owner}/</span>
@@ -86,6 +103,7 @@ export function RepoPicker({
   const { status, retry } = useUserRepos();
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [active, setActive] = useState(0);
   const listId = useId();
 
   const result = useMemo(
@@ -99,6 +117,38 @@ export function RepoPicker({
   const pick = (repo: UserRepo): void => {
     onChange(repo.url);
     setDismissed(true);
+  };
+
+  const rows = result?.rows ?? [];
+  const current = rows.length === 0 ? -1 : Math.min(active, rows.length - 1);
+  const optionId = (index: number): string => `${listId}-${index}`;
+
+  /**
+   * The combobox pattern: focus stays in the field, and the arrows move which
+   * option is active. A dismissed list reopens on the first arrow rather than
+   * moving a row the user cannot see.
+   */
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (rows.length === 0) return;
+      event.preventDefault();
+      if (!open) {
+        setDismissed(false);
+        return;
+      }
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      setActive((current + step + rows.length) % rows.length);
+      return;
+    }
+    if (event.key === 'Enter' && open && current >= 0) {
+      event.preventDefault();
+      pick(rows[current].repo);
+      return;
+    }
+    if (event.key === 'Escape' && open) {
+      event.preventDefault();
+      setDismissed(true);
+    }
   };
 
   const query = value.trim();
@@ -149,9 +199,11 @@ export function RepoPicker({
             <span className="normal-case">{count}</span>
           </div>
           <div id={listId} role="listbox" aria-label="Your repositories">
-            {result.rows.map((match) => (
+            {result.rows.map((match, index) => (
               <RepoOption
                 key={`${match.repo.owner}/${match.repo.name}`}
+                id={optionId(index)}
+                active={index === current}
                 match={match}
                 onPick={pick}
               />
@@ -176,11 +228,16 @@ export function RepoPicker({
           aria-expanded={open}
           aria-controls={listId}
           aria-autocomplete="list"
+          aria-activedescendant={
+            open && current >= 0 && status.state === 'ready' ? optionId(current) : undefined
+          }
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
+            setActive(0);
             setDismissed(false);
           }}
+          onKeyDown={onKeyDown}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           placeholder="Search your repositories, or paste any git URL"
@@ -189,8 +246,19 @@ export function RepoPicker({
           className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-subtle"
         />
       </div>
+      {/*
+        `data-escape-scope`: Radix hears Escape on the document in the capture
+        phase, before this field does, so the overlay asks whether a control
+        has claimed the key (`escapeIsClaimed`). While the list is open it has:
+        the first Escape closes the list, the second closes settings.
+      */}
       {open && body !== null ? (
-        <div className="overflow-hidden rounded-[7px] border border-border bg-panel-2">{body}</div>
+        <div
+          data-escape-scope=""
+          className="overflow-hidden rounded-[7px] border border-border bg-panel-2"
+        >
+          {body}
+        </div>
       ) : null}
     </div>
   );

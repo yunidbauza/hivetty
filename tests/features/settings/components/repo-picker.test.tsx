@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UserRepo } from '@shared/github-contract';
 
 import { RepoPicker } from '@features/settings/components/repo-picker';
+import { escapeIsClaimed } from '@features/settings/components/settings-overlay';
 import { useUserRepos, type UserReposStatus } from '@features/settings/hooks/use-user-repos';
 
 vi.mock('@features/settings/hooks/use-user-repos', () => ({ useUserRepos: vi.fn() }));
@@ -169,5 +170,63 @@ describe('RepoPicker', () => {
     expect(screen.queryByText('Loading your repositories…')).toBeNull();
     expect(screen.queryByText(/None of your repositories/)).toBeNull();
     expect(screen.getByTestId('value')).toHaveTextContent('anything');
+  });
+});
+
+describe('RepoPicker keyboard', () => {
+  const options = (): HTMLElement[] => screen.getAllByRole('option');
+
+  it('marks the first row active and moves with the arrows, wrapping', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(field());
+
+    expect(options()[0]).toHaveAttribute('aria-selected', 'true');
+    expect(field()).toHaveAttribute('aria-activedescendant', options()[0].id);
+
+    await user.keyboard('{ArrowDown}');
+    expect(options()[1]).toHaveAttribute('aria-selected', 'true');
+    expect(options()[0]).toHaveAttribute('aria-selected', 'false');
+    await user.keyboard('{ArrowUp}{ArrowUp}');
+    expect(options()[2]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('picks the active row with Enter', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(field());
+    await user.keyboard('{ArrowDown}{Enter}');
+
+    expect(screen.getByTestId('value')).toHaveTextContent('https://github.com/acme/hive-team.git');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('resets to the first row when the query changes', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(field());
+    await user.keyboard('{ArrowDown}');
+    await user.type(field(), 'o');
+
+    expect(options()[0]).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('claims Escape while open, so settings stays open, and closes the list', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(field());
+
+    expect(escapeIsClaimed(field())).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(escapeIsClaimed(field())).toBe(false);
+  });
+
+  it('reopens on ArrowDown after Escape', async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    await user.click(field());
+    await user.keyboard('{Escape}{ArrowDown}');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
   });
 });
