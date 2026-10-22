@@ -566,7 +566,7 @@ describe('remote contract: the version handshake', () => {
   });
 
   it('is protocol 3: 2 carried a generation (HIVE-144), 3 caught up on unbumped channels (HIVE-140 audit)', () => {
-    expect(REMOTE_PROTOCOL_VERSION).toBe(14);
+    expect(REMOTE_PROTOCOL_VERSION).toBe(15);
   });
 });
 
@@ -617,7 +617,7 @@ describe('remote contract: the attach snapshot (HIVE-144)', () => {
     expect(EVENT_CHANNELS).toContain(CH.changedFilesChanged);
     expect(frameKindOf(CH.changedFilesChanged)).toBe('event');
     expect(frameKindOf(CH.changedFilesList)).toBe('call');
-    expect(REMOTE_PROTOCOL_VERSION).toBe(14);
+    expect(REMOTE_PROTOCOL_VERSION).toBe(15);
   });
 
   it('snapshots the plans so a reattaching client sees the current plan (HIVE-179)', () => {
