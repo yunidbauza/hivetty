@@ -231,7 +231,7 @@ is an empty `204`, so it prints nothing, and a marker's context prints whole.
 Two things follow. No party-authored byte reaches a pty from delivery any more:
 the truncation to one line and the control-character stripping that used to
 be `deliver.ts`'s security boundary went with the body, which now travels as
-JSON the model reads. And the hook `timeout` in `electron/main/hooks/settings.ts`
+JSON the model reads. And the hook `timeout` in `electron/main/harness/claude-code/settings.ts`
 is 3 s with a new reason: the prompt waits behind the hook, and the reply now
 matters, so the number bounds what a stalled main process can add to a prompt
 rather than hiding a dead one (it cannot; a refused connection is drawn at
@@ -1065,7 +1065,7 @@ already has.
 ## The MCP host
 
 Every `claude` session Hive TTY launches is handed `--mcp-config` pointing at
-a generated file (`electron/main/mcp/config.ts`) naming one server: the built
+a generated file (`electron/main/harness/claude-code/mcp-config.ts`) naming one server: the built
 output of `electron/mcp-host/`, run as `${execPath} out/main/mcp-host.js`
 with `ELECTRON_RUN_AS_NODE=1` so the app's own binary runs it as plain Node
 instead of booting Chromium. `claude` starts one host process per session and
@@ -1626,8 +1626,9 @@ user's machine, so it loads their `~/.claude/skills` and their installed plugins
 whether or not the definition names them — and on a fresh install, where
 `~/.hive/skills` is empty, the field refused *every* name a person could type.
 
-`skills/available.ts` therefore resolves three roots — `~/.hive/skills`,
-`~/.claude/skills`, and each `installPath` in
+`skills/available.ts` therefore merges three roots: `~/.hive/skills`, and the
+two the Claude Code adapter answers through `installed`
+(`harness/claude-code/installed.ts`): `~/.claude/skills`, and each `installPath` in
 `~/.claude/plugins/installed_plugins.json`, whose skills are namespaced
 `plugin:skill`. The registry rather than a glob over the plugin cache, because
 several versions of one plugin sit there at once and only that file says which
@@ -1649,7 +1650,7 @@ routinely carries) from leaking into an unattended turn, while `--settings`
 still applies alongside it so Hive TTY's own hooks keep firing. The skills stay
 reachable and the field stays a declaration.
 
-Two details worth knowing before changing `available.ts`:
+Two details worth knowing before changing `available.ts` or `installed.ts`:
 
 - **`isSkillFolder`, not `entry.isDirectory()`.** `readdir` reports `lstat`
   semantics, so a symlinked skill folder answers `false` — and a personal skills
@@ -1690,7 +1691,7 @@ grants nothing and schedules a refresh; its merge raises the card, once.
 
 A fence needs **two halves**, and neither works alone. `permissions.ask:
 ["*"]`, written into the agent-only settings file (`agentSettings`,
-`electron/main/hooks/settings.ts`) — never `hookSettings`, which carries no
+`electron/main/harness/claude-code/settings.ts`) — never `hookSettings`, which carries no
 `ask` rule and would run an agent with no fence at all — is the *trigger*: the
 only thing, measured against `claude` 2.1.251, that makes a permission check
 fire under `-p` at all. `--permission-prompt-tool mcp__hive__approve`

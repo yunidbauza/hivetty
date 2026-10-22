@@ -273,7 +273,7 @@ keeps a theme toggle repainting transcript text written minutes ago.
 
 ### Why this is what makes a running session follow the theme
 
-`hooks/settings.ts` pins Claude Code's own theme to **`dark-ansi`**, and that is
+`harness/claude-code/settings.ts` pins Claude Code's own theme to **`dark-ansi`**, and that is
 the other half of the fix rather than a cosmetic preference.
 
 Under `dark` or `light`, Claude emits **24-bit** colour — measured against

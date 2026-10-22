@@ -5,6 +5,8 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
+import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
+import type { HarnessAdapter } from '../../../../electron/main/harness/port';
 import { createDeliver, type Deliver } from '../../../../electron/main/ledger/deliver';
 import { createLedger, type Ledger } from '../../../../electron/main/ledger/index';
 import { OVERMIND } from '../../../../electron/shared/ledger-contract';
@@ -27,8 +29,11 @@ describe('createDeliver', () => {
   let write: Mock<(entityId: string, data: string) => boolean>;
   let live: Set<string>;
   let idle: Set<string>;
+  /** The session's harness, as `Sessions.adapterOf` answers it; `undefined` while the session layer is not up. */
+  let adapter: Pick<HarnessAdapter, 'capabilities' | 'promptMarker'> | undefined;
 
   beforeEach(() => {
+    adapter = claudeCodeAdapter;
     dir = mkdtempSync(join(tmpdir(), 'hive-deliver-'));
     clock = AT;
     live = new Set(['sess-a']);
@@ -41,6 +46,7 @@ describe('createDeliver', () => {
       isLive: (id) => live.has(id),
       isIdle: (id) => idle.has(id),
       write: (id, data) => write(id, data),
+      adapterOf: () => adapter,
     });
     ledger.onChange((entry) => deliver.onEntry(entry));
   });
@@ -592,6 +598,7 @@ describe('createDeliver', () => {
       isLive: (id) => live.has(id),
       isIdle: (id) => idle.has(id),
       write: (id, data) => write2(id, data),
+      adapterOf: () => adapter,
     });
     return { deliver2, write2 };
   };
@@ -616,5 +623,40 @@ describe('createDeliver', () => {
     deliver2.onReady('sess-a');
 
     expect(write2).toHaveBeenCalledTimes(1);
+  });
+
+  describe('a harness that does not take a prompt marker (HIVE-240)', () => {
+    const none = (): Pick<HarnessAdapter, 'capabilities' | 'promptMarker'> => ({
+      capabilities: { resume: 'none', meters: false, contextDelivery: 'none' },
+      promptMarker: vi.fn(() => 'never typed'),
+    });
+
+    it('types nothing and records nothing, on entry, idle and ready', () => {
+      const declining = none();
+      adapter = declining;
+      ask('sess-a');
+      deliver.onIdle('sess-a');
+      deliver.onReady('sess-a');
+      expect(write).not.toHaveBeenCalled();
+      expect(declining.promptMarker).not.toHaveBeenCalled();
+      expect(receipts()).toHaveLength(0);
+    });
+
+    it('types nothing while the session layer has no adapter to answer with', () => {
+      adapter = undefined;
+      ask('sess-a');
+      deliver.onIdle('sess-a');
+      expect(write).not.toHaveBeenCalled();
+      expect(receipts()).toHaveLength(0);
+    });
+
+    it('still delivers the held entry once a prompt-marker adapter answers', () => {
+      adapter = undefined;
+      const result = ask('sess-a');
+      adapter = claudeCodeAdapter;
+      deliver.onIdle('sess-a');
+      expect(lastWrite()).toBe(`📒 ${result.ok ? result.ref : ''}\r`);
+      expect(receipts()).toHaveLength(1);
+    });
   });
 });

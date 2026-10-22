@@ -31,6 +31,7 @@ sides import.
 | Main, IPC, the PTY host, status | [Desktop architecture](desktop-architecture.md) |
 | Explorer and editor, the fs surface | [Explorer and editor](explorer-and-editor.md) |
 | Ledger, MCP host, agents | [Agents and the ledger](agents-and-ledger.md) |
+| The harness port, the Claude Code adapter | [Harness architecture](harness-architecture.md) |
 | Remote listener and pairing | [Server mode](server-mode.md) |
 | Build, sign, publish, update | [Packaging and updates](packaging-and-updates.md) |
 
@@ -61,7 +62,7 @@ src/
                          lib/theme/colour, and nothing else from lib/
   stores/                hive, ui, appearance, editor
 electron/
-  main/                  config, sessions, hooks, ledger, agents, integrations, server
+  main/                  config, sessions, hooks, ledger, agents, harness, integrations, server
   preload/               the bridge
   pty-host/              terminals
   mcp-host/              the hive MCP server
@@ -81,6 +82,7 @@ Enforced by ESLint, proven by `pnpm verify:boundaries`. The full table is in
 - Only `appearance-store` persists, to `localStorage`.
 - No raw hex in components: colour comes from `--cc-*` tokens (the terminal from the theme's
   JS palette).
+- Only `electron/main/harness/` may import an adapter, and an adapter never imports sessions, IPC, notifications or plans.
 
 ## Where to read next
 

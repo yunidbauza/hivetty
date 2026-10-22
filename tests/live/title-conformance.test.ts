@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { nameFromTitle } from '../../electron/main/harness/claude-code/title';
 import { createTitleReader } from '../../electron/main/sessions/title';
 import { hiveNameFromTitle } from '../../electron/shared/session-contract';
 
@@ -136,7 +137,7 @@ async function run(label: string, named: boolean): Promise<Arm> {
     handled. A title split across two reads is the failure that is invisible in
     testing and permanent in production.
   */
-  const reader = createTitleReader();
+  const reader = createTitleReader(nameFromTitle);
   const names: string[] = [];
   for (const name of reader.read(readFileSync(dump, 'utf8'))) {
     if (names.at(-1) !== name) names.push(name);

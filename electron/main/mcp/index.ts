@@ -1,7 +1,9 @@
 import { join } from 'node:path';
 
+import { sessionAdapter } from '../harness/registry';
+
 import type { StdioServerSpec } from './agent-config';
-import { hiveServerSpec, writeMcpConfig } from './config';
+import { hiveServerSpec } from './config';
 import { MCP_CONFIG_FILE } from './paths';
 
 /**
@@ -73,7 +75,7 @@ export function createMcpRuntime({
 
   const run = async (): Promise<void> => {
     try {
-      await writeMcpConfig(path, { execPath, scriptPath });
+      await sessionAdapter().prepare.mcpConfig(path, { execPath, scriptPath });
       written = true;
     } catch (cause) {
       /*
@@ -105,7 +107,6 @@ export function createMcpRuntime({
   };
 }
 
-export { mcpConfig, writeMcpConfig } from './config';
 export { MCP_CONFIG_FILE, AGENT_MCP_DIR, agentMcpConfigFile } from './paths';
 export {
   agentMcpConfig,

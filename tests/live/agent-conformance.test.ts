@@ -27,7 +27,7 @@ import {
 import { createAgentState, type AgentState } from '../../electron/main/agents/state';
 import { createWakeCommand } from '../../electron/main/agents/wake-command';
 import { createReceiver, type Receiver } from '../../electron/main/hooks/receiver';
-import { writeAgentSettings } from '../../electron/main/hooks/settings';
+import { writeAgentSettings } from '../../electron/main/harness/claude-code/settings';
 import { runAsync } from '../../electron/main/integrations/github/run';
 import { createSlackBridge, type SlackBridge } from '../../electron/main/integrations/slack/bridge';
 import { openSlackSocket, openSlackWeb } from '../../electron/main/integrations/slack/clients';
@@ -38,7 +38,8 @@ import {
 } from '../../electron/main/integrations/slack/subscriptions';
 import { createLedger, type Ledger } from '../../electron/main/ledger';
 import { agentMcpConfigFile } from '../../electron/main/mcp';
-import { hiveServerSpec, mcpConfig } from '../../electron/main/mcp/config';
+import { mcpConfig } from '../../electron/main/harness/claude-code/mcp-config';
+import { hiveServerSpec } from '../../electron/main/mcp/config';
 import { createSkillsRuntime } from '../../electron/main/skills';
 import {
   parseList,
@@ -1211,7 +1212,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
       */
       onAgentsList: async (caller) =>
         agentsDirectoryFor(caller, await agentRegistry.list(), agentState.all()),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => undefined,
       onPromptName: () => {},
       onCleared: () => undefined,
@@ -1624,7 +1625,7 @@ describe.skipIf(!LIVE)('one real headless wake, against a real claude', () => {
 
     // 2. The Stop hook came back, under the **agent's** name — and nothing at
     //    all arrived on the session register.
-    const stops = agentEvents.filter((event) => event.event === 'Stop');
+    const stops = agentEvents.filter((event) => event.signal.kind === 'turn-end');
 
     expect(stops.length).toBeGreaterThan(0);
     expect(stops.every((stop) => stop.entityId === NAME)).toBe(true);

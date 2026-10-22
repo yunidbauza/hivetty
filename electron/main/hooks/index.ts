@@ -20,6 +20,7 @@ import {
 } from '@shared/hook-contract';
 import type { JiraToolHandlers } from '@shared/jira-contract';
 import type { SessionMetrics } from '@shared/metrics-contract';
+import type { PlanUpdate } from '@shared/plan-contract';
 
 import {
   CONTAINER_AGENT_FILE,
@@ -34,12 +35,12 @@ import {
   writeSessionContainerFiles,
   writeSharedContainerFiles,
 } from '../container/generated';
+import type { HookTransport } from '../harness/port';
+import { sessionAdapter, type HarnessRegistry } from '../harness/registry';
 import type { Ledger } from '../ledger';
-import type { PlanToolCall } from '../plans';
 
 import { withHostAlias } from './container-origin';
 import { createReceiver, type Receiver } from './receiver';
-import { type HookTransport, writeAgentSettings, writeHookSettings } from './settings';
 
 /**
  * The hook pipeline, as one thing the session layer can hold (HIVE-62).
@@ -174,6 +175,8 @@ export interface HookHandlers {
    * `ReceiverOptions.knowsAgent` for the argument in full.
    */
   knowsAgent: (entityId: string) => boolean;
+  /** The harness registry, so the receiver reads each session's hooks with its own adapter (HIVE-236). */
+  harnesses?: HarnessRegistry;
   /**
    * Who else is on this machine (HIVE-127).
    *
@@ -209,8 +212,8 @@ export interface HookHandlers {
    */
   onPromptName: (entityId: string, name: string) => void;
   onCleared: (entityId: string) => void;
-  /** A main-agent PostToolUse of a task tool (HIVE-179). See `ReceiverOptions.onPlanTool`. */
-  onPlanTool: (call: PlanToolCall) => void;
+  /** A main-agent plan op (HIVE-179, HIVE-238). See `ReceiverOptions.onPlan`. */
+  onPlan: (update: PlanUpdate) => void;
   /** A main-agent edit (HIVE-201). See `ReceiverOptions.onFileTool`. */
   onFileTool?: (entityId: string) => void;
   /** A session reported its context and rate-limit usage (HIVE-79). */
@@ -354,6 +357,7 @@ export interface HookRuntime {
 }
 
 export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
+  const files = sessionAdapter().prepare;
   const {
     userDataPath,
     port,
@@ -440,6 +444,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
     async start({
       knowsSession,
       knowsAgent,
+      harnesses,
       onAgentsList,
       onProjectsList,
       onProjectAutoMerge,
@@ -450,7 +455,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onTicketIntent,
       onPromptName,
       onCleared,
-      onPlanTool,
+      onPlan,
       onFileTool,
       onMetrics,
       onDone,
@@ -468,7 +473,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onTicketIntent,
         onPromptName,
         onCleared,
-        onPlanTool,
+        onPlan,
         ...(onFileTool === undefined ? {} : { onFileTool }),
         onMetrics,
         onDone,
@@ -494,6 +499,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onJira,
         knowsSession,
         knowsAgent,
+        ...(harnesses === undefined ? {} : { harnesses }),
         /*
           `port` stays the test override it has always been and wins when given,
           so a spec that pins a port is not fighting a config default. Config
@@ -563,7 +569,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           both in locals until the second `await` resolves is what keeps that
           window from opening.
         */
-        const newSettingsPath = await writeHookSettings(
+        const newSettingsPath = await files.sessionSettings(
           userDataPath,
           url,
           /*
@@ -595,7 +601,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           this exact receiver, so a widened bind refuses its http hooks exactly
           as it refuses the interactive set's.
         */
-        const newAgentSettingsPath = await writeAgentSettings(
+        const newAgentSettingsPath = await files.agentSettings(
           userDataPath,
           url,
           created.readyUrl ?? undefined,
@@ -639,7 +645,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
           flight when `stop` runs cannot bring `settingsPath` back to life.
         */
         rewrite = async () => {
-          await writeHookSettings(
+          await files.sessionSettings(
             userDataPath,
             url,
             sessionMetrics() ? (created.metricsUrl ?? undefined) : undefined,
@@ -919,12 +925,3 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
 }
 
 export { createReceiver } from './receiver';
-export {
-  hookSettings,
-  metricsScript,
-  statusLineSettings,
-  writeHookSettings,
-  HOOK_SETTINGS_DIR,
-  METRICS_SCRIPT_FILE,
-} from './settings';
-export { parseMetrics } from './metrics';

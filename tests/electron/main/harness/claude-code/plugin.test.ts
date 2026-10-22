@@ -17,8 +17,8 @@ import { join } from 'node:path';
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writePluginDir } from '../../../../electron/main/skills/plugin';
-import { readUserSkills } from '../../../../electron/main/skills/read';
+import { writePluginDir } from '../../../../../electron/main/harness/claude-code/plugin';
+import { readUserSkills } from '../../../../../electron/main/skills/read';
 
 /**
  * Pass-through spies on `copyFile` and `writeFile`, in the shape

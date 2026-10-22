@@ -199,8 +199,8 @@ template has to explain itself in the file the user opens.
 `~/.hive/config.json` is the user's; `app.getPath('userData')` is the app's, and
 five things live there. `window-state.json` (geometry, `window-state.ts`), the
 per-theme hook settings and the status-line script under `hive/`
-(`hooks/settings.ts`), the **generated skills plugin** under `hive/plugin/`
-(`skills/plugin.ts`), the OS-encrypted `jira-credential.bin`, and
+(`harness/claude-code/settings.ts`), the **generated skills plugin** under `hive/plugin/`
+(`harness/claude-code/plugin.ts`), the OS-encrypted `jira-credential.bin`, and
 **`sessions.json`** — the fleet as it was when the app last closed.
 
 The plugin directory is the app's copy of the user's skills, in the layout

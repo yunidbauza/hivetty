@@ -1,18 +1,17 @@
 import { CH } from '@shared/ipc-contract';
-import type { PlanChangedEvent, PlanSource, SessionPlan } from '@shared/plan-contract';
+import type { PlanChangedEvent, PlanSource, PlanUpdate, SessionPlan } from '@shared/plan-contract';
 
 import { parsePlanFile } from './parse-plan-file';
-import { parsePlanMode } from './parse-plan-mode';
 import { readPlanFile } from './read-plan-file';
-import { isAllDone, reduceTaskTool, TASK_TOOL_NAMES, type PlanToolCall } from './task-tools';
+import { isAllDone, reduceTaskOp } from './task-tools';
 
 /** Every session's plan, owned by main (HIVE-179). */
 export interface Plans {
   /**
-   * A main-agent PostToolUse of a plan tool (the receiver already filtered).
+   * A main-agent plan op (the adapter already filtered).
    * A plan-file write returns the read's promise, which never rejects.
    */
-  onTool(call: PlanToolCall): Promise<void> | void;
+  apply(update: PlanUpdate): Promise<void> | void;
   /** Offer a whole plan from `source`; accepted by the rank rule. */
   offer(entityId: string, source: PlanSource, next: SessionPlan | undefined): void;
   /** Current plan, or undefined. */
@@ -91,10 +90,8 @@ export function createPlans({
    * came from a hook payload, so `readPlanFile` confines it to the session's
    * cwd. A re-read of the file a builder is working keeps its build link.
    */
-  async function readPlan(call: PlanToolCall): Promise<void> {
-    const filePath = (call.toolInput as { file_path?: unknown } | null | undefined)?.file_path;
-    if (typeof filePath !== 'string') return;
-    const read = await readPlanFile(filePath, call.cwd);
+  async function readPlan(entityId: string, filePath: string, cwd: string | undefined): Promise<void> {
+    const read = await readPlanFile(filePath, cwd);
     if (read === undefined) {
       if (!refused.has(filePath)) {
         refused.add(filePath);
@@ -102,8 +99,8 @@ export function createPlans({
       }
       return;
     }
-    const last = planFiles.get(call.entityId);
-    const shown = plans.get(call.entityId);
+    const last = planFiles.get(entityId);
+    const shown = plans.get(entityId);
     // Unchanged and a plan on screen, whatever its source: nothing to publish,
     // its time stands, and a newer plan is not displaced by the old file.
     if (shown !== undefined && last?.file === read.file && last.text === read.text) return;
@@ -112,18 +109,18 @@ export function createPlans({
     // When the file was written, not when it was last re-read: a turned-away
     // file is re-read at every Stop, and its time must not drift with them.
     const at = last?.file === read.file && last.read === read.text ? last.at : now();
-    const current = plans.get(call.entityId);
+    const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
-    planFiles.set(call.entityId, {
+    planFiles.set(entityId, {
       file: read.file,
       at,
       read: read.text,
       ...(accepts(current, 'plan-file') ? { text: read.text } : {}),
     });
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
-    offer(call.entityId, 'plan-file', {
-      entityId: call.entityId,
+    offer(entityId, 'plan-file', {
+      entityId,
       source: 'plan-file',
       tasks,
       allDone: isAllDone(tasks),
@@ -134,33 +131,27 @@ export function createPlans({
   }
 
   return {
-    onTool(call) {
-      if (call.toolName === 'Write' || call.toolName === 'Edit') return readPlan(call);
-      /*
-        A turn's end re-reads the plan file the session last read. A step
-        ticked by a shell edit fires no Write or Edit hook, and the panel sat
-        at 0 of 4 on a finished plan until one did.
-      */
-      if (call.toolName === 'Stop') {
-        const record = planFiles.get(call.entityId);
-        return record === undefined ? undefined : readPlan({ ...call, toolInput: { file_path: record.file } });
-      }
-      if (call.toolName === 'ExitPlanMode') {
-        // Source 3: plan mode's approved plan, every task proposed. claude
-        // 2.1.270's PostToolUse sends `tool_input: {}` and the plan in
-        // `tool_response.plan`; older builds sent it in the input.
-        const plan =
-          (call.toolResponse as { plan?: unknown } | null | undefined)?.plan ??
-          (call.toolInput as { plan?: unknown } | null | undefined)?.plan;
-        const tasks = typeof plan === 'string' ? parsePlanMode(plan) : [];
-        if (tasks.length > 0) {
-          offer(call.entityId, 'plan-mode', { entityId: call.entityId, source: 'plan-mode', tasks, allDone: false });
+    apply({ entityId, op, cwd }) {
+      switch (op.kind) {
+        case 'plan-file-touched':
+          return readPlan(entityId, op.path, cwd);
+        case 'plan-file-reread': {
+          /*
+            A turn's end re-reads the plan file the session last read. A step
+            ticked by a shell edit fires no Write or Edit hook, and the panel sat
+            at 0 of 4 on a finished plan until one did.
+          */
+          const record = planFiles.get(entityId);
+          return record === undefined ? undefined : readPlan(entityId, record.file, cwd);
         }
-        return;
+        case 'plan-proposed':
+          // Source 3: plan mode's approved plan, every task proposed.
+          if (op.tasks.length > 0) offer(entityId, 'plan-mode', { entityId, source: 'plan-mode', tasks: op.tasks, allDone: false });
+          return;
+        default:
+          // Rank 1 is always accepted, so no `accepts` check here.
+          set(entityId, reduceTaskOp(plans.get(entityId), entityId, op, now()));
       }
-      if (!TASK_TOOL_NAMES.has(call.toolName)) return;
-      // Rank 1 is always accepted, so no `accepts` check here.
-      set(call.entityId, reduceTaskTool(plans.get(call.entityId), call, now()));
     },
     offer,
     get: (entityId) => plans.get(entityId),

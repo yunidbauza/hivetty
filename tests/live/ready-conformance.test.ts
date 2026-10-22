@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createReceiver } from '../../electron/main/hooks/receiver';
-import { hookSettings } from '../../electron/main/hooks/settings';
+import { hookSettings } from '../../electron/main/harness/claude-code/settings';
 
 /** Not exercised by this suite — the ready signal, not the ledger. */
 const noLedger = {
@@ -75,7 +75,7 @@ describe.skipIf(!enabled)('ready-signal conformance', () => {
     const receiver = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: () => {},

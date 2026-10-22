@@ -55,6 +55,7 @@ import {
   writePrThread,
   writePrViewed,
 } from '@lib/github';
+import { inputProfileFor } from '@lib/harness/input-profile';
 import {
   readJiraComments,
   readJiraDetail,
@@ -2334,6 +2335,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     const session: Session = {
       kind: 'session',
       id,
+      harness: 'claude-code',
       project: projectId,
       /**
        * Only present when the picker was opened from a ticket card, which is
@@ -2778,7 +2780,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * The *messages* still name the row, because that is what the user typed
        * and what they see in the rails.
        */
-      const result = sendToSession(terminalOf(entity), msg);
+      const result = sendToSession(terminalOf(entity), msg, inputProfileFor(entity.harness));
 
       /**
        * No echo, and no acknowledgement timer.
@@ -4140,6 +4142,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         entities[item.id] = stampLifecycle({
           kind: 'session',
           id: item.id,
+          harness: 'claude-code',
           project: item.project,
           status,
           task: item.task,
@@ -4482,7 +4485,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * once the row has a name that came from somewhere better: the session's
        * first prompt, or a person typing `/rename`. Main separates those two
        * from the guess by reading the transcript Claude records the difference
-       * in — see `sessions/title-origin.ts`, because the OSC-0 channel this
+       * in — see `harness/claude-code/title-origin.ts`, because the OSC-0 channel this
        * arrives on cannot tell them apart.
        *
        * A pinned ticket row is covered by this rather than exempted from it.
@@ -5103,6 +5106,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     const successor: Session = {
       kind: 'session',
       id: successorId,
+      harness: 'claude-code',
       terminalId: terminalOf(current),
       project: current.project,
       status: 'idle',

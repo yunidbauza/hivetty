@@ -1128,7 +1128,7 @@ async function openCdpTarget(
  *   nothing here depends on which of the two bounds would have won.
  * - Anything else exits **non-zero**, which is what lets the same script stand
  *   in as `claudeCommand` for a pty bootstrap. `sessionCommand` builds
- *   `<claudeCommand> && exit` (`electron/main/sessions/bootstrap.ts`), so a
+ *   `<claudeCommand> && exit` (`electron/main/harness/claude-code/launch.ts`), so a
  *   stub that ended cleanly would take the login shell with it — the identical
  *   reasoning behind `stubClaudeCommand`'s `; false` below.
  *
@@ -2018,7 +2018,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
      * A no-op bootstrap, and the `; false` is not decoration.
      *
      * `sessionCommand` bootstraps a session as `<claudeCommand> && exit`
-     * (`electron/main/sessions/bootstrap.ts`), so a stub that ends cleanly takes
+     * (`electron/main/harness/claude-code/launch.ts`), so a stub that ends cleanly takes
      * the login shell with it and leaves no shell for these cases to type into.
      * Ending badly short-circuits the `&&`. Copied from
      * `tests/e2e/electron/fixtures/hive-app.ts`'s `STUB_CLAUDE_COMMAND`, which

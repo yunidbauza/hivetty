@@ -287,7 +287,7 @@ with Terminal here. `ModelChip` (`layout/model-chip.tsx`) reads
 
 **The model chip's numbers are *observed*, and an unobserved one renders
 nothing at all.** They arrive from Claude Code's own status line payload — see
-`src/lib/session-metrics.ts` and `electron/main/hooks/settings.ts` — and each
+`src/lib/session-metrics.ts` and `electron/main/harness/claude-code/settings.ts` — and each
 stat carries its own gauge, percentage and separator, so a value nobody has
 reported takes all three away with it rather than holding an em dash in a
 labelled slot. That absence is routine, not exceptional: `rate_limits` is

@@ -14,8 +14,9 @@ import { join } from 'node:path';
 
 import { RESERVED_SKILL_NAME } from '@shared/skills-contract';
 
+import type { SkillsRead } from '../../skills/read';
+
 import { doneSkill } from './done-skill';
-import type { SkillsRead } from './read';
 
 /**
  * Generating the plugin directory `--plugin-dir` points at (HIVE-96).
@@ -176,7 +177,7 @@ async function prune(
 /**
  * Regenerate the plugin directory from `read`.
  *
- * Modelled on `writeHookSettings` (`hooks/settings.ts`): generated up front so
+ * Modelled on `writeHookSettings` (`harness/claude-code/settings.ts`): generated up front so
  * that the spawn path *picks a path* rather than negotiating with a live
  * directory.
  *

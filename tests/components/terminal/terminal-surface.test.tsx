@@ -23,6 +23,7 @@ import {
 } from '../../../__mocks__/@xterm/xterm';
 
 import { TerminalSurface } from '@components/terminal/terminal-surface';
+import { DEFAULT_INPUT_PROFILE, type InputProfile } from '@lib/harness/input-profile';
 import { isMacPlatform } from '@lib/platform';
 import { TERM, TERM_LIGHT } from '@lib/terminal/ansi';
 import type {
@@ -1335,6 +1336,81 @@ describe('TerminalSurface', () => {
       expect(transport.write).not.toHaveBeenCalled();
     });
 
+    describe('the input profile (HIVE-240)', () => {
+      const RULE = '─'.repeat(96);
+      const custom: InputProfile = { ...DEFAULT_INPUT_PROFILE, newline: '<NL>', lineKill: '<KILL>' };
+
+      function renderWithProfile(inputProfile: InputProfile) {
+        const { transport } = fakeTransport();
+        render(
+          <TerminalSurface
+            transport={transport}
+            palette={TERM}
+            readOnly={false}
+            inputProfile={inputProfile}
+          />,
+        );
+        return { transport };
+      }
+
+      it('types the profile’s newline for Shift+Enter', () => {
+        const { transport } = renderWithProfile(custom);
+
+        expect(press({ key: 'Enter', shiftKey: true })).toBe(false);
+        expect(transport.write).toHaveBeenCalledWith('<NL>');
+      });
+
+      it('types the profile’s line kill for Cmd+Delete on macOS', () => {
+        vi.stubGlobal('navigator', {
+          ...navigator,
+          userAgentData: { platform: 'macOS' },
+        });
+
+        try {
+          const { transport } = renderWithProfile(custom);
+
+          expect(press({ key: 'Backspace', metaKey: true })).toBe(false);
+          expect(transport.write).toHaveBeenCalledWith('<KILL>');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('types the profile’s line motions for Cmd+← and Cmd+→ on macOS', () => {
+        vi.stubGlobal('navigator', {
+          ...navigator,
+          userAgentData: { platform: 'macOS' },
+        });
+
+        try {
+          const { transport } = renderWithProfile({
+            ...DEFAULT_INPUT_PROFILE,
+            lineMotion: { 'line-start': '<HOME>', 'line-end': '<END>' },
+          });
+
+          expect(press({ key: 'ArrowLeft', metaKey: true })).toBe(false);
+          expect(transport.write).toHaveBeenCalledWith('<HOME>');
+          expect(press({ key: 'ArrowRight', metaKey: true })).toBe(false);
+          expect(transport.write).toHaveBeenCalledWith('<END>');
+        } finally {
+          vi.unstubAllGlobals();
+        }
+      });
+
+      it('leaves a bare ← in the pty when the profile declines it', () => {
+        const declines: InputProfile = { ...DEFAULT_INPUT_PROFILE, claimsBareBack: () => 'foreign' };
+        renderWithProfile(declines);
+        const mock = terminal();
+        // The frame the default profile claims (see "takes bare ← when the buffer shows an empty Claude prompt").
+        mock.bufferLines = [RULE, '❯ ', RULE];
+        mock.buffer.active.baseY = 0;
+        mock.buffer.active.cursorY = 1;
+        mock.buffer.active.cursorX = 2;
+
+        expect(press({ key: 'ArrowLeft' })).toBe(true);
+      });
+    });
+
     it('leaves Alt+Enter to xterm, which already encodes it', () => {
       /**
        * Not a redundant case. xterm's own table reads
@@ -1722,6 +1798,21 @@ describe('TerminalSurface input-box report', () => {
     rerender(<TerminalSurface transport={transport} palette={TERM} visible />);
 
     expect(transport.reportPrompt).toHaveBeenLastCalledWith('empty');
+  });
+
+  it('reports draft for an empty Claude prompt when the profile declines the claim (HIVE-240)', () => {
+    const { transport } = fakeTransport();
+    const declines: InputProfile = { ...DEFAULT_INPUT_PROFILE, claimsBareBack: () => 'foreign' };
+    const { rerender } = render(
+      <TerminalSurface transport={transport} palette={TERM} visible={false} inputProfile={declines} />,
+    );
+    stage([RULE, '❯ ', RULE], 1);
+
+    rerender(
+      <TerminalSurface transport={transport} palette={TERM} visible inputProfile={declines} />,
+    );
+
+    expect(transport.reportPrompt).toHaveBeenLastCalledWith('draft');
   });
 
   it('reports draft when the prompt holds text, and again only on change', () => {

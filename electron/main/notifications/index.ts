@@ -1,5 +1,4 @@
 import { isRecord } from '../../shared/guards';
-import type { StatusHookEvent } from '../../shared/hook-contract';
 import { CH } from '../../shared/ipc-contract';
 import type { NotificationKind } from '../../shared/notification-contract';
 
@@ -121,63 +120,16 @@ interface Notifier {
 }
 
 /**
- * The two ways Claude blocks on a human, now one kind (HIVE-83).
- *
- * `hook-contract.ts` maps `PermissionRequest` and `Elicitation` to the same
- * *status* — they are "different mechanisms and the same fact about the
- * session". They used to be kept apart as notifications too, on the theory
- * that "approve this command" and "answer this question" ask different things.
- * That split did not survive measurement: `Elicitation` (MCP elicitation)
- * effectively never fires, while the real question case — the
- * `AskUserQuestion` tool — arrives as `PermissionRequest` and wore "needs
- * approval" copy regardless. One kind now; {@link waitingCopy} is where the
- * cause still shows up, in the words rather than in a second switch.
+ * What each block says. Keyed on why it blocked, not on the kind — one kind
+ * covers all three reasons (HIVE-83), and the row is where the difference
+ * survives. An unknown reason reads as a permission, the copy a block always
+ * had when nothing more specific was known.
  */
-const WAITING_KIND: Record<string, NotificationKind> = {
-  PermissionRequest: 'session.blocked',
-  Elicitation: 'session.blocked',
-};
-
-/**
- * The third way, and the one that arrives on the `Notification` hook.
- *
- * Keyed on `notification_type` rather than folded into {@link WAITING_KIND},
- * because `Notification` is a single event that means two different things and
- * only one of them belongs in the inbox:
- *
- * - `idle_prompt` — the turn ended and the idle wait passed with nothing typed.
- *   Nothing else reports this, and it is the commonest way a session ends up
- *   waiting on a human.
- * - `permission_prompt` — mapped to `undefined` **on purpose**. It arrives about
- *   six seconds behind the `PermissionRequest` that already raised
- *   `session.blocked`, so raising anything here would be the same interruption
- *   twice, six seconds apart. The status still moves to `waiting` — that path
- *   runs before this one — which is the whole of what this event adds once the
- *   first has been seen.
- */
-const NOTIFICATION_TYPE_KIND: Record<string, NotificationKind | undefined> = {
-  idle_prompt: 'session.input_needed',
-  permission_prompt: undefined,
-};
-
-/**
- * What each block says. Keyed on what blocked, not on the kind — one kind now
- * covers all three, and the row is where the difference survives.
- */
-function waitingCopy(
-  event: StatusHookEvent,
-  toolName?: string,
-): { title: string; body: string } {
-  if (event === 'Elicitation')
-    return {
-      title: 'needs an answer',
-      body: 'An MCP server is waiting on you.',
-    };
-  if (toolName === 'AskUserQuestion')
-    return {
-      title: 'asked a question',
-      body: 'It cannot carry on until you answer.',
-    };
+function waitingCopy(reason: unknown): { title: string; body: string } {
+  if (reason === 'input')
+    return { title: 'needs an answer', body: 'An MCP server is waiting on you.' };
+  if (reason === 'question')
+    return { title: 'asked a question', body: 'It cannot carry on until you answer.' };
   return { title: 'needs approval', body: 'A tool is waiting on you.' };
 }
 
@@ -229,17 +181,17 @@ const ARRIVAL_KINDS: readonly NotificationKind[] = [
  * reporting that nothing is blocked any more (`derive` in `tracker.ts` holds
  * `waiting` while `blocked` is non-empty). Three ways in, all real:
  *
- * - the user approves, the tool runs, and its `PostToolUse` clears the entry
- *   the `PermissionRequest` was paired to;
- * - the user answers an `AskUserQuestion`, which *is* a tool and arrives the
- *   same way;
- * - the user types instead, and `UserPromptSubmit` clears `blocked` wholesale.
+ * - the user approves, the tool runs, and its `tool-end` clears the entry the
+ *   permission block was paired to;
+ * - the user answers a question (Claude's `AskUserQuestion`), which *is* a
+ *   tool and arrives the same way;
+ * - the user types instead, and the `prompt` clears `blocked` wholesale.
  *
  * ## The two exits this cannot see
  *
  * **Escape**, which the tracker records as emitting no event whatsoever, and an
- * answered **`Elicitation`**, whose block is held under the `UNPAIRED` sentinel
- * with no tool name for a `PostToolUse` to pair with. Both leave the row until
+ * answered **`input`** block (Claude's `Elicitation`), which is held under the
+ * `UNPAIRED` sentinel with no tool name for a `tool-end` to pair with. Both leave the row until
  * the next prompt, which is the honest failure: the alternative is to infer an
  * answer from silence, and a row cleared while its session is genuinely still
  * stopped is an inbox that lies rather than one that nags.
@@ -258,42 +210,34 @@ const ANSWERED_KINDS: readonly NotificationKind[] = ['session.blocked'];
 const hasLiveDetail = (idleDetail: unknown): boolean => idleDetail !== undefined;
 
 /**
- * Which inbox kind a `waiting` status is, or `undefined` for none.
+ * Which inbox kind a signal is, or `undefined` for none (HIVE-237).
  *
- * A free function so the two-step lookup reads as one question. `undefined` is
- * a real answer twice over and the two are deliberately indistinguishable here:
- * a hook this build has no reading of, and `permission_prompt`, which is a
- * second sighting of something already announced. Both mean "move the dot, say
- * nothing", and the caller needs no more than that.
+ * Every block is one kind (HIVE-83). The three reasons a session waits — a
+ * tool wanting a yes, the agent asking a question, an MCP server wanting
+ * input — used to be kept apart as notifications too, on the theory that
+ * "approve this command" and "answer this question" ask different things. That
+ * split did not survive measurement: Claude's MCP elicitation effectively never
+ * fires, while the real question (its `AskUserQuestion` tool) arrives as a
+ * permission request and wore "needs approval" copy regardless. One kind now;
+ * {@link waitingCopy} is where the reason shows, in the words rather than in a
+ * second switch.
+ *
+ * A `notice` raises a row only for `idle`: the turn ended and the idle wait
+ * passed with nothing typed. Nothing else reports that, and it is the commonest
+ * way a session ends up waiting on a human. A `notice` · `permission` (Claude's
+ * `permission_prompt`) answers `undefined` **on purpose**: it arrives about six
+ * seconds behind the block that already raised `session.blocked`, so raising
+ * anything would be the same interruption twice. The status still moves to
+ * `waiting`; that is the whole of what it adds once the block has been seen.
+ *
+ * Both arguments are `unknown` off an IPC payload and are only ever compared to
+ * literals, so no prototype member (`'constructor'`, `'toString'`) can answer
+ * for one — the hazard a lookup table indexed by a payload string had.
  */
-function waitingKind(
-  event: unknown,
-  notificationType: unknown,
-): NotificationKind | undefined {
-  /**
-   * `Object.hasOwn`, not a bare index.
-   *
-   * Both arguments arrive as `unknown` off an IPC payload, and a plain lookup
-   * on an object literal walks the prototype — so `'constructor'` or
-   * `'toString'` answers with an inherited *function*, which sails past a
-   * `=== undefined` guard and then throws two lines later when the copy table
-   * has no entry for it. `observe`'s try would catch it, so the cost is one
-   * dropped notification rather than a crash, which is precisely why it would
-   * never be noticed.
-   *
-   * The receiver already validates against the closed vocabulary before any of
-   * this runs, so nothing reachable today gets here. That is an argument for
-   * leaving the guard in, not out: the validation is one refactor away from
-   * moving, and this function's signature promises to cope with anything.
-   */
-  if (event === 'Notification') {
-    if (typeof notificationType !== 'string') return undefined;
-    return Object.hasOwn(NOTIFICATION_TYPE_KIND, notificationType)
-      ? NOTIFICATION_TYPE_KIND[notificationType]
-      : undefined;
-  }
-  if (typeof event !== 'string') return undefined;
-  return Object.hasOwn(WAITING_KIND, event) ? WAITING_KIND[event] : undefined;
+function waitingKind(kind: unknown, reason: unknown): NotificationKind | undefined {
+  if (kind === 'waiting') return 'session.blocked';
+  if (kind === 'notice' && reason === 'idle') return 'session.input_needed';
+  return undefined;
 }
 
 /**
@@ -314,27 +258,27 @@ const hasEnded = (status: string): boolean =>
 function stillRelevant(
   kind: NotificationKind,
   status: string,
-  event: unknown,
+  signalKind: unknown,
 ): boolean {
   if (kind === 'session.input_needed') {
-    return !(event === 'UserPromptSubmit' || hasEnded(status));
+    return !(signalKind === 'prompt' || hasEnded(status));
   }
   /**
    * `session.idle` is `both`, so a promotion is a toast, and a toast that
    * says "is yours again" about a session that has since gone back to work
    * is a lie (HIVE-89). So this one expires the moment the session is no
-   * longer idle — which covers engagement (`UserPromptSubmit` reports
-   * `working`), `terminated`, and a turn that resumed without a typed prompt
-   * alike — rather than borrowing `input_needed`'s engagement-only rule.
+   * longer idle — which covers engagement (a `prompt` reports `working`),
+   * `terminated`, and a turn that resumed without a typed prompt alike —
+   * rather than borrowing `input_needed`'s engagement-only rule.
    */
   if (kind === 'session.idle') return status === 'idle';
   /**
    * The status is trustworthy again (HIVE-83).
    *
-   * This used to read `status === 'waiting' || event === 'PostToolUse'`,
-   * because a sibling tool's completion in a parallel batch would flip the
-   * session to `working` while a permission was still outstanding. The tracker
-   * pairs tool events by `tool_use_id`, so `waiting` now means blocked and the
+   * This used to also accept any tool's completion (a `tool-end`), because a
+   * sibling tool's completion in a parallel batch would flip the session to
+   * `working` while a permission was still outstanding. The tracker pairs
+   * tool events by `tool_use_id`, so `waiting` now means blocked and the
    * notifier can stop compensating for a status it did not trust.
    */
   return status === 'waiting';
@@ -356,7 +300,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
    * (`sessions/index.ts`) tears nothing down and the entity id is unchanged —
    * so the entries are not stale in the sense of naming something gone. And
    * both clear on the same act that always follows a `/clear`: the user types,
-   * which is `UserPromptSubmit`, which is the engagement rule both maps
+   * which is a `prompt`, which is the engagement rule both maps
    * already use. The blocked kind is covered a second way over — a `/clear`
    * cannot be typed past an outstanding permission prompt, so a pending
    * `session.blocked` is answered before a `/clear` is even reachable.
@@ -375,8 +319,8 @@ export function createNotifier(options: NotifierOptions): Notifier {
    *
    * So the suppression is stated in terms of the *session* rather than the
    * event: announced once, and cleared only by **engagement**, never by
-   * idleness itself. See the `event === 'UserPromptSubmit' || status ===
-   * 'terminated'` check below for what engagement means and why.
+   * idleness itself. See the `signalKind === 'prompt' || hasEnded(status)`
+   * check below for what engagement means and why.
    *
    * ## A dismissal does not clear it, and that is the decision
    *
@@ -397,7 +341,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
    * it looks like it should cause is unreachable: Claude Code arms its idle
    * timer **once per idle stretch** and re-arms it only when the turn state
    * changes, so any later `idle_prompt` is necessarily preceded by a
-   * `UserPromptSubmit` — which clears this mark before the prompt can be
+   * `prompt` — which clears this mark before the notice can be
    * suppressed by it. There is no forgotten session hiding behind this set.
    */
   const announcedInputNeeded = new Set<string>();
@@ -407,18 +351,18 @@ export function createNotifier(options: NotifierOptions): Notifier {
    *
    * `session.idle` is an edge — raised on the transition into "idle and
    * nothing running" — and this set is what makes it one. A session is armed
-   * by `UserPromptSubmit`, the one event that says a turn is the user's, and
-   * the first `Stop` that lands `idle` with no `idleDetail` spends the arm.
+   * by a `prompt`, the one signal that says a turn is the user's, and the
+   * first `turn-end` that lands `idle` with no `idleDetail` spends the arm.
    * `terminated` drops it.
    *
    * Stated as "armed" rather than as "already announced" (the shape
    * `announcedInputNeeded` takes) on purpose: it means a session that has not
-   * typed yet — a `SessionStart` idle, a resumed conversation — never
+   * typed yet — a `session-start` idle, a resumed conversation — never
    * announces, because nothing ever armed it. The inverse shape would have
    * announced every spawn the moment it reported idle, which is the defect
    * that retired the old `session.idle`.
    *
-   * ## Why only `Stop` spends it — measured, not the brief
+   * ## Why only a turn's end spends it — measured, not the brief
    *
    * HIVE-89 named three events that reach the moment: `Stop` with nothing
    * outstanding, the `SubagentStop` that retires the last agent, and the last
@@ -432,7 +376,8 @@ export function createNotifier(options: NotifierOptions): Notifier {
    * and announcing there *and* on the `Stop` that follows was two rows for one
    * fact — precisely what the ticket ruled out. So `SubagentStop` does not
    * spend the arm; the `Stop` after the re-invoke does, and both of the
-   * ticket's "later" cases arrive as that `Stop`. That re-invoke is
+   * ticket's "later" cases arrive as that `Stop`. So `turn-end` spends the arm
+   * and `subagent-end` does not. That re-invoke is
    * indistinguishable from a typed prompt (see `tracker.ts`), which is fine
    * here: it re-arms a session that has just been disarmed by nothing, and
    * the one `Stop` that follows is the one row.
@@ -457,7 +402,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
    *   contract is unchanged: the detail is trusted in the idle window, and
    *   this file trusts it.
    * - `/clear` and an Escape-interrupted turn leave the arm where it was. Harmless:
-   *   nothing reaches a `Stop` again without a `UserPromptSubmit`, which
+   *   nothing reaches a `turn-end` again without a `prompt`, which
    *   re-arms anyway. See the `/clear` note above `announcedInputNeeded`.
    */
   const armedIdle = new Set<string>();
@@ -538,9 +483,9 @@ export function createNotifier(options: NotifierOptions): Notifier {
   };
 
   const sessionEvent = (payload: Record<string, unknown>): void => {
-    const { entityId, status, event, notificationType, toolName, idleDetail } =
-      payload;
+    const { entityId, status, signal, idleDetail } = payload;
     if (typeof entityId !== 'string' || typeof status !== 'string') return;
+    const { kind: signalKind, reason } = isRecord(signal) ? signal : {};
 
     const action = { type: 'session', entityId } as const;
 
@@ -558,7 +503,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
      *
      * The rule the set has always been reaching for is "announced once, until
      * the user comes back". A tool finishing is not that. A turn ending is not
-     * that. `UserPromptSubmit` is exactly that — it is the user typing — and
+     * that. A `prompt` is exactly that — it is the user typing — and
      * `terminated` ends the question by ending the session.
      *
      * Main *can* now tell why a session is idle (HIVE-83 / HIVE-84), and
@@ -573,7 +518,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * by things that were not the user. Engagement is still the only thing
      * that clears it.
      */
-    if (event === 'UserPromptSubmit' || hasEnded(status)) {
+    if (signalKind === 'prompt' || hasEnded(status)) {
       announcedInputNeeded.delete(entityId);
     }
 
@@ -582,7 +527,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * the first idle with nothing running, and dropped by `terminated`. See
      * `armedIdle`.
      */
-    if (event === 'UserPromptSubmit') armedIdle.add(entityId);
+    if (signalKind === 'prompt') armedIdle.add(entityId);
     else if (hasEnded(status)) armedIdle.delete(entityId);
 
     /**
@@ -597,7 +542,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * announcement. See {@link stillRelevant}.
      */
     const pending = pendingForeground.get(entityId);
-    if (pending !== undefined && !stillRelevant(pending.kind, status, event)) {
+    if (pending !== undefined && !stillRelevant(pending.kind, status, signalKind)) {
       pendingForeground.delete(entityId);
     }
 
@@ -619,7 +564,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * not `waiting`. The `/done` route reaches it too: `finishedEvent` calls
      * this function with `status: 'done'`.
      */
-    if (blockedRaised.has(entityId) && !stillRelevant('session.blocked', status, event)) {
+    if (blockedRaised.has(entityId) && !stillRelevant('session.blocked', status, signalKind)) {
       blockedRaised.delete(entityId);
       hub.dismissForSession(entityId, ANSWERED_KINDS);
     }
@@ -635,17 +580,17 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * The session working again takes both yours-again rows with it, on every
      * device at once: the hub announces the dismissal to each window and each
      * attached client, so a row does not wait for the foreground sweep to
-     * catch up on a device that never looked. `UserPromptSubmit` is the user
+     * catch up on a device that never looked. A `prompt` is the user
      * coming back; a `working` status is the turn resuming without a typed
      * prompt. Neither is gated on `isDelegated`: a delegated session raises
      * neither row, so there is nothing a hold could be protecting here.
      */
-    if (event === 'UserPromptSubmit' || status === 'working') {
+    if (signalKind === 'prompt' || status === 'working') {
       hub.dismissForSession(entityId, ARRIVAL_KINDS);
     }
 
     /**
-     * The inbox is routed off the hook **event**, never off the status.
+     * The inbox is routed off the hook's **signal**, never off the status.
      *
      * These are two different questions that used to share one branch. The
      * status answers "is this session blocked" — it drives the dot and the
@@ -653,16 +598,16 @@ export function createNotifier(options: NotifierOptions): Notifier {
      * telling you about". `idle_prompt` is the case that proves they are not
      * the same: nothing is blocked, and the user still needs to know.
      *
-     * `waitingKind` already keys purely off the event, so every hook that is
-     * not an inbox event — `Stop`, `UserPromptSubmit`, `SessionStart`,
-     * `permission_prompt` behind a `PermissionRequest` — answers `undefined`
+     * `waitingKind` already keys purely off the signal, so every hook that is
+     * not an inbox event — `turn-end`, `prompt`, `session-start`, a `notice` ·
+     * `permission` behind a permission block — answers `undefined`
      * and we stop here. That is the same set that was silent before.
      */
-    if (event !== undefined) {
+    if (signalKind !== undefined) {
       /**
-       * The edge `session.idle` is raised on (HIVE-89): a `Stop` that lands
+       * The edge `session.idle` is raised on (HIVE-89): a `turn-end` that lands
        * `idle` with nothing still running, while the arm is held. See
-       * `armedIdle` for why it is an arm and why only `Stop` spends it.
+       * `armedIdle` for why it is an arm and why only a turn's end spends it.
        */
       /*
         Not while an agent it asked is still on the job. The arm stays held, so
@@ -670,13 +615,13 @@ export function createNotifier(options: NotifierOptions): Notifier {
         that says it is yours again.
       */
       const trueIdle =
-        event === 'Stop' &&
+        signalKind === 'turn-end' &&
         status === 'idle' &&
         !hasLiveDetail(idleDetail) &&
         armedIdle.has(entityId) &&
         !isDelegated(entityId);
       const kind =
-        waitingKind(event, notificationType) ??
+        waitingKind(signalKind, reason) ??
         (trueIdle ? ('session.idle' as const) : undefined);
       if (kind === undefined) return;
 
@@ -713,11 +658,7 @@ export function createNotifier(options: NotifierOptions): Notifier {
       if (kind === 'session.blocked') blockedRaised.add(entityId);
 
       const copy =
-        PLAIN_COPY[kind] ??
-        waitingCopy(
-          event as StatusHookEvent,
-          typeof toolName === 'string' ? toolName : undefined,
-        );
+        PLAIN_COPY[kind] ?? waitingCopy(reason);
       const raised = hub.raise({
         kind,
         /*
@@ -739,9 +680,9 @@ export function createNotifier(options: NotifierOptions): Notifier {
 
         **Guarded on the kind**, and it has to be. Unguarded, a `null` raise of
         *any* kind wiped the block mark — and that is reachable, not
-        theoretical: an answered `Elicitation` leaves its block under `UNPAIRED`
+        theoretical: an answered `input` block leaves it under `UNPAIRED`
         with no tool name to pair against, so the tracker keeps reporting
-        `waiting`; the `idle_prompt` that follows raises `session.input_needed`;
+        `waiting`; the idle `notice` that follows raises `session.input_needed`;
         and if the user has switched that kind off, `raise` answers `null`. The
         genuinely blocked row would then have lost the mark that sweeps it, and
         nothing but a hand could clear it.

@@ -33,7 +33,6 @@ import {
   HOOK_HEADER_TOKEN,
   HOOK_MAX_BODY_BYTES,
   type HookAgentEvent,
-  type HookContextReply,
   type HookStatusEvent,
   type HookTicketIntentEvent,
 } from '../../../../electron/shared/hook-contract';
@@ -53,8 +52,10 @@ import {
   type SessionMetrics,
 } from '../../../../electron/shared/metrics-contract';
 import { createLedger, type Ledger } from '../../../../electron/main/ledger';
+import type { HookContextReply } from '../../../../electron/main/harness/claude-code/hook-vocabulary';
 import { createReceiver, type Receiver } from '../../../../electron/main/hooks/receiver';
-import type { PlanToolCall } from '../../../../electron/main/plans';
+import { sessionAdapter, type HarnessRegistry } from '../../../../electron/main/harness/registry';
+import type { PlanUpdate } from '../../../../electron/shared/plan-contract';
 
 /**
  * Every call site below that is not exercising the ledger routes still needs
@@ -245,7 +246,7 @@ describe('hook receiver', () => {
     receiver = createReceiver({
       onCleared: (entityId) => cleared.push(entityId),
       onEvent: (event) => events.push(event),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: (event) => intents.push(event),
       onPromptName: (entityId, name) => promptNames.push({ entityId, name }),
       onDone: (entityId) => dones.push(entityId),
@@ -1019,13 +1020,13 @@ describe('hook receiver', () => {
   });
 
   it.each([
-    ['SessionStart', 'idle'],
-    ['UserPromptSubmit', 'working'],
-    ['PermissionRequest', 'waiting'],
-    ['Elicitation', 'waiting'],
-    ['PostToolUse', 'working'],
-    ['Stop', 'idle'],
-  ])('maps %s to %s', async (event, status) => {
+    ['SessionStart', { kind: 'session-start' }],
+    ['UserPromptSubmit', { kind: 'prompt' }],
+    ['PermissionRequest', { kind: 'waiting', reason: 'permission' }],
+    ['Elicitation', { kind: 'waiting', reason: 'input' }],
+    ['PostToolUse', { kind: 'tool-end' }],
+    ['Stop', { kind: 'turn-end' }],
+  ])('maps %s to %j', async (event, signal) => {
     const response = await post({ hook_event_name: event, session_id: 'uuid' });
     expect(response.status).toBe(204);
     /*
@@ -1034,14 +1035,14 @@ describe('hook receiver', () => {
       across a `/clear` — which starts a new conversation in the same pty under
       an id nothing else tells main about.
     */
-    expect(events).toEqual([{ entityId: 'sess-01', event, status, sessionUuid: 'uuid' }]);
+    expect(events).toEqual([{ entityId: 'sess-01', signal, sessionUuid: 'uuid' }]);
   });
 
   it('omits the conversation uuid when the payload carried none', async () => {
     // Absence is the honest answer, the same discipline `cwd` follows.
     await post({ hook_event_name: 'Stop' });
 
-    expect(events).toEqual([{ entityId: 'sess-01', event: 'Stop', status: 'idle' }]);
+    expect(events).toEqual([{ entityId: 'sess-01', signal: { kind: 'turn-end' } }]);
   });
 
   /**
@@ -1060,7 +1061,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
         toolName: 'Bash',
         toolUseId: 'toolu_01',
         runInBackground: true,
@@ -1075,7 +1076,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'SubagentStart', agentId: 'a828e337' });
+      expect(events[0]).toMatchObject({ signal: { kind: 'subagent-start' }, agentId: 'a828e337' });
     });
 
     /**
@@ -1098,8 +1099,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'PermissionRequest',
-          status: 'waiting',
+          signal: { kind: 'waiting', reason: 'permission' },
           toolName: 'Write',
         },
       ]);
@@ -1133,7 +1133,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
         backgroundShells: ['bcy0lrc5b'],
       });
     });
@@ -1151,7 +1151,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'Stop', backgroundShells: [] });
+      expect(events[0]).toMatchObject({ signal: { kind: 'turn-end' }, backgroundShells: [] });
     });
 
     it('says nothing for an event that carries no list at all', async () => {
@@ -1172,7 +1172,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events[0]).toMatchObject({
-        event: 'SubagentStop',
+        signal: { kind: 'subagent-end' },
         agentId: 'a95ea9629a0d69ec6',
         backgroundShells: ['bcy0lrc5b'],
       });
@@ -1318,7 +1318,7 @@ describe('hook receiver', () => {
       });
 
       expect(response.status).toBe(204);
-      expect(events[0]).toMatchObject({ event: 'Stop', status: 'idle' });
+      expect(events[0]).toMatchObject({ signal: { kind: 'turn-end' } });
       expect(events[0]).not.toHaveProperty('backgroundShells');
     });
   });
@@ -1511,14 +1511,14 @@ describe('hook receiver', () => {
      * already ended, and `idle` is what the session already was.
      */
     it.each([
-      ['idle_prompt', 'idle'],
-      ['permission_prompt', 'waiting'],
+      ['idle_prompt', { kind: 'notice', reason: 'idle' }],
+      ['permission_prompt', { kind: 'notice', reason: 'permission' }],
     ])(
-      'maps %s to %s, carrying the type through',
-      async (notificationType, status) => {
+      'maps %s to %j, carrying the type through',
+      async (type, signal) => {
         const response = await post({
           hook_event_name: 'Notification',
-          notification_type: notificationType,
+          notification_type: type,
           message: 'Claude is waiting for your input',
         });
 
@@ -1526,9 +1526,7 @@ describe('hook receiver', () => {
         expect(events).toEqual([
           {
             entityId: 'sess-01',
-            event: 'Notification',
-            status,
-            notificationType,
+            signal,
           },
         ]);
       },
@@ -1573,9 +1571,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'Notification',
-          status: 'idle',
-          notificationType: 'idle_prompt',
+          signal: { kind: 'notice', reason: 'idle' },
         },
       ]);
     });
@@ -1626,7 +1622,7 @@ describe('hook receiver', () => {
       expect(text).toContain('"intent":"ship it"');
       expect(text).toContain(`thread "${ref}"`);
       // The prompt still counts as the session working.
-      expect(events.map((e) => e.event)).toEqual(['UserPromptSubmit']);
+      expect(events.map((e) => e.signal)).toEqual([{ kind: 'prompt' }]);
       expect(events[0]?.sessionUuid).toBe('u1');
     });
 
@@ -1775,7 +1771,7 @@ describe('hook receiver', () => {
 
     expect(response.status).toBe(204);
     expect(events).toEqual([
-      { entityId: 'sess-01', event: 'PermissionRequest', status: 'waiting' },
+      { entityId: 'sess-01', signal: { kind: 'waiting', reason: 'permission' } },
     ]);
   });
 
@@ -1811,8 +1807,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'Stop',
-          status: 'idle',
+          signal: { kind: 'turn-end' },
           cwd: '/repo/.claude/worktrees/incorp-332',
         },
       ]);
@@ -1829,7 +1824,7 @@ describe('hook receiver', () => {
 
       expect(response.status).toBe(204);
       expect(events).toEqual([
-        { entityId: 'sess-01', event: 'Stop', status: 'idle' },
+        { entityId: 'sess-01', signal: { kind: 'turn-end' } },
       ]);
     });
 
@@ -1847,8 +1842,7 @@ describe('hook receiver', () => {
       expect(events).toEqual([
         {
           entityId: 'sess-01',
-          event: 'PermissionRequest',
-          status: 'waiting',
+          signal: { kind: 'waiting', reason: 'permission' },
           cwd: '/repo/worktree',
         },
       ]);
@@ -1867,7 +1861,7 @@ describe('hook receiver', () => {
       const ordered = createReceiver({
         onCleared: () => {},
         onEvent: () => order.push('status'),
-        onPlanTool: () => {},
+        onPlan: () => {},
         onTicketIntent: () => order.push('intent'),
         onPromptName: () => {},
         onDone: () => {},
@@ -2135,7 +2129,7 @@ describe('hook receiver', () => {
     const doomed = createReceiver({
     onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -2156,7 +2150,7 @@ describe('hook receiver', () => {
       onEvent: () => {
         throw new Error('listener blew up');
       },
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -2214,7 +2208,7 @@ describe('the token binds to one session (HIVE-112)', () => {
     receiver = createReceiver({
       onCleared: () => {},
       onEvent: (event) => events.push(event),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -2268,7 +2262,7 @@ describe('the token binds to one session (HIVE-112)', () => {
 
     expect(response.status).toBe(ok);
     // The hook route's 204 is an acceptance only if the event got through.
-    if (name === '/hook') expect(events.map((e) => e.event)).toEqual(['Stop']);
+    if (name === '/hook') expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
   });
 
   it.each(ROUTES)('refuses an unknown, garbage token on $name', async ({ url, body, refused }) => {
@@ -2284,7 +2278,7 @@ describe('the token binds to one session (HIVE-112)', () => {
       const impostor = createReceiver({
         onCleared: () => {},
         onEvent: () => {},
-        onPlanTool: () => {},
+        onPlan: () => {},
         onTicketIntent: () => {},
         onPromptName: () => {},
         onDone: () => {},
@@ -2314,8 +2308,8 @@ describe('hook receiver tokens', () => {
     // *the same* session id — the launch secret is what has to differ for
     // this to hold, since `tokenFor` is otherwise a pure function of its
     // argument (HIVE-112).
-    const a = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlanTool: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
-    const b = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlanTool: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
+    const a = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlan: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
+    const b = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlan: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
     expect(a.tokenFor('sess-01')).not.toBe(b.tokenFor('sess-01'));
     // Hex-encoded SHA-256, not a v4 uuid.
     expect(a.tokenFor('sess-01')).toHaveLength(64);
@@ -2323,17 +2317,17 @@ describe('hook receiver tokens', () => {
   });
 
   it('is deterministic: the same receiver and session id always agree', () => {
-    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlanTool: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
+    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlan: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
     expect(receiver.tokenFor('sess-01')).toBe(receiver.tokenFor('sess-01'));
   });
 
   it('derives a different token for a different session id on the same receiver', () => {
-    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlanTool: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
+    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlan: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
     expect(receiver.tokenFor('sess-01')).not.toBe(receiver.tokenFor('sess-02'));
   });
 
   it('has no url before it starts', () => {
-    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlanTool: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
+    const receiver = createReceiver({ onEvent: () => {}, onCleared: () => {}, onPlan: () => {}, onTicketIntent: () => {}, onPromptName: () => {}, onMetrics: () => {}, onDone: () => {}, onReady: () => {}, knowsSession: () => true, ...noLedger, ...noAgents });
     expect(receiver.url).toBeNull();
   });
 });
@@ -2357,7 +2351,7 @@ describe('the status line path', () => {
     receiver = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: (entityId, reported) => metrics.push({ entityId, reported }),
@@ -2398,7 +2392,7 @@ describe('the status line path', () => {
     const unbound = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: () => {},
@@ -2549,7 +2543,7 @@ describe('the agent id space (HIVE-115)', () => {
       knowsAgent: (entityId) => entityId === AGENT,
       onEvent: (event) => sessionEvents.push(event),
       onAgentEvent: (event) => agentEvents.push(event),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: (event) => intents.push(event),
       onPromptName: () => {},
       onCleared: (entityId) => cleared.push(entityId),
@@ -2628,8 +2622,7 @@ describe('the agent id space (HIVE-115)', () => {
     expect(agentEvents).toEqual([
       {
         entityId: AGENT,
-        event: 'Stop',
-        status: 'idle',
+        signal: { kind: 'turn-end' },
         sessionUuid: 'f9589d3c-8987-4f7d-ba2f-537952d2633c',
       },
     ]);
@@ -2652,8 +2645,7 @@ describe('the agent id space (HIVE-115)', () => {
     expect(agentEvents).toEqual([
       {
         entityId: AGENT,
-        event: 'Stop',
-        status: 'idle',
+        signal: { kind: 'turn-end' },
         sessionUuid: 'f9589d3c-8987-4f7d-ba2f-537952d2633c',
       },
     ]);
@@ -2676,14 +2668,14 @@ describe('the agent id space (HIVE-115)', () => {
     await postAs(AGENT, { hook_event_name: 'Stop', background_tasks: tasks });
 
     expect(agentEvents).toEqual([
-      { entityId: AGENT, event: 'Stop', status: 'idle', backgroundWork: expected },
+      { entityId: AGENT, signal: { kind: 'turn-end' }, backgroundWork: expected },
     ]);
   });
 
   it('omits the uuid rather than inventing one when the payload has none', async () => {
     await postAs(AGENT, { hook_event_name: 'Stop' });
 
-    expect(agentEvents).toEqual([{ entityId: AGENT, event: 'Stop', status: 'idle' }]);
+    expect(agentEvents).toEqual([{ entityId: AGENT, signal: { kind: 'turn-end' } }]);
   });
 
   /**
@@ -2849,7 +2841,7 @@ describe('the project auto-merge route (retro B)', () => {
     receiver = createReceiver({
       knowsSession: (entityId) => entityId === CALLER,
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3014,7 +3006,7 @@ describe('the projects and pr routes (HIVE-173)', () => {
     receiver = createReceiver({
       knowsSession: (entityId) => entityId === CALLER,
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3168,7 +3160,7 @@ describe('the Jira routes (HIVE-174)', () => {
     receiver = createReceiver({
       knowsSession: (entityId) => entityId === CALLER,
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3246,7 +3238,7 @@ describe('the Jira routes (HIVE-174)', () => {
     const both = createReceiver({
       knowsSession: (entityId) => entityId === CALLER || entityId === AGENT,
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3317,7 +3309,7 @@ describe('the Jira routes (HIVE-174)', () => {
     const bare = createReceiver({
       knowsSession: (entityId) => entityId === CALLER,
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3395,7 +3387,7 @@ describe('the agents route', () => {
       knowsAgent: () => false,
       onEvent: () => {},
       onAgentEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},
@@ -3548,7 +3540,7 @@ describe('the MCP route', () => {
     receiver = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4017,7 +4009,7 @@ describe('a widened bind', () => {
     widened = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4098,7 +4090,7 @@ describe('boundHost (HIVE-134)', () => {
     const fresh = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4144,7 +4136,7 @@ describe('boundHost (HIVE-134)', () => {
     const fresh = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4199,7 +4191,7 @@ describe('the token comparison (HIVE-134)', () => {
     receiver = createReceiver({
       onCleared: () => {},
       onEvent: (event) => events.push(event),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4355,7 +4347,7 @@ describe('the Origin and Host guard', () => {
     receiver = createReceiver({
       onCleared: () => {},
       onEvent: (event) => events.push(event),
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4535,7 +4527,7 @@ describe('a diverged host alias (HIVE-134 follow-up)', () => {
     diverged = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4615,7 +4607,7 @@ describe('an allowlisted origin', () => {
     listed = createReceiver({
       onCleared: () => {},
       onEvent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onDone: () => {},
@@ -4672,14 +4664,14 @@ describe('an allowlisted origin', () => {
 
 /**
  * The plan panel's source 1 (HIVE-179): the main agent's task tools, and
- * nothing else, reach `onPlanTool`.
+ * nothing else, reach `onPlan`.
  *
  * The receiver is a trust boundary here. A subagent's task shares the
  * session's id space, and an agent's POST carries a name rather than a
  * session, so both are posted from the recorded claude 2.1.269 bodies and
  * must never arrive.
  */
-describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
+describe('hook receiver: task tools reach onPlan (HIVE-179)', () => {
   const AGENT = 'plan-probe-agent';
 
   interface RecordedBody {
@@ -4711,7 +4703,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
 
   let receiver: Receiver;
   let url: string;
-  let planCalls: PlanToolCall[];
+  let planCalls: PlanUpdate[];
   let events: HookStatusEvent[];
   let throwOnPlan: boolean;
 
@@ -4723,7 +4715,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
       onEvent: (event) => events.push(event),
       onCleared: () => {},
       onTicketIntent: () => {},
-      onPlanTool: (call) => {
+      onPlan: (call) => {
         if (throwOnPlan) throw new Error('plans store broke');
         planCalls.push(call);
       },
@@ -4756,7 +4748,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
       body: JSON.stringify(body),
     });
 
-  it("hands the main agent's PostToolUse TaskCreate to onPlanTool", async () => {
+  it("hands the main agent's PostToolUse TaskCreate to onPlan", async () => {
     const body = pick('PostToolUse', false);
 
     const response = await postAs('sess-01', body);
@@ -4765,9 +4757,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
     expect(planCalls).toEqual([
       {
         entityId: 'sess-01',
-        toolName: 'TaskCreate',
-        toolInput: { subject: 'Alpha', description: 'Alpha' },
-        toolResponse: { task: { id: '1', subject: 'Alpha' } },
+        op: { kind: 'task-created', id: '1', title: 'Alpha' },
         cwd: body.cwd,
       },
     ]);
@@ -4776,12 +4766,12 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
   it('replays the recorded run as five calls, none of them the subagent', async () => {
     for (const body of recorded) await postAs('sess-01', body);
 
-    expect(planCalls.map((call) => call.toolName)).toEqual([
-      'TaskCreate',
-      'TaskCreate',
-      'TaskCreate',
-      'TaskUpdate',
-      'TaskUpdate',
+    expect(planCalls.map((update) => update.op.kind)).toEqual([
+      'task-created',
+      'task-created',
+      'task-created',
+      'task-updated',
+      'task-updated',
     ]);
   });
 
@@ -4800,7 +4790,7 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
     expect(planCalls).toEqual([]);
   });
 
-  it("never hands a POST under an agent's name to onPlanTool", async () => {
+  it("never hands a POST under an agent's name to onPlan", async () => {
     const response = await postAs(AGENT, pick('PostToolUse', false));
 
     expect(response.status).toBe(204);
@@ -4831,16 +4821,16 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
     expect(planCalls).toEqual([]);
   });
 
-  it('answers and still publishes the status when onPlanTool throws', async () => {
+  it('answers and still publishes the status when onPlan throws', async () => {
     throwOnPlan = true;
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const response = await postAs('sess-01', pick('PostToolUse', false));
 
     expect(response.status).toBe(204);
-    expect(events.map((event) => event.event)).toEqual(['PostToolUse']);
+    expect(events.map((event) => event.signal)).toEqual([{ kind: 'tool-end' }]);
     expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('onPlanTool threw'),
+      expect.stringContaining('onPlan threw'),
       expect.any(Error),
     );
     error.mockRestore();
@@ -4854,13 +4844,13 @@ describe('hook receiver: task tools reach onPlanTool (HIVE-179)', () => {
  * path must look like a plan file, the call must be the main agent's — on a
  * truncated body too — and plan mode's whole plan is never half-read.
  */
-describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', () => {
+describe('hook receiver: plan files and plan mode reach onPlan (HIVE-180)', () => {
   const PLAN_PATH = '/repo/.hive/plans/2026-09-12-x.md';
   const SUBAGENT = { agent_id: 'ad74678b565585bbf', agent_type: 'general-purpose' };
 
   let receiver: Receiver;
   let url: string;
-  let planCalls: PlanToolCall[];
+  let planCalls: PlanUpdate[];
 
   beforeEach(async () => {
     planCalls = [];
@@ -4868,7 +4858,7 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
-      onPlanTool: (call) => planCalls.push(call),
+      onPlan: (call) => planCalls.push(call),
       onPromptName: () => {},
       onMetrics: () => {},
       onDone: () => {},
@@ -4913,20 +4903,20 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
       body: JSON.stringify(body),
     });
 
-  it('hands a Write to a plan file to onPlanTool, with the path and cwd only', async () => {
+  it('hands a Write to a plan file to onPlan, with the path and cwd only', async () => {
     const response = await post(toolBody('Write', { file_path: PLAN_PATH, content: '## Task 1: A' }));
 
     expect(response.status).toBe(204);
     expect(planCalls).toEqual([
-      { entityId: 'sess-01', toolName: 'Write', toolInput: { file_path: PLAN_PATH }, toolResponse: undefined, cwd: '/repo' },
+      { entityId: 'sess-01', op: { kind: 'plan-file-touched', path: PLAN_PATH }, cwd: '/repo' },
     ]);
   });
 
-  it('hands an Edit to a plan file to onPlanTool', async () => {
+  it('hands an Edit to a plan file to onPlan', async () => {
     await post(toolBody('Edit', { file_path: PLAN_PATH, old_string: '- [ ]', new_string: '- [x]' }));
 
-    expect(planCalls.map((call) => [call.toolName, call.toolInput])).toEqual([
-      ['Edit', { file_path: PLAN_PATH }],
+    expect(planCalls.map((update) => update.op)).toEqual([
+      { kind: 'plan-file-touched', path: PLAN_PATH },
     ]);
   });
 
@@ -4939,11 +4929,11 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
     expect(planCalls).toEqual([]);
   });
 
-  it('hands a Stop to onPlanTool, so the store re-reads the plan file a shell edit changed', async () => {
+  it('hands a Stop to onPlan, so the store re-reads the plan file a shell edit changed', async () => {
     await post({ session_id: '43fa9e8a-46e9-4c16-9b5c-549db8c85ef8', cwd: '/repo', hook_event_name: 'Stop', stop_hook_active: false });
 
     expect(planCalls).toEqual([
-      { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: '/repo' },
+      { entityId: 'sess-01', op: { kind: 'plan-file-reread' }, cwd: '/repo' },
     ]);
   });
 
@@ -4963,10 +4953,7 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
     expect(planCalls).toEqual([
       {
         entityId: 'sess-01',
-        toolName: 'Write',
-        toolInput: { file_path: PLAN_PATH },
-        toolResponse: undefined,
-        truncated: true,
+        op: { kind: 'plan-file-touched', path: PLAN_PATH },
         cwd: '/repo',
       },
     ]);
@@ -4979,14 +4966,19 @@ describe('hook receiver: plan files and plan mode reach onPlanTool (HIVE-180)', 
     expect(planCalls).toEqual([]);
   });
 
-  it("hands plan mode's approved plan to onPlanTool", async () => {
+  it("hands plan mode's approved plan to onPlan", async () => {
     await post(toolBody('ExitPlanMode', { plan: '### One\n### Two' }));
 
     expect(planCalls).toHaveLength(1);
     expect(planCalls[0]).toMatchObject({
       entityId: 'sess-01',
-      toolName: 'ExitPlanMode',
-      toolInput: { plan: '### One\n### Two' },
+      op: {
+        kind: 'plan-proposed',
+        tasks: [
+          { id: '1', title: 'One', status: 'pending' },
+          { id: '2', title: 'Two', status: 'pending' },
+        ],
+      },
       cwd: '/repo',
     });
   });
@@ -5016,7 +5008,7 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
   let receiver: Receiver;
   let url: string;
   let fileCalls: string[];
-  let planCalls: PlanToolCall[];
+  let planCalls: PlanUpdate[];
 
   beforeEach(async () => {
     fileCalls = [];
@@ -5025,7 +5017,7 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
-      onPlanTool: (call) => planCalls.push(call),
+      onPlan: (call) => planCalls.push(call),
       onFileTool: (entityId) => fileCalls.push(entityId),
       onPromptName: () => {},
       onMetrics: () => {},
@@ -5096,7 +5088,7 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
     expect(fileCalls).toEqual([]);
   });
 
-  it('a plan-file write triggers both onPlanTool and onFileTool', async () => {
+  it('a plan-file write triggers both onPlan and onFileTool', async () => {
     await post(toolBody('Write', { file_path: '/repo/.hive/plans/x.md', content: '## Task 1: A' }));
     expect(fileCalls).toEqual(['sess-01']);
     expect(planCalls).toHaveLength(1);
@@ -5109,7 +5101,7 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
       onEvent: () => {},
       onCleared: () => {},
       onTicketIntent: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onFileTool: () => {
         throw new Error('boom');
       },
@@ -5126,5 +5118,108 @@ describe('hook receiver: edits reach onFileTool (HIVE-201)', () => {
     expect(response.status).toBe(204);
     expect(error).toHaveBeenCalledWith(expect.stringContaining('onFileTool threw'), expect.any(Error));
     error.mockRestore();
+  });
+});
+
+describe('hook receiver: reads through the harness registry (HIVE-236)', () => {
+  const startWith = async (harnesses: HarnessRegistry) => {
+    const events: HookStatusEvent[] = [];
+    const r = createReceiver({
+      onCleared: () => {},
+      onEvent: (event) => events.push(event),
+      onPlan: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      onMetrics: () => {},
+      ...noLedger,
+      harnesses,
+    });
+    const at = (await r.start()) as string;
+    const res = await fetch(at, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: r.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: JSON.stringify({ hook_event_name: 'Stop' }),
+    });
+    await r.stop();
+    return { events, status: res.status };
+  };
+
+  it("reads a session's hook with the adapter its harness names", async () => {
+    const readHook = vi.fn(sessionAdapter().readHook);
+    const adapterFor = vi.fn(() => ({ ...sessionAdapter(), readHook }));
+    const harnessOf = vi.fn(() => 'claude-code' as const);
+    const { events, status } = await startWith({ adapterFor, harnessOf });
+    expect(status).toBe(204);
+    expect(harnessOf).toHaveBeenCalledWith('sess-01');
+    expect(adapterFor).toHaveBeenCalledWith('claude-code');
+    expect(readHook).toHaveBeenCalledWith(expect.objectContaining({ lane: 'session', entityId: 'sess-01' }));
+    expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
+  });
+
+  it('still reads a hook when the registry names no harness (phase 1)', async () => {
+    const adapterFor = vi.fn();
+    const { events } = await startWith({ adapterFor, harnessOf: () => undefined });
+    expect(adapterFor).not.toHaveBeenCalled();
+    expect(events.map((e) => e.signal)).toEqual([{ kind: 'turn-end' }]);
+  });
+
+  const postMetrics = async (harnesses: HarnessRegistry) => {
+    const metrics: unknown[] = [];
+    const r = createReceiver({
+      onCleared: () => {},
+      onEvent: () => {},
+      onPlan: () => {},
+      onTicketIntent: () => {},
+      onPromptName: () => {},
+      onDone: () => {},
+      onReady: () => {},
+      knowsSession: () => true,
+      ...noAgents,
+      onMetrics: (_id, m) => metrics.push(m),
+      ...noLedger,
+      harnesses,
+    });
+    await r.start();
+    const res = await fetch(r.metricsUrl as string, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_TOKEN]: r.tokenFor('sess-01'),
+        [HOOK_HEADER_SESSION]: 'sess-01',
+      },
+      body: JSON.stringify(VALID_METRICS),
+    });
+    await r.stop();
+    return { metrics, status: res.status };
+  };
+
+  it("reads a session's status line with the adapter its harness names (HIVE-239)", async () => {
+    const meters = vi.fn(sessionAdapter().meters);
+    const adapterFor = vi.fn(() => ({ ...sessionAdapter(), meters }));
+    const { metrics, status } = await postMetrics({ adapterFor, harnessOf: () => 'claude-code' as const });
+    expect(status).toBe(204);
+    expect(meters).toHaveBeenCalledWith(JSON.stringify(VALID_METRICS));
+    expect(metrics).toHaveLength(1);
+  });
+
+  it('refuses a status line from a harness without meters (HIVE-239)', async () => {
+    const meters = vi.fn(sessionAdapter().meters);
+    const adapterFor = vi.fn(() => ({
+      ...sessionAdapter(),
+      capabilities: { ...sessionAdapter().capabilities, meters: false },
+      meters,
+    }));
+    const { metrics, status } = await postMetrics({ adapterFor, harnessOf: () => 'claude-code' as const });
+    expect(status).toBe(404);
+    expect(meters).not.toHaveBeenCalled();
+    expect(metrics).toEqual([]);
   });
 });

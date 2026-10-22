@@ -1,24 +1,27 @@
-import { chmod, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ContainerFreshness } from '@shared/config-contract';
+import type { HookIdentity } from '@shared/hook-contract';
 
+import { sessionAdapter } from '../harness/registry';
 import { withHostAlias } from '../hooks/container-origin';
-import {
-  type HookIdentity,
-  agentSettings,
-  hookSettings,
-  metricsScript,
-  statusLineSettings,
-} from '../hooks/settings';
-import { containerMcpConfig } from '../mcp/container-config';
+
+import type { ContainerOrigins } from './layout';
+
+export {
+  CONTAINER_AGENT_FILE,
+  CONTAINER_MCP_FILE,
+  CONTAINER_SETTINGS_FILE,
+  type ContainerOrigins,
+} from './layout';
 
 /**
  * The container-flavoured set of every file a session is launched with
  * (HIVE-132).
  *
  * A **parallel** set rather than a branch inside the existing writers, for the
- * reason `hooks/settings.ts` already gives about writing both themes up front:
+ * reason `harness/claude-code/settings.ts` already gives about writing both themes up front:
  * writing everything ahead of time means the spawn path never writes, it picks
  * a path. Nothing here decides *which* path — that is HIVE-133's per-project
  * `container` block, and its absence is why this module has no notion of a
@@ -101,26 +104,6 @@ export const writeAliasContainerFiles = (
     options,
   );
 
-/**
- * Exported, unlike {@link SCRIPT_FILE} (HIVE-133,
- * post-review fix): `sessions/index.ts` has to name these same two files when
- * it selects `--settings` and `--mcp-config` for a container spawn, and it
- * used to do that with its own hardcoded copies of these strings. Nothing
- * tied the reader's path to the writer's, so a rename here would have drifted
- * silently past every test. The agent-settings and status-line filenames have
- * no such second reader — `writeContainerSession`'s caller never names them —
- * so they stay private.
- */
-export const CONTAINER_MCP_FILE = 'hive.mcp.json';
-export const CONTAINER_SETTINGS_FILE = 'claude-hooks.settings.json';
-/**
- * The agent-space settings file in every set — the one carrying
- * `permissions.ask: ["*"]`. Exported since HIVE-137, because a containerised
- * agent's wake has to name it on its own command line.
- */
-export const CONTAINER_AGENT_FILE = 'claude-agent.settings.json';
-const SCRIPT_FILE = 'statusline.sh';
-
 /** What only the caller placing these files can know (HIVE-133). */
 interface ContainerSetOptions {
   /**
@@ -138,14 +121,6 @@ interface ContainerSetOptions {
    * collapses to in `exec-env`.
    */
   run?: string;
-}
-
-/** The receiver's URLs, as some host addresses them. */
-export interface ContainerOrigins {
-  url: string;
-  origin: string;
-  metricsUrl?: string;
-  readyUrl?: string;
 }
 
 /**
@@ -195,96 +170,14 @@ const writeSet = async (
 ): Promise<void> => {
   await mkdir(root, { recursive: true });
 
-  const mode = modeFor(identity);
-  /*
-    `command`, not `http`, for both files below (HIVE-137): the binary refuses
-    an http hook to any non-loopback private address, and `host.docker.internal`
-    is one — measured from inside a container, recorded on `statusCommand`. A
-    command hook is `curl` with the same headers and the payload from stdin,
-    and `curl` is what the ready and `/done` commands in this same set already
-    rely on being there.
-  */
-  const settings = hookSettings(origins.url, origins.readyUrl, identity, 'command');
-
-  if (origins.metricsUrl !== undefined) {
-    const scriptPath = join(root, SCRIPT_FILE);
-
-    await writeFile(
-      scriptPath,
-      metricsScript(origins.metricsUrl, identity),
-      'utf8',
-    );
-    /* Owner-only, for the reason `writeHookSettings` sets the same bit. */
-    await chmod(scriptPath, 0o700);
-    /*
-      The path the *reader* of this settings file will see, which is not
-      necessarily the path we just wrote to. Claude Code runs this command with
-      `/bin/sh <path>`, so a host absolute path baked into a file that is about
-      to be mounted somewhere else names a script that does not exist there —
-      no metrics, while still paying the configured-status-line cost (Claude
-      Code drops its footer key hints for any configured status line).
-
-      `containerRoot` is how HIVE-133 says where the set will be mounted. Absent,
-      the host path is correct: that is a bind mount at the same path, and it is
-      also every non-container caller.
-    */
-    settings.statusLine = statusLineSettings(
-      options?.containerRoot === undefined
-        ? scriptPath
-        : join(options.containerRoot, SCRIPT_FILE),
-    );
-  }
-
-  await writeFile(
-    join(root, CONTAINER_SETTINGS_FILE),
-    `${JSON.stringify(settings, null, 2)}\n`,
-    { encoding: 'utf8', mode },
-  );
-  await writeFile(
-    join(root, CONTAINER_AGENT_FILE),
-    `${JSON.stringify(
-      agentSettings(origins.url, origins.readyUrl, identity, 'command'),
-      null,
-      2,
-    )}\n`,
-    { encoding: 'utf8', mode },
-  );
-  await writeFile(
-    join(root, CONTAINER_MCP_FILE),
-    containerMcpConfig(
-      freshness,
-      identity === undefined
-        ? undefined
-        : {
-            receiverUrl: origins.origin,
-            session: identity.session,
-            token: identity.token,
-            /*
-              Carried explicitly, because `HookIdentity` has no run and the
-              `exec-env` flavour goes to real trouble to keep one. Without it
-              two concurrent containerised runs would both send an empty
-              `x-hive-run`, the route would read both as absent, and their asks
-              would be indistinguishable — the exact thing HIVE-128 exists to
-              prevent, reintroduced only for `rewrite`.
-            */
-            ...(options?.run === undefined ? {} : { run: options.run }),
-          },
-    ),
-    { encoding: 'utf8', mode },
-  );
-
-  /*
-    `writeFile`'s `mode` applies only when it creates the file — an existing one
-    keeps whatever it had. This set is rewritten on every launch and on every
-    re-spawn, so without an explicit `chmod` a file created once at `0644` would
-    keep those bits for the rest of its life even after it starts carrying a
-    token.
-  */
-  await Promise.all(
-    [CONTAINER_SETTINGS_FILE, CONTAINER_AGENT_FILE, CONTAINER_MCP_FILE].map((file) =>
-      chmod(join(root, file), mode),
-    ),
-  );
+  await sessionAdapter().prepare.containerSet(root, {
+    origins,
+    freshness,
+    mode: modeFor(identity),
+    ...(identity === undefined ? {} : { identity }),
+    ...(options?.containerRoot === undefined ? {} : { containerRoot: options.containerRoot }),
+    ...(options?.run === undefined ? {} : { run: options.run }),
+  });
 };
 
 /**

@@ -12,12 +12,11 @@ import {
   type ProjectConfig,
 } from '@shared/config-contract';
 import type { PrLookup, PrLookupReply } from '@shared/github-contract';
+import type { StatusSignal } from '@shared/harness-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
-  type HookNotificationType,
   type IdleDetail,
   type ObservedStatus,
-  type StatusHookEvent,
 } from '@shared/hook-contract';
 import {
   CH,
@@ -58,27 +57,27 @@ import {
   CONTAINER_SETTINGS_FILE,
   removeSessionContainerFiles,
 } from '../container/generated';
+import { createPathMap } from '../container/path-map';
 import { sessionRoot } from '../fs/session-roots';
+import type { HarnessAdapter, PreparedFiles } from '../harness/port';
+import { createHarnessRegistry, sessionAdapter } from '../harness/registry';
 import type { HookRuntime } from '../hooks';
 import { withHostAlias } from '../hooks/container-origin';
 import { ticketKeysFromBranch } from '../hooks/ticket-intent';
 import { createStatusTracker } from '../hooks/tracker';
 import { createPtyIpc, type PtyIpc, type ResumeResult } from '../ipc/pty';
 import type { SurfaceId } from '../ipc/surfaces';
-import type { McpRuntime } from '../mcp';
 import { createPlans, type Plans } from '../plans';
 import type { PtyHostSupervisor } from '../pty-host/supervisor';
 import type { SkillsRuntime } from '../skills';
 
 import { createActivityTracker, type ActivityTracker } from './activity';
-import { createBootstrap, sessionCommand, type Bootstrap } from './bootstrap';
+import { createBootstrap, type Bootstrap } from './bootstrap';
 import { createChangedFiles } from './changed-files';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
 import type { SessionHistory } from './history';
-import { createPathMap } from './path-map';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
-import { createTitleOriginReader } from './title-origin';
 
 /**
  * Sessions: what a terminal actually *is* in this app (story 096).
@@ -135,13 +134,6 @@ export interface SessionsOptions {
    * plugin could not be written" — both omit the flag.
    */
   skills?: SkillsRuntime;
-  /**
-   * The generated MCP config, when the app has one (HIVE-112).
-   *
-   * Optional for the reason `skills` is: absent is supported, not degraded. A
-   * session without it is an ordinary `claude` that cannot reach the ledger.
-   */
-  mcp?: McpRuntime;
   /**
    * The uuid pinned as `--session-id` on a spawn (HIVE-61).
    *
@@ -258,6 +250,12 @@ interface OpenRequest {
   cols: number;
   rows: number;
   /**
+   * The harness files this spawn launches with, as `prepareSession` in `ipc/index.ts` left them
+   * (HIVE-235). Absent means none: no `--settings`, `--plugin-dir` or `--mcp-config`. Carried
+   * across a restart, which reuses the request.
+   */
+  files?: PreparedFiles;
+  /**
    * The session's first instruction, delivered after the bootstrap (story 097).
    *
    * Absent on `restart`, and on every `open` that is really an attach — see
@@ -361,6 +359,8 @@ interface OpenTerminalRequest {
 export interface Sessions {
   /** Spawn, bootstrap and attach — or attach to what is already running. */
   open(request: OpenRequest): void;
+  /** The adapter for an entity: its harness's, else the shared one (HIVE-236's fallback). For `deliver` (HIVE-240). */
+  adapterOf(entityId: string): HarnessAdapter;
   /**
    * Spawn a bare command in a PTY — no project, no bootstrap, no activity
    * tracking (story 102). `onExit` fires once, for whichever of exit, host
@@ -531,7 +531,6 @@ export function createSessions(options: SessionsOptions): Sessions {
     maxSessions = MAX_SESSIONS,
     hooks,
     skills,
-    mcp,
     newSessionUuid = randomUUID,
     branchReader,
     history,
@@ -637,14 +636,31 @@ export function createSessions(options: SessionsOptions): Sessions {
   const commandEntities = new Set<string>();
 
   /**
-   * Entities that are terminals (terminals).
+   * Entities that are agent sessions (HIVE-234): the one positive fact the
+   * harness registry is told. A terminal is neither this nor a command.
    *
-   * Like `commandEntities`, membership is what keeps the activity tracker, the
-   * bootstrap, the title scanner and history away from output that is not a
-   * Claude's. Unlike a command, a terminal has an ending the renderer needs
-   * to hear about — see `publishTerminalEnded`.
+   * Added by `spawn` before its process starts and removed only by
+   * `settleExit` — **not** on a failed spawn, because a session whose spawn
+   * failed was never a terminal, and a late host error must not read it as one.
    */
-  const terminalEntities = new Set<string>();
+  const agentSessions = new Set<string>();
+  const harnesses = createHarnessRegistry({
+    isAgentSession: (entityId) => agentSessions.has(entityId),
+  });
+  /**
+   * A plain terminal (terminals): no harness, and not a command (story 102).
+   * Membership is what keeps the activity tracker, the bootstrap, the title
+   * scanner and history away from output that is not an agent's; unlike a
+   * command, a terminal has an ending the renderer needs to hear about — see
+   * `publishTerminalEnded`.
+   */
+  const isTerminal = (entityId: string): boolean =>
+    harnesses.harnessOf(entityId) === undefined && !commandEntities.has(entityId);
+  /** The adapter for an entity: its harness's, else the shared one (HIVE-236's fallback). */
+  const adapterOf = (entityId: string): HarnessAdapter => {
+    const harness = harnesses.harnessOf(entityId);
+    return harness === undefined ? sessionAdapter() : harnesses.adapterFor(harness);
+  };
 
   function settleCommand(entityId: string, result: CommandExit): void {
     const onExit = commandExit.get(entityId);
@@ -680,7 +696,7 @@ export function createSessions(options: SessionsOptions): Sessions {
          * tracker would publish `session:status` for an entity the store does
          * not have, and feeding the bootstrap would type `claude` into it.
          */
-        if (!commandEntities.has(entityId) && !terminalEntities.has(entityId)) {
+        if (harnesses.harnessOf(entityId) !== undefined) {
           activity.sawOutput(entityId);
           bootstrap.sawOutput(entityId);
           // A command has no agent, so it has no name to report either.
@@ -704,7 +720,7 @@ export function createSessions(options: SessionsOptions): Sessions {
       case CH.ptyExit: {
         const data = payload as ExitEvent;
         send(channel, { ...data, sessionId: entityId } satisfies ExitEvent);
-        if (terminalEntities.has(entityId)) {
+        if (isTerminal(entityId)) {
           publishTerminalEnded(
             entityId,
             data.signal !== undefined && data.signal !== 0
@@ -727,7 +743,7 @@ export function createSessions(options: SessionsOptions): Sessions {
       case CH.ptyLost: {
         const data = payload as SessionLostEvent;
         send(channel, { ...data, sessionId: entityId } satisfies SessionLostEvent);
-        if (terminalEntities.has(entityId)) {
+        if (isTerminal(entityId)) {
           publishTerminalEnded(entityId, { kind: 'lost', reason: 'the pty host crashed' });
         } else {
           sessionLost(entityId, 'the pty host crashed');
@@ -741,7 +757,7 @@ export function createSessions(options: SessionsOptions): Sessions {
       case CH.sessionForeground: {
         // Only a terminal asked. Anything else on this channel is a host bug
         // and is dropped rather than painted onto a session row.
-        if (!terminalEntities.has(entityId)) return;
+        if (!isTerminal(entityId)) return;
         const data = payload as { sessionId: string; name: string | null };
         send(CH.sessionForeground, { entityId, name: data.name } satisfies SessionForegroundEvent);
         return;
@@ -808,6 +824,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     send,
     transcriptOf: (entityId) => transcripts.get(entityId),
     rootOf: changedFilesRoot,
+    adapterOf,
   });
 
   /**
@@ -844,8 +861,6 @@ export function createSessions(options: SessionsOptions): Sessions {
    * it was already being reported as in the meantime.
    */
   const MAX_TITLE_LOOKUPS = 8;
-
-  const titleOrigin = createTitleOriginReader();
 
   /**
    * Reads `git rev-parse` for a directory, cached and rate-limited (HIVE-78).
@@ -1008,6 +1023,8 @@ export function createSessions(options: SessionsOptions): Sessions {
       `knowsSession` consults the live registry per call.
     */
     knowsAgent: (entityId) => agentNames().has(entityId),
+    // What reads each session's hook body (HIVE-236); this closure owns the registry.
+    harnesses,
     /*
       The peer directory (HIVE-127). Asked per call, like `knowsAgent` above
       and for the same reason: a definition can be written while the app runs,
@@ -1025,19 +1042,20 @@ export function createSessions(options: SessionsOptions): Sessions {
      * Everything `onEvent` does below — the status tracker, `publishHookStatus`,
      * the finish arming, the branch read, the history record — is about a pty,
      * and an agent has none. So this handler does one thing and refuses to grow
-     * a second: `Stop` is what tells the run tracker a turn ended, and it is
-     * the only event a wake acts on today. The rest arrive so the receiver can
-     * answer them rather than 404 a run's own hooks, and are ignored until
+     * a second: a `turn-end` (Claude's `Stop`) is what tells the run tracker a
+     * turn ended, and it is the only signal a wake acts on today. The rest
+     * arrive so the receiver can answer them rather than 404 a run's own
+     * hooks, and are ignored until
      * HIVE-116 has somewhere to draw them.
      *
      * `event.sessionUuid` rides along rather than being dropped. Without it a
-     * `Stop` is keyed by the agent's name alone, which every run that agent
+     * turn's end is keyed by the agent's name alone, which every run that agent
      * ever makes shares — so a late one could arm the stall watchdog against
      * the *next* run and SIGTERM a healthy process. Forwarding the uuid is what
-     * lets the tracker refuse a `Stop` that is not about the run it is holding.
+     * lets the tracker refuse a turn's end that is not about the run it is holding.
      */
     onAgentEvent: (event) => {
-      if (event.event === 'Stop') {
+      if (event.signal.kind === 'turn-end') {
         onAgentTurnEnded?.(event.entityId, event.sessionUuid, event.backgroundWork);
       }
     },
@@ -1065,7 +1083,7 @@ export function createSessions(options: SessionsOptions): Sessions {
        */
       const derived = statusTracker.apply({
         entityId: event.entityId,
-        event: event.event,
+        signal: event.signal,
         ...(event.toolUseId === undefined ? {} : { toolUseId: event.toolUseId }),
         ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
         ...(event.agentId === undefined ? {} : { agentId: event.agentId }),
@@ -1075,38 +1093,28 @@ export function createSessions(options: SessionsOptions): Sessions {
         ...(event.backgroundShells === undefined
           ? {}
           : { backgroundShells: event.backgroundShells }),
-        ...(event.notificationType === undefined
-          ? {}
-          : { notificationType: event.notificationType }),
       });
 
-      publishHookStatus(
-        event.entityId,
-        derived.status,
-        event.event,
-        event.notificationType,
-        derived.detail,
-        event.toolName,
-      );
+      publishHookStatus(event.entityId, derived.status, event.signal, derived.detail);
 
       /**
        * `/done`'s two turning points, both of them events on this stream
        * (HIVE-93).
        *
-       * `Stop` is the end of a turn, and the app's only reliable signal that the
+       * A turn's end (`turn-end`) is the app's only reliable signal that the
        * REPL is back at an empty prompt — so it is when a declared finish is
-       * acted on. `SubagentStop` deliberately is not: a helper agent finishing
-       * says nothing about the session.
+       * acted on. A `subagent-end` deliberately is not: a helper agent
+       * finishing says nothing about the session.
        *
-       * `UserPromptSubmit` is the opposite turning point — the user went back to
+       * A `prompt` is the opposite turning point — the user went back to
        * work, which withdraws a declaration nothing has acted on yet.
        *
        * Both sit after the status publish so a session that is closing still
        * reports the turn it just finished; its last live status stays truthful
        * right up until the exit replaces it.
        */
-      if (event.event === 'Stop') closeFinished(event.entityId);
-      else if (event.event === 'UserPromptSubmit') disarmFinish(event.entityId);
+      if (event.signal.kind === 'turn-end') closeFinished(event.entityId);
+      else if (event.signal.kind === 'prompt') disarmFinish(event.entityId);
       /**
        * The branch read is deliberately **after** the status (HIVE-78).
        *
@@ -1144,7 +1152,7 @@ export function createSessions(options: SessionsOptions): Sessions {
 
       if (event.cwd !== undefined) {
         /**
-         * `Stop` reads **fresh** (HIVE-78).
+         * A turn's end reads **fresh** (HIVE-78).
          *
          * It is the end of a turn — the moment the agent has finished whatever
          * it was doing, and the last event that will fire until the user types
@@ -1153,7 +1161,7 @@ export function createSessions(options: SessionsOptions): Sessions {
          * old branch until the *next* prompt, which is exactly the window in
          * which the user looks at it. Every other event still pays the floor.
          */
-        void publishBranch(event.entityId, event.cwd, event.event === 'Stop');
+        void publishBranch(event.entityId, event.cwd, event.signal.kind === 'turn-end');
       }
     },
     onTicketIntent: (event) =>
@@ -1163,7 +1171,7 @@ export function createSessions(options: SessionsOptions): Sessions {
         source: event.source,
       } satisfies SessionTicketIntentEvent),
     // The plan panel's source 1 (HIVE-179); the receiver already filtered.
-    onPlanTool: (call) => plans.onTool(call),
+    onPlan: (update) => plans.apply(update),
     // Changed files (HIVE-201): a main-agent edit re-reads the transcript.
     onFileTool: (entityId) => void changedFiles.onFileTool(entityId),
     /**
@@ -1208,7 +1216,7 @@ export function createSessions(options: SessionsOptions): Sessions {
        *
        * `/clear` starts a new one under a new id, and the only hook that
        * carries that id — `SessionStart` — never reaches the receiver (see
-       * `hook-contract.ts`). So the history cannot learn it, and keeping the
+       * `harness/claude-code/hook-vocabulary.ts`). So the history cannot learn it, and keeping the
        * old one would let a later `--resume` reopen the conversation the user
        * deliberately ended. Dropped, so a restored row for this terminal opens
        * as a fresh session instead.
@@ -1264,7 +1272,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     if (event.sessionId === undefined) return;
     const entityId = registry.entityFor(event.sessionId);
     if (entityId === undefined) return;
-    if (terminalEntities.has(entityId)) {
+    if (isTerminal(entityId)) {
       publishTerminalEnded(entityId, { kind: 'lost', reason: event.message });
       settleExit(entityId);
       return;
@@ -1284,38 +1292,18 @@ export function createSessions(options: SessionsOptions): Sessions {
     entityId: string,
     status: ObservedStatus,
     /**
-     * The hook that produced this status, when one did (HIVE-75).
+     * What the hook that produced this status said, when one did (HIVE-75, HIVE-237).
      *
-     * Passed straight through rather than interpreted here. The session layer's
-     * job is to say what a session is doing; deciding that a `PermissionRequest`
-     * deserves a different notification than an `Elicitation` is the hub's, and
-     * putting that judgement here would give the sessions layer an opinion
-     * about the inbox it has managed to avoid having so far.
+     * Passed straight through; deciding what it means for the inbox is the hub's.
      */
-    event?: StatusHookEvent,
-    /**
-     * What kind of interruption, when `event` is `Notification`.
-     *
-     * Passed through for the reason `event` is: the hub decides that a
-     * `permission_prompt` is already covered by the `PermissionRequest` ahead of
-     * it and an `idle_prompt` is not, and that judgement has no business here.
-     */
-    notificationType?: HookNotificationType,
+    signal?: StatusSignal,
     /**
      * What is still running while the main agent is not (HIVE-83).
      *
-     * Passed through for the same reason `event` is: the session layer says
+     * Passed through for the same reason `signal` is: the session layer says
      * what a session is doing, and the renderer decides how to draw it.
      */
     idleDetail?: IdleDetail,
-    /**
-     * The tool a `PermissionRequest` named, when it named one (HIVE-83).
-     *
-     * Passed through for the same reason `event` is: telling `AskUserQuestion`
-     * apart from any other blocking tool is the notification hub's judgement,
-     * not the session layer's.
-     */
-    toolName?: string,
   ): void {
     /**
      * The history's `status` is documented as the *last known* one, and until
@@ -1359,10 +1347,8 @@ export function createSessions(options: SessionsOptions): Sessions {
     send(CH.sessionStatus, {
       entityId,
       status,
-      ...(event === undefined ? {} : { event }),
-      ...(notificationType === undefined ? {} : { notificationType }),
+      ...(signal === undefined ? {} : { signal }),
       ...(idleDetail === undefined ? {} : { idleDetail }),
-      ...(toolName === undefined ? {} : { toolName }),
     } satisfies SessionStatusEvent);
   }
 
@@ -1715,13 +1701,11 @@ export function createSessions(options: SessionsOptions): Sessions {
   function publishHookStatus(
     entityId: string,
     status: ObservedStatus,
-    event?: StatusHookEvent,
-    notificationType?: HookNotificationType,
+    signal?: StatusSignal,
     idleDetail?: IdleDetail,
-    toolName?: string,
   ): void {
     hookDriven.add(entityId);
-    publishStatus(entityId, status, event, notificationType, idleDetail, toolName);
+    publishStatus(entityId, status, signal, idleDetail);
   }
 
   /**
@@ -1749,7 +1733,7 @@ export function createSessions(options: SessionsOptions): Sessions {
 
     let reader = titles.get(entityId);
     if (reader === undefined) {
-      reader = createTitleReader();
+      reader = createTitleReader(adapterOf(entityId).record.nameFromTitle);
       titles.set(entityId, reader);
     }
     for (const name of reader.read(chunk)) {
@@ -1775,7 +1759,7 @@ export function createSessions(options: SessionsOptions): Sessions {
    * (first-prompt naming).
    *
    * The two are identical on the OSC-0 channel, so the answer comes from the
-   * transcript — see `title-origin.ts` for why Claude's own record is the only
+   * transcript — see `harness/claude-code/title-origin.ts` for why Claude's own record is the only
    * honest source, and why its `ai-title` is a guess about the wrong moment.
    *
    * ## Why an `unknown` is not cached
@@ -1802,7 +1786,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     const transcript = transcripts.get(entityId);
     if (transcript === undefined) return 'agent';
 
-    const verdict = titleOrigin.classify(transcript.cwd, transcript.sessionUuid, name);
+    const verdict = adapterOf(entityId).record.titleOrigin(transcript.cwd, transcript.sessionUuid, name);
     const settled = verdict !== 'unknown';
 
     /*
@@ -1886,8 +1870,9 @@ export function createSessions(options: SessionsOptions): Sessions {
     lastBranch.delete(entityId);
     // Same reason as the data path: a command's or a terminal's ending is not
     // a session's — see `publishTerminalEnded`.
-    if (commandEntities.delete(entityId) || terminalEntities.delete(entityId)) {
+    if (!agentSessions.delete(entityId)) {
       // Nothing to tell the store about.
+      commandEntities.delete(entityId);
     } else {
       /**
        * The ending, recorded where it is actually known (HIVE-87).
@@ -2227,44 +2212,12 @@ export function createSessions(options: SessionsOptions): Sessions {
      */
     const runtime = effectiveRuntime(snapshot, project);
 
-    startProcess({
-      entityId: request.entityId,
-      cwd: project.path,
-      file: runtime.shell,
-      args: LOGIN_SHELL_ARGS,
-      cols: request.cols,
-      rows: request.rows,
-      /**
-       * The hook environment is merged **over** the project's (HIVE-62).
-       *
-       * Project env is the user's to control and wins everywhere else, but not
-       * here: these two variables are how a hook proves which row it speaks
-       * for, so a project able to set `HIVE_SESSION_ID` could point another
-       * session's status at a row of its choosing. Attribution is the app's
-       * claim about its own sessions, not a value under configuration.
-       *
-       * This is the *only* thing enforcing it. `config-contract.ts` has
-       * `RESERVED_ENV_KEYS` and `UNSAFE_ENV_KEYS`, and neither lists the two
-       * Hive variables — so the spread order here is the whole guarantee rather
-       * than a second layer behind a list. Adding them to that list as well
-       * would be belt and braces; leaving this comment claiming a protection
-       * that does not exist would not.
-       */
-      env: { ...runtime.env, ...hooks?.envFor(request.entityId) },
-      /*
-        A session, unlike a clone, runs `claude` — so it is the one spawn whose
-        authentication matters. `snapshot` is the config already read for this
-        spawn, so this costs no extra read.
-      */
-      stripEnv: snapshot.subscriptionAuth ? AUTH_ENV_KEYS : [],
-    });
-
     /*
-      Resolved before the command is assembled, because it is the one argument
-      that depends on something the renderer told us about *itself* rather than
-      about the session.
+      The hook settings file, resolved by `prepareSession` (`ipc/index.ts`)
+      after its writes and carried on the request (HIVE-235), so the path this
+      command names is the one the rewrite just finished.
     */
-    const settingsPath = hooks?.settingsPathFor();
+    const settingsPath = request.files?.settingsPath ?? null;
 
     /**
      * The generated plugin, read but **not** regenerated here (HIVE-96).
@@ -2274,18 +2227,18 @@ export function createSessions(options: SessionsOptions): Sessions {
      * two rapid opens of the same entity both pass the guard and both spawn —
      * which is the single most destructive thing this layer can do.
      *
-     * So the regeneration happens one level up, in the `session:open` handler,
-     * which is already asynchronous and runs before this is reached. See
-     * `ipc/index.ts`.
+     * So the regeneration happens one level up, in `prepareSession`
+     * (`ipc/index.ts`), which is already asynchronous, runs before this is
+     * reached, and hands the resolved path in on the request (HIVE-235).
      */
-    const pluginDir = skills?.pluginDirPath() ?? null;
+    const pluginDir = request.files?.pluginDir ?? null;
 
     /**
-     * The ledger tools (HIVE-112). Resolved here for the same reason
-     * `pluginDir` is: it is main's own path, chosen at spawn, and it never
-     * crosses IPC.
+     * The ledger tools (HIVE-112). Resolved by `prepareSession` after
+     * `mcp.start()` for the same reason `pluginDir` is: it is main's own path,
+     * chosen before spawn, and it never crosses IPC (HIVE-235).
      */
-    const mcpConfig = mcp?.configPathFor() ?? null;
+    const mcpConfig = request.files?.mcpConfig ?? null;
 
     /**
      * A container project is launched from HIVE-132's container-flavoured set,
@@ -2313,7 +2266,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     const hookEnv = hooks?.envFor(request.entityId) ?? {};
     /*
       The same filter the host pty env gets via `startProcess`'s `stripEnv`
-      above, applied to the container's copy of `runtime.env` (final-review
+      below, applied to the container's copy of `runtime.env` (final-review
       fix, Important 3).
 
       `stripEnv` only ever reaches the pty environment. A container project's
@@ -2350,7 +2303,7 @@ export function createSessions(options: SessionsOptions): Sessions {
               is the user's to control and wins everywhere else, but not here:
               these are how a hook proves which row it speaks for. The spread
               order is the whole guarantee, exactly as it is for the pty env
-              above — and now that project env crosses the boundary, it has to
+              below — and now that project env crosses the boundary, it has to
               be restated on the command line as well.
             */
             env: {
@@ -2427,6 +2380,10 @@ export function createSessions(options: SessionsOptions): Sessions {
     const spawnMcpConfig =
       containerSet === null ? mcpConfig : join(containerSet, CONTAINER_MCP_FILE);
 
+    // An agent session from here on, spawn failed or not — see `agentSessions`.
+    agentSessions.add(request.entityId);
+    const adapter = harnesses.adapterFor(harnesses.harnessOf(request.entityId)!);
+
     /**
      * Hoisted out of the `sessionCommand` call it used to sit inside (HIVE-87).
      *
@@ -2442,12 +2399,184 @@ export function createSessions(options: SessionsOptions): Sessions {
      * there is nothing to pick up — no history, no record, no uuid, or an id
      * this run began — and the request degrades to the plain spawn it would
      * otherwise have been. The renderer asked to resume; main decides whether
-     * it can.
+     * it can. A harness that cannot resume by id (HIVE-239) always starts afresh.
      */
     const resumeUuid =
-      request.resume === true ? history?.resumable(request.entityId) : undefined;
+      request.resume === true && adapter.capabilities.resume === 'by-id'
+        ? history?.resumable(request.entityId)
+        : undefined;
     const resume = resumeUuid !== undefined;
     const sessionUuid = resumeUuid ?? newSessionUuid();
+    /**
+     * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
+     * login shell with it and the session settles to `done`. See its own
+     * comment for why that reverses story 096, and why it is `&&`.
+     */
+    /**
+     * The picker's model and effort become flags on that command
+     * (story 109). They were recorded on the entity and shown on its chip
+     * from the first story that offered them, and reached the process in no
+     * story at all — so a session started as Haiku with low effort opened as
+     * Opus and said so on the meta bar.
+     */
+    const plan = adapter.launch({
+      command: runtime.claudeCommand,
+      ...(request.model === undefined ? {} : { model: request.model }),
+      ...(request.effort === undefined ? {} : { effort: request.effort }),
+      /**
+       * **Nothing is named here any more, and that is the feature** (HIVE-108).
+       *
+       * HIVE-61 sent the row's own id — `--name sess-07` — so that the agent's
+       * prompt box, its `/resume` picker and the terminal title all agreed with
+       * the rail. The cost of that agreement turned out to be the name itself:
+       * **`--name` suppresses Claude Code's own titling entirely.** Two arms of
+       * a real `claude`, same prompt, same moment, differing in nothing else:
+       *
+       * ```
+       * --name sess-probe   ai-title: (none)               OSC: "✳ sess-probe"
+       * (no flag)           ai-title: "Mutex explanation"  OSC: "✳ Claude Code"
+       *                                                    → "◐ Mutex explanation"
+       * ```
+       *
+       * Every session this app has ever spawned carries a `custom-title` and no
+       * `ai-title` for exactly this reason — 25+ transcripts, some 3,000 lines
+       * long, all of them mute. The Hive was not failing to infer names; it was
+       * stopping Claude from inferring them.
+       *
+       * So the id fallback is gone. A session opens unnamed, Claude titles it
+       * from the conversation once there is one, and the title arrives on the
+       * OSC-0 stream `readTitle` has parsed since HIVE-61 — no new transport,
+       * no prompt scraping, no second inference engine. `hiveNameFromTitle`
+       * spells it the way the rail spells names.
+       *
+       * What is given up is the opening frame: until Claude has titled it, the
+       * label on its input box is simply **absent**, where it used to read
+       * `sess-07`. Measured against a real `claude` — the name is drawn into
+       * the box's top border, and with no name the border is unlabelled:
+       *
+       * ```
+       * named    ────────────────────── sess-probe ─
+       * unnamed  ──────────────────────────────────
+       * ```
+       *
+       * (HIVE-108 first recorded this as "the prompt box says `Claude Code`".
+       * It does not. `Claude Code` is the *terminal title* Claude writes while
+       * unnamed, and the splash banner — which prints either way and names the
+       * product, not the session.)
+       *
+       * The row is untouched: `nameFromTitle` maps that title to the *absence*
+       * of a name, so the rail goes on saying `sess-07` until a real one lands.
+       *
+       * **This subsumes HIVE-107.** That fix carved `--resume` out of the id
+       * fallback, because `--name` on a resume renames the stored conversation
+       * rather than labelling a new one. With no fallback left there is nothing
+       * to carve: a resume sends no flag because *no spawn does*.
+       *
+       * An explicit `request.name` still survives, because that is a caller
+       * saying something the transcript cannot: *call it this from now on*.
+       * Nothing asks for it today — a ticket session is named by the store,
+       * which pins `HIVE-73` in front of whatever Claude infers, rather than by
+       * a flag that would cost it the inference.
+       */
+      ...(request.name === undefined ? {} : { name: request.name }),
+      sessionUuid,
+      resume,
+      /*
+        One file for every session since HIVE-82: nothing in it varies by
+        theme any more, because Claude's is pinned to `dark-ansi` and the
+        colours resolve against the terminal's palette at paint time.
+
+        `spawnSettingsPath`, not `settingsPath`: a container project's set
+        lives under `containerSet` (HIVE-133), and `sessionCommand` maps
+        whichever one lands here into its container-side spelling.
+      */
+      ...(spawnSettingsPath == null ? {} : { settingsPath: spawnSettingsPath }),
+      /*
+        The generated plugin, when there is one (HIVE-96). Resolved above for
+        the same reason `settingsPath` is: it is main's own path, chosen at
+        spawn, and it never crosses IPC — `parseSpawnRequest` has no field for
+        it and deliberately never will.
+
+        Unlike `settingsPath` and `mcpConfig`, never swapped for a
+        container-flavoured path: `--plugin-dir` is shared between host and
+        container sessions (see the comment on `containerSpawn` above).
+      */
+      ...(pluginDir == null ? {} : { pluginDir }),
+      /*
+        The ledger tools (HIVE-112). Resolved here for the same reason
+        `pluginDir` is: it is main's own path, chosen at spawn, and it never
+        crosses IPC.
+
+        `spawnMcpConfig`, for the reason `spawnSettingsPath` is above.
+      */
+      ...(spawnMcpConfig == null ? {} : { mcpConfig: spawnMcpConfig }),
+      /*
+        The project runs inside a container (HIVE-133). `sessionCommand`
+        reads this to expand `container.env` at the command's `{env}`
+        placeholder and to rewrite the three flag paths above into their
+        container-side spelling — see `ContainerSpawn`'s own comment for
+        what each half does.
+      */
+      ...(containerSpawn === undefined ? {} : { container: containerSpawn }),
+      /*
+        Belt *and* braces, deliberately. `stripEnv` below covers the ambient
+        environment and a project's own `env` block; this covers the login
+        shell's profile, which re-exports whatever the user put in `~/.zshrc`
+        after the host has already sanitised. Neither one is sufficient alone.
+      */
+      subscriptionAuth: snapshot.subscriptionAuth,
+      /**
+       * The opening instruction becomes `claude`'s initial prompt, on this
+       * command line, rather than a second write into the pty afterwards
+       * (HIVE-91).
+       *
+       * It moved *into* `sessionCommand` from `arm`'s third argument. The old
+       * shape waited for the TUI to settle and then typed the task in, which
+       * meant a `claude` that failed to start handed the user's instruction to
+       * the login shell to run as a command. See `sessionCommand`'s own
+       * comment for the transcript that produced.
+       */
+      /*
+        Not on a resume (HIVE-88): the conversation being picked up has
+        already heard its opening instruction, and a history record carries
+        the task precisely so the row can display it — not so it can be
+        said twice.
+      */
+      ...(request.task === undefined || resume ? {} : { task: request.task }),
+    });
+
+    startProcess({
+      entityId: request.entityId,
+      cwd: project.path,
+      file: runtime.shell,
+      args: LOGIN_SHELL_ARGS,
+      cols: request.cols,
+      rows: request.rows,
+      /**
+       * The hook environment is merged **over** the project's (HIVE-62).
+       *
+       * Project env is the user's to control and wins everywhere else, but not
+       * here: these two variables are how a hook proves which row it speaks
+       * for, so a project able to set `HIVE_SESSION_ID` could point another
+       * session's status at a row of its choosing. Attribution is the app's
+       * claim about its own sessions, not a value under configuration.
+       *
+       * This is the *only* thing enforcing it. `config-contract.ts` has
+       * `RESERVED_ENV_KEYS` and `UNSAFE_ENV_KEYS`, and neither lists the two
+       * Hive variables — so the spread order here is the whole guarantee rather
+       * than a second layer behind a list. Adding them to that list as well
+       * would be belt and braces; leaving this comment claiming a protection
+       * that does not exist would not.
+       */
+      env: { ...runtime.env, ...hooks?.envFor(request.entityId) },
+      /*
+        A session, unlike a clone, runs `claude` — so it is the one spawn whose
+        authentication matters. `snapshot` is the config already read for this
+        spawn, so this costs no extra read.
+        The adapter decides which credentials go (HIVE-234).
+      */
+      stripEnv: plan.stripEnv,
+    });
 
     /**
      * The transcript this generation will write to (first-prompt naming).
@@ -2507,145 +2636,7 @@ export function createSessions(options: SessionsOptions): Sessions {
       );
     }
 
-    /**
-     * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
-     * login shell with it and the session settles to `done`. See its own
-     * comment for why that reverses story 096, and why it is `&&`.
-     */
-    bootstrap.arm(
-      request.entityId,
-      /**
-       * The picker's model and effort become flags on that command
-       * (story 109). They were recorded on the entity and shown on its chip
-       * from the first story that offered them, and reached the process in no
-       * story at all — so a session started as Haiku with low effort opened as
-       * Opus and said so on the meta bar.
-       */
-      sessionCommand(runtime.claudeCommand, {
-        ...(request.model === undefined ? {} : { model: request.model }),
-        ...(request.effort === undefined ? {} : { effort: request.effort }),
-        /**
-         * **Nothing is named here any more, and that is the feature** (HIVE-108).
-         *
-         * HIVE-61 sent the row's own id — `--name sess-07` — so that the agent's
-         * prompt box, its `/resume` picker and the terminal title all agreed with
-         * the rail. The cost of that agreement turned out to be the name itself:
-         * **`--name` suppresses Claude Code's own titling entirely.** Two arms of
-         * a real `claude`, same prompt, same moment, differing in nothing else:
-         *
-         * ```
-         * --name sess-probe   ai-title: (none)               OSC: "✳ sess-probe"
-         * (no flag)           ai-title: "Mutex explanation"  OSC: "✳ Claude Code"
-         *                                                    → "◐ Mutex explanation"
-         * ```
-         *
-         * Every session this app has ever spawned carries a `custom-title` and no
-         * `ai-title` for exactly this reason — 25+ transcripts, some 3,000 lines
-         * long, all of them mute. The Hive was not failing to infer names; it was
-         * stopping Claude from inferring them.
-         *
-         * So the id fallback is gone. A session opens unnamed, Claude titles it
-         * from the conversation once there is one, and the title arrives on the
-         * OSC-0 stream `readTitle` has parsed since HIVE-61 — no new transport,
-         * no prompt scraping, no second inference engine. `hiveNameFromTitle`
-         * spells it the way the rail spells names.
-         *
-         * What is given up is the opening frame: until Claude has titled it, the
-         * label on its input box is simply **absent**, where it used to read
-         * `sess-07`. Measured against a real `claude` — the name is drawn into
-         * the box's top border, and with no name the border is unlabelled:
-         *
-         * ```
-         * named    ────────────────────── sess-probe ─
-         * unnamed  ──────────────────────────────────
-         * ```
-         *
-         * (HIVE-108 first recorded this as "the prompt box says `Claude Code`".
-         * It does not. `Claude Code` is the *terminal title* Claude writes while
-         * unnamed, and the splash banner — which prints either way and names the
-         * product, not the session.)
-         *
-         * The row is untouched: `nameFromTitle` maps that title to the *absence*
-         * of a name, so the rail goes on saying `sess-07` until a real one lands.
-         *
-         * **This subsumes HIVE-107.** That fix carved `--resume` out of the id
-         * fallback, because `--name` on a resume renames the stored conversation
-         * rather than labelling a new one. With no fallback left there is nothing
-         * to carve: a resume sends no flag because *no spawn does*.
-         *
-         * An explicit `request.name` still survives, because that is a caller
-         * saying something the transcript cannot: *call it this from now on*.
-         * Nothing asks for it today — a ticket session is named by the store,
-         * which pins `HIVE-73` in front of whatever Claude infers, rather than by
-         * a flag that would cost it the inference.
-         */
-        ...(request.name === undefined ? {} : { name: request.name }),
-        sessionUuid,
-        resume,
-        /*
-          One file for every session since HIVE-82: nothing in it varies by
-          theme any more, because Claude's is pinned to `dark-ansi` and the
-          colours resolve against the terminal's palette at paint time.
-
-          `spawnSettingsPath`, not `settingsPath`: a container project's set
-          lives under `containerSet` (HIVE-133), and `sessionCommand` maps
-          whichever one lands here into its container-side spelling.
-        */
-        ...(spawnSettingsPath == null ? {} : { settingsPath: spawnSettingsPath }),
-        /*
-          The generated plugin, when there is one (HIVE-96). Resolved above for
-          the same reason `settingsPath` is: it is main's own path, chosen at
-          spawn, and it never crosses IPC — `parseSpawnRequest` has no field for
-          it and deliberately never will.
-
-          Unlike `settingsPath` and `mcpConfig`, never swapped for a
-          container-flavoured path: `--plugin-dir` is shared between host and
-          container sessions (see the comment on `containerSpawn` above).
-        */
-        ...(pluginDir == null ? {} : { pluginDir }),
-        /*
-          The ledger tools (HIVE-112). Resolved here for the same reason
-          `pluginDir` is: it is main's own path, chosen at spawn, and it never
-          crosses IPC.
-
-          `spawnMcpConfig`, for the reason `spawnSettingsPath` is above.
-        */
-        ...(spawnMcpConfig == null ? {} : { mcpConfig: spawnMcpConfig }),
-        /*
-          The project runs inside a container (HIVE-133). `sessionCommand`
-          reads this to expand `container.env` at the command's `{env}`
-          placeholder and to rewrite the three flag paths above into their
-          container-side spelling — see `ContainerSpawn`'s own comment for
-          what each half does.
-        */
-        ...(containerSpawn === undefined ? {} : { container: containerSpawn }),
-        /*
-          Belt *and* braces, deliberately. `stripEnv` above covers the ambient
-          environment and a project's own `env` block; this covers the login
-          shell's profile, which re-exports whatever the user put in `~/.zshrc`
-          after the host has already sanitised. Neither one is sufficient alone.
-        */
-        subscriptionAuth: snapshot.subscriptionAuth,
-        /**
-         * The opening instruction becomes `claude`'s initial prompt, on this
-         * command line, rather than a second write into the pty afterwards
-         * (HIVE-91).
-         *
-         * It moved *into* `sessionCommand` from `arm`'s third argument. The old
-         * shape waited for the TUI to settle and then typed the task in, which
-         * meant a `claude` that failed to start handed the user's instruction to
-         * the login shell to run as a command. See `sessionCommand`'s own
-         * comment for the transcript that produced.
-         */
-        /*
-          Not on a resume (HIVE-88): the conversation being picked up has
-          already heard its opening instruction, and a history record carries
-          the task precisely so the row can display it — not so it can be
-          said twice.
-        */
-        ...(request.task === undefined || resume ? {} : { task: request.task }),
-      }),
-    );
+    bootstrap.arm(request.entityId, plan.command, plan.submitDelayMs);
 
     /**
      * The branch this session opens on (HIVE-78).
@@ -2668,6 +2659,7 @@ export function createSessions(options: SessionsOptions): Sessions {
   }
 
   return {
+    adapterOf,
     openCommand(request) {
       /**
        * Registered *before* the spawn, because a failure to start is reported
@@ -2699,27 +2691,21 @@ export function createSessions(options: SessionsOptions): Sessions {
       const project = requireMappedProject(snapshot, request.projectId);
       const runtime = effectiveRuntime(snapshot, project);
 
-      terminalEntities.add(request.entityId);
-      try {
-        startProcess({
-          entityId: request.entityId,
-          // "Terminal here" names a directory; every other entry point means
-          // the project root. A directory that is gone is not repaired: the
-          // host's spawn error reaches the tab with its reason.
-          cwd: request.cwd ?? project.path,
-          file: runtime.shell,
-          args: LOGIN_SHELL_ARGS,
-          cols: request.cols,
-          rows: request.rows,
-          // The project's own variables, and nothing of the hook receiver's:
-          // there is no Claude here to call it.
-          env: runtime.env,
-          foreground: true,
-        });
-      } catch (cause) {
-        terminalEntities.delete(request.entityId);
-        throw cause;
-      }
+      startProcess({
+        entityId: request.entityId,
+        // "Terminal here" names a directory; every other entry point means
+        // the project root. A directory that is gone is not repaired: the
+        // host's spawn error reaches the tab with its reason.
+        cwd: request.cwd ?? project.path,
+        file: runtime.shell,
+        args: LOGIN_SHELL_ARGS,
+        cols: request.cols,
+        rows: request.rows,
+        // The project's own variables, and nothing of the hook receiver's:
+        // there is no Claude here to call it.
+        env: runtime.env,
+        foreground: true,
+      });
     },
 
     open(request) {
@@ -2781,7 +2767,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     },
 
     refresh(entityId) {
-      if (terminalEntities.has(entityId) || commandEntities.has(entityId)) return;
+      if (harnesses.harnessOf(entityId) === undefined) return;
       const sessionId = registry.sessionFor(entityId);
       if (sessionId === undefined) return;
       ptyIpc.refresh(sessionId);

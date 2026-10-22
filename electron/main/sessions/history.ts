@@ -1,5 +1,4 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 
 import { SESSION_ID_PREFIX_PATTERN } from '@shared/agent-contract';
 import { isRecord } from '@shared/guards';
@@ -12,8 +11,7 @@ import {
   type SessionRecord,
 } from '@shared/session-history-contract';
 
-import { nameFromTitle } from './title';
-import { transcriptPath } from './title-origin';
+import { sessionAdapter } from '../harness/registry';
 
 /**
  * What the fleet looked like last time (HIVE-87).
@@ -171,7 +169,7 @@ const finite = (value: unknown): number | undefined =>
 const cleanName = (value: unknown): string | undefined => {
   const raw = text(value);
   if (raw === undefined) return undefined;
-  const name = nameFromTitle(raw);
+  const name = sessionAdapter().record.nameFromTitle(raw);
   return name === '' ? undefined : name;
 };
 
@@ -329,11 +327,12 @@ export function createSessionHistory(
   /** Injected for the same reason `newSessionUuid` is: a real clock makes the file unassertable. */
   now: () => number = Date.now,
   /**
-   * Whether Claude wrote a transcript for this conversation. Injected so tests
-   * do not depend on the developer's real `~/.claude`.
+   * Whether the harness wrote a transcript for this conversation (HIVE-239: the
+   * adapter's record). Injected so tests do not depend on the developer's real
+   * home directory.
    */
   hasTranscript: (cwd: string, sessionUuid: string) => boolean = (cwd, sessionUuid) =>
-    transcriptPath(homedir(), cwd, sessionUuid) !== null,
+    sessionAdapter().record.hasTranscript(cwd, sessionUuid),
 ): SessionHistory {
   /**
    * Seeded from the file, **not empty**.
