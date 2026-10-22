@@ -6,15 +6,16 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  doneCommand,
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,
-  HOOK_EVENTS,
-  HOOK_STATUS,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
-} from '../../../../electron/shared/hook-contract';
-import { METRICS_REFRESH_SECONDS } from '../../../../electron/shared/metrics-contract';
+} from '../../../../../electron/shared/hook-contract';
+import {
+  doneCommand,
+  HOOK_EVENTS,
+} from '../../../../../electron/main/harness/claude-code/hook-vocabulary';
+import { METRICS_REFRESH_SECONDS } from '../../../../../electron/shared/metrics-contract';
 import {
   AGENT_SETTINGS_FILE,
   agentSettings,
@@ -24,8 +25,8 @@ import {
   statusLineSettings,
   writeAgentSettings,
   writeHookSettings,
-} from '../../../../electron/main/hooks/settings';
-import { doneSkill } from '../../../../electron/main/skills/done-skill';
+} from '../../../../../electron/main/harness/claude-code/settings';
+import { doneSkill } from '../../../../../electron/main/harness/claude-code/done-skill';
 
 /**
  * The settings file and the receiver are two halves of one contract (HIVE-62).
@@ -52,13 +53,12 @@ describe('hookSettings', () => {
    * `terminated` locks the user out of a working agent. Both remain true. What
    * changed is that the event no longer produces a status at all — it produces
    * `done` on its own channel, and only for `reason: 'clear'`. The guarantee
-   * that used to be expressed by not subscribing is now expressed by
-   * {@link StatusHookEvent}, which excludes it from the status map so no edit
-   * can quietly map it back onto `terminated`.
+   * that used to be expressed by not subscribing is now expressed by the
+   * adapter's `SignalEvent`, which excludes it from the signal mapping so no
+   * edit can quietly map it back onto `terminated` (HIVE-237).
    */
   it('subscribes SessionEnd, but never as a status', () => {
     expect(Object.keys(settings.hooks)).toContain('SessionEnd');
-    expect(Object.keys(HOOK_STATUS)).not.toContain('SessionEnd');
   });
 
   it('posts every event to the receiver over http', () => {
@@ -98,7 +98,7 @@ describe('hookSettings', () => {
    *
    * The http handler above is subscribed to every event including this one, and
    * **`SessionStart` is the one that never arrives** — measured twice against
-   * real binaries and recorded in `hook-contract.ts`. So this event, alone,
+   * real binaries and recorded in `hook-vocabulary.ts`. So this event, alone,
    * carries a second handler of a different type, and these assertions are what
    * stop the map builder being "simplified" back into one entry per event.
    */
@@ -651,7 +651,7 @@ describe('metricsScript — freshness (HIVE-132)', () => {
       `#!/bin/sh
 # The Hive — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
 [ -n "$HIVE_HOOK_TOKEN" ] || exit 0
 

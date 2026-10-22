@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { TerminalSurface } from '@components/terminal/terminal-surface';
+import type { InputProfile } from '@lib/harness/input-profile';
 import type { TermPalette } from '@lib/terminal/ansi';
 import type { FileLinkTarget } from '@lib/terminal/file-links';
 import type { TerminalTransport } from '@lib/terminal/terminal-transport';
@@ -20,6 +21,8 @@ export interface TerminalHostEntry {
   terminalKey: string;
   transport: TerminalTransport;
   readOnly?: boolean;
+  /** The harness's keys (HIVE-240), picked by the composition root; absent is the default profile. */
+  inputProfile?: InputProfile;
 }
 
 interface TerminalHostProps {
@@ -147,6 +150,7 @@ export function TerminalHost({
           fontSize={fontSize}
           scrollback={scrollback}
           readOnly={entry.readOnly}
+          inputProfile={entry.inputProfile}
           visible={entry.id === activeId}
           ended={entry.id === endedId}
           resolveFileLinks={resolveFileLinks}

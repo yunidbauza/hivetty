@@ -4,6 +4,12 @@ import { createPlans, type Plans } from '../../../../electron/main/plans';
 import { createBuilderProgress } from '../../../../electron/main/plans/builder-progress';
 import type { LedgerEntry } from '../../../../electron/shared/ledger-contract';
 import type { SessionPlan } from '../../../../electron/shared/plan-contract';
+import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
+
+const onTool = (plans: Plans, call: ClaudePlanCall) => {
+  const update = toPlanUpdate(call);
+  return update === undefined ? undefined : plans.apply(update);
+};
 
 /**
  * A builder's progress, ticked onto the session that asked for the build
@@ -122,7 +128,7 @@ describe('createBuilderProgress', () => {
   });
 
   it('links nothing when the session has no plan file', () => {
-    void plans.onTool({
+    void onTool(plans, {
       entityId: 'sess-02',
       toolName: 'TaskCreate',
       toolInput: { subject: 'A' },
@@ -175,7 +181,7 @@ describe('createBuilderProgress', () => {
 
   it("never ticks a plan that replaced the one the build was linked to", () => {
     progress.onEntry(ask());
-    void plans.onTool({
+    void onTool(plans, {
       entityId: 'sess-01',
       toolName: 'TaskCreate',
       toolInput: { subject: 'Other work' },

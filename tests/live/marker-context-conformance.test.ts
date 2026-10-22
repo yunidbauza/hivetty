@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createReceiver, type Receiver } from '../../electron/main/hooks/receiver';
-import { hookSettings, type HookTransport } from '../../electron/main/hooks/settings';
+import { hookSettings } from '../../electron/main/harness/claude-code/settings';
+import type { HookTransport } from '../../electron/main/harness/port';
 import { readTranscript as readScreen } from '../../electron/main/integrations/slack/tty';
 import { createLedger } from '../../electron/main/ledger';
 import { ledgerMarker } from '../../electron/shared/ledger-contract';
@@ -146,9 +147,9 @@ describe.skipIf(!enabled)('a marker carries its entry as context, against a real
     */
     const ledger = createLedger({ dir: join(dir, 'hive'), knowsParty: () => true });
     receiver = createReceiver({
-      onEvent: (event) => arrivals.push({ at: Date.now(), event: event.event }),
+      onEvent: (event) => arrivals.push({ at: Date.now(), event: event.signal.kind }),
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: () => {},
@@ -264,7 +265,7 @@ describe.skipIf(!enabled)('a marker carries its entry as context, against a real
 
     // Each turn is over when its `Stop` reaches the real receiver.
     const poll = setInterval(() => {
-      const stops = arrivals.filter((a) => a.event === 'Stop').length;
+      const stops = arrivals.filter((a) => a.event === 'turn-end').length;
       if (stops >= 1 && !existsSync(join(dir, 'stop1'))) writeFileSync(join(dir, 'stop1'), '');
       if (stops >= 2 && !existsSync(doneFile)) {
         clearInterval(poll);
@@ -310,8 +311,8 @@ describe.skipIf(!enabled)('a marker carries its entry as context, against a real
 
     const events = arrivals.map((a) => a.event);
     // Both prompts arrived at the real receiver, and both turns ran to their end.
-    expect(events.filter((e) => e === 'UserPromptSubmit')).toHaveLength(2);
-    expect(events.filter((e) => e === 'Stop')).toHaveLength(2);
+    expect(events.filter((e) => e === 'prompt')).toHaveLength(2);
+    expect(events.filter((e) => e === 'turn-end')).toHaveLength(2);
     expect(transcriptPath).not.toBeNull();
 
     // The entry reached the transcript as context: the third line and the meta intent.

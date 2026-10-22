@@ -169,7 +169,8 @@ describe('AGENTS.md', () => {
   const agents = read('AGENTS.md');
 
   /**
-   * Raised from 200 to 250 (HIVE-145).
+   * Raised from 200 to 250 (HIVE-145), and to 255 for the harness port's fence
+   * and its deep-dive row (HIVE-232).
    *
    * The cap is a forcing function for the file's own opening claim — "this file
    * is deliberately thin" — not a measurement of anything, so the number moves
@@ -183,8 +184,8 @@ describe('AGENTS.md', () => {
    * how a subsystem works, what a token means, why a decision went the way it
    * did — still belongs in a deep-dive behind the table.
    */
-  it('stays under 250 lines — anything longer belongs in a deep-dive', () => {
-    expect(agents.split('\n').length).toBeLessThan(250);
+  it('stays under 255 lines — anything longer belongs in a deep-dive', () => {
+    expect(agents.split('\n').length).toBeLessThan(255);
   });
 
   it('routes to every deep-dive doc that exists', () => {

@@ -1,13 +1,8 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-
-import { MCP_SERVER_NAME } from '@shared/mcp-contract';
-
 /**
  * The `--mcp-config` file every Hive session is launched with (HIVE-112).
  */
 
-interface McpConfigOptions {
+export interface McpConfigOptions {
   /**
    * The app's own binary — `process.execPath`.
    *
@@ -35,19 +30,3 @@ export const hiveServerSpec = ({ execPath, scriptPath }: McpConfigOptions) => ({
   */
   env: { ELECTRON_RUN_AS_NODE: '1' },
 });
-
-export const mcpConfig = (options: McpConfigOptions): string =>
-  `${JSON.stringify(
-    { mcpServers: { [MCP_SERVER_NAME]: hiveServerSpec(options) } },
-    null,
-    2,
-  )}\n`;
-
-/** Write the config, creating its directory if needed. Overwrites. */
-export async function writeMcpConfig(
-  path: string,
-  options: McpConfigOptions,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, mcpConfig(options), 'utf8');
-}

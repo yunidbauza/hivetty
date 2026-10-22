@@ -3,8 +3,16 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { reduceTaskTool, type PlanToolCall } from '../../../../electron/main/plans/task-tools';
+import { isTaskOp, reduceTaskOp } from '../../../../electron/main/plans/task-tools';
 import type { SessionPlan } from '../../../../electron/shared/plan-contract';
+import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
+
+const reduceTaskTool = (plan: SessionPlan | undefined, call: ClaudePlanCall, now = 0): SessionPlan | undefined => {
+  const update = toPlanUpdate(call);
+  const op = update?.op;
+  if (op === undefined || !isTaskOp(op)) return plan;
+  return reduceTaskOp(plan, call.entityId, op, now);
+};
 
 /** One recorded hook body (claude 2.1.269, `.hive/specs/fixtures`). */
 interface Body {
@@ -23,7 +31,7 @@ const bodies: Body[] = readFileSync(
   .filter((line) => line.trim() !== '')
   .map((line) => JSON.parse(line) as Body);
 
-const call = (b: Body): PlanToolCall => ({
+const call = (b: Body): ClaudePlanCall => ({
   entityId: 'sess-01',
   toolName: b.tool_name,
   toolInput: b.tool_input,
@@ -38,7 +46,7 @@ const replay = (filter: (b: Body) => boolean): SessionPlan | undefined =>
 const mainAgentPost = (b: Body): boolean =>
   b.hook_event_name === 'PostToolUse' && b.agent_id === undefined;
 
-const update = (input: Record<string, unknown>): PlanToolCall => ({
+const update = (input: Record<string, unknown>): ClaudePlanCall => ({
   entityId: 'sess-01',
   toolName: 'TaskUpdate',
   toolInput: input,
@@ -191,7 +199,7 @@ describe('reduceTaskTool', () => {
 });
 
 describe('reduceTaskTool: activeForm and times (HIVE-201)', () => {
-  const create = (id: string, subject: string, activeForm?: string): PlanToolCall => ({
+  const create = (id: string, subject: string, activeForm?: string): ClaudePlanCall => ({
     entityId: 'sess-01',
     toolName: 'TaskCreate',
     toolInput: { subject, ...(activeForm === undefined ? {} : { activeForm }) },
@@ -237,7 +245,7 @@ describe('reduceTaskTool: activeForm and times (HIVE-201)', () => {
 });
 
 describe('reduceTaskTool: TodoWrite times (HIVE-201)', () => {
-  const todo = (todos: { content: string; status: string; activeForm?: string }[]): PlanToolCall => ({
+  const todo = (todos: { content: string; status: string; activeForm?: string }[]): ClaudePlanCall => ({
     entityId: 'sess-01',
     toolName: 'TodoWrite',
     toolInput: { todos },

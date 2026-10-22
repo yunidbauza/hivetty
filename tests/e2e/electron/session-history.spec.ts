@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test as base, expect } from '@playwright/test';
 
 import { SESSION_HISTORY_FILE } from '../../../electron/shared/session-history-contract';
-import { claudeProjectDir } from '../../../electron/main/sessions/title-origin';
+import { claudeProjectDir } from '../../../electron/main/harness/claude-code/title-origin';
 import { goToOvermind } from '../fixtures/places';
 
 import {

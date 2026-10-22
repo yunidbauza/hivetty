@@ -1,15 +1,12 @@
-import type {
-  HookNotificationType,
-  IdleDetail,
-  ObservedStatus,
-  StatusHookEvent,
-} from '@shared/hook-contract';
+import type { StatusSignal } from '@shared/harness-contract';
+import type { IdleDetail, ObservedStatus } from '@shared/hook-contract';
 
 /**
  * The stand-in for a block whose tool could not be identified.
  *
- * `PermissionRequest` carries no `tool_use_id` and `Elicitation` carries no tool
- * identity at all, so a block that cannot be paired is still recorded — losing
+ * A permission block carries no `tool_use_id` (Claude's `PermissionRequest`)
+ * and an `input` block carries no tool identity at all (Claude's
+ * `Elicitation`), so a block that cannot be paired is still recorded — losing
  * it would be worse than holding it a little too long, which is the failure the
  * old `stillRelevant` workaround was compensating for.
  */
@@ -17,7 +14,7 @@ export const UNPAIRED = 'unpaired';
 
 interface TrackerInput {
   entityId: string;
-  event: StatusHookEvent;
+  signal: StatusSignal;
   toolUseId?: string;
   toolName?: string;
   agentId?: string;
@@ -30,7 +27,6 @@ interface TrackerInput {
    * inference stands.
    */
   backgroundShells?: string[];
-  notificationType?: HookNotificationType;
 }
 
 interface DerivedState {
@@ -142,7 +138,7 @@ interface HeldCounts {
 
 export interface StatusTracker {
   apply(input: TrackerInput): DerivedState;
-  /** `/clear` and `SessionStart`: same pty, new conversation. */
+  /** `/clear` and a session's start: same pty, new conversation. */
   reset(entityId: string): void;
   /** The process is gone; drop the record entirely. */
   forget(entityId: string): void;
@@ -179,9 +175,9 @@ function derive(s: Session): DerivedState {
 }
 
 /**
- * Resolve a `PermissionRequest` to the tool it is about.
+ * Resolve a permission block to the tool it is about.
  *
- * The matching `PreToolUse` fires roughly sixty milliseconds earlier and is
+ * The matching tool start (Claude's `PreToolUse`) fires roughly sixty milliseconds earlier and is
  * therefore the newest outstanding entry with this name. `agentId` participates
  * because a subagent's block and the main agent's must not resolve to each
  * other.
@@ -220,8 +216,8 @@ export function createStatusTracker(): StatusTracker {
       /**
        * An observation outranks the inference (HIVE-90).
        *
-       * Applied before the switch rather than inside the `Stop` and
-       * `SubagentStop` cases, because the rule is about the *payload* and not
+       * Applied before the switch rather than inside the `turn-end` and
+       * `subagent-end` cases, because the rule is about the *payload* and not
        * about which event delivered it: any body that reports its live
        * background shells is more authoritative than a set assembled from the
        * tool events that opened each one. Those two are the only events
@@ -230,21 +226,21 @@ export function createStatusTracker(): StatusTracker {
        * where an event-keyed version would quietly keep guessing.
        *
        * Before the switch, so `derive()` at the end of every case already sees
-       * it. The one case that also writes this set is `UserPromptSubmit`,
-       * whose clear runs afterwards and therefore wins; that is correct and
-       * costs nothing, since a `UserPromptSubmit` carries no list to overrule.
+       * it. The one case that also writes this set is `prompt`, whose clear
+       * runs afterwards and therefore wins; that is correct and costs nothing,
+       * since a prompt carries no list to overrule.
        */
       if (input.backgroundShells !== undefined) {
         s.bgShells.clear();
         for (const id of input.backgroundShells) s.bgShells.add(id);
       }
 
-      switch (input.event) {
-        case 'SessionStart':
+      switch (input.signal.kind) {
+        case 'session-start':
           sessions.set(input.entityId, empty());
           return derive(sessions.get(input.entityId) as Session);
 
-        case 'UserPromptSubmit':
+        case 'prompt':
           /**
            * Also the background-shell inference's only way to stop being
            * sticky — and no longer the only way a shell's end is *seen*
@@ -309,7 +305,7 @@ export function createStatusTracker(): StatusTracker {
           s.postToolUseSincePermissionRequest = false;
           return derive(s);
 
-        case 'PreToolUse':
+        case 'tool-start':
           /**
            * Also re-arms the `permission_prompt` echo guard (§4.4 / review
            * Fix 2, HIVE-83 regression fix). Measured against real Claude Code
@@ -340,7 +336,7 @@ export function createStatusTracker(): StatusTracker {
           }
           return derive(s);
 
-        case 'PostToolUse': {
+        case 'tool-end': {
           s.postToolUseSincePermissionRequest = true;
 
           if (input.toolUseId !== undefined) {
@@ -426,7 +422,13 @@ export function createStatusTracker(): StatusTracker {
           return derive(s);
         }
 
-        case 'PermissionRequest': {
+        case 'waiting': {
+          if (input.signal.reason === 'input') {
+            s.blocked.add(UNPAIRED);
+            // No tool identity to give (§4.4) — see `blockedNames`.
+            s.blockedNames.delete(UNPAIRED);
+            return derive(s);
+          }
           const key = resolve(s, input.toolName, input.agentId);
           s.blocked.add(key);
           if (input.toolName !== undefined) s.blockedNames.set(key, input.toolName);
@@ -434,15 +436,10 @@ export function createStatusTracker(): StatusTracker {
           return derive(s);
         }
 
-        case 'Elicitation':
-          s.blocked.add(UNPAIRED);
-          // No tool identity to give (§4.4) — see `blockedNames`.
-          s.blockedNames.delete(UNPAIRED);
-          return derive(s);
-
-        case 'Notification':
+        case 'notice':
           /**
-           * `permission_prompt` echoes a `PermissionRequest` six seconds later.
+           * A `permission` notice (Claude's `permission_prompt`) echoes a
+           * permission block (its `PermissionRequest`) six seconds later.
            * It re-asserts a block only when none is held *and* the request has
            * not already been answered — recovering a missed request without
            * double-counting one already tracked, and without re-blocking a
@@ -450,19 +447,19 @@ export function createStatusTracker(): StatusTracker {
            * `postToolUseSincePermissionRequest`'s doc for what was measured).
            */
           if (
-            input.notificationType === 'permission_prompt' &&
+            input.signal.reason === 'permission' &&
             s.blocked.size === 0 &&
             !s.postToolUseSincePermissionRequest
           )
             s.blocked.add(UNPAIRED);
-          if (input.notificationType === 'idle_prompt') s.turnActive = false;
+          if (input.signal.reason === 'idle') s.turnActive = false;
           return derive(s);
 
-        case 'SubagentStart':
+        case 'subagent-start':
           if (input.agentId !== undefined) s.agents.add(input.agentId);
           return derive(s);
 
-        case 'SubagentStop':
+        case 'subagent-end':
           /**
            * Only agents seen starting are removed. Claude Code emits
            * `SubagentStop` for internal helper agents with an empty
@@ -472,11 +469,8 @@ export function createStatusTracker(): StatusTracker {
           if (input.agentId !== undefined) s.agents.delete(input.agentId);
           return derive(s);
 
-        case 'Stop':
+        case 'turn-end':
           s.turnActive = false;
-          return derive(s);
-
-        default:
           return derive(s);
       }
     },

@@ -19,7 +19,7 @@ import {
 import { OVERMIND } from '@shared/ledger-contract';
 import { SLACK_SERVER_KEY } from '@shared/slack-contract';
 
-import { expandEnvArgv } from '../sessions/container-command';
+import { expandEnvArgv } from '../container/container-command';
 
 import {
   NO_LOG,

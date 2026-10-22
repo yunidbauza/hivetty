@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createLedger } from '../../electron/main/ledger';
 import { createReceiver } from '../../electron/main/hooks/receiver';
-import { mcpConfig } from '../../electron/main/mcp/config';
+import { mcpConfig } from '../../electron/main/harness/claude-code/mcp-config';
 import { OVERMIND } from '../../electron/shared/ledger-contract';
 import { openAsks } from '../../electron/shared/ledger-derive';
 
@@ -67,7 +67,7 @@ describe.skipIf(!RUN)('the hive MCP server, against a real claude', () => {
       onAgentEvent: () => undefined,
       // Not exercised by this test: every other route the receiver serves.
       onEvent: () => undefined,
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => undefined,
       onPromptName: () => {},
       onCleared: () => undefined,

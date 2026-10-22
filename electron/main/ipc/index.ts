@@ -253,6 +253,8 @@ import {
   writeFileContent,
   type FsWatchLayer,
 } from '../fs';
+import type { PreparedFiles } from '../harness/port';
+import { sessionAdapter } from '../harness/registry';
 import { createHookRuntime } from '../hooks';
 import { readGhStatus, runCommand } from '../integrations/gh';
 import { createGithub } from '../integrations/github';
@@ -316,8 +318,7 @@ import {
 } from '../sessions/history';
 import { onShutdown } from '../shutdown';
 import { createSkillsRuntime, type SkillsRuntime } from '../skills';
-import { readSessionPluginOverrides } from '../skills/available';
-import { installedPluginsFile, PLUGIN_DIR } from '../skills/paths';
+import { PLUGIN_DIR } from '../skills/paths';
 import { splashEnabled } from '../splash';
 import {
   checkForUpdatesInteractively,
@@ -2082,6 +2083,8 @@ export function registerIpcHandlers(
     // input is queued and may never be sent. Passed straight through, because
     // `deliver` records a receipt on the strength of it.
     write: (id, text) => sessions?.write(id, text) ?? false,
+    // Lazy for the reason its siblings are: `sessions` is bound after this point (HIVE-240).
+    adapterOf: (id) => sessions?.adapterOf(id),
   });
 
   /*
@@ -2339,8 +2342,7 @@ export function registerIpcHandlers(
     sessionMetrics: () => getConfig().sessionMetrics,
     // HIVE-176. Resolved against the plugin registry at every write, and the
     // file is rewritten before every spawn, so an install is picked up too.
-    enabledPlugins: () =>
-      readSessionPluginOverrides(installedPluginsFile(), getConfig().disabledSessionPlugins),
+    enabledPlugins: () => sessionAdapter().installed.sessionOverrides(getConfig().disabledSessionPlugins),
     // The same, for the hostname a container reaches this machine by (HIVE-132).
     hostAlias: () => getConfig().receiver.hostAlias,
     // Every hostname the guard admits, not just the global one — see
@@ -2604,7 +2606,7 @@ export function registerIpcHandlers(
     doneUrl: () => hooks.doneUrl(),
     ready: seeded,
     // HIVE-176. The plugin names the Settings switches list.
-    installedPlugins: installedPluginsFile,
+    installedPlugins: () => sessionAdapter().installed.pluginNames(),
   });
 
   /*
@@ -3147,12 +3149,11 @@ export function registerIpcHandlers(
     */
     liveSurfaces: () => surfaces.all().map((surface) => surface.id),
     // Where the generated sets live (HIVE-133) — the same value `hooks`,
-    // `skills` and `mcp` are each handed below, so a container project's
+    // `skills` and `mcp` are each built with, so a container project's
     // per-session directory and its host counterpart resolve against the
     // same root.
     userDataPath: app.getPath('userData'),
     skills,
-    mcp,
     hooks,
     history,
     /*
@@ -5208,6 +5209,94 @@ export function registerIpcHandlers(
   });
 
   /**
+   * Everything a harness session's files need before `spawn` reads them (HIVE-235), in the order
+   * the two handlers below always ran it. The writes are the adapter's (`sessionAdapter().prepare`,
+   * reached by each runtime); the order and the waits are the core's.
+   *
+   * `container: false` on a restart — see `ptyRestart` for why its write belongs to `restartOnce`.
+   */
+  const prepareSession = async (
+    sessionId: string,
+    projectId: string,
+    { container }: { container: boolean },
+  ): Promise<PreparedFiles> => {
+    /**
+     * Regenerate the skills plugin before the session is started (HIVE-96).
+     *
+     * Here rather than inside `spawn` because `spawn` is synchronous on
+     * purpose — its "attach, never respawn" guard and the registration that
+     * satisfies it must not be separated by an await. This handler is already
+     * asynchronous and already waits for the login-shell probe, so the
+     * regeneration is free of that constraint.
+     *
+     * Per spawn rather than at launch: a skill saved from Settings, or written
+     * by hand into `~/.hive/skills` with the app already running, has to be on
+     * *this* command line. A readdir over a handful of small files is cheaper
+     * than any protocol that would tell us the tree changed.
+     */
+    await skills?.sync();
+    // HIVE-176. What the config and the plugin registry say now, before this
+    // session reads the settings file: a hand edit or a plugin installed since
+    // the last write both land here.
+    await hooks.rewriteSettings();
+    /**
+     * Wait for the MCP config write before a session can be spawned (HIVE-112).
+     *
+     * `mcp.start()` is fired once, unawaited, at construction so a slow write
+     * cannot delay the first window — but `mcp.configPathFor()` is read just
+     * below, and the session spawns on what it answers. Without this await, a
+     * session opened inside that window would see `null` and start silently
+     * and permanently without ledger tools. The
+     * promise is memoised, so this either resolves immediately (the ordinary
+     * case, long since settled by the time anyone opens a session) or joins
+     * the one write already in flight — never a second one.
+     */
+    await mcp.start();
+    if (container) {
+      /**
+       * A `rewrite` container project's per-session files (HIVE-133).
+       *
+       * Here rather than inside `spawn` for the reason `skills.sync()` above is:
+       * `spawn` is synchronous on purpose, and its attach-never-respawn guard
+       * must not be separated from the registration that satisfies it by an
+       * await. This handler is already asynchronous.
+       *
+       * Keyed by **entity id**. `tokenFor` is HMAC(launchSecret, entityId) and the
+       * receiver compares against `tokenFor(entityId)` for the id in
+       * `x-hive-session`, so a directory named after the registry's generation id
+       * would carry a token refused on every call.
+       *
+       * A no-op for a host project and for `exec-env`, where every per-session
+       * value in the set is a `${VAR}` and there is nothing resolved to write.
+       */
+      /**
+       * After any in-flight removal for this same id, never beside it.
+       *
+       * `settleExit` starts an `rm -rf` of this entity's session directory on
+       * every ending and resolves its exit waiters without waiting for it, so
+       * re-opening an entity whose previous generation has just exited can put
+       * this write in the path of a deletion that is still running — losing the
+       * four files it just produced, and spawning with no `--settings` and no
+       * `--mcp-config`. `restartOnce` awaits the same promise for the same
+       * reason; this is the other door into the same write.
+       *
+       * Resolves immediately in every ordinary case, this handler's own awaits
+       * above having long since covered the removal.
+       */
+      await sessions?.containerRemoval(sessionId);
+      await hooks?.writeContainerSession(sessionId, projectId);
+    }
+    const settingsPath = hooks.settingsPathFor();
+    const pluginDir = skills?.pluginDirPath() ?? null;
+    const mcpConfig = mcp.configPathFor();
+    return {
+      ...(settingsPath == null ? {} : { settingsPath }),
+      ...(pluginDir === null ? {} : { pluginDir }),
+      ...(mcpConfig === null ? {} : { mcpConfig }),
+    };
+  };
+
+  /**
    * The PTY channels (story 093).
    *
    * `spawn` and `kill` use `invoke` — both need a result. `write`, `resize`
@@ -5243,70 +5332,7 @@ export function registerIpcHandlers(
      * long since resolved by the time anyone opens a session.
      */
     await loginEnvStatus();
-    /**
-     * Regenerate the skills plugin before the session is started (HIVE-96).
-     *
-     * Here rather than inside `spawn` because `spawn` is synchronous on
-     * purpose — its "attach, never respawn" guard and the registration that
-     * satisfies it must not be separated by an await. This handler is already
-     * asynchronous and already waits for the login-shell probe, so the
-     * regeneration is free of that constraint.
-     *
-     * Per spawn rather than at launch: a skill saved from Settings, or written
-     * by hand into `~/.hive/skills` with the app already running, has to be on
-     * *this* command line. A readdir over a handful of small files is cheaper
-     * than any protocol that would tell us the tree changed.
-     */
-    await skills?.sync();
-    // HIVE-176. What the config and the plugin registry say now, before this
-    // session reads the settings file: a hand edit or a plugin installed since
-    // the last write both land here.
-    await hooks.rewriteSettings();
-    /**
-     * Wait for the MCP config write before a session can be spawned (HIVE-112).
-     *
-     * `mcp.start()` is fired once, unawaited, at construction so a slow write
-     * cannot delay the first window — but `sessions.open()` calls `spawn()`
-     * synchronously below, and `spawn()` reads `mcp.configPathFor()` the same
-     * instant. Without this await, a session opened inside that window would
-     * see `null` and start silently and permanently without ledger tools. The
-     * promise is memoised, so this either resolves immediately (the ordinary
-     * case, long since settled by the time anyone opens a session) or joins
-     * the one write already in flight — never a second one.
-     */
-    await mcp.start();
-    /**
-     * A `rewrite` container project's per-session files (HIVE-133).
-     *
-     * Here rather than inside `spawn` for the reason `skills.sync()` above is:
-     * `spawn` is synchronous on purpose, and its attach-never-respawn guard
-     * must not be separated from the registration that satisfies it by an
-     * await. This handler is already asynchronous.
-     *
-     * Keyed by **entity id**. `tokenFor` is HMAC(launchSecret, entityId) and the
-     * receiver compares against `tokenFor(entityId)` for the id in
-     * `x-hive-session`, so a directory named after the registry's generation id
-     * would carry a token refused on every call.
-     *
-     * A no-op for a host project and for `exec-env`, where every per-session
-     * value in the set is a `${VAR}` and there is nothing resolved to write.
-     */
-    /**
-     * After any in-flight removal for this same id, never beside it.
-     *
-     * `settleExit` starts an `rm -rf` of this entity's session directory on
-     * every ending and resolves its exit waiters without waiting for it, so
-     * re-opening an entity whose previous generation has just exited can put
-     * this write in the path of a deletion that is still running — losing the
-     * four files it just produced, and spawning with no `--settings` and no
-     * `--mcp-config`. `restartOnce` awaits the same promise for the same
-     * reason; this is the other door into the same write.
-     *
-     * Resolves immediately in every ordinary case, this handler's own awaits
-     * above having long since covered the removal.
-     */
-    await sessions?.containerRemoval(request.sessionId);
-    await hooks?.writeContainerSession(request.sessionId, request.projectId);
+    const files = await prepareSession(request.sessionId, request.projectId, { container: true });
     sessions?.open({
       entityId: request.sessionId,
       projectId: request.projectId,
@@ -5318,6 +5344,7 @@ export function registerIpcHandlers(
       name: request.name,
       // HIVE-88. Forwarded only here — a restart is never a resume.
       resume: request.resume,
+      files,
     });
   });
 
@@ -5340,16 +5367,6 @@ export function registerIpcHandlers(
     // Same fork race as `ptySpawn` above: a restart can be the call that first
     // brings the host up, so it has to wait for the same reason.
     await loginEnvStatus();
-    // And the same regeneration, for the same reason: a restart builds a fresh
-    // command line, so it must see the skills the user has now (HIVE-96).
-    await skills?.sync();
-    // HIVE-176. What the config and the plugin registry say now, before this
-    // session reads the settings file: a hand edit or a plugin installed since
-    // the last write both land here.
-    await hooks.rewriteSettings();
-    // Same wait as `ptySpawn` above, for the same reason: a restart's `spawn()`
-    // reads `mcp.configPathFor()` synchronously too (HIVE-112).
-    await mcp.start();
     /**
      * **Not** written here, unlike `ptySpawn` above (HIVE-133, post-review
      * fix). A restart's own teardown kills the old process and waits for its
@@ -5360,7 +5377,12 @@ export function registerIpcHandlers(
      * writes instead, in the one window between the old process actually
      * exiting and the new one spawning, which is the only ordering the
      * teardown cannot undo.
+     *
+     * Everything else `prepareSession` does, a restart needs for `ptySpawn`'s
+     * reasons: a fresh command line must see the skills, settings and MCP
+     * config as they are now (HIVE-96, HIVE-176, HIVE-112).
      */
+    const files = await prepareSession(request.sessionId, request.projectId, { container: false });
     /**
      * The task is deliberately **not** forwarded (story 097).
      *
@@ -5387,6 +5409,7 @@ export function registerIpcHandlers(
        * back as `sess-07` would rename a row the user has been watching.
        */
       name: request.name,
+      files,
     });
   });
 

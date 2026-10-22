@@ -10,14 +10,14 @@ import {
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
 } from '@shared/hook-contract';
-import { MCP_PATH, MCP_SERVER_NAME } from '@shared/mcp-contract';
+import { MCP_PATH } from '@shared/mcp-contract';
 
 /**
  * The container-flavoured `--mcp-config` (HIVE-132).
  *
  * Beside `hiveServerSpec` in `config.ts` on purpose: the shared stdio file and
  * this one must never define the hive server two different ways. The server
- * name stays {@link MCP_SERVER_NAME} because delivery decides tool naming —
+ * name stays `MCP_SERVER_NAME` because delivery decides tool naming —
  * `--mcp-config` yields `mcp__hive__*`, which the agent preamble (HIVE-115) and
  * the permission tool (HIVE-119) both depend on (`paths.ts:14-18`).
  *
@@ -45,7 +45,7 @@ export interface HttpServerSpec {
 }
 
 /** What `rewrite` bakes in place of the `${VAR}` references. */
-interface ResolvedIdentity {
+export interface ResolvedIdentity {
   /** The receiver's origin as the *container* must address it. */
   receiverUrl: string;
   session: string;
@@ -106,17 +106,3 @@ export function containerHiveServerSpec(
     },
   };
 }
-
-export const containerMcpConfig = (
-  freshness: ContainerFreshness,
-  resolved?: ResolvedIdentity,
-): string =>
-  `${JSON.stringify(
-    {
-      mcpServers: {
-        [MCP_SERVER_NAME]: containerHiveServerSpec(freshness, resolved),
-      },
-    },
-    null,
-    2,
-  )}\n`;

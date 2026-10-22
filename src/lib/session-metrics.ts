@@ -18,7 +18,7 @@ import type { SessionMetrics } from '@shared/metrics-contract';
  * The real source is Claude Code's **status line payload**. A status line
  * command receives a JSON document on stdin carrying `context_window`,
  * `rate_limits`, `model` and `effort`, and the Hive injects its own status line
- * into every session it spawns — see `electron/main/hooks/settings.ts`. So the
+ * into every session it spawns — see `electron/main/harness/claude-code/settings.ts`. So the
  * chip now reports what the session reports about itself.
  *
  * ## What absence means, and why it is not zero

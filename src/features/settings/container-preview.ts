@@ -7,7 +7,7 @@ const ELIDED = 'a3f…';
 /**
  * Wrap a value in single quotes, escaping any it contains.
  *
- * A duplicate of `electron/main/sessions/shell-quote.ts`'s `shellQuote`, for
+ * A duplicate of `electron/main/container/shell-quote.ts`'s `shellQuote`, for
  * the same reason `expandPreview` below is a duplicate of `expandEnvArgs`:
  * `src/**` cannot import `electron/main/**`. Kept even though every value
  * this module actually quotes today is synthetic and quote-free

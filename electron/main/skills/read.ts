@@ -15,7 +15,7 @@ import { readBundle } from './bundle';
  *
  * Pure over a root handed in, with no `app` import, so its tests run under
  * plain Node and never need an Electron runtime — the same arrangement
- * `hooks/settings.ts` uses for the settings it generates.
+ * `harness/claude-code/settings.ts` uses for the settings it generates.
  */
 
 interface UserSkill {

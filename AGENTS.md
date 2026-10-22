@@ -125,13 +125,14 @@ one still fires.
 | `electron/main/**` | `src/**` |
 | `electron/preload/**` | `src/**`, `electron/main/**` |
 | **`electron/pty-host/**`, `electron/mcp-host/**`** | `src/**`, `electron/main/**`, `electron/preload/**` |
+| `electron/main/harness/**` | `electron/main/{sessions,ipc,notifications,plans}/**` |
 | `src/**` | `electron/main/**`, `electron/preload/**`, `electron/pty-host/**`, `electron/mcp-host/**` |
 
-`electron/shared/**` is the **only** module both processes may import, and its rule is
-what a module **drags in** — no runtime imports, no Node APIs, no DOM APIs — not "types
-only" (`guards.ts`, `ledger-derive.ts`, `mcp-tools.ts` all ship logic both sides run).
-The renderer reaches it via `@shared`, **type-only** for anything with behaviour behind
-it, or main-process code lands in the renderer bundle — that compile-time contract.
+Nothing outside `electron/main/harness/**` imports `electron/main/harness/claude-code/**`; everyone else goes through the
+registry. `electron/shared/**` is the **only** module both
+processes may import, and its rule is what a module **drags in** — no runtime imports, no Node APIs, no DOM APIs — not "types
+only" (`guards.ts`, `ledger-derive.ts`, `mcp-tools.ts` all ship logic both sides run). The renderer reaches it via `@shared`,
+**type-only** for anything with behaviour behind it, or main-process code lands in the renderer bundle — that compile-time contract.
 
 `src/components/layout/` is the **composition root** and is exempt from the
 `features/` ban: the list panel, the stage and the session panel exist to mount

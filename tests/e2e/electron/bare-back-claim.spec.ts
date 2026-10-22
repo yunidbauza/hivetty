@@ -244,13 +244,20 @@ test('bare ← at an empty Claude prompt returns to the overmind', async ({}, te
 
     /**
      * The fleet is back on the stage. If the key had leaked, Claude's agent
-     * list would be open inside a session tab that never changed.
+     * list would be open inside a session tab that never changed. The Overmind
+     * folds its transcript into the dock (HIVE-197), and that dock is mounted
+     * only on the Overmind, so its show button is the arrival signal.
      */
+    const show = page.getByRole('button', { name: /^Show the console/ });
     await expect(
-      page.locator('[data-terminal-id="orch"]'),
+      show,
       `chords: ${JSON.stringify(await chords(page))}\nlast of the session:\n${await tail(page)}`,
     ).toBeVisible({ timeout: 10_000 });
     await expect(terminal).toBeHidden();
+
+    // And the overmind's own terminal is the one behind it.
+    await show.click();
+    await expect(page.locator('[data-terminal-id="orch"]')).toBeVisible();
   } finally {
     await app.close();
   }
@@ -298,7 +305,7 @@ test('bare ← with a half-written message stays in the session', async ({}, tes
 
     // Still here. The message is still being written.
     await expect(terminal).toBeVisible();
-    await expect(page.locator('[data-terminal-id="orch"]')).toBeHidden();
+    await expect(page.getByRole('button', { name: /^Show the console/ })).toBeHidden();
 
     /**
      * And the app said so rather than losing the key in silence — the

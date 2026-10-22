@@ -4,8 +4,13 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { containerMcpConfig } from '../../../../electron/main/mcp/container-config';
-import { mcpConfig, writeMcpConfig } from '../../../../electron/main/mcp/config';
+import { MCP_SERVER_NAME } from '@shared/mcp-contract';
+
+import {
+  containerMcpConfig,
+  mcpConfig,
+  writeMcpConfig,
+} from '../../../../../electron/main/harness/claude-code/mcp-config';
 
 describe('mcpConfig', () => {
   const options = { execPath: '/Apps/Hive.app/Contents/MacOS/Hive', scriptPath: '/out/mcp-host.js' };
@@ -74,5 +79,19 @@ describe('the stdio and container emitters agree on the hive server', () => {
     expect(Object.keys(stdio.mcpServers)).toEqual(
       Object.keys(container.mcpServers),
     );
+  });
+});
+
+describe('containerMcpConfig', () => {
+  it('names the server `hive`, which is what makes tools `mcp__hive__*`', () => {
+    const parsed = JSON.parse(containerMcpConfig('exec-env')) as {
+      mcpServers: Record<string, unknown>;
+    };
+
+    expect(Object.keys(parsed.mcpServers)).toEqual([MCP_SERVER_NAME]);
+  });
+
+  it('ends with a newline, like every other generated file', () => {
+    expect(containerMcpConfig('exec-env').endsWith('}\n')).toBe(true);
   });
 });

@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createReceiver } from '../../electron/main/hooks/receiver';
-import { metricsScript } from '../../electron/main/hooks/settings';
+import { metricsScript } from '../../electron/main/harness/claude-code/settings';
 import {
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,
@@ -116,7 +116,7 @@ describe.skipIf(!enabled)('status line conformance', () => {
     const receiver = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: (entityId, metrics) => reported.push({ entityId, metrics }),
@@ -189,7 +189,7 @@ describe.skipIf(!enabled)('status line conformance', () => {
     const receiver = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: () => {},
@@ -231,7 +231,7 @@ describe.skipIf(!enabled)('status line conformance', () => {
     const receiver = createReceiver({
       onEvent: () => {},
       onCleared: () => {},
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => {},
       onPromptName: () => {},
       onMetrics: (entityId) => reported.push(entityId),

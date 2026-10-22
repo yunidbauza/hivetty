@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isSession, terminalOf, type Session } from '@/types/entity';
 import { isDesktop } from '@config/runtime';
 import { requestSpawn } from '@lib/terminal/pty-transport';
+import { DEFAULT_INPUT_PROFILE } from '@lib/harness/input-profile';
 import { sendToSession } from '@lib/terminal/session-input';
 import { useHiveStore } from '@stores/hive-store';
 import { useUiStore } from '@stores/ui-store';
@@ -65,6 +66,12 @@ describe('clearSession', () => {
     expect(successorId).not.toBeNull();
     expect(successorId).not.toBe('hero-refresh');
     expect(sessionAt(successorId!).status).toBe('idle');
+  });
+
+  it('stamps the successor with the harness that drives it (HIVE-240)', () => {
+    const successorId = state().clearSession('hero-refresh')!;
+
+    expect(sessionAt(successorId).harness).toBe('claude-code');
   });
 
   /**
@@ -449,7 +456,7 @@ describe('clearSession', () => {
        * message — "has no live session — open it to start one" — for a pty that
        * was running and perfectly typable.
        */
-      expect(sendToSession).toHaveBeenCalledWith('hero-refresh', 'hello');
+      expect(sendToSession).toHaveBeenCalledWith('hero-refresh', 'hello', DEFAULT_INPUT_PROFILE);
     });
   });
 

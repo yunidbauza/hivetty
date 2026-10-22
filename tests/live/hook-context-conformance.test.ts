@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { readTranscript as readScreen } from '../../electron/main/integrations/slack/tty';
-import type { HookEvent } from '../../electron/shared/hook-contract';
+import type { HookEvent } from '../../electron/main/harness/claude-code/hook-vocabulary';
 
 /**
  * Can a hook's response put text into a session's context? (HIVE-136)

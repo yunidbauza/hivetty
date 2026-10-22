@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_INPUT_PROFILE } from '@lib/harness/input-profile';
 import {
   createPtyTransport,
   resetPtyChannels,
@@ -104,7 +105,7 @@ describe('sendToSession', () => {
   it('submits with a carriage return, not a newline', () => {
     openSession('sess-a');
 
-    expect(sendToSession('sess-a', 'y')).toEqual({ ok: true });
+    expect(sendToSession('sess-a', 'y', DEFAULT_INPUT_PROFILE)).toEqual({ ok: true });
     expect(write).toHaveBeenCalledWith({ sessionId: 'sess-a', data: 'y\r' });
   });
 
@@ -118,7 +119,7 @@ describe('sendToSession', () => {
      */
     openSession('sess-a');
 
-    sendToSession('sess-a', 'one\ntwo');
+    sendToSession('sess-a', 'one\ntwo', DEFAULT_INPUT_PROFILE);
 
     expect(write).toHaveBeenCalledWith({
       sessionId: 'sess-a',
@@ -126,8 +127,16 @@ describe('sendToSession', () => {
     });
   });
 
+  it('joins lines with the profile’s newline, and submits with a carriage return (HIVE-240)', () => {
+    openSession('sess-a');
+
+    sendToSession('sess-a', 'one\ntwo', { ...DEFAULT_INPUT_PROFILE, newline: '<NL>' });
+
+    expect(write).toHaveBeenCalledWith({ sessionId: 'sess-a', data: 'one<NL>two\r' });
+  });
+
   it('refuses a session that was never opened, and writes nothing', () => {
-    expect(sendToSession('sess-a', 'y')).toEqual({
+    expect(sendToSession('sess-a', 'y', DEFAULT_INPUT_PROFILE)).toEqual({
       ok: false,
       reason: 'sess-a has no live session — open it to start one',
     });
@@ -138,7 +147,7 @@ describe('sendToSession', () => {
     openSession('sess-a');
     exit('sess-a');
 
-    expect(sendToSession('sess-a', 'y')).toEqual({
+    expect(sendToSession('sess-a', 'y', DEFAULT_INPUT_PROFILE)).toEqual({
       ok: false,
       reason: 'sess-a has exited — restart it to send again',
     });
@@ -148,7 +157,7 @@ describe('sendToSession', () => {
   it('refuses an empty message rather than submitting a bare carriage return', () => {
     openSession('sess-a');
 
-    expect(sendToSession('sess-a', '   ')).toEqual({
+    expect(sendToSession('sess-a', '   ', DEFAULT_INPUT_PROFILE)).toEqual({
       ok: false,
       reason: 'nothing to send',
     });
@@ -158,7 +167,7 @@ describe('sendToSession', () => {
   it('refuses a message that is only newlines', () => {
     openSession('sess-a');
 
-    expect(sendToSession('sess-a', '\n\n').ok).toBe(false);
+    expect(sendToSession('sess-a', '\n\n', DEFAULT_INPUT_PROFILE).ok).toBe(false);
     expect(write).not.toHaveBeenCalled();
   });
 
@@ -166,7 +175,7 @@ describe('sendToSession', () => {
     openSession('sess-a');
     delete (window as { hive?: unknown }).hive;
 
-    expect(sendToSession('sess-a', 'y')).toEqual({
+    expect(sendToSession('sess-a', 'y', DEFAULT_INPUT_PROFILE)).toEqual({
       ok: false,
       reason: 'this build has no terminal bridge',
     });

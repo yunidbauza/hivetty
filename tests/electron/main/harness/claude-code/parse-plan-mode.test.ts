@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parsePlanMode } from '../../../../electron/main/plans/parse-plan-mode';
+import { parsePlanMode } from '../../../../../electron/main/harness/claude-code/parse-plan-mode';
 
 describe('parsePlanMode', () => {
   it('takes ### headings when there are any', () => {

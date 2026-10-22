@@ -38,7 +38,7 @@ import { launchHive } from './fixtures/hive-app';
  * receiver's `POST /ledger`, authenticated by the token the app itself put in
  * that party's environment. So this spec starts one real (stubbed) session and
  * has its shell speak for it, with the exact request shape `doneCommand` and
- * `readyCommand` already use for their own hooks (`hook-contract.ts`) — a
+ * `readyCommand` already use for their own hooks (`hook-vocabulary.ts`) — a
  * `curl` reading its own session id and token out of the environment the app
  * gave it.
  *

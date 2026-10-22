@@ -7,7 +7,7 @@ import { delimiter, isAbsolute, join } from 'node:path';
  * ## Why an agent does not go through the shell
  *
  * A session's command line is *typed into* a login shell
- * (`sessions/bootstrap.ts`), so the user's own `claude` — which on a developer
+ * (`harness/claude-code/launch.ts`), so the user's own `claude` — which on a developer
  * machine is routinely a shell function or alias — is what runs. An agent is
  * spawned with an argv array and no shell, so a function is unreachable.
  *

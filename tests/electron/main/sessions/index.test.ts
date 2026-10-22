@@ -1,5 +1,5 @@
 // @vitest-environment node
-import type { PlanToolCall } from '../../../../electron/main/plans';
+import type { PlanUpdate } from '../../../../electron/shared/plan-contract';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,8 +16,11 @@ import type {
   HookAgentEvent,
   HookStatusEvent,
 } from '../../../../electron/shared/hook-contract';
+import type { StatusSignal } from '../../../../electron/shared/harness-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
 
+import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
+import { sessionAdapter } from '../../../../electron/main/harness/registry';
 import type { RunAsync } from '../../../../electron/main/integrations/github/run';
 import type { PtyHostSupervisor } from '../../../../electron/main/pty-host/supervisor';
 import {
@@ -340,7 +343,7 @@ describe('what a session runs', () => {
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
     });
 
-    themed.open({ ...OPEN });
+    themed.open({ ...OPEN, files: { settingsPath: '/userData/hive/claude-hooks.settings.json' } });
     const sessionId = mintedFor('hero-refresh');
 
     emitData({ sessionId, chunk: '$ ' });
@@ -348,13 +351,46 @@ describe('what a session runs', () => {
     vi.advanceTimersByTime(150);
     vi.advanceTimersByTime(SUBMIT);
 
-    expect(asked).toBe(1);
+    expect(asked).toBe(0);
     const written = vi
       .mocked(supervisor.write)
       .mock.calls.map(([, data]) => data)
       .join('');
     expect(written).toContain('claude-hooks.settings.json');
     expect(written).not.toContain('settings.light.json');
+  });
+
+  it('launches with the paths the request carries, and asks no runtime for them (HIVE-235)', () => {
+    const instance = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => CONFIG,
+      userDataPath: USER_DATA_PATH,
+      newSessionUuid: () => TEST_UUID,
+    });
+
+    instance.open({
+      ...OPEN,
+      files: {
+        settingsPath: '/userData/hive/claude-hooks.settings.json',
+        pluginDir: '/userData/hive/plugin',
+        mcpConfig: '/userData/hive/hive.mcp.json',
+      },
+    });
+    const sessionId = mintedFor('hero-refresh');
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(SUBMIT);
+
+    const written = vi
+      .mocked(supervisor.write)
+      .mock.calls.map(([, data]) => data)
+      .join('');
+    expect(written).toContain("--settings '/userData/hive/claude-hooks.settings.json'");
+    expect(written).toContain("--plugin-dir '/userData/hive/plugin'");
+    expect(written).toContain("--mcp-config '/userData/hive/hive.mcp.json'");
   });
 
   /**
@@ -918,8 +954,8 @@ function harness(
   onEnded?: (entityId: string) => void,
 ): {
   hook: (
-    event: { entityId: string; event: HookStatusEvent['event'] } & Partial<
-      Omit<HookStatusEvent, 'entityId' | 'event' | 'status'>
+    event: { entityId: string; signal: StatusSignal } & Partial<
+      Omit<HookStatusEvent, 'entityId' | 'signal'>
     >,
   ) => void;
   cleared: (entityId: string) => void;
@@ -970,7 +1006,7 @@ function harness(
     // `status` is a required field on the wire contract but unread by
     // `onEvent` — the tracker derives it — so a fixed fallback here is
     // never observed downstream.
-    hook: (event) => onEvent!({ status: 'working', ...event } as HookStatusEvent),
+    hook: (event) => onEvent!(event as HookStatusEvent),
     cleared: (entityId) => onCleared!(entityId),
     lastStatus: (entityId) => statusFor(entityId).status,
     lastEvent: (entityId) => statusFor(entityId),
@@ -1022,9 +1058,9 @@ describe('status', () => {
   });
 
   /**
-   * HIVE-81: `idle_prompt` reports `idle`, not `waiting` (`NOTIFICATION_TYPE_STATUS`
-   * in `hook-contract.ts`). This layer does not compute that mapping — the
-   * receiver does — but it must pass whatever the receiver decided straight
+   * HIVE-81: `idle_prompt` reports `idle`, not `waiting` (its `notice` signal,
+   * through `hooks/tracker.ts`). This layer does not compute that mapping — the
+   * tracker does — but it must pass whatever the receiver decided straight
    * through rather than reinterpreting it.
    */
   it('reports idle, not waiting, for an idle_prompt notification', () => {
@@ -1052,9 +1088,7 @@ describe('status', () => {
     // 'idle' rather than reinterpreting it as 'waiting'.
     onEvent!({
       entityId: 'hero-refresh',
-      status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     });
 
     expect(sent.at(-1)).toEqual({
@@ -1062,8 +1096,7 @@ describe('status', () => {
       payload: {
         entityId: 'hero-refresh',
         status: 'idle',
-        event: 'Notification',
-        notificationType: 'idle_prompt',
+        signal: { kind: 'notice', reason: 'idle' },
       },
     });
 
@@ -1131,8 +1164,7 @@ describe('status', () => {
     const toolFinished = () =>
       onEvent!({
         entityId: 'hero-refresh',
-        status: 'working',
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
         cwd: '/home/dev/repos/hero-refresh',
       } as HookStatusEvent);
 
@@ -1222,8 +1254,7 @@ describe('status', () => {
     const turnEnded = () =>
       onEvent!({
         entityId: 'hero-refresh',
-        status: 'idle',
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
         cwd: '/home/dev/repos/hero-refresh',
       } as HookStatusEvent);
 
@@ -1373,26 +1404,26 @@ describe('status', () => {
   it('holds waiting while a sibling tool finishes, then releases on the blocked one', () => {
     const h = harness();
 
-    h.hook({ entityId: 'sess-a', event: 'UserPromptSubmit' });
-    h.hook({ entityId: 'sess-a', event: 'PreToolUse', toolUseId: 'A', toolName: 'Bash' });
+    h.hook({ entityId: 'sess-a', signal: { kind: 'prompt' } });
+    h.hook({ entityId: 'sess-a', signal: { kind: 'tool-start' }, toolUseId: 'A', toolName: 'Bash' });
     h.hook({
       entityId: 'sess-a',
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
       toolUseId: 'B',
       toolName: 'AskUserQuestion',
     });
     h.hook({
       entityId: 'sess-a',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'question' },
       toolName: 'AskUserQuestion',
     });
-    h.hook({ entityId: 'sess-a', event: 'PostToolUse', toolUseId: 'A', toolName: 'Bash' });
+    h.hook({ entityId: 'sess-a', signal: { kind: 'tool-end' }, toolUseId: 'A', toolName: 'Bash' });
 
     expect(h.lastStatus('sess-a')).toBe('waiting');
 
     h.hook({
       entityId: 'sess-a',
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
       toolUseId: 'B',
       toolName: 'AskUserQuestion',
     });
@@ -1443,13 +1474,13 @@ describe('status', () => {
   it('clears tracker state when the conversation is cleared', () => {
     const h = harness();
 
-    h.hook({ entityId: 'sess-b', event: 'UserPromptSubmit' });
-    h.hook({ entityId: 'sess-b', event: 'SubagentStart', agentId: 'X' });
-    h.hook({ entityId: 'sess-b', event: 'Stop' });
+    h.hook({ entityId: 'sess-b', signal: { kind: 'prompt' } });
+    h.hook({ entityId: 'sess-b', signal: { kind: 'subagent-start' }, agentId: 'X' });
+    h.hook({ entityId: 'sess-b', signal: { kind: 'turn-end' } });
     expect(h.lastEvent('sess-b')).toMatchObject({ idleDetail: 'agents' });
 
     h.cleared('sess-b');
-    h.hook({ entityId: 'sess-b', event: 'Stop' });
+    h.hook({ entityId: 'sess-b', signal: { kind: 'turn-end' } });
     expect(h.lastEvent('sess-b').idleDetail).toBeUndefined();
   });
 });
@@ -2029,6 +2060,23 @@ describe('the history', () => {
       vi.advanceTimersByTime(SUBMIT);
     };
 
+    it('starts a new conversation for a harness that cannot resume by id (HIVE-239)', () => {
+      const caps = claudeCodeAdapter.capabilities;
+      caps.resume = 'none';
+      try {
+        const written: Written[] = [];
+        withHistory(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, resume: true });
+        settle(mintedFor('hero-refresh'));
+
+        const typed = vi.mocked(supervisor.write).mock.calls.map(([, text]) => text).join('\n');
+        expect(typed).toContain(`--session-id ${TEST_UUID}`);
+        expect(typed).not.toContain('--resume');
+        expect(patchesFor(written, 'hero-refresh')[0]).toMatchObject({ sessionUuid: TEST_UUID });
+      } finally {
+        caps.resume = 'by-id';
+      }
+    });
+
     it('resumes the conversation the history names, and says nothing twice', () => {
       const written: Written[] = [];
       withHistory(written, { 'hero-refresh': PRIOR }).open({
@@ -2183,15 +2231,15 @@ describe('/done', () => {
   function finished(): {
     open: () => string;
     done: (entityId: string) => void;
-    hook: (entityId: string, event: HookStatusEvent['event']) => void;
+    hook: (entityId: string, signal: StatusSignal) => void;
     cleared: (entityId: string) => void;
     restart: () => Promise<void>;
     patches: (entityId: string) => Record<string, unknown>[];
     statusOf: (entityId: string) => unknown;
     finishedFor: (entityId: string) => number;
     lastFinished: (entityId: string) => Record<string, unknown> | undefined;
-    /** Hand the store a main-agent task-tool call, as the receiver would (HIVE-179). */
-    planTool: (call: PlanToolCall) => void;
+    /** Hand the store a main-agent plan op, as the receiver would (HIVE-179, HIVE-238). */
+    planTool: (update: PlanUpdate) => void;
     /** Every `CH.planChanged` payload for the entity, in order. */
     planPushes: (entityId: string) => Record<string, unknown>[];
     /** Every `CH.sessionTerminalEnded` payload this harness sent. */
@@ -2203,7 +2251,7 @@ describe('/done', () => {
     let onEvent!: (event: HookStatusEvent) => void;
     let onDone!: (entityId: string) => void;
     let onCleared!: (entityId: string) => void;
-    let onPlanTool!: (call: PlanToolCall) => void;
+    let onPlan!: (call: PlanUpdate) => void;
 
     const instance = createSessions({
       supervisor,
@@ -2223,12 +2271,12 @@ describe('/done', () => {
           onEvent: (event: HookStatusEvent) => void;
           onDone: (entityId: string) => void;
           onCleared: (entityId: string) => void;
-          onPlanTool: (call: PlanToolCall) => void;
+          onPlan: (call: PlanUpdate) => void;
         }) => {
           onEvent = opts.onEvent;
           onDone = opts.onDone;
           onCleared = opts.onCleared;
-          onPlanTool = opts.onPlanTool;
+          onPlan = opts.onPlan;
           return Promise.resolve();
         },
         stop: () => Promise.resolve(),
@@ -2291,8 +2339,7 @@ describe('/done', () => {
         return mintedFor('hero-refresh');
       },
       done: (entityId) => onDone(entityId),
-      hook: (entityId, event) =>
-        onEvent({ entityId, event, status: 'working' } as HookStatusEvent),
+      hook: (entityId, signal) => onEvent({ entityId, signal }),
       cleared: (entityId) => onCleared(entityId),
       restart: () => instance.restart(OPEN),
       patches: (entityId) =>
@@ -2318,7 +2365,7 @@ describe('/done', () => {
               entry.payload.entityId === entityId,
           )
           .at(-1)?.payload,
-      planTool: (call) => onPlanTool(call),
+      planTool: (call) => onPlan(call),
       planPushes: (entityId) =>
         local
           .filter(
@@ -2338,11 +2385,9 @@ describe('/done', () => {
    * callback the three endings need.
    */
   describe('plans (HIVE-179)', () => {
-    const createAlpha = (entityId: string): PlanToolCall => ({
+    const createAlpha = (entityId: string): PlanUpdate => ({
       entityId,
-      toolName: 'TaskCreate',
-      toolInput: { subject: 'Alpha' },
-      toolResponse: { task: { id: '1', subject: 'Alpha' } },
+      op: { kind: 'task-created', id: '1', title: 'Alpha' },
     });
 
     const alphaPlan = (entityId: string) => ({
@@ -2385,9 +2430,7 @@ describe('/done', () => {
         h.open();
         await h.planTool({
           entityId: 'hero-refresh',
-          toolName: 'Write',
-          toolInput: { file_path: file },
-          toolResponse: undefined,
+          op: { kind: 'plan-file-touched', path: file },
           cwd: root,
         });
         expect(h.sessions.plans().plans[0]).toMatchObject({ source: 'plan-file', file });
@@ -2410,7 +2453,7 @@ describe('/done', () => {
       h.planTool(createAlpha('hero-refresh'));
 
       h.done('hero-refresh');
-      h.hook('hero-refresh', 'Stop');
+      h.hook('hero-refresh', { kind: 'turn-end' });
       emitExit({ sessionId, exitCode: 0 });
 
       expect(h.finishedFor('hero-refresh')).toBe(1);
@@ -2447,7 +2490,7 @@ describe('/done', () => {
       emitExit({ sessionId: first, exitCode: 0 });
       vi.advanceTimersByTime(8);
       await restarted;
-      h.planTool({ ...createAlpha('hero-refresh'), toolInput: { subject: 'Beta' } });
+      h.planTool({ ...createAlpha('hero-refresh'), op: { kind: 'task-created', id: '1', title: 'Beta' } });
 
       expect(h.sessions.plans()).toEqual({
         plans: [
@@ -2478,7 +2521,7 @@ describe('/done', () => {
     const h = finished();
     const sessionId = h.open();
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
 
     emitExit({ sessionId, exitCode: 129, signal: 9 });
 
@@ -2501,7 +2544,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
 
     /*
       The assertion is the *mechanism*, not just the effect. `bootstrap.ts`
@@ -2532,7 +2575,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
     emitExit({ sessionId, exitCode: 0 });
 
     expect(h.patches('hero-refresh').at(-1)).toMatchObject({ status: 'done' });
@@ -2552,7 +2595,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
     emitExit({ sessionId, exitCode: 0 });
 
     /*
@@ -2583,8 +2626,8 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'UserPromptSubmit');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'prompt' });
+    h.hook('hero-refresh', { kind: 'turn-end' });
 
     // Nothing written, and the ending that eventually comes is not `done`.
     expect(writes()).toEqual([]);
@@ -2599,7 +2642,7 @@ describe('/done', () => {
     h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'SubagentStop');
+    h.hook('hero-refresh', { kind: 'subagent-end' });
 
     expect(writes()).toEqual([]);
   });
@@ -2609,7 +2652,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
     expect(killed).not.toContain(sessionId);
 
     vi.advanceTimersByTime(10_000);
@@ -2622,7 +2665,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
     emitExit({ sessionId, exitCode: 0 });
 
     // The timer has to go with the session, or it fires against a closed
@@ -2638,8 +2681,8 @@ describe('/done', () => {
 
     h.done('hero-refresh');
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
+    h.hook('hero-refresh', { kind: 'turn-end' });
 
     expect(writes()).toEqual(['/exit\r']);
   });
@@ -2650,7 +2693,7 @@ describe('/done', () => {
 
     h.done('hero-refresh');
     h.cleared('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
 
     /*
       `/clear` retires the conversation that declared itself finished and opens
@@ -2673,7 +2716,7 @@ describe('/done', () => {
     const sessionId = h.open();
 
     h.done('hero-refresh');
-    h.hook('hero-refresh', 'Stop');
+    h.hook('hero-refresh', { kind: 'turn-end' });
     expect(writes()).toEqual(['/exit\r']);
 
     /*
@@ -2683,7 +2726,7 @@ describe('/done', () => {
       this event is the proof. Left armed, the backstop would destroy the pty
       ten seconds into that turn and file it as `done`.
     */
-    h.hook('hero-refresh', 'UserPromptSubmit');
+    h.hook('hero-refresh', { kind: 'prompt' });
     vi.advanceTimersByTime(10_000);
 
     expect(killed).not.toContain(sessionId);
@@ -2761,7 +2804,7 @@ describe('the idle signal', () => {
     const h = harness(onIdle);
     h.sessions.open(OPEN);
 
-    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: [] });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'turn-end' }, backgroundShells: [] });
 
     expect(onIdle).toHaveBeenCalledWith('hero-refresh');
   });
@@ -2777,7 +2820,7 @@ describe('the idle signal', () => {
     const h = harness(onIdle);
     h.sessions.open(OPEN);
 
-    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: ['shell-1'] });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'turn-end' }, backgroundShells: ['shell-1'] });
 
     expect(onIdle).not.toHaveBeenCalled();
   });
@@ -2788,7 +2831,7 @@ describe('the idle signal', () => {
     const h = harness(onIdle);
     h.sessions.open(OPEN);
 
-    h.hook({ entityId: 'hero-refresh', event: 'PermissionRequest', toolName: 'Bash' });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'waiting', reason: 'permission' }, toolName: 'Bash' });
 
     expect(onIdle).not.toHaveBeenCalled();
   });
@@ -2800,11 +2843,11 @@ describe('the idle signal', () => {
     expect(h.sessions.isIdle('hero-refresh')).toBe(false);
 
     h.sessions.open(OPEN);
-    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: [] });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'turn-end' }, backgroundShells: [] });
     expect(h.sessions.isIdle('hero-refresh')).toBe(true);
 
     // `UserPromptSubmit` derives `working` — the turn started again.
-    h.hook({ entityId: 'hero-refresh', event: 'UserPromptSubmit' });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'prompt' } });
     expect(h.sessions.isIdle('hero-refresh')).toBe(false);
   });
 
@@ -2812,7 +2855,7 @@ describe('the idle signal', () => {
     const h = harness();
     h.sessions.open(OPEN);
 
-    h.hook({ entityId: 'hero-refresh', event: 'Stop', backgroundShells: ['shell-1'] });
+    h.hook({ entityId: 'hero-refresh', signal: { kind: 'turn-end' }, backgroundShells: ['shell-1'] });
 
     expect(h.sessions.isIdle('hero-refresh')).toBe(false);
   });
@@ -2833,8 +2876,8 @@ describe('the agent id space (HIVE-115)', () => {
 
   const agentHarness = (): {
     knowsAgent: (entityId: string) => boolean;
-    agentEvent: (event: Partial<HookAgentEvent> & { event: HookAgentEvent['event'] }) => void;
-    sessionEvent: (event: HookStatusEvent['event']) => void;
+    agentEvent: (event: Partial<HookAgentEvent> & { signal: StatusSignal }) => void;
+    sessionEvent: (signal: StatusSignal) => void;
     turnsEnded: ReturnType<typeof vi.fn>;
     names: Set<string>;
     sent: Sent[];
@@ -2880,11 +2923,9 @@ describe('the agent id space (HIVE-115)', () => {
 
     return {
       knowsAgent: (entityId) => knowsAgent!(entityId),
-      // `status` is required on the wire contract and unread here.
       agentEvent: (event) =>
-        onAgentEvent!({ entityId: AGENT, status: 'idle', ...event } as HookAgentEvent),
-      sessionEvent: (event: HookStatusEvent['event']) =>
-        onEvent!({ entityId: 'hero-refresh', status: 'idle', event } as HookStatusEvent),
+        onAgentEvent!({ entityId: AGENT, ...event } as HookAgentEvent),
+      sessionEvent: (signal: StatusSignal) => onEvent!({ entityId: 'hero-refresh', signal }),
       turnsEnded,
       names,
       sent: localSent,
@@ -2909,7 +2950,7 @@ describe('the agent id space (HIVE-115)', () => {
   it('forwards a Stop with the session uuid that came with it', () => {
     const h = agentHarness();
 
-    h.agentEvent({ event: 'Stop', sessionUuid: UUID });
+    h.agentEvent({ signal: { kind: 'turn-end' }, sessionUuid: UUID });
 
     expect(h.turnsEnded).toHaveBeenCalledWith(AGENT, UUID, undefined);
 
@@ -2919,7 +2960,7 @@ describe('the agent id space (HIVE-115)', () => {
   it('forwards whether the Stop reported background work holding the run', () => {
     const h = agentHarness();
 
-    h.agentEvent({ event: 'Stop', sessionUuid: UUID, backgroundWork: true });
+    h.agentEvent({ signal: { kind: 'turn-end' }, sessionUuid: UUID, backgroundWork: true });
 
     expect(h.turnsEnded).toHaveBeenCalledWith(AGENT, UUID, true);
 
@@ -2934,19 +2975,24 @@ describe('the agent id space (HIVE-115)', () => {
   it('forwards a Stop with no uuid as undefined', () => {
     const h = agentHarness();
 
-    h.agentEvent({ event: 'Stop' });
+    h.agentEvent({ signal: { kind: 'turn-end' } });
 
     expect(h.turnsEnded).toHaveBeenCalledWith(AGENT, undefined, undefined);
 
     h.sessions.dispose();
   });
 
-  it.each(['SessionStart', 'PreToolUse', 'PostToolUse', 'SubagentStop'] as const)(
+  it.each([
+    ['SessionStart', { kind: 'session-start' }],
+    ['PreToolUse', { kind: 'tool-start' }],
+    ['PostToolUse', { kind: 'tool-end' }],
+    ['SubagentStop', { kind: 'subagent-end' }],
+  ] as const)(
     'accepts %s from an agent and acts on none of it',
-    (event) => {
+    (_event, signal) => {
       const h = agentHarness();
 
-      h.agentEvent({ event, sessionUuid: UUID });
+      h.agentEvent({ signal, sessionUuid: UUID });
 
       expect(h.turnsEnded).not.toHaveBeenCalled();
 
@@ -2965,13 +3011,17 @@ describe('the agent id space (HIVE-115)', () => {
   it('never publishes a session status for an agent, though a session does', () => {
     const h = agentHarness();
 
-    for (const event of ['SessionStart', 'PreToolUse', 'Stop'] as const) {
-      h.agentEvent({ event, sessionUuid: UUID });
+    for (const [, signal] of [
+      ['SessionStart', { kind: 'session-start' }],
+      ['PreToolUse', { kind: 'tool-start' }],
+      ['Stop', { kind: 'turn-end' }],
+    ] as const) {
+      h.agentEvent({ signal, sessionUuid: UUID });
     }
 
     expect(h.sent.filter((entry) => entry.channel === CH.sessionStatus)).toEqual([]);
 
-    h.sessionEvent('Stop');
+    h.sessionEvent({ kind: 'turn-end' });
 
     expect(
       h.sent
@@ -3098,9 +3148,6 @@ describe('container spawn (HIVE-133)', () => {
         },
         stop: () => Promise.resolve(),
       } as unknown as Parameters<typeof createSessions>[0]['hooks'],
-      mcp: {
-        configPathFor: () => join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
-      } as unknown as Parameters<typeof createSessions>[0]['mcp'],
       skills: {
         sync: () => Promise.resolve({ names: [] }),
         pluginDirPath: () => join(USER_DATA_PATH, 'hive', 'plugin'),
@@ -3108,7 +3155,14 @@ describe('container spawn (HIVE-133)', () => {
     });
     created.push(instance);
 
-    instance.open(OPEN);
+    instance.open({
+      ...OPEN,
+      files: {
+        settingsPath: join(USER_DATA_PATH, 'hive', CONTAINER_SETTINGS_FILE),
+        pluginDir: join(USER_DATA_PATH, 'hive', 'plugin'),
+        mcpConfig: join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
+      },
+    });
     const sessionId = mintedFor('hero-refresh');
 
     emitData({ sessionId, chunk: '$ ' });
@@ -3408,10 +3462,18 @@ describe('container spawn (HIVE-133)', () => {
     });
     created.push(instance);
 
-    instance.open(OPEN);
+    const request = {
+      ...OPEN,
+      files: {
+        settingsPath: join(USER_DATA_PATH, 'hive', CONTAINER_SETTINGS_FILE),
+        pluginDir: join(USER_DATA_PATH, 'hive', 'plugin'),
+        mcpConfig: join(USER_DATA_PATH, 'hive', CONTAINER_MCP_FILE),
+      },
+    };
+    instance.open(request);
     const first = mintedFor('hero-refresh');
 
-    const restart = instance.restart(OPEN);
+    const restart = instance.restart(request);
     await Promise.resolve();
     emitExit({ sessionId: first, exitCode: 0 });
 
@@ -3586,6 +3648,29 @@ describe('terminals', () => {
     expect(sessions.entities()).not.toContain('term-01');
   });
 
+  it('publishes no terminal ending for a command, which has no harness either (HIVE-234)', () => {
+    sessions.openCommand({
+      entityId: 'hive.clone',
+      cwd: '/Users/me/Projects',
+      file: 'git',
+      args: ['clone', '--progress', '--', 'https://x/y.git', 'y'],
+      cols: 80,
+      rows: 24,
+      onExit: () => {},
+    });
+    emitExit({ sessionId: mintedFor('hive.clone'), exitCode: 0 });
+    emitError({ sessionId: mintedFor('hive.clone'), message: 'late' });
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
+  it('publishes no terminal ending when a session’s spawn fails (HIVE-234)', () => {
+    sessions.open(OPEN);
+    emitError({ sessionId: mintedFor('hero-refresh'), message: 'could not start /bin/zsh' });
+
+    expect(on(CH.sessionTerminalEnded)).toHaveLength(0);
+  });
+
   it('reports lost when the host went away', () => {
     sessions.openTerminal(TERMINAL);
     emitLost({ sessionId: mintedFor('term-01') });
@@ -3666,6 +3751,14 @@ describe('terminals', () => {
       entityId: 'hero-refresh',
       ending: { kind: 'lost', reason: 'the pty host crashed' },
     });
+  });
+
+  it('answers the adapter for an entity: Claude Code for a session, the shared one for a terminal (HIVE-240)', () => {
+    sessions.open(OPEN);
+    sessions.openTerminal(TERMINAL);
+    expect(sessions.adapterOf('hero-refresh')).toBe(claudeCodeAdapter);
+    expect(sessions.adapterOf('term-01')).toBe(sessionAdapter());
+    expect(sessions.adapterOf('never-opened')).toBe(sessionAdapter());
   });
 });
 

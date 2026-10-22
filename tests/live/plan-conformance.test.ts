@@ -15,7 +15,7 @@ import { CH } from '../../electron/shared/ipc-contract';
 import type { PlanChangedEvent } from '../../electron/shared/plan-contract';
 
 import { createReceiver, type Receiver } from '../../electron/main/hooks/receiver';
-import { writeHookSettings } from '../../electron/main/hooks/settings';
+import { writeHookSettings } from '../../electron/main/harness/claude-code/settings';
 import { createPlans, type Plans } from '../../electron/main/plans';
 
 /**
@@ -118,7 +118,7 @@ describe.skipIf(!enabled)('plan conformance (HIVE-179)', () => {
     });
     receiver = createReceiver({
       onEvent: () => {},
-      onPlanTool: (call) => plans.onTool(call),
+      onPlan: (update) => plans.apply(update),
       onTicketIntent: () => {},
       onPromptName: () => {},
       onCleared: () => {},

@@ -11,8 +11,8 @@ import { HOOK_ENV_GRANTS, HOOK_ENV_RECEIVER_URL } from '@shared/hook-contract';
 import { HIVE_CONSENT_TOOLS, HIVE_STANDING_GRANTS } from '@shared/ledger-tools';
 import { namesTool, ONCE_ONLY_TOOLS } from '@shared/permission-rules';
 
+import { createPathMap } from '../container/path-map';
 import { withHostAlias } from '../hooks/container-origin';
-import { createPathMap } from '../sessions/path-map';
 
 /**
  * The command line one wake runs (HIVE-115).

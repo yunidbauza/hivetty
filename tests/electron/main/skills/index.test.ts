@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MAX_BUNDLE_FILE_BYTES, type BundleManifest } from '@shared/skills-contract';
 
+import { readInstalledPluginNames } from '../../../../electron/main/harness/claude-code/installed';
 import { createSkillsRuntime } from '../../../../electron/main/skills';
 import { resolveInSkill } from '../../../../electron/main/skills/paths';
 
@@ -1314,7 +1315,7 @@ describe('the snapshot lists the installed plugins (HIVE-176)', () => {
       'utf8',
     );
 
-    const withRegistry = createSkillsRuntime({ userDataPath, version: '1.0.0', installedPlugins: () => registryFile });
+    const withRegistry = createSkillsRuntime({ userDataPath, version: '1.0.0', installedPlugins: () => readInstalledPluginNames(registryFile) });
     expect((await withRegistry.list()).plugins).toEqual(['workstream']);
     expect((await runtime().list()).plugins).toEqual([]);
   });

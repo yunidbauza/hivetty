@@ -62,7 +62,7 @@ describe('session status', () => {
   });
 
   /**
-   * `HOOK_STATUS` maps both `SessionStart` and `Stop` to `idle`, so without the
+   * The tracker derives `idle` from both a session's start and a turn's end, so without the
    * gate every spawn announced "has gone quiet" the moment it started, and
    * every turn announced it again — filling the buffer and evicting the
    * approval request the user actually walked away from.
@@ -73,12 +73,12 @@ describe('session status', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'nova-web',
       status: 'idle',
-      event: 'SessionStart',
+      signal: { kind: 'session-start' },
     });
     n.observe(CH.sessionStatus, {
       entityId: 'nova-web',
       status: 'idle',
-      event: 'Stop',
+      signal: { kind: 'turn-end' },
     });
 
     expect(raise).not.toHaveBeenCalled();
@@ -103,7 +103,7 @@ describe('session status', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'lead-form',
       status: 'waiting',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'permission' },
     });
     expect(raised().kind).toBe('session.blocked');
     expect(raised().title).toBe('needs approval');
@@ -113,7 +113,7 @@ describe('session status', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'call-notes',
       status: 'waiting',
-      event: 'Elicitation',
+      signal: { kind: 'waiting', reason: 'input' },
     });
     expect(raised().kind).toBe('session.blocked');
     expect(raised().title).toBe('needs an answer');
@@ -126,8 +126,7 @@ describe('session status', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'lead-form',
       status: 'waiting',
-      event: 'PermissionRequest',
-      toolName: 'AskUserQuestion',
+      signal: { kind: 'waiting', reason: 'question' },
     });
 
     expect(raised().kind).toBe('session.blocked');
@@ -155,18 +154,17 @@ describe('session status', () => {
  * human.
  */
 describe('the Notification hook', () => {
-  const waiting = (
+  const notice = (
     entityId: string,
-    notificationType: string,
+    reason: string,
   ): Parameters<ReturnType<typeof notifier>['observe']>[1] => ({
     entityId,
     status: 'waiting',
-    event: 'Notification',
-    notificationType,
+    signal: { kind: 'notice', reason },
   });
 
   it('raises session.input_needed for an idle prompt', () => {
-    notifier().observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
+    notifier().observe(CH.sessionStatus, notice('lead-form', 'idle'));
 
     expect(raised().kind).toBe('session.input_needed');
     // It replaces the session's idle row, so it delivers at least as that row would.
@@ -182,14 +180,14 @@ describe('the Notification hook', () => {
   it('raises nothing for a permission prompt — PermissionRequest already did', () => {
     notifier().observe(
       CH.sessionStatus,
-      waiting('lead-form', 'permission_prompt'),
+      notice('lead-form', 'permission'),
     );
 
     expect(raise).not.toHaveBeenCalled();
   });
 
   it('ignores a notification type this build has no reading of', () => {
-    notifier().observe(CH.sessionStatus, waiting('lead-form', 'auth_needed'));
+    notifier().observe(CH.sessionStatus, notice('lead-form', 'auth_needed'));
 
     expect(raise).not.toHaveBeenCalled();
   });
@@ -207,25 +205,25 @@ describe('the Notification hook', () => {
    */
   it.each(['constructor', 'toString', '__proto__', 'valueOf'])(
     'treats the inherited property %s as no kind at all',
-    (notificationType) => {
+    (name) => {
       const n = notifier();
 
-      n.observe(CH.sessionStatus, waiting('lead-form', notificationType));
+      n.observe(CH.sessionStatus, notice('lead-form', name));
       n.observe(CH.sessionStatus, {
         entityId: 'lead-form',
         status: 'waiting',
-        event: notificationType,
+        signal: { kind: name },
       });
 
       expect(raise).not.toHaveBeenCalled();
     },
   );
 
-  it('ignores a Notification carrying no type at all', () => {
+  it('ignores a notice carrying no reason at all', () => {
     notifier().observe(CH.sessionStatus, {
       entityId: 'lead-form',
       status: 'waiting',
-      event: 'Notification',
+      signal: { kind: 'notice' },
     });
 
     expect(raise).not.toHaveBeenCalled();
@@ -239,9 +237,9 @@ describe('the Notification hook', () => {
   it('says it once while the session stays waiting', () => {
     const n = notifier();
 
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
 
     expect(raise).toHaveBeenCalledTimes(1);
   });
@@ -249,14 +247,14 @@ describe('the Notification hook', () => {
   it('says it again once the session has visibly stopped waiting', () => {
     const n = notifier();
 
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
     // The user came back and typed.
     n.observe(CH.sessionStatus, {
       entityId: 'lead-form',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
 
     expect(raise).toHaveBeenCalledTimes(2);
   });
@@ -265,8 +263,8 @@ describe('the Notification hook', () => {
   it('does not let one waiting session silence another', () => {
     const n = notifier();
 
-    n.observe(CH.sessionStatus, waiting('lead-form', 'idle_prompt'));
-    n.observe(CH.sessionStatus, waiting('call-notes', 'idle_prompt'));
+    n.observe(CH.sessionStatus, notice('lead-form', 'idle'));
+    n.observe(CH.sessionStatus, notice('call-notes', 'idle'));
 
     expect(raise).toHaveBeenCalledTimes(2);
     expect(raise.mock.calls[1][0].title).toBe('is waiting on you');
@@ -275,7 +273,7 @@ describe('the Notification hook', () => {
 
 /**
  * HIVE-81: `idle_prompt` now reports the status `idle`, not `waiting` — see
- * `hook-contract.ts`'s `NOTIFICATION_TYPE_STATUS`. The inbox row it raises is
+ * `hooks/tracker.ts`'s `notice` branch. The inbox row it raises is
  * routed off the hook *event*, independently of that status, which is the
  * split these tests pin down.
  */
@@ -286,8 +284,7 @@ describe('idle_prompt', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     });
 
     expect(raised().kind).toBe('session.input_needed');
@@ -298,8 +295,7 @@ describe('idle_prompt', () => {
     const idlePrompt = {
       entityId: 'sess-03',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     };
 
     n.observe(CH.sessionStatus, idlePrompt);
@@ -310,7 +306,7 @@ describe('idle_prompt', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'idle',
-      event: 'Stop',
+      signal: { kind: 'turn-end' },
     });
     n.observe(CH.sessionStatus, idlePrompt);
     expect(raise).toHaveBeenCalledTimes(1);
@@ -318,7 +314,7 @@ describe('idle_prompt', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
     n.observe(CH.sessionStatus, idlePrompt);
     expect(raise).toHaveBeenCalledTimes(2);
@@ -330,7 +326,7 @@ describe('idle_prompt', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'idle',
-      event: 'Stop',
+      signal: { kind: 'turn-end' },
     });
 
     expect(raise).not.toHaveBeenCalled();
@@ -373,7 +369,7 @@ describe('naming', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'waiting',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'permission' },
     });
 
     expect(raise).toHaveBeenCalledWith(
@@ -390,7 +386,7 @@ describe('naming', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'waiting',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'permission' },
     });
 
     expect(raised().title).toBe('needs approval');
@@ -403,7 +399,7 @@ describe('naming', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'waiting',
-      event: 'Elicitation',
+      signal: { kind: 'waiting', reason: 'input' },
     });
     expect(raised()).toMatchObject({
       title: 'needs an answer',
@@ -423,7 +419,7 @@ describe('naming', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'waiting',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'permission' },
     });
 
     expect(raised().action).toEqual({ type: 'session', entityId: 'sess-01' });
@@ -437,8 +433,7 @@ describe('announced once', () => {
     const idlePrompt = {
       entityId: 'sess-01',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     };
 
     n.observe(CH.sessionStatus, idlePrompt);
@@ -448,7 +443,7 @@ describe('announced once', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'working',
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
     });
     n.observe(CH.sessionStatus, idlePrompt);
     expect(raise).toHaveBeenCalledTimes(1);
@@ -459,8 +454,7 @@ describe('announced once', () => {
     const idlePrompt = {
       entityId: 'sess-01',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     };
 
     n.observe(CH.sessionStatus, idlePrompt);
@@ -469,7 +463,7 @@ describe('announced once', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-01',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
     n.observe(CH.sessionStatus, idlePrompt);
     expect(raise).toHaveBeenCalledTimes(2);
@@ -480,8 +474,7 @@ describe('announced once', () => {
     const idlePrompt = {
       entityId: 'sess-01',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     };
 
     n.observe(CH.sessionStatus, idlePrompt);
@@ -536,7 +529,7 @@ describe('foreground re-arm', () => {
   const waitingPermission = (entityId: string) => ({
     entityId,
     status: 'waiting',
-    event: 'PermissionRequest',
+    signal: { kind: 'waiting', reason: 'permission' },
   });
 
   beforeEach(() => {
@@ -582,8 +575,7 @@ describe('foreground re-arm', () => {
   const idlePrompt = (entityId: string) => ({
     entityId,
     status: 'idle',
-    event: 'Notification',
-    notificationType: 'idle_prompt',
+    signal: { kind: 'notice', reason: 'idle' },
   });
 
   it('promotes a gated input_needed when the user looks away', () => {
@@ -625,7 +617,7 @@ describe('foreground re-arm', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-04',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
     n.reevaluateForeground();
 
@@ -650,7 +642,7 @@ describe('foreground re-arm', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-04',
       status: 'working',
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
     });
     n.reevaluateForeground();
 
@@ -806,7 +798,7 @@ describe('foreground re-arm', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'waiting',
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
     });
     n.reevaluateForeground();
 
@@ -821,7 +813,7 @@ describe('foreground re-arm', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
     n.reevaluateForeground();
 
@@ -837,7 +829,7 @@ describe('foreground re-arm', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-03',
       status: 'idle',
-      event: 'Stop',
+      signal: { kind: 'turn-end' },
     });
     n.reevaluateForeground();
 
@@ -979,12 +971,12 @@ describe('session.idle', () => {
   const prompt = (entityId: string) => ({
     entityId,
     status: 'working',
-    event: 'UserPromptSubmit',
+    signal: { kind: 'prompt' },
   });
   const stop = (entityId: string, idleDetail?: string) => ({
     entityId,
     status: 'idle',
-    event: 'Stop',
+    signal: { kind: 'turn-end' },
     ...(idleDetail === undefined ? {} : { idleDetail }),
   });
   const idleKinds = () =>
@@ -1048,7 +1040,7 @@ describe('session.idle', () => {
       isDelegated: () => true,
     });
 
-    n.observe(CH.sessionStatus, { entityId: 'sess-05', status: 'waiting', event: 'Notification', notificationType: 'idle_prompt' });
+    n.observe(CH.sessionStatus, { entityId: 'sess-05', status: 'waiting', signal: { kind: 'notice', reason: 'idle' } });
 
     expect(raise).not.toHaveBeenCalled();
   });
@@ -1066,7 +1058,7 @@ describe('session.idle', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-05',
       status: 'idle',
-      event: 'SubagentStop',
+      signal: { kind: 'subagent-end' },
     });
     expect(raise).not.toHaveBeenCalled();
 
@@ -1078,7 +1070,7 @@ describe('session.idle', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-05',
       status: 'idle',
-      event: 'SubagentStop',
+      signal: { kind: 'subagent-end' },
     });
     expect(idleKinds()).toHaveLength(1);
   });
@@ -1110,7 +1102,7 @@ describe('session.idle', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-05',
       status: 'working',
-      event: 'PostToolUse',
+      signal: { kind: 'tool-end' },
     });
     n.observe(CH.sessionStatus, stop('sess-05'));
     n.observe(CH.sessionStatus, stop('sess-05'));
@@ -1135,7 +1127,7 @@ describe('session.idle', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-05',
       status: 'idle',
-      event: 'SessionStart',
+      signal: { kind: 'session-start' },
     });
     n.observe(CH.sessionStatus, stop('sess-05'));
 
@@ -1150,7 +1142,7 @@ describe('session.idle', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-05',
       status: 'idle',
-      event: 'SessionStart',
+      signal: { kind: 'session-start' },
     });
     n.observe(CH.sessionStatus, stop('sess-05'));
 
@@ -1190,8 +1182,7 @@ describe('input_needed under a live idle detail', () => {
   const idlePrompt = (idleDetail?: string) => ({
     entityId: 'sess-07',
     status: 'idle',
-    event: 'Notification',
-    notificationType: 'idle_prompt',
+    signal: { kind: 'notice', reason: 'idle' },
     ...(idleDetail === undefined ? {} : { idleDetail }),
   });
 
@@ -1235,8 +1226,8 @@ describe('session.idle foreground gating', () => {
     } as unknown as NotificationHub;
     return promote;
   };
-  const prompt = { entityId: 'sess-08', status: 'working', event: 'UserPromptSubmit' };
-  const stop = { entityId: 'sess-08', status: 'idle', event: 'Stop' };
+  const prompt = { entityId: 'sess-08', status: 'working', signal: { kind: 'prompt' } };
+  const stop = { entityId: 'sess-08', status: 'idle', signal: { kind: 'turn-end' } };
 
   /**
    * The nudge a minute later is the same fact again and supersedes the idle
@@ -1253,8 +1244,7 @@ describe('session.idle foreground gating', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-08',
       status: 'idle',
-      event: 'Notification',
-      notificationType: 'idle_prompt',
+      signal: { kind: 'notice', reason: 'idle' },
     });
     n.reevaluateForeground();
 
@@ -1272,7 +1262,7 @@ describe('session.idle foreground gating', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-08',
       status: 'working',
-      event: 'PreToolUse',
+      signal: { kind: 'tool-start' },
     });
     n.reevaluateForeground();
 
@@ -1295,9 +1285,9 @@ describe('session.idle foreground gating', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-08',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
-    n.observe(CH.sessionStatus, { entityId: 'sess-08', status: 'idle', event: 'Stop' });
+    n.observe(CH.sessionStatus, { entityId: 'sess-08', status: 'idle', signal: { kind: 'turn-end' } });
     n.reevaluateForeground();
     expect(promote).toHaveBeenCalledWith('raised-idle');
 
@@ -1305,7 +1295,7 @@ describe('session.idle foreground gating', () => {
     n.observe(CH.sessionStatus, {
       entityId: 'sess-08',
       status: 'working',
-      event: 'UserPromptSubmit',
+      signal: { kind: 'prompt' },
     });
     n.reevaluateForeground();
     expect(promote).not.toHaveBeenCalled();
@@ -1432,12 +1422,12 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'UserPromptSubmit',
+        signal: { kind: 'prompt' },
       });
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'idle',
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
       });
       n.reevaluateForeground();
 
@@ -1471,7 +1461,7 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'waiting',
-        event: 'PermissionRequest',
+        signal: { kind: 'waiting', reason: 'permission' },
       });
       n.reevaluateForeground();
 
@@ -1486,7 +1476,7 @@ describe('a row dismisses itself once it has been acted on', () => {
     const block = (entityId: string) => ({
       entityId,
       status: 'waiting',
-      event: 'PermissionRequest',
+      signal: { kind: 'waiting', reason: 'permission' },
     });
 
     /** An approved tool runs, and its `PostToolUse` lands `working`. */
@@ -1497,7 +1487,7 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
       });
 
       expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.blocked']);
@@ -1511,7 +1501,7 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'UserPromptSubmit',
+        signal: { kind: 'prompt' },
       });
 
       expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.blocked']);
@@ -1565,12 +1555,12 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
       });
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'idle',
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
       });
 
       const answered = dismissForSession.mock.calls.filter(([, kinds]) => kinds[0] === 'session.blocked');
@@ -1611,14 +1601,13 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'waiting',
-        event: 'Notification',
-        notificationType: 'idle_prompt',
+        signal: { kind: 'notice', reason: 'idle' },
       });
       // The user types, which is what clears `blocked` wholesale.
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'UserPromptSubmit',
+        signal: { kind: 'prompt' },
       });
 
       expect(dismissForSession).toHaveBeenCalledWith('sess-05', ['session.blocked']);
@@ -1636,7 +1625,7 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'PostToolUse',
+        signal: { kind: 'tool-end' },
       });
 
       const answered = dismissForSession.mock.calls.filter(([, kinds]) => kinds[0] === 'session.blocked');
@@ -1650,12 +1639,12 @@ describe('a row dismisses itself once it has been acted on', () => {
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'working',
-        event: 'UserPromptSubmit',
+        signal: { kind: 'prompt' },
       });
       n.observe(CH.sessionStatus, {
         entityId: 'sess-05',
         status: 'idle',
-        event: 'Stop',
+        signal: { kind: 'turn-end' },
       });
 
       expect(dismissForSession).not.toHaveBeenCalledWith('sess-05', ['session.blocked']);
@@ -1692,13 +1681,12 @@ describe('one yours-again row per session', () => {
       isDelegated: () => delegated,
     });
   };
-  const prompt = { entityId: 'sess-05', status: 'working', event: 'UserPromptSubmit' };
-  const stop = { entityId: 'sess-05', status: 'idle', event: 'Stop' };
+  const prompt = { entityId: 'sess-05', status: 'working', signal: { kind: 'prompt' } };
+  const stop = { entityId: 'sess-05', status: 'idle', signal: { kind: 'turn-end' } };
   const nudge = {
     entityId: 'sess-05',
     status: 'waiting',
-    event: 'Notification',
-    notificationType: 'idle_prompt',
+    signal: { kind: 'notice', reason: 'idle' },
   };
   const arrival = ['session.idle', 'session.input_needed'];
   const raisedKinds = () => raise.mock.calls.map((call) => (call[0] as { kind: string }).kind);
@@ -1769,8 +1757,8 @@ describe('one yours-again row per session', () => {
   });
 
   it.each([
-    ['UserPromptSubmit', { entityId: 'sess-05', status: 'working', event: 'UserPromptSubmit' }],
-    ['a working status', { entityId: 'sess-05', status: 'working', event: 'PostToolUse' }],
+    ['UserPromptSubmit', { entityId: 'sess-05', status: 'working', signal: { kind: 'prompt' } }],
+    ['a working status', { entityId: 'sess-05', status: 'working', signal: { kind: 'tool-end' } }],
     ['a working status with no event', { entityId: 'sess-05', status: 'working' }],
   ])('drops both yours-again rows when the session resumes (%s)', (_name, payload) => {
     const n = withHub();

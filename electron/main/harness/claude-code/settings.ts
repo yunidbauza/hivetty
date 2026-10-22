@@ -5,14 +5,15 @@ import {
   type HookIdentity,
   HOOK_ENV_SESSION,
   HOOK_ENV_TOKEN,
-  HOOK_EVENTS,
   HOOK_HEADER_SESSION,
   HOOK_HEADER_TOKEN,
-  readyCommand,
-  statusCommand,
 } from '@shared/hook-contract';
 import { METRICS_REFRESH_SECONDS } from '@shared/metrics-contract';
 import { ONCE_ONLY_TOOLS } from '@shared/permission-rules';
+
+import type { HookTransport } from '../port';
+
+import { HOOK_EVENTS, readyCommand, statusCommand } from './hook-vocabulary';
 
 /**
  * The settings file the app hands every session (HIVE-62, HIVE-79).
@@ -211,15 +212,6 @@ const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)
  * what makes a host session's file and an `exec-env` container's file the same
  * code path differing by their URL alone.
  */
-/**
- * How a status hook reaches the receiver.
- *
- * `http` on the host. `command` for a set that runs inside a container
- * (HIVE-137), where the binary refuses an http hook to `host.docker.internal`
- * — see {@link statusCommand} for the measurement.
- */
-export type HookTransport = 'http' | 'command';
-
 export function hookSettings(
   url: string,
   readyUrl?: string,
@@ -230,7 +222,7 @@ export function hookSettings(
    * Three seconds, and the reason is no longer "the answer never matters".
    *
    * The prompt waits behind this hook. Measured (HIVE-136, the note beside
-   * `HOOK_EVENTS` in `hook-contract.ts`, pinned by
+   * `HOOK_EVENTS` in `hook-vocabulary.ts`, pinned by
    * `tests/live/hook-context-conformance.test.ts`): a reply that took 5 s
    * moved a turn's end from 7.5 s to 11.8 s after the prompt, and a reply past
    * the timeout is discarded with "UserPromptSubmit hook timed out" drawn on
@@ -278,7 +270,7 @@ export function hookSettings(
    *
    * Not redundancy. The http handler above is subscribed to every event and
    * **`SessionStart` is the one that never arrives** — measured, twice, and
-   * recorded in `hook-contract.ts`. So the app has no http-borne way to learn
+   * recorded in `hook-vocabulary.ts`. So the app has no http-borne way to learn
    * that Claude is up, which is precisely the moment the boot overlay needs.
    *
    * The http entry stays anyway, exactly as the note there argues: it costs one
@@ -328,7 +320,7 @@ export function hookSettings(
     /*
       No grant, deliberately (HIVE-93). `/done`'s `curl` is authorised by
       `allowed-tools` in the generated skill's own frontmatter instead — see
-      `skills/done-skill.ts`. This file merges above the user's scope, so a
+      `harness/claude-code/done-skill.ts`. This file merges above the user's scope, so a
       grant written here is one they can neither see among their own settings
       nor revoke; the skill's frontmatter puts the authorisation three lines
       above the command it authorises, in a file they can read.
@@ -479,7 +471,7 @@ export function metricsScript(url: string, identity?: HookIdentity): string {
   return `#!/bin/sh
 # The Hive — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
-# prints nothing so no status line is rendered. See electron/main/hooks/settings.ts.
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 ${guards}curl -s -m 5 -o /dev/null \\
   -X POST ${shellQuote(url)} \\
   -H 'content-type: application/json' \\
@@ -518,7 +510,7 @@ exit 0
  * config's) and found it off loopback. An http hook addressed to a private or
  * link-local host is refused outright by Claude Code
  * (`ERR_HTTP_HOOK_BLOCKED_ADDRESS` — see `statusCommand`'s doc comment in
- * `hook-contract.ts` for the measured error), silently, because a hook failure
+ * `hook-vocabulary.ts` for the measured error), silently, because a hook failure
  * is not a turn failure: status, the inbox, the header gauges and `/done` all
  * stop updating with nothing on screen to explain why. `command` is exactly
  * the escape hatch the container set already uses for the same reason

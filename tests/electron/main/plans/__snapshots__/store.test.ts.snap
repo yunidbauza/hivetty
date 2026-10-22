@@ -1,0 +1,144 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`fixture replay equivalence (HIVE-238) > exit-plan-mode-2.1.270.jsonl publishes the same plans 1`] = `
+[
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "plan-mode",
+      "tasks": [
+        {
+          "id": "1",
+          "status": "pending",
+          "title": "A top-level title heading (# <Project Name>)",
+        },
+        {
+          "id": "2",
+          "status": "pending",
+          "title": "A ## Usage section containing three numbered steps (placeholder steps like install, configure, run — adjust wording to fit the project once known)",
+        },
+      ],
+    },
+  },
+]
+`;
+
+exports[`fixture replay equivalence (HIVE-238) > task-tools-2.1.269.jsonl publishes the same plans 1`] = `
+[
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "task-tools",
+      "tasks": [
+        {
+          "id": "1",
+          "status": "pending",
+          "title": "Alpha",
+        },
+      ],
+    },
+  },
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "task-tools",
+      "tasks": [
+        {
+          "id": "1",
+          "status": "pending",
+          "title": "Alpha",
+        },
+        {
+          "id": "2",
+          "status": "pending",
+          "title": "Beta",
+        },
+      ],
+    },
+  },
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "task-tools",
+      "tasks": [
+        {
+          "id": "1",
+          "status": "pending",
+          "title": "Alpha",
+        },
+        {
+          "id": "2",
+          "status": "pending",
+          "title": "Beta",
+        },
+        {
+          "id": "3",
+          "status": "pending",
+          "title": "Gamma",
+        },
+      ],
+    },
+  },
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "task-tools",
+      "tasks": [
+        {
+          "id": "1",
+          "startedAt": 4000,
+          "status": "in_progress",
+          "title": "Alpha",
+        },
+        {
+          "id": "2",
+          "status": "pending",
+          "title": "Beta",
+        },
+        {
+          "id": "3",
+          "status": "pending",
+          "title": "Gamma",
+        },
+      ],
+    },
+  },
+  {
+    "entityId": "sess-01",
+    "plan": {
+      "allDone": false,
+      "entityId": "sess-01",
+      "source": "task-tools",
+      "tasks": [
+        {
+          "endedAt": 5000,
+          "id": "1",
+          "startedAt": 4000,
+          "status": "completed",
+          "title": "Alpha",
+        },
+        {
+          "id": "2",
+          "status": "pending",
+          "title": "Beta",
+        },
+        {
+          "id": "3",
+          "status": "pending",
+          "title": "Gamma",
+        },
+      ],
+    },
+  },
+]
+`;

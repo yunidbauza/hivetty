@@ -55,7 +55,7 @@ import {
   backChordLabel,
   type TerminalChordDetail,
 } from '@lib/terminal/keymap';
-import { isLiveTerminal, resolveTransport } from '@lib/terminal/resolve-transport';
+import { inputProfileOf, isLiveTerminal, resolveTransport } from '@lib/terminal/resolve-transport';
 import { ORCHESTRATOR_ID } from '@lib/terminal/static-transport';
 import type { TerminalTransport } from '@lib/terminal/terminal-transport';
 import {
@@ -305,8 +305,16 @@ export function CenterStage() {
          * `readOnly` separately from the transport would eventually produce a
          * terminal that blinks a cursor and swallows every keystroke, which
          * reads as a hung session rather than as a read-only one.
+         *
+         * The input profile is picked here too (HIVE-240), so no component compares harness ids.
          */
-        return { id, terminalKey, transport, readOnly: !isLiveTerminal(id) };
+        return {
+          id,
+          terminalKey,
+          transport,
+          readOnly: !isLiveTerminal(id),
+          inputProfile: inputProfileOf(id),
+        };
       }),
     [ids],
   );

@@ -1,4 +1,4 @@
-import { doneCommand } from '@shared/hook-contract';
+import { doneCommand } from './hook-vocabulary';
 
 /**
  * The built-in `/done`, owned by the app and rewritten on every launch.

@@ -6,6 +6,7 @@ import type {
   RunSummary,
   WakeSpec,
 } from '@shared/agent-contract';
+import type { HarnessId } from '@shared/harness-contract';
 import type { IdleDetail } from '@shared/hook-contract';
 import type { SessionEffort, SessionModel } from '@shared/session-contract';
 import type { SessionPrRecord } from '@shared/session-history-contract';
@@ -72,6 +73,11 @@ export type Effort = SessionEffort;
 export interface Session {
   kind: 'session';
   id: string; // 'hero-refresh'
+  /**
+   * The harness driving this session (HIVE-240). Stamped where the store mints a session; absent on
+   * fixtures and reads as the default input profile. Phase 1: always `claude-code`.
+   */
+  harness?: HarnessId;
   /**
    * What the *agent* calls itself (HIVE-61).
    *

@@ -5,20 +5,15 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  installedPluginNames,
-  readAvailableSkillNames,
-  readInstalledPluginNames,
-  readSessionPluginOverrides,
-  sessionPluginOverrides,
-} from '../../../../electron/main/skills/available';
+import { readClaudeSkillNames } from '../../../../electron/main/harness/claude-code/installed';
+import { readAvailableSkillNames } from '../../../../electron/main/skills/available';
 
 /**
  * Every root is a temp directory, and that is the point rather than hygiene.
  *
- * Two of the three real roots live inside the developer's own `~/.claude`, so a
- * spec that read them would assert on whichever plugins happened to be
- * installed that week — green here, red on CI, and unable to cover the case
+ * Two of the three real roots live inside the developer's own `~/.claude`, and
+ * now come from `harness/claude-code/installed.ts` (HIVE-345), so a spec that
+ * read them would assert on whichever plugins happened to be installed that week — green here, red on CI, and unable to cover the case
  * that matters most: the machine with nothing installed at all, which is where
  * the old behaviour refused every skill name a person could type.
  */
@@ -53,11 +48,10 @@ const registry = async (plugins: Record<string, string>) => {
   return file;
 };
 
-const roots = () => ({
-  hive: at('hive', 'skills'),
-  user: at('claude', 'skills'),
-  installedPlugins: at('claude', 'plugins', 'installed_plugins.json'),
-});
+const available = () =>
+  readAvailableSkillNames(at('hive', 'skills'), () =>
+    readClaudeSkillNames(at('claude', 'skills'), at('claude', 'plugins', 'installed_plugins.json')),
+  );
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'hive-skills-'));
@@ -71,7 +65,7 @@ describe('readAvailableSkillNames', () => {
   it('reads the hive folder', async () => {
     await skill(at('hive', 'skills'), 'release-notes');
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual(['release-notes']);
+    expect((await available()).all).toEqual(['release-notes']);
   });
 
   /*
@@ -82,7 +76,7 @@ describe('readAvailableSkillNames', () => {
   it('reads the user’s own ~/.claude/skills', async () => {
     await skill(at('claude', 'skills'), 'graphify');
 
-    expect((await readAvailableSkillNames(roots())).all).toContain('graphify');
+    expect((await available()).all).toContain('graphify');
   });
 
   it('namespaces a plugin’s skills as plugin:skill', async () => {
@@ -92,7 +86,7 @@ describe('readAvailableSkillNames', () => {
     await skill(join(install, 'skills'), 'release-notes');
     await registry({ 'acme-notes@acme': install });
 
-    expect((await readAvailableSkillNames(roots())).all).toContain(
+    expect((await available()).all).toContain(
       'acme-notes:release-notes',
     );
   });
@@ -110,7 +104,7 @@ describe('readAvailableSkillNames', () => {
     await skill(join(stale, 'skills'), 'retired-verb');
     await registry({ 'workstream@claude-kit': current });
 
-    const { all } = await readAvailableSkillNames(roots());
+    const { all } = await available();
 
     expect(all).toContain('workstream:goal-on');
     expect(all).not.toContain('workstream:retired-verb');
@@ -123,7 +117,7 @@ describe('readAvailableSkillNames', () => {
     the fewest ways to work out why.
   */
   it('is empty, not an error, when nothing exists', async () => {
-    await expect(readAvailableSkillNames(roots())).resolves.toEqual({
+    await expect(available()).resolves.toEqual({
       all: [],
       hive: [],
     });
@@ -138,7 +132,7 @@ describe('readAvailableSkillNames', () => {
     );
     await skill(at('hive', 'skills'), 'release-notes');
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual(['release-notes']);
+    expect((await available()).all).toEqual(['release-notes']);
   });
 
   /*
@@ -155,14 +149,14 @@ describe('readAvailableSkillNames', () => {
     );
     await skill(at('claude', 'skills'), 'graphify');
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual(['graphify']);
+    expect((await available()).all).toEqual(['graphify']);
   });
 
   it('ignores a folder with no SKILL.md', async () => {
     await mkdir(at('hive', 'skills', 'notes'), { recursive: true });
     await skill(at('hive', 'skills'), 'release-notes');
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual(['release-notes']);
+    expect((await available()).all).toEqual(['release-notes']);
   });
 
   /*
@@ -182,7 +176,7 @@ describe('readAvailableSkillNames', () => {
     await mkdir(at('claude', 'skills'), { recursive: true });
     await symlink(real, at('claude', 'skills', 'pretty-mermaid'));
 
-    expect((await readAvailableSkillNames(roots())).all).toContain(
+    expect((await available()).all).toContain(
       'pretty-mermaid',
     );
   });
@@ -192,7 +186,7 @@ describe('readAvailableSkillNames', () => {
     await mkdir(at('claude', 'skills'), { recursive: true });
     await symlink(at('loose.md'), at('claude', 'skills', 'loose'));
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual([]);
+    expect((await available()).all).toEqual([]);
   });
 
   /*
@@ -220,7 +214,7 @@ describe('readAvailableSkillNames', () => {
       'utf8',
     );
 
-    const { all } = await readAvailableSkillNames(roots());
+    const { all } = await available();
 
     expect(all).toContain('plugin-dev:agent-development');
     expect(all).not.toContain('plugin-dev:other-project-skill');
@@ -239,7 +233,7 @@ describe('readAvailableSkillNames', () => {
       'utf8',
     );
 
-    expect((await readAvailableSkillNames(roots())).all).toContain(
+    expect((await available()).all).toContain(
       'telegram:telegram',
     );
   });
@@ -254,7 +248,7 @@ describe('readAvailableSkillNames', () => {
     await skill(at('hive', 'skills'), 'release-notes');
     await skill(at('claude', 'skills'), 'graphify');
 
-    const { all, hive } = await readAvailableSkillNames(roots());
+    const { all, hive } = await available();
 
     expect(all).toEqual(['graphify', 'release-notes']);
     expect(hive).toEqual(['release-notes']);
@@ -265,52 +259,9 @@ describe('readAvailableSkillNames', () => {
     await skill(at('claude', 'skills'), 'shared');
     await skill(at('claude', 'skills'), 'alpha');
 
-    expect((await readAvailableSkillNames(roots())).all).toEqual([
+    expect((await available()).all).toEqual([
       'alpha',
       'shared',
     ]);
-  });
-});
-
-describe('the plugins a Hive session switches off (HIVE-176)', () => {
-  const REGISTRY = JSON.stringify({
-    version: 2,
-    plugins: {
-      'workstream@claude-kit': [{ scope: 'user', installPath: '/p/w' }],
-      'superpowers@claude-plugins-official': [{ scope: 'user', installPath: '/p/s' }],
-      'jira-writer@claude-kit': [{ scope: 'user', installPath: '/p/j' }],
-      'workstream-extras@acme': [{ scope: 'user', installPath: '/p/x' }],
-    },
-  });
-
-  it('keys the overrides by the exact name@marketplace, and only for listed names', () => {
-    expect(sessionPluginOverrides(REGISTRY, ['workstream', 'superpowers'])).toEqual({
-      'workstream@claude-kit': false,
-      'superpowers@claude-plugins-official': false,
-    });
-    expect(sessionPluginOverrides(REGISTRY, [])).toEqual({});
-    expect(sessionPluginOverrides('not json', ['workstream'])).toEqual({});
-  });
-
-  it('lists installed plugin names a switch can act on, sorted', () => {
-    expect(installedPluginNames(REGISTRY)).toEqual([
-      'jira-writer',
-      'superpowers',
-      'workstream',
-      'workstream-extras',
-    ]);
-    // The app's own name, and one the guard would refuse, are never offered.
-    const odd = JSON.stringify({ plugins: { 'hive@local': [], 'bad name@x': [], 'ok@x': [] } });
-    expect(installedPluginNames(odd)).toEqual(['ok']);
-  });
-
-  it('reads both from the registry file, and answers empty when there is none', async () => {
-    await registry({ 'workstream@claude-kit': at('w'), 'ponytail@ponytail': at('p') });
-    const file = roots().installedPlugins;
-
-    expect(await readSessionPluginOverrides(file, ['workstream'])).toEqual({ 'workstream@claude-kit': false });
-    expect(await readInstalledPluginNames(file)).toEqual(['ponytail', 'workstream']);
-    expect(await readSessionPluginOverrides(at('nope.json'), ['workstream'])).toEqual({});
-    expect(await readInstalledPluginNames(at('nope.json'))).toEqual([]);
   });
 });

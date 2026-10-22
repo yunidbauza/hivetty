@@ -2,86 +2,19 @@
  * Every session's changed files, read from its own transcript (HIVE-201).
  *
  * A main-agent edit's PostToolUse says only that something changed; the
- * transcript says exactly what, in `toolUseResult.structuredPatch`. So main
- * reads the transcript itself, from where the last read stopped.
+ * transcript says exactly what; its format is the adapter's (`foldEdits`).
+ * So main reads the transcript itself, from where the last read stopped.
  */
 import { open } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
 
-import type {
-  ChangedFile,
-  ChangedFilesEvent,
-  ChangedFilesSnapshot,
-  ChangeMark,
-} from '@shared/changed-files-contract';
+import type { ChangedFile, ChangedFilesEvent, ChangedFilesSnapshot } from '@shared/changed-files-contract';
 import { CH } from '@shared/ipc-contract';
 
-import { transcriptPath } from './title-origin';
+import type { FileTally, HarnessAdapter } from '../harness/port';
+import { sessionAdapter } from '../harness/registry';
 
-export interface FileTally {
-  mark: ChangeMark;
-  added: number;
-  removed: number;
-}
-
-const lineCount = (text: string): number =>
-  text === '' ? 0 : text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
-
-/**
- * Fold transcript lines into per-file tallies (HIVE-201).
- *
- * The facts, measured on claude's own transcripts: a user line's
- * `toolUseResult` carries `filePath` and `structuredPatch` (hunks whose
- * `lines` start `+`, `-` or a space); a `Write` adds `type: 'create' |
- * 'update'`, and a create's patch is empty, so its `+N` is `content`'s line
- * count. `isSidechain: true` is a subagent's, and not this session's (D10).
- *
- * The substring test runs before `JSON.parse`, as `titleRecord` does: most
- * lines are large and irrelevant, and `originalFile` makes these large too.
- */
-export function foldTranscriptLines(
-  tallies: Map<string, FileTally>,
-  lines: readonly string[],
-): Map<string, FileTally> {
-  for (const line of lines) {
-    if (!line.includes('"toolUseResult"')) continue;
-    let record: { isSidechain?: unknown; toolUseResult?: unknown };
-    try {
-      record = JSON.parse(line) as typeof record;
-    } catch {
-      continue;
-    }
-    if (record.isSidechain === true) continue;
-    const result = record.toolUseResult;
-    if (typeof result !== 'object' || result === null) continue;
-    const { filePath, structuredPatch, type, content } = result as Record<string, unknown>;
-    if (typeof filePath !== 'string' || !Array.isArray(structuredPatch)) continue;
-
-    let added = 0;
-    let removed = 0;
-    if (type === 'create' && typeof content === 'string') {
-      added = lineCount(content);
-    } else {
-      for (const hunk of structuredPatch) {
-        const hunkLines = (hunk as { lines?: unknown } | null)?.lines;
-        if (!Array.isArray(hunkLines)) continue;
-        for (const text of hunkLines) {
-          if (typeof text !== 'string') continue;
-          if (text.startsWith('+')) added += 1;
-          else if (text.startsWith('-')) removed += 1;
-        }
-      }
-    }
-    const before = tallies.get(filePath);
-    tallies.set(filePath, {
-      mark: before?.mark ?? (type === 'create' ? 'A' : 'M'),
-      added: (before?.added ?? 0) + added,
-      removed: (before?.removed ?? 0) + removed,
-    });
-  }
-  return tallies;
-}
+export type { FileTally };
 
 export interface ChangedFiles {
   /** A main-agent edit landed: re-read the transcript from where the last read stopped. Never rejects. */
@@ -105,16 +38,17 @@ interface SessionState {
  */
 export function createChangedFiles({
   send,
-  home = homedir(),
   transcriptOf,
   rootOf,
+  /** The harness that wrote the session's transcript (HIVE-238). Phase 1: Claude Code. */
+  adapterOf = () => sessionAdapter(),
 }: {
   send: (channel: string, payload: unknown) => void;
-  home?: string;
   /** The session's live transcript, from the receiver's `transcripts` map. */
   transcriptOf: (entityId: string) => { cwd: string; sessionUuid: string } | undefined;
   /** The Files tree's root, absolute and realpath'd; `null` with no project. */
   rootOf: (entityId: string) => Promise<string | null>;
+  adapterOf?: (entityId: string) => HarnessAdapter;
 }): ChangedFiles {
   const sessions = new Map<string, SessionState>();
   /** One read in flight per session; a trigger during it chains behind it. */
@@ -142,7 +76,7 @@ export function createChangedFiles({
     if (generationOf(entityId) !== generation) return;
     const transcript = transcriptOf(entityId);
     if (transcript === undefined) return;
-    const path = transcriptPath(home, transcript.cwd, transcript.sessionUuid);
+    const path = adapterOf(entityId).record.transcriptPath(transcript.cwd, transcript.sessionUuid);
     if (path === null) return;
     let state = sessions.get(entityId);
     if (state === undefined) {
@@ -169,7 +103,7 @@ export function createChangedFiles({
       await handle.close();
     }
     if (sessions.get(entityId) !== state) return;
-    foldTranscriptLines(state.tallies, text.split('\n'));
+    adapterOf(entityId).foldEdits(state.tallies, text.split('\n'));
     await publish(entityId, state);
   }
 

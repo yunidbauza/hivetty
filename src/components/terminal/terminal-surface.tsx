@@ -4,6 +4,7 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal, type IBufferCell, type IBufferLine } from '@xterm/xterm';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 
+import { DEFAULT_INPUT_PROFILE, type InputProfile } from '@lib/harness/input-profile';
 import { isMacPlatform } from '@lib/platform';
 import { xtermThemeFor, type TermPalette } from '@lib/terminal/ansi';
 import { shouldAutoScroll } from '@lib/terminal/auto-scroll';
@@ -15,10 +16,6 @@ import {
 import {
   FRAME_SCAN,
   isBareBack,
-  isEmptyClaudePrompt,
-  LINE_KILL_SEQUENCE,
-  LINE_MOTION_SEQUENCE,
-  NEWLINE_SEQUENCE,
   TERMINAL_CHORD_EVENT,
   decideTerminalKey,
   isRailChord,
@@ -176,6 +173,11 @@ interface TerminalSurfaceProps {
    * the browser's own default runs — which main refuses as a navigation.
    */
   dropText?: (files: File[]) => string | null;
+  /**
+   * The harness's keys and its bare-← claim (HIVE-240), already picked by the composition root.
+   * Absent means the default, which is what every surface typed before profiles existed.
+   */
+  inputProfile?: InputProfile;
 }
 
 /** What the mount effect builds, held together so dependents can re-run. */
@@ -274,13 +276,13 @@ function readCursorContext(terminal: Terminal): CursorContext | null {
 /**
  * What the box holds, in the transport's three words (HIVE-135).
  *
- * The same read as the bare-`←` claim and nothing else: `claim` is `empty`,
+ * The same read as the profile's bare-`←` claim and nothing else: `claim` is `empty`,
  * and both other answers — not empty, or not provably empty — are `draft`,
  * because the only safe mistake here is holding a nudge that could have gone.
  */
-function promptInputOf(terminal: Terminal): PromptInput {
+function promptInputOf(terminal: Terminal, profile: InputProfile): PromptInput {
   const cursor = readCursorContext(terminal);
-  return cursor !== null && isEmptyClaudePrompt(cursor) ? 'empty' : 'draft';
+  return cursor !== null && profile.claimsBareBack(cursor) === 'claim' ? 'empty' : 'draft';
 }
 
 /**
@@ -383,6 +385,7 @@ export function TerminalSurface({
   resolveFileLinks,
   onOpenFile,
   dropText,
+  inputProfile = DEFAULT_INPUT_PROFILE,
 }: TerminalSurfaceProps) {
   /**
    * Container and instance both live in state behind callback refs rather than
@@ -420,6 +423,15 @@ export function TerminalSurface({
   useEffect(() => {
     endedRef.current = ended;
   }, [ended]);
+
+  /**
+   * Read per keystroke and per prompt read, for the reason {@link endedRef} is (HIVE-240): the key
+   * handler is installed once, and a captured profile would pin it to the first render's.
+   */
+  const inputProfileRef = useRef(inputProfile);
+  useEffect(() => {
+    inputProfileRef.current = inputProfile;
+  }, [inputProfile]);
 
   /**
    * Whether this surface is on screen, readable from the resize observer.
@@ -625,9 +637,12 @@ export function TerminalSurface({
         // would run the copy twice and fight the pty for the same chord.
         if (event.type !== 'keydown') return true;
 
+        const profile = inputProfileRef.current;
         const action = decideTerminalKey(event, {
           isMac,
           hasSelection: terminal.hasSelection(),
+          /** Read per keystroke, not captured. See {@link inputProfileRef}. */
+          profile,
           /** Read per keystroke, not captured. See {@link endedRef}. */
           ended: endedRef.current,
           /**
@@ -682,27 +697,27 @@ export function TerminalSurface({
            */
           case 'line-start':
           case 'line-end':
-            transportRef.current.write(LINE_MOTION_SEQUENCE[action]);
+            transportRef.current.write(profile.lineMotion[action]);
             event.preventDefault();
             return false;
           /**
            * Written for the same reason as the newline, from the same failure:
            * xterm encodes *something* for `Cmd+Delete` — a bare `DEL` — and the
            * something is wrong. Declining would rub out one character where the
-           * user asked for the line. See {@link LINE_KILL_SEQUENCE}.
+           * user asked for the line. The profile's (`LINE_KILL_SEQUENCE` by default).
            */
           case 'line-kill':
-            transportRef.current.write(LINE_KILL_SEQUENCE);
+            transportRef.current.write(profile.lineKill);
             event.preventDefault();
             return false;
           /**
            * Written for the same reason as the line motions, from the opposite
            * failure: xterm encodes *too little* here rather than nothing at all.
            * Its `case 13` ignores `shiftKey`, so declining would let it send a
-           * bare `\r` — the very byte that submits. See {@link NEWLINE_SEQUENCE}.
+           * bare `\r` — the very byte that submits. The profile's (`NEWLINE_SEQUENCE` by default).
            */
           case 'newline':
-            transportRef.current.write(NEWLINE_SEQUENCE);
+            transportRef.current.write(profile.newline);
             event.preventDefault();
             return false;
           /**
@@ -909,7 +924,7 @@ export function TerminalSurface({
     const report = () => {
       frame = null;
       if (!visibleRef.current) return;
-      const next = promptInputOf(terminal);
+      const next = promptInputOf(terminal, inputProfileRef.current);
       if (next === lastPromptRef.current) return;
       lastPromptRef.current = next;
       transport.reportPrompt?.(next);
@@ -1109,7 +1124,7 @@ export function TerminalSurface({
       return;
     }
 
-    const next = promptInputOf(terminal);
+    const next = promptInputOf(terminal, inputProfileRef.current);
     lastPromptRef.current = next;
     transport.reportPrompt(next);
 

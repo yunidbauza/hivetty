@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createReceiver } from '../../electron/main/hooks/receiver';
 import { createLedger } from '../../electron/main/ledger';
-import { containerMcpConfig } from '../../electron/main/mcp/container-config';
+import { containerMcpConfig } from '../../electron/main/harness/claude-code/mcp-config';
 import {
   HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_RUN,
@@ -134,7 +134,7 @@ describe.skipIf(!RUN)('the hive MCP endpoint over HTTP, against a real claude', 
       onAgentEvent: () => undefined,
       // Not exercised by this test: every other route the receiver serves.
       onEvent: () => undefined,
-      onPlanTool: () => {},
+      onPlan: () => {},
       onTicketIntent: () => undefined,
       onPromptName: () => {},
       onCleared: () => undefined,

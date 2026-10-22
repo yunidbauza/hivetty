@@ -33,6 +33,7 @@ import {
   requestSpawn,
   requestSpawnTerminal,
 } from '@lib/terminal/pty-transport';
+import { DEFAULT_INPUT_PROFILE } from '@lib/harness/input-profile';
 import { sendToSession } from '@lib/terminal/session-input';
 
 import { useAppearanceStore } from '@stores/appearance-store';
@@ -180,6 +181,13 @@ describe('hive-store', () => {
       expect(state.order.at(-1)).toBe(id);
       expect(state.entities[id]).toBeDefined();
       expect(useUiStore.getState().activeTab).toBe(id);
+    });
+
+    it('stamps the harness that drives it (HIVE-240)', () => {
+      const id = useHiveStore.getState().spawnSession('nova-web');
+      const entity = useHiveStore.getState().entities[id];
+
+      expect(entity?.kind === 'session' && entity.harness).toBe('claude-code');
     });
 
     it('invents no branch at all (HIVE-78)', () => {
@@ -433,7 +441,7 @@ describe('hive-store', () => {
       it('routes to the pty and reports it', () => {
         const outcome = useHiveStore.getState().sendToEntity('lead-form', 'y');
 
-        expect(sendToSession).toHaveBeenCalledWith('lead-form', 'y');
+        expect(sendToSession).toHaveBeenCalledWith('lead-form', 'y', DEFAULT_INPUT_PROFILE);
         expect(outcome).toEqual({ kind: 'routed' });
       });
 

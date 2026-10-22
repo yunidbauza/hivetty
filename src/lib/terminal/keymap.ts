@@ -1,3 +1,5 @@
+import type { InputProfile } from '@lib/harness/input-profile';
+
 /**
  * Who owns a keystroke when the terminal is live (story 095).
  *
@@ -467,7 +469,7 @@ const isBlankInputRow = (row: string): boolean =>
  * Three answers rather than two, because "no" has two very different meanings
  * and the app needs to tell them apart (HIVE-79).
  */
-type BareBackClaim =
+export type BareBackClaim =
   /** Claude's input, and empty: the app takes the key. */
   | 'claim'
   /**
@@ -682,6 +684,8 @@ export const backChordLabel = (isMac: boolean): string =>
 
 interface KeyContext {
   isMac: boolean;
+  /** The harness's keys and its bare-← claim (HIVE-240). `DEFAULT_INPUT_PROFILE` is today's. */
+  profile: InputProfile;
   /** Whether the terminal currently holds a selection. */
   hasSelection: boolean;
   /**
@@ -711,7 +715,7 @@ interface KeyContext {
  */
 export function decideTerminalKey(
   event: KeyEventLike,
-  { isMac, hasSelection, cursor, ended = false }: KeyContext,
+  { isMac, hasSelection, cursor, ended = false, profile }: KeyContext,
 ): TerminalKeyAction {
   if (isBackChord(event, isMac)) return 'app-chord';
 
@@ -760,7 +764,7 @@ export function decideTerminalKey(
    * {@link BareBackClaim} for the three answers and why "no" needed two of them.
    */
   if (isBareBack(event) && cursor) {
-    const claim = claimBareBack(cursor);
+    const claim = profile.claimsBareBack(cursor);
     if (claim === 'claim') return 'app-chord';
     if (claim === 'declined') return 'back-declined';
   }

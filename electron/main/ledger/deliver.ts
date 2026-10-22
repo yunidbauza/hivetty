@@ -1,11 +1,7 @@
 import type { PromptInput } from '../../shared/ipc-contract';
-import {
-  ledgerMarker,
-  OVERMIND,
-  type LedgerEntry,
-  type LedgerKind,
-} from '../../shared/ledger-contract';
+import { OVERMIND, type LedgerEntry, type LedgerKind } from '../../shared/ledger-contract';
 import { afterTarget, isHeld, releasesAfter } from '../../shared/ledger-derive';
+import type { HarnessAdapter } from '../harness/port';
 import type { SurfaceId } from '../ipc/surfaces';
 
 import type { Ledger } from './index';
@@ -18,12 +14,15 @@ import type { Ledger } from './index';
  * addressed to a live session is announced in that session's terminal as one marker
  * line, at a moment when the terminal is actually at an empty prompt.
  *
- * The line is a marker, not the entry (HIVE-138). `ledgerMarker` names the
- * entry and carries nothing else; the receiver recognises the marker on the
- * `UserPromptSubmit` it produces and answers with the entry whole as hook
- * context (`electron/main/hooks/receiver.ts`, `context.ts`), untruncated and
- * labelled as context rather than passing as the user's own words. What this
- * module decides is only *when* the marker is written and *that* it landed.
+ * The line is a marker, not the entry (HIVE-138), and its bytes are the
+ * session's adapter's (HIVE-240): `promptMarker`, Claude's in
+ * `harness/claude-code/prompt-marker.ts`, names the entry and carries nothing
+ * else. The receiver recognises the marker on the prompt hook it produces and
+ * answers with the entry whole as hook context (`electron/main/hooks/receiver.ts`,
+ * `context.ts`), untruncated and labelled as context rather than passing as the
+ * user's own words. What this module decides is only *when* the marker is
+ * written and *that* it landed; a harness whose `contextDelivery` is not
+ * `prompt-marker` is never typed into.
  *
  * No party-authored byte reaches the pty from here any more. Before HIVE-138
  * this was the one path that typed another party's body into a prompt
@@ -66,6 +65,12 @@ interface DeliverOptions {
    * landed would suppress the retry forever.
    */
   write: (entityId: string, data: string) => boolean;
+  /**
+   * The harness behind a session, or `undefined` while the session layer is not up (HIVE-240).
+   * Only a `prompt-marker` harness is typed into, and the bytes are its own: this module decides
+   * *when*, the adapter decides *what*.
+   */
+  adapterOf: (entityId: string) => Pick<HarnessAdapter, 'capabilities' | 'promptMarker'> | undefined;
 }
 
 export interface Deliver {
@@ -88,7 +93,7 @@ export interface Deliver {
   onSurfaceGone(surfaceId: SurfaceId): void;
 }
 
-export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions): Deliver {
+export function createDeliver({ ledger, isLive, isIdle, write, adapterOf }: DeliverOptions): Deliver {
   /**
    * What each surface's input box holds, and for which session (HIVE-135).
    *
@@ -203,7 +208,13 @@ export function createDeliver({ ledger, isLive, isIdle, write }: DeliverOptions)
   /** Write one nudge, and record it only if it landed. Reports whether it did. */
   function deliverOne(entityId: string, entry: LedgerEntry): boolean {
     const handle = handleFor(entry);
-    if (!write(entityId, `${ledgerMarker(entry)}\r`)) return false;
+    /*
+      Not delivering is the same answer as a write that did not land: no receipt, so the next idle
+      or ready transition asks again. A `none` harness reads the ledger through its tools.
+    */
+    const adapter = adapterOf(entityId);
+    if (adapter?.capabilities.contextDelivery !== 'prompt-marker') return false;
+    if (!write(entityId, adapter.promptMarker(entry))) return false;
 
     /*
       `from: OVERMIND` is asserted rather than derived. The party set is

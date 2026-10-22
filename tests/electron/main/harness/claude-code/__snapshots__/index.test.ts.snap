@@ -1,0 +1,2817 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the files a Claude Code session is launched with > agent settings, command 1`] = `
+{
+  "hive/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > agent settings, http 1`] = `
+{
+  "hive/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > alias container set 1`] = `
+{
+  "hive/container/aliases/gateway/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://gateway:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/aliases/gateway/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://gateway:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://gateway:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/sh '/hive/container/aliases/gateway/statusline.sh'",
+    "refreshInterval": 30
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/aliases/gateway/hive.mcp.json": {
+    "content": "{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "\${HIVE_RECEIVER_URL}/mcp",
+      "headers": {
+        "x-hive-session": "\${HIVE_SESSION_ID}",
+        "x-hive-token": "\${HIVE_HOOK_TOKEN}",
+        "x-hive-run": "\${HIVE_RUN_ID:-}",
+        "x-hive-run-token": "\${HIVE_RUN_TOKEN:-}"
+      }
+    }
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/aliases/gateway/statusline.sh": {
+    "content": "#!/bin/sh
+# The Hive — session usage reporter. Written per launch; do not edit.
+# Reads Claude Code's status line payload on stdin, forwards it to the app, and
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
+[ -n "$HIVE_SESSION_ID" ] || exit 0
+[ -n "$HIVE_HOOK_TOKEN" ] || exit 0
+
+curl -s -m 5 -o /dev/null \\
+  -X POST 'http://gateway:60123/metrics' \\
+  -H 'content-type: application/json' \\
+  -H "x-hive-session: $HIVE_SESSION_ID" \\
+  -H "x-hive-token: $HIVE_HOOK_TOKEN" \\
+  --data-binary @- 2>/dev/null
+
+exit 0
+",
+    "mode": "700",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > plugin dir, done url absent 1`] = `
+{
+  "plugin/.claude-plugin/plugin.json": {
+    "content": "{
+  "name": "hive",
+  "version": "1.2.3",
+  "description": "Skills Hive TTY injects into the sessions it starts.",
+  "skills": [
+    "./skills/"
+  ]
+}
+",
+    "mode": "644",
+  },
+  "plugin/skills/done/SKILL.md": {
+    "content": "---
+name: done
+description: >-
+  Finish this session — mark it done in The Hive and close its terminal. Use it
+  when the work a session was opened for is complete, either because the user
+  asked to finish or because a skill has finished its task and is handing off.
+  Closing is recoverable; the transcript stays readable afterwards.
+---
+
+This session cannot be closed automatically: The Hive is not reachable from it,
+so there is nowhere to report that the work is finished.
+
+Tell the user exactly that, in one line, and suggest they type \`/exit\` to close
+the terminal themselves. Do not run any command.
+",
+    "mode": "644",
+  },
+  "plugin/skills/review/SKILL.md": {
+    "content": "---
+name: review
+description: Review the diff
+---
+Read it closely.
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > plugin dir, done url present 1`] = `
+{
+  "plugin/.claude-plugin/plugin.json": {
+    "content": "{
+  "name": "hive",
+  "version": "1.2.3",
+  "description": "Skills Hive TTY injects into the sessions it starts.",
+  "skills": [
+    "./skills/"
+  ]
+}
+",
+    "mode": "644",
+  },
+  "plugin/skills/done/SKILL.md": {
+    "content": "---
+name: done
+description: >-
+  Finish this session — mark it done in The Hive and close its terminal. Use it
+  when the work a session was opened for is complete, either because the user
+  asked to finish or because a skill has finished its task and is handing off.
+  Closing is recoverable; the transcript stays readable afterwards.
+allowed-tools: 'Bash(curl -sS --fail -m 5 -X POST "$HIVE_RECEIVER_URL/done" -H "x-hive-session: $HIVE_SESSION_ID" -H "x-hive-token: $HIVE_HOOK_TOKEN")'
+---
+
+Run exactly this command:
+
+\`\`\`sh
+curl -sS --fail -m 5 -X POST "$HIVE_RECEIVER_URL/done" -H "x-hive-session: $HIVE_SESSION_ID" -H "x-hive-token: $HIVE_HOOK_TOKEN"
+\`\`\`
+
+That request tells The Hive this session is finished. The app closes the
+terminal itself once the turn ends — you cannot close it yourself, and you do
+not need to.
+
+Then stop. Do not summarise, do not explain, and do not run anything else.
+",
+    "mode": "644",
+  },
+  "plugin/skills/review/SKILL.md": {
+    "content": "---
+name: review
+description: Review the diff
+---
+Read it closely.
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session mcp config 1`] = `
+{
+  "hive/hive.mcp.json": {
+    "content": "{
+  "mcpServers": {
+    "hive": {
+      "command": "/Applications/The Hive.app/Contents/MacOS/The Hive",
+      "args": [
+        "/Applications/The Hive.app/Contents/Resources/app.asar/out/mcp-host/index.js"
+      ],
+      "env": {
+        "ELECTRON_RUN_AS_NODE": "1"
+      }
+    }
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session rewrite container set 1`] = `
+{
+  "hive/container/sessions/sess-07/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "600",
+  },
+  "hive/container/sessions/sess-07/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: sess-07\\" -H \\"x-hive-token: tok-abc123\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/sh '/hive/container/sessions/sess-07/statusline.sh'",
+    "refreshInterval": 30
+  }
+}
+",
+    "mode": "600",
+  },
+  "hive/container/sessions/sess-07/hive.mcp.json": {
+    "content": "{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "http://host.docker.internal:60123/mcp",
+      "headers": {
+        "x-hive-session": "sess-07",
+        "x-hive-token": "tok-abc123",
+        "x-hive-run": "run-1",
+        "x-hive-run-token": ""
+      }
+    }
+  }
+}
+",
+    "mode": "600",
+  },
+  "hive/container/sessions/sess-07/statusline.sh": {
+    "content": "#!/bin/sh
+# The Hive — session usage reporter. Written per launch; do not edit.
+# Reads Claude Code's status line payload on stdin, forwards it to the app, and
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
+curl -s -m 5 -o /dev/null \\
+  -X POST 'http://host.docker.internal:60123/metrics' \\
+  -H 'content-type: application/json' \\
+  -H "x-hive-session: sess-07" \\
+  -H "x-hive-token: tok-abc123" \\
+  --data-binary @- 2>/dev/null
+
+exit 0
+",
+    "mode": "700",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session settings, command, metrics off 1`] = `
+{
+  "hive/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session settings, command, metrics on 1`] = `
+{
+  "hive/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://127.0.0.1:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/sh '<root>/hive/statusline.sh'",
+    "refreshInterval": 30
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/statusline.sh": {
+    "content": "#!/bin/sh
+# The Hive — session usage reporter. Written per launch; do not edit.
+# Reads Claude Code's status line payload on stdin, forwards it to the app, and
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
+[ -n "$HIVE_SESSION_ID" ] || exit 0
+[ -n "$HIVE_HOOK_TOKEN" ] || exit 0
+
+curl -s -m 5 -o /dev/null \\
+  -X POST 'http://127.0.0.1:60123/metrics' \\
+  -H 'content-type: application/json' \\
+  -H "x-hive-session: $HIVE_SESSION_ID" \\
+  -H "x-hive-token: $HIVE_HOOK_TOKEN" \\
+  --data-binary @- 2>/dev/null
+
+exit 0
+",
+    "mode": "700",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session settings, http, metrics off 1`] = `
+{
+  "hive/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > session settings, http, metrics on 1`] = `
+{
+  "hive/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://127.0.0.1:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:60123/hook",
+            "headers": {
+              "x-hive-session": "$HIVE_SESSION_ID",
+              "x-hive-token": "$HIVE_HOOK_TOKEN"
+            },
+            "allowedEnvVars": [
+              "HIVE_SESSION_ID",
+              "HIVE_HOOK_TOKEN"
+            ],
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/sh '<root>/hive/statusline.sh'",
+    "refreshInterval": 30
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": false
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/statusline.sh": {
+    "content": "#!/bin/sh
+# The Hive — session usage reporter. Written per launch; do not edit.
+# Reads Claude Code's status line payload on stdin, forwards it to the app, and
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
+[ -n "$HIVE_SESSION_ID" ] || exit 0
+[ -n "$HIVE_HOOK_TOKEN" ] || exit 0
+
+curl -s -m 5 -o /dev/null \\
+  -X POST 'http://127.0.0.1:60123/metrics' \\
+  -H 'content-type: application/json' \\
+  -H "x-hive-session: $HIVE_SESSION_ID" \\
+  -H "x-hive-token: $HIVE_HOOK_TOKEN" \\
+  --data-binary @- 2>/dev/null
+
+exit 0
+",
+    "mode": "700",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > shared exec-env container set 1`] = `
+{
+  "hive/container/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/sh '<root>/hive/container/statusline.sh'",
+    "refreshInterval": 30
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/hive.mcp.json": {
+    "content": "{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "\${HIVE_RECEIVER_URL}/mcp",
+      "headers": {
+        "x-hive-session": "\${HIVE_SESSION_ID}",
+        "x-hive-token": "\${HIVE_HOOK_TOKEN}",
+        "x-hive-run": "\${HIVE_RUN_ID:-}",
+        "x-hive-run-token": "\${HIVE_RUN_TOKEN:-}"
+      }
+    }
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/statusline.sh": {
+    "content": "#!/bin/sh
+# The Hive — session usage reporter. Written per launch; do not edit.
+# Reads Claude Code's status line payload on stdin, forwards it to the app, and
+# prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
+[ -n "$HIVE_SESSION_ID" ] || exit 0
+[ -n "$HIVE_HOOK_TOKEN" ] || exit 0
+
+curl -s -m 5 -o /dev/null \\
+  -X POST 'http://host.docker.internal:60123/metrics' \\
+  -H 'content-type: application/json' \\
+  -H "x-hive-session: $HIVE_SESSION_ID" \\
+  -H "x-hive-token: $HIVE_HOOK_TOKEN" \\
+  --data-binary @- 2>/dev/null
+
+exit 0
+",
+    "mode": "700",
+  },
+}
+`;
+
+exports[`the files a Claude Code session is launched with > shared exec-env container set, metrics off 1`] = `
+{
+  "hive/container/claude-agent.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "*"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/claude-hooks.settings.json": {
+    "content": "{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -o /dev/null -X POST http://host.docker.internal:60123/ready -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "curl -s -m 3 -X POST http://host.docker.internal:60123/hook -H 'content-type: application/json' -H \\"x-hive-session: $HIVE_SESSION_ID\\" -H \\"x-hive-token: $HIVE_HOOK_TOKEN\\" --data-binary @- 2>/dev/null || true",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  },
+  "disableAgentView": true,
+  "theme": "dark-ansi",
+  "permissions": {
+    "ask": [
+      "mcp__hive__project_auto_merge"
+    ]
+  }
+}
+",
+    "mode": "644",
+  },
+  "hive/container/hive.mcp.json": {
+    "content": "{
+  "mcpServers": {
+    "hive": {
+      "type": "http",
+      "url": "\${HIVE_RECEIVER_URL}/mcp",
+      "headers": {
+        "x-hive-session": "\${HIVE_SESSION_ID}",
+        "x-hive-token": "\${HIVE_HOOK_TOKEN}",
+        "x-hive-run": "\${HIVE_RUN_ID:-}",
+        "x-hive-run-token": "\${HIVE_RUN_TOKEN:-}"
+      }
+    }
+  }
+}
+",
+    "mode": "644",
+  },
+}
+`;

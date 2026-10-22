@@ -473,6 +473,48 @@ export default tseslint.config(
               message:
                 'The remote client runs on the laptop. It may not import the renderer, the bridge, or the host half — the two halves must stay separable onto two machines.',
             },
+            /**
+             * ADAPTERS DON'T REACH THE CORE (HIVE-233).
+             *
+             * The harness port points one way: the core calls an adapter, and
+             * passes in as arguments whatever the adapter needs. An adapter that
+             * imported sessions, IPC, notifications or plans would make the port
+             * a cycle by another name, and a second harness would inherit the
+             * first one's grip on the core.
+             */
+            {
+              target: './electron/main/harness/**/*',
+              from: [
+                './electron/main/sessions/**/*',
+                './electron/main/ipc/**/*',
+                './electron/main/notifications/**/*',
+                './electron/main/plans/**/*',
+              ],
+              message:
+                'An adapter does not reach the core. The core passes what an adapter needs in as arguments.',
+            },
+            /**
+             * THE DRIVEN SIDE STAYS SEALED (HIVE-233).
+             *
+             * Only `electron/main/harness/**` may import an adapter; everyone
+             * else asks the registry (`adapterFor`, `harnessOf`). That is what
+             * lets a second harness land as a new folder rather than a hunt for
+             * every place that knew it was Claude. The target is everything that
+             * ships outside `harness/`: `!(harness)` is a minimatch extglob,
+             * which the plugin matches targets with. `tests/**` stays unfenced,
+             * as everywhere else. A second adapter adds its folder to `from`.
+             */
+            {
+              target: [
+                './electron/main/!(harness)/**/*',
+                './electron/main/*',
+                './electron/!(main)/**/*',
+                './src/**/*',
+              ],
+              from: './electron/main/harness/claude-code/**/*',
+              message:
+                'Only electron/main/harness/ may import an adapter. Reach Claude Code through the registry: adapterFor() and harnessOf().',
+            },
           ],
         },
       ],

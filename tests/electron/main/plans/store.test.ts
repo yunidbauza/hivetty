@@ -4,24 +4,31 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createPlans, type PlanToolCall } from '../../../../electron/main/plans';
+import { readHook } from '../../../../electron/main/harness/claude-code/hooks';
+import { createPlans, type Plans } from '../../../../electron/main/plans';
 import { parsePlanFile } from '../../../../electron/main/plans/parse-plan-file';
 import { CH } from '../../../../electron/shared/ipc-contract';
 import { type SessionPlan } from '../../../../electron/shared/plan-contract';
+import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
 
-const create = (id: string, subject: string, entityId = 'sess-01'): PlanToolCall => ({
+const create = (id: string, subject: string, entityId = 'sess-01'): ClaudePlanCall => ({
   entityId,
   toolName: 'TaskCreate',
   toolInput: { subject },
   toolResponse: { task: { id, subject } },
 });
 
-const update = (taskId: string, status: string): PlanToolCall => ({
+const update = (taskId: string, status: string): ClaudePlanCall => ({
   entityId: 'sess-01',
   toolName: 'TaskUpdate',
   toolInput: { taskId, status },
   toolResponse: {},
 });
+
+const onTool = (plans: Plans, call: ClaudePlanCall) => {
+  const update = toPlanUpdate(call);
+  return update === undefined ? undefined : plans.apply(update);
+};
 
 const modePlan: SessionPlan = {
   entityId: 'sess-01',
@@ -43,7 +50,7 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
+    onTool(plans, create('1', 'A'));
 
     expect(send).toHaveBeenLastCalledWith(CH.planChanged, {
       entityId: 'sess-01',
@@ -55,8 +62,8 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(update('9', 'completed'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, update('9', 'completed'));
 
     expect(send).toHaveBeenCalledTimes(1);
   });
@@ -65,7 +72,7 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool({ entityId: 'sess-01', toolName: 'Read', toolInput: {}, toolResponse: {} });
+    onTool(plans, { entityId: 'sess-01', toolName: 'Read', toolInput: {}, toolResponse: {} });
 
     expect(send).not.toHaveBeenCalled();
     expect(plans.get('sess-01')).toBeUndefined();
@@ -75,15 +82,15 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(update('1', 'completed'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, update('1', 'completed'));
     vi.advanceTimersByTime(24 * 60 * 60 * 1000);
 
     expect(plans.get('sess-01')?.allDone).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
     expect(send).not.toHaveBeenCalledWith(CH.planChanged, { entityId: 'sess-01', plan: null });
 
-    plans.onTool(create('2', 'B'));
+    onTool(plans, create('2', 'B'));
 
     expect(plans.get('sess-01')?.tasks.map((t) => t.id)).toEqual(['2']);
   });
@@ -92,8 +99,8 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(update('1', 'completed'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, update('1', 'completed'));
     plans.forget('sess-01');
 
     expect(plans.get('sess-01')).toBeUndefined();
@@ -104,7 +111,7 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
+    onTool(plans, create('1', 'A'));
     plans.drop('sess-01');
     plans.drop('sess-01');
 
@@ -117,8 +124,8 @@ describe('createPlans', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(update('1', 'deleted'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, update('1', 'deleted'));
 
     expect(plans.get('sess-01')).toBeUndefined();
     expect(send).toHaveBeenLastCalledWith(CH.planChanged, { entityId: 'sess-01', plan: null });
@@ -131,7 +138,7 @@ describe('createPlans', () => {
 
     expect(plans.get('sess-01')?.source).toBe('plan-mode');
 
-    plans.onTool(create('1', 'A'));
+    onTool(plans, create('1', 'A'));
 
     expect(plans.get('sess-01')?.source).toBe('task-tools');
 
@@ -143,8 +150,8 @@ describe('createPlans', () => {
   it('a lower rank replaces an all-done higher one', () => {
     const plans = createPlans({ send: vi.fn() });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(update('1', 'completed'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, update('1', 'completed'));
     plans.offer('sess-01', 'plan-mode', modePlan);
 
     expect(plans.get('sess-01')).toBe(modePlan);
@@ -162,8 +169,8 @@ describe('createPlans', () => {
   it('lists every plan', () => {
     const plans = createPlans({ send: vi.fn() });
 
-    plans.onTool(create('1', 'A'));
-    plans.onTool(create('1', 'B', 'sess-02'));
+    onTool(plans, create('1', 'A'));
+    onTool(plans, create('1', 'B', 'sess-02'));
 
     expect(plans.list().map((p) => p.entityId).sort()).toEqual(['sess-01', 'sess-02']);
   });
@@ -187,7 +194,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     writeFileSync(file, PLAN_TEXT);
   });
 
-  const fileCall = (toolName = 'Write', extra: Partial<PlanToolCall> = {}): PlanToolCall => ({
+  const fileCall = (toolName = 'Write', extra: Partial<ClaudePlanCall> = {}): ClaudePlanCall => ({
     entityId: 'sess-01',
     toolName,
     toolInput: { file_path: file },
@@ -196,7 +203,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     ...extra,
   });
 
-  const planMode = (plan: string): PlanToolCall => ({
+  const planMode = (plan: string): ClaudePlanCall => ({
     entityId: 'sess-01',
     toolName: 'ExitPlanMode',
     toolInput: { plan },
@@ -207,7 +214,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
 
     const expected = {
       entityId: 'sess-01',
@@ -223,10 +230,10 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
 
   it('re-reads on the next Edit, so ticking the last step completes a task', async () => {
     const plans = createPlans({ send: vi.fn() });
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
 
     writeFileSync(file, PLAN_TEXT.replace('- [ ] two', '- [x] two'));
-    await plans.onTool(fileCall('Edit'));
+    await onTool(plans, fileCall('Edit'));
 
     expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
   });
@@ -237,10 +244,10 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   */
   it('re-reads the session plan file at a Stop, so a shell edit reaches the panel', async () => {
     const plans = createPlans({ send: vi.fn() });
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
 
     writeFileSync(file, PLAN_TEXT.replace('- [ ] two', '- [x] two'));
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
 
     expect(plans.get('sess-01')?.tasks.map((t) => t.status)).toEqual(['completed', 'pending']);
   });
@@ -248,12 +255,12 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('publishes nothing at a Stop when the plan file is unchanged', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
     const fileAt = plans.get('sess-01')?.fileAt;
     send.mockClear();
     vi.advanceTimersByTime(60_000);
 
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
 
     expect(send).not.toHaveBeenCalled();
     expect(plans.get('sess-01')?.fileAt).toBe(fileAt);
@@ -264,13 +271,13 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const plans = createPlans({ send });
     // A finished file plan is the only one a plan-mode plan replaces.
     writeFileSync(file, PLAN_TEXT.replaceAll('- [ ]', '- [x]'));
-    await plans.onTool(fileCall());
-    await plans.onTool(planMode('1. Fresh\n2. Newer'));
+    await onTool(plans, fileCall());
+    await onTool(plans, planMode('1. Fresh\n2. Newer'));
     expect(plans.get('sess-01')?.source).toBe('plan-mode');
     send.mockClear();
 
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
 
     expect(send).not.toHaveBeenCalled();
     expect(plans.get('sess-01')?.source).toBe('plan-mode');
@@ -283,12 +290,12 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   */
   it('shows a plan file a live task-tools plan turned away, once that plan finishes', async () => {
     const plans = createPlans({ send: vi.fn() });
-    plans.onTool(create('1', 'A'));
-    await plans.onTool(fileCall());
+    onTool(plans, create('1', 'A'));
+    await onTool(plans, fileCall());
     expect(plans.get('sess-01')?.source).toBe('task-tools');
 
-    plans.onTool(update('1', 'completed'));
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    onTool(plans, update('1', 'completed'));
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
 
     expect(plans.get('sess-01')?.source).toBe('plan-file');
   });
@@ -300,13 +307,13 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   */
   it('keeps a turned-away plan file\'s time across Stops while its text is unchanged', async () => {
     const plans = createPlans({ send: vi.fn() });
-    plans.onTool(create('1', 'A'));
-    await plans.onTool(fileCall());
+    onTool(plans, create('1', 'A'));
+    await onTool(plans, fileCall());
     const written = Date.now();
 
     vi.advanceTimersByTime(60_000);
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
-    plans.onTool(create('2', 'B'));
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    onTool(plans, create('2', 'B'));
 
     expect(plans.get('sess-01')?.fileAt).toBe(written);
   });
@@ -315,7 +322,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const send = vi.fn();
     const plans = createPlans({ send });
 
-    await plans.onTool({ entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
 
     expect(send).not.toHaveBeenCalled();
   });
@@ -323,7 +330,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('reads a truncated write the same way', async () => {
     const plans = createPlans({ send: vi.fn() });
 
-    await plans.onTool(fileCall('Write', { truncated: true }));
+    await onTool(plans, fileCall('Write', { truncated: true }));
 
     expect(plans.get('sess-01')?.source).toBe('plan-file');
   });
@@ -332,7 +339,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const plans = createPlans({ send: vi.fn() });
     writeFileSync(file, '# Just prose');
 
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
 
     expect(plans.get('sess-01')).toBeUndefined();
   });
@@ -342,8 +349,8 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const plans = createPlans({ send: vi.fn() });
     const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-elsewhere-')));
 
-    await plans.onTool(fileCall('Write', { cwd: elsewhere }));
-    await plans.onTool(fileCall('Edit', { cwd: elsewhere }));
+    await onTool(plans, fileCall('Write', { cwd: elsewhere }));
+    await onTool(plans, fileCall('Edit', { cwd: elsewhere }));
 
     expect(plans.get('sess-01')).toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
@@ -352,11 +359,11 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
 
   it('keeps a build link across a re-read of the same file', async () => {
     const plans = createPlans({ send: vi.fn() });
-    await plans.onTool(fileCall());
+    await onTool(plans, fileCall());
     const current = plans.get('sess-01') as SessionPlan;
     plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'building' } });
 
-    await plans.onTool(fileCall('Edit'));
+    await onTool(plans, fileCall('Edit'));
 
     expect(plans.get('sess-01')?.build).toEqual({ askId: 'A1', state: 'building' });
   });
@@ -364,7 +371,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it("plan mode's plan is offered as proposed tasks", () => {
     const plans = createPlans({ send: vi.fn() });
 
-    void plans.onTool(planMode('1. One\n2. Two'));
+    void onTool(plans, planMode('1. One\n2. Two'));
 
     expect(plans.get('sess-01')).toEqual({
       entityId: 'sess-01',
@@ -386,7 +393,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
       .find((body) => body.hook_event_name === 'PostToolUse');
     const plans = createPlans({ send: vi.fn() });
 
-    void plans.onTool({
+    void onTool(plans, {
       entityId: 'sess-01',
       toolName: 'ExitPlanMode',
       toolInput: post?.tool_input,
@@ -400,8 +407,8 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('a plan-mode plan with no tasks, or no plan string, offers nothing', () => {
     const plans = createPlans({ send: vi.fn() });
 
-    void plans.onTool(planMode('Just do it.'));
-    void plans.onTool({ ...planMode(''), toolInput: {} });
+    void onTool(plans, planMode('Just do it.'));
+    void onTool(plans, { ...planMode(''), toolInput: {} });
 
     expect(plans.get('sess-01')).toBeUndefined();
   });
@@ -409,8 +416,8 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('plan mode, then TaskCreate, ends with the task-tool plan', () => {
     const plans = createPlans({ send: vi.fn() });
 
-    void plans.onTool(planMode('### P'));
-    void plans.onTool(create('1', 'A'));
+    void onTool(plans, planMode('### P'));
+    void onTool(plans, create('1', 'A'));
 
     expect(plans.get('sess-01')?.source).toBe('task-tools');
   });
@@ -418,8 +425,8 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('TaskCreate, then a plan-file write, keeps the task-tool plan', async () => {
     const plans = createPlans({ send: vi.fn() });
 
-    void plans.onTool(create('1', 'A'));
-    await plans.onTool(fileCall());
+    void onTool(plans, create('1', 'A'));
+    await onTool(plans, fileCall());
 
     expect(plans.get('sess-01')?.source).toBe('task-tools');
   });
@@ -427,28 +434,51 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   it('stamps task times from the injected clock (HIVE-201)', () => {
     let t = 1_000;
     const plans = createPlans({ send: vi.fn(), now: () => t });
-    void plans.onTool(create('1', 'A'));
+    void onTool(plans, create('1', 'A'));
     t = 5_000;
-    void plans.onTool(update('1', 'in_progress'));
+    void onTool(plans, update('1', 'in_progress'));
     expect(plans.get('sess-01')?.tasks[0]?.startedAt).toBe(5_000);
   });
 
   it('carries the plan file and its time onto a task-tools plan that takes over (HIVE-201)', async () => {
     const plans = createPlans({ send: vi.fn(), now: () => 42 });
-    await plans.onTool(fileCall());
-    void plans.onTool(create('1', 'A'));
+    await onTool(plans, fileCall());
+    void onTool(plans, create('1', 'A'));
     expect(plans.get('sess-01')).toMatchObject({ source: 'task-tools', file, fileAt: 42 });
   });
 
   it('keeps the plan-file record across the replacement of a finished plan, and forget clears it (HIVE-201)', async () => {
     const plans = createPlans({ send: vi.fn(), now: () => 7 });
-    await plans.onTool(fileCall());
-    void plans.onTool(create('1', 'A'));
-    void plans.onTool(update('1', 'completed'));
-    void plans.onTool(create('2', 'B'));
+    await onTool(plans, fileCall());
+    void onTool(plans, create('1', 'A'));
+    void onTool(plans, update('1', 'completed'));
+    void onTool(plans, create('2', 'B'));
     expect(plans.get('sess-01')?.file).toBe(file);
     plans.forget('sess-01');
-    void plans.onTool(create('3', 'C'));
+    void onTool(plans, create('3', 'C'));
     expect(plans.get('sess-01')?.file).toBeUndefined();
+  });
+});
+
+describe('fixture replay equivalence (HIVE-238)', () => {
+  const replayFixture = async (name: string): Promise<unknown[]> => {
+    const sent: unknown[] = [];
+    let t = 0;
+    const plans = createPlans({ send: (_channel, payload) => sent.push(payload), now: () => (t += 1_000) });
+    const lines = readFileSync(join(__dirname, '../../../fixtures/hooks', name), 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '');
+    for (const body of lines) {
+      for (const effect of readHook({ lane: 'session', entityId: 'sess-01', body, truncated: false }).effects) {
+        if (effect.kind === 'plan') await plans.apply(effect.update);
+      }
+    }
+    return sent;
+  };
+
+  it.each(['task-tools-2.1.269.jsonl', 'exit-plan-mode-2.1.270.jsonl'])('%s publishes the same plans', async (name) => {
+    const sent = await replayFixture(name);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent).toMatchSnapshot();
   });
 });
