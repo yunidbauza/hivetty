@@ -1626,8 +1626,9 @@ user's machine, so it loads their `~/.claude/skills` and their installed plugins
 whether or not the definition names them — and on a fresh install, where
 `~/.hivetty/skills` is empty, the field refused *every* name a person could type.
 
-`skills/available.ts` therefore resolves three roots — `~/.hivetty/skills`,
-`~/.claude/skills`, and each `installPath` in
+`skills/available.ts` therefore merges three roots: `~/.hivetty/skills`, and the
+two the Claude Code adapter answers through `installed`
+(`harness/claude-code/installed.ts`): `~/.claude/skills`, and each `installPath` in
 `~/.claude/plugins/installed_plugins.json`, whose skills are namespaced
 `plugin:skill`. The registry rather than a glob over the plugin cache, because
 several versions of one plugin sit there at once and only that file says which
@@ -1649,7 +1650,7 @@ routinely carries) from leaking into an unattended turn, while `--settings`
 still applies alongside it so HiveTTY's own hooks keep firing. The skills stay
 reachable and the field stays a declaration.
 
-Two details worth knowing before changing `available.ts`:
+Two details worth knowing before changing `available.ts` or `installed.ts`:
 
 - **`isSkillFolder`, not `entry.isDirectory()`.** `readdir` reports `lstat`
   semantics, so a symlinked skill folder answers `false` — and a personal skills

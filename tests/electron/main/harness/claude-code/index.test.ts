@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   containerOrigins,
@@ -19,6 +19,7 @@ import {
   writeAgentSettings,
   writeHookSettings,
 } from '../../../../../electron/main/harness/claude-code/settings';
+import { readAvailableSkillNames } from '../../../../../electron/main/skills/available';
 import { readUserSkills } from '../../../../../electron/main/skills/read';
 
 /**
@@ -141,5 +142,71 @@ it('reads hooks and wraps context the Claude way (HIVE-236)', () => {
 describe('claudeCodeAdapter (HIVE-238)', () => {
   it('folds transcript edits', () => {
     expect(claudeCodeAdapter.foldEdits).toBe(foldTranscriptLines);
+  });
+});
+
+/**
+ * HIVE-345's pin: the three things the app reads out of `~/.claude`, for one fixed tree. The
+ * literals were recorded against the readers before they moved behind `installed`.
+ */
+describe('what is installed for Claude Code (HIVE-345)', () => {
+  const skill = async (dir: string) => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'SKILL.md'), '---\nname: x\n---\n', 'utf8');
+  };
+
+  beforeEach(async () => {
+    const claude = join(root, 'claude');
+    vi.stubEnv('CLAUDE_CONFIG_DIR', claude);
+    await skill(join(claude, 'skills', 'mine'));
+    await mkdir(join(claude, 'skills', 'notes'), { recursive: true });
+    await skill(join(root, 'p', 'ponytail', 'skills', 'ponytail'));
+    await skill(join(root, 'p', 'ws-user', 'skills', 'standup'));
+    await skill(join(root, 'p', 'ws-project', 'skills', 'other'));
+    await skill(join(root, 'hive', 'skills', 'release-notes'));
+    await mkdir(join(claude, 'plugins'), { recursive: true });
+    await writeFile(
+      join(claude, 'plugins', 'installed_plugins.json'),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          'ponytail@ponytail': [{ scope: 'user', installPath: join(root, 'p', 'ponytail') }],
+          'workstream@claude-kit': [
+            { scope: 'project', installPath: join(root, 'p', 'ws-project') },
+            { scope: 'user', installPath: join(root, 'p', 'ws-user') },
+          ],
+          'hive@local': [],
+        },
+      }),
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('the enabledPlugins a session settings file carries', async () => {
+    expect(await claudeCodeAdapter.installed.sessionOverrides(['workstream', 'superpowers'])).toEqual({
+      'workstream@claude-kit': false,
+    });
+  });
+
+  it('the plugins Settings lists', async () => {
+    expect(await claudeCodeAdapter.installed.pluginNames()).toEqual(['ponytail', 'workstream']);
+  });
+
+  it('the skill names an agent may reference', async () => {
+    expect(
+      await readAvailableSkillNames(join(root, 'hive', 'skills'), () => claudeCodeAdapter.installed.skillNames()),
+    ).toEqual({
+      all: ['mine', 'ponytail:ponytail', 'release-notes', 'workstream:standup'],
+      hive: ['release-notes'],
+    });
+    expect((await claudeCodeAdapter.installed.skillNames()).sort()).toEqual([
+      'mine',
+      'ponytail:ponytail',
+      'workstream:standup',
+    ]);
   });
 });

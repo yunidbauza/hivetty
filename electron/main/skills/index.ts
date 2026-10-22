@@ -20,7 +20,6 @@ import {
 
 import { sessionAdapter } from '../harness/registry';
 
-import { readInstalledPluginNames } from './available';
 import { copyInto } from './import';
 import { importSkill as importPackage, isSkillPackage } from './import-skill';
 import { PLUGIN_DIR, isSkillManifest, resolveInSkill, skillsRoot } from './paths';
@@ -146,8 +145,8 @@ export interface SkillsRuntime {
 
 interface SkillsRuntimeOptions {
   userDataPath: string;
-  /** The Claude Code plugin registry, read for the snapshot's plugin names (HIVE-176). */
-  installedPlugins?: () => string;
+  /** The harness's installed plugin names, for the snapshot's switches (HIVE-176, HIVE-345). */
+  installedPlugins?: () => Promise<string[]>;
   /**
    * The app's version, for the generated manifest.
    *
@@ -287,7 +286,7 @@ export function createSkillsRuntime({
       valid: false,
     })),
     skillsRoot: skillsRoot(),
-    plugins: installedPlugins === undefined ? [] : await readInstalledPluginNames(installedPlugins()),
+    plugins: installedPlugins === undefined ? [] : await installedPlugins(),
   });
 
   /**

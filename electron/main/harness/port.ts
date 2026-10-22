@@ -19,7 +19,7 @@ import type { SkillsRead } from '../skills/read';
  * (HIVE-234, landed), `prepare` (HIVE-235, landed), `readHook` (HIVE-236, landed;
  * HIVE-237 normalised its signals, HIVE-238 its plan ops), `foldEdits` (HIVE-238),
  * `record` and `meters` (HIVE-239, landed),
- * `promptMarker` (HIVE-240, landed). See
+ * `promptMarker` (HIVE-240, landed), `installed` (HIVE-345). See
  * `docs/harness-architecture.md`.
  */
 export interface HarnessAdapter {
@@ -41,6 +41,8 @@ export interface HarnessAdapter {
   meters(body: string): SessionMetrics | null;
   /** Where the harness keeps a conversation, and what it says about it (HIVE-239). */
   readonly record: HarnessRecord;
+  /** What the user installed for the harness themselves, which HiveTTY reads and never manages (HIVE-345). */
+  readonly installed: HarnessInstalled;
 }
 
 /** What wrote a title, as far as the harness's own record can say (HIVE-239). */
@@ -62,6 +64,16 @@ export interface HarnessRecord {
   titleOrigin(cwd: string, sessionUuid: string, name: string): TitleVerdict;
   /** A raw terminal title as a session name: activity marks stripped, `''` for the harness's "unnamed". */
   nameFromTitle(title: string): string;
+}
+
+/** What the user installed for a harness themselves: its skills and plugins (HIVE-345). */
+export interface HarnessInstalled {
+  /** Skill names the harness loads beyond HiveTTY's own: the user's skills, and `plugin:skill` per installed plugin. Unsorted. */
+  skillNames(): Promise<string[]>;
+  /** Installed plugin names a session switch can act on, sorted; `[]` with no registry. */
+  pluginNames(): Promise<string[]>;
+  /** `enabledPlugins` overrides that keep the `disabled` plugins out of a session; `{}` with no registry. */
+  sessionOverrides(disabled: readonly string[]): Promise<Record<string, false>>;
 }
 
 /** One file's edits in a session, as the changed-files list counts them (HIVE-201). */

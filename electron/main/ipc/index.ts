@@ -254,6 +254,7 @@ import {
   type FsWatchLayer,
 } from '../fs';
 import type { PreparedFiles } from '../harness/port';
+import { sessionAdapter } from '../harness/registry';
 import { createHookRuntime } from '../hooks';
 import { readGhStatus, runCommand } from '../integrations/gh';
 import { createGithub } from '../integrations/github';
@@ -317,8 +318,7 @@ import {
 } from '../sessions/history';
 import { onShutdown } from '../shutdown';
 import { createSkillsRuntime, type SkillsRuntime } from '../skills';
-import { readSessionPluginOverrides } from '../skills/available';
-import { installedPluginsFile, PLUGIN_DIR } from '../skills/paths';
+import { PLUGIN_DIR } from '../skills/paths';
 import { splashEnabled } from '../splash';
 import {
   checkForUpdatesInteractively,
@@ -2342,8 +2342,7 @@ export function registerIpcHandlers(
     sessionMetrics: () => getConfig().sessionMetrics,
     // HIVE-176. Resolved against the plugin registry at every write, and the
     // file is rewritten before every spawn, so an install is picked up too.
-    enabledPlugins: () =>
-      readSessionPluginOverrides(installedPluginsFile(), getConfig().disabledSessionPlugins),
+    enabledPlugins: () => sessionAdapter().installed.sessionOverrides(getConfig().disabledSessionPlugins),
     // The same, for the hostname a container reaches this machine by (HIVE-132).
     hostAlias: () => getConfig().receiver.hostAlias,
     // Every hostname the guard admits, not just the global one — see
@@ -2607,7 +2606,7 @@ export function registerIpcHandlers(
     doneUrl: () => hooks.doneUrl(),
     ready: seeded,
     // HIVE-176. The plugin names the Settings switches list.
-    installedPlugins: installedPluginsFile,
+    installedPlugins: () => sessionAdapter().installed.pluginNames(),
   });
 
   /*

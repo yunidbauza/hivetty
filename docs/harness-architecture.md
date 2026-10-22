@@ -31,6 +31,7 @@ with why it is not a behaviour change.
 | `foldEdits` | HIVE-238 (landed) |
 | `record`, `meters` | HIVE-239 (landed) |
 | `promptMarker` | HIVE-240 (landed) |
+| `installed` | HIVE-345: the user's own skills and plugins (`skillNames`, `pluginNames`, `sessionOverrides`), reached through `sessionAdapter()` by the agents runtime, the skills snapshot and the hook settings' `enabledPlugins`. |
 
 ### Capabilities: build one, shape for three
 
@@ -92,9 +93,8 @@ settings, the status line script), `plugin.ts` and `done-skill.ts`, `mcp-config.
   `ContainerOrigins`, re-exported from `generated.ts`. `generated.ts` imports the registry
   and the adapter's `container-files.ts` needs the filenames, so the names live where
   `registry → claude-code → container` cannot cycle back.
-- **Not moved (HIVE-336):** the `~/.claude` readers in `skills/paths.ts` and
-  `skills/available.ts`, `PLUGIN_DIR`, and `agents/**`, which only ever receive paths. The
-  server descriptors (`hiveServerSpec`, `containerHiveServerSpec`) stay in `mcp/` because
+- **Not moved:** `PLUGIN_DIR` and `agents/**`, which only ever receive paths. The
+  `~/.claude` readers moved behind `installed` with HIVE-345. The server descriptors (`hiveServerSpec`, `containerHiveServerSpec`) stay in `mcp/` because
   the agent path shares them.
 
 ### The registry
