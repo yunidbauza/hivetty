@@ -29,17 +29,20 @@ import { readUserSkills } from '../../electron/main/skills/read';
  * A skill's frontmatter hooks register **when the skill is invoked**, not at
  * session start (measured: a run that never invoked `goal-on` left the brief
  * untouched). So the prompt is `/goal-on clear`, the cheapest invocation the
- * skill has, and the model is given `Read` only so it answers and stops
- * rather than editing anything. The brief the verifier reads sits under
- * `HIVE_GOALS_DIR`, which the model does not know about, so whatever the
- * model does to `~/.hive/goals` is not what is measured.
+ * skill has. `--allowedTools Read` alone did not stop the model obeying
+ * `clear` on the very brief under test (HIVE-346: it found it through
+ * `HIVE_GOALS_DIR` and wrote `CLEARED`, before the first Stop or after it), so
+ * every tool that writes is denied outright: the hook is the brief's only
+ * writer.
  *
  * The brief is written `ACTIVE` with one unticked Outcome and `turn_budget: 1`,
  * so the cheapest possible run proves the block: the first Stop is refused
- * (turns 0 → 1), the second finds the budget spent and writes `FAILED`. Both
- * writes stamp `last_verified`, and each posts a receipt. Asserting on the
- * file rather than on the model's words is the point: a hook that never ran
- * leaves no stamp, whatever the transcript says.
+ * (turns 0 → 1) and stamps `last_verified`, and the change posts an `ACTIVE`
+ * receipt. Whether a second Stop follows to write `FAILED` is the model's
+ * choice, not the hook's (HIVE-346 saw runs spend all eight turns after the
+ * block without one), so the assertions stop at what the hook itself wrote.
+ * Asserting on the file rather than on the model's words is the point: a hook
+ * that never ran leaves no stamp, whatever the transcript says.
  *
  * Opt-in like every live suite: `pnpm test:goal`. Skipped, not failed,
  * without the flag; a missing `claude` fails loudly, as `skills-conformance`
@@ -156,6 +159,8 @@ describe.skipIf(!enabled)('goal-on Stop hook through the generated plugin (HIVE-
             '8',
             '--allowedTools',
             'Read',
+            '--disallowedTools',
+            'Bash,Edit,Write,NotebookEdit',
             '-p',
             '/goal-on clear',
           ],
@@ -190,9 +195,11 @@ describe.skipIf(!enabled)('goal-on Stop hook through the generated plugin (HIVE-
       console.info('EVIDENCE ', join(cwd, 'finding.json'));
       // The floor ran: it stamps on every completed path, blocked or released.
       expect(after).toMatch(/^last_verified: \d{4}-/m);
-      // It blocked once (turns 0 → 1) and then spent the budget.
+      // It blocked once (turns 0 → 1). A second Stop, if the model made one,
+      // spent the budget; nothing else may have written the status.
       expect(after).toMatch(/^turns_used: 1$/m);
-      expect(after).toMatch(/^status: FAILED$/m);
+      const status = /^status: (ACTIVE|FAILED)$/m.exec(after)?.[1];
+      expect(status).toBeDefined();
 
       // The receipt reached the receiver with the session's own headers.
       const events = receiver.receipts.filter(
@@ -204,8 +211,12 @@ describe.skipIf(!enabled)('goal-on Stop hook through the generated plugin (HIVE-
         expect(receipt.headers['x-hive-session']).toBe(session);
         expect((receipt.body as { meta?: { goal?: string } }).meta?.goal).toBe(session);
       }
-      const statuses = events.map((receipt) => (receipt.body as { meta?: { status?: string } }).meta?.status);
-      expect(statuses).toContain('FAILED');
+      const metas = events.map(
+        (receipt) => (receipt.body as { meta?: { status?: string; turns_used?: number; turn_budget?: number } }).meta,
+      );
+      // The block's own receipt, then one for whatever status the file ends on.
+      expect(metas).toContainEqual(expect.objectContaining({ status: 'ACTIVE', turns_used: 1, turn_budget: 1 }));
+      expect(metas.map((meta) => meta?.status)).toContain(status);
     },
   );
 });
