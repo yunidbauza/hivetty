@@ -219,47 +219,54 @@ export function RepoPicker({
       <label htmlFor="clone-url" className="text-ui-sm text-muted">
         Repository URL
       </label>
-      <div className="flex items-center gap-2 rounded-full border border-border bg-bg px-3 py-1.5 focus-within:border-brand">
-        <MagnifyingGlass size={12} className="shrink-0 text-subtle" />
-        <input
-          id="clone-url"
-          type="text"
-          role="combobox"
-          aria-expanded={open}
-          aria-controls={listId}
-          aria-autocomplete="list"
-          aria-activedescendant={
-            open && current >= 0 && status.state === 'ready' ? optionId(current) : undefined
-          }
-          value={value}
-          onChange={(event) => {
-            onChange(event.target.value);
-            setActive(0);
-            setDismissed(false);
-          }}
-          onKeyDown={onKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setFocused(false)}
-          placeholder="Search your repositories, or paste any git URL"
-          spellCheck={false}
-          autoComplete="off"
-          className="min-w-0 flex-1 bg-transparent text-control text-ink outline-none placeholder:text-subtle"
-        />
-      </div>
       {/*
-        `data-escape-scope`: Radix hears Escape on the document in the capture
-        phase, before this field does, so the overlay asks whether a control
-        has claimed the key (`escapeIsClaimed`). While the list is open it has:
-        the first Escape closes the list, the second closes settings.
+        The list floats over the form rather than pushing it down. Inline, it
+        collapsed on the field's blur, so a click aimed at "Choose…" landed
+        where the button had been a moment before and was lost.
       */}
-      {open && body !== null ? (
-        <div
-          data-escape-scope=""
-          className="overflow-hidden rounded-lg border border-border bg-panel-2"
-        >
-          {body}
+      <div className="relative">
+        <div className="flex items-center gap-2 rounded-full border border-border bg-bg px-3 py-1.5 focus-within:border-brand">
+          <MagnifyingGlass size={12} className="shrink-0 text-subtle" />
+          <input
+            id="clone-url"
+            type="text"
+            role="combobox"
+            aria-expanded={open}
+            aria-controls={listId}
+            aria-autocomplete="list"
+            aria-activedescendant={
+              open && current >= 0 && status.state === 'ready' ? optionId(current) : undefined
+            }
+            value={value}
+            onChange={(event) => {
+              onChange(event.target.value);
+              setActive(0);
+              setDismissed(false);
+            }}
+            onKeyDown={onKeyDown}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            placeholder="Search your repositories, or paste any git URL"
+            spellCheck={false}
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent text-control text-ink outline-none placeholder:text-subtle"
+          />
         </div>
-      ) : null}
+        {/*
+          `data-escape-scope`: Radix hears Escape on the document in the capture
+          phase, before this field does, so the overlay asks whether a control
+          has claimed the key (`escapeIsClaimed`). While the list is open it has:
+          the first Escape closes the list, the second closes settings.
+        */}
+        {open && body !== null ? (
+          <div
+            data-escape-scope=""
+            className="absolute inset-x-0 top-full z-20 mt-1.5 overflow-hidden rounded-lg border border-border bg-panel-2"
+          >
+            {body}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
