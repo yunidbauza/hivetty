@@ -67,8 +67,10 @@ import type { SessionStatusEvent } from '../../electron/shared/session-contract'
  * say ok            -> UserPromptSubmit working
  *                   -> Stop             idle      => row: session.idle (HIVE-89)
  *                   -> Notification     idle     idle_prompt        (+60s)
- *                   => 2 rows: session.idle (presented), session.input_needed
- *                      (inbox only), badge 2 (both rows are Summons)
+ *                   => 2 raises: session.idle (presented), then
+ *                      session.input_needed, which replaces the idle row and
+ *                      keeps its toast (`deliverAsWell`, 6 Oct 2026): 2
+ *                      toasts, 1 row, badge 1
  *
  * AskUserQuestion   -> UserPromptSubmit  working
  *                   -> PermissionRequest waiting
@@ -103,7 +105,9 @@ import type { SessionStatusEvent } from '../../electron/shared/session-contract'
  * this kind chatty is the toast, not the row, and that matters more once a
  * session can sit in `idle (agents)` for a long time). This corrects the
  * belief this comment held when it was written against 47f0984, before that
- * change shipped — this file's live run is what caught the drift.
+ * change shipped — this file's live run is what caught the drift. Since 6 Oct
+ * 2026 that holds only when no idle row is there to take over; in a run that
+ * just raised one, it toasts as the idle row would have (HIVE-348).
  *
  * ## Why the driver answers the question (the review's second finding)
  *
@@ -223,7 +227,8 @@ interface Scenario {
    * discipline the notice-signal assertion follows above. `session.blocked` is
    * `defaultDelivery: 'both'`; `session.input_needed` is deliberately
    * `'inbox'` only (HIVE-83's Task 5) — a row still lands and the badge still
-   * counts it, but no toast. The live run is what caught this file's own
+   * counts it, but no toast, unless it takes over an idle row and keeps that
+   * row's toast (`deliverAsWell`, 6 Oct 2026). The live run is what caught this file's own
    * belief going stale when that shipped. `session.idle` is `'both'` (HIVE-89)
    * and every scenario raises one, so every count below is one higher than it
    * was.
@@ -347,6 +352,9 @@ const SCENARIO_TIMEOUT_MS = (IDLE_PROMPT_DEADLINE + 75) * 1000;
  * `completesTool` is the discriminator because it is precisely "the block was
  * answered inside the run": the notifier sweeps the blocked row the moment the
  * session stops being `waiting`. The scenario that never answers keeps its row.
+ *
+ * An input-needed row replaces the same session's idle row (`deliverAsWell`,
+ * 6 Oct 2026), so the two count once (HIVE-348).
  */
 const expectedBadge = (kinds: NotificationKind[], completesTool: boolean): number =>
   kinds.filter(
@@ -354,7 +362,8 @@ const expectedBadge = (kinds: NotificationKind[], completesTool: boolean): numbe
       kind === 'session.idle' ||
       kind === 'session.input_needed' ||
       (kind === 'session.blocked' && !completesTool),
-  ).length;
+  ).length -
+  (kinds.includes('session.idle') && kinds.includes('session.input_needed') ? 1 : 0);
 
 const scenarios: Scenario[] = [
   {
@@ -375,8 +384,12 @@ const scenarios: Scenario[] = [
      */
     status: 'idle',
     kinds: ['session.idle', 'session.input_needed'],
-    /** `session.idle` toasts; `session.input_needed` is `inbox` only — see `Scenario.presentedCount`. */
-    presentedCount: 1,
+    /**
+     * `session.idle` toasts, and `session.input_needed` takes its row over and
+     * toasts too (`deliverAsWell`, 6 Oct 2026). One toast here means the
+     * takeover dropped to its own inbox-only default (HIVE-348).
+     */
+    presentedCount: 2,
     /**
      * Long enough for `Stop`, then the idle prompt — however long this machine
      * makes the app wait for it. See {@link IDLE_PROMPT_DEADLINE}.
