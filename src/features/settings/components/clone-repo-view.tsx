@@ -5,6 +5,7 @@ import { TerminalSurface } from '@/components/terminal/terminal-surface';
 import { cancelClone, onCloneDone, startClone } from '@/lib/clone-repo';
 
 import { Button } from '@components/ui/button';
+import { RepoPicker } from '@features/settings/components/repo-picker';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
 import { DirectoryPicker } from '@features/shared/components/directory-picker';
 import { useChooseDirectory } from '@hooks/use-choose-directory';
@@ -168,21 +169,9 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
 
       {phase === 'compose' ? (
         <>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="clone-url" className="text-ui-sm text-muted">
-              Repository URL
-            </label>
-            <input
-              id="clone-url"
-              type="text"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://github.com/owner/repo.git"
-              spellCheck={false}
-              autoComplete="off"
-              className="rounded-full border border-border bg-bg px-3 py-1.5 text-control text-ink placeholder:text-subtle"
-            />
-          </div>
+          {/* The URL field, with the user's own repositories under it. Picking
+              one writes its https URL into `url`; pasting works as before. */}
+          <RepoPicker value={url} onChange={setUrl} />
 
           <div className="flex flex-col gap-1.5">
             <span className="text-ui-sm text-muted">Clone into</span>
