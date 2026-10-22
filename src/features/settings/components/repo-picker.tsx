@@ -261,7 +261,7 @@ export function RepoPicker({
         {open && body !== null ? (
           <div
             data-escape-scope=""
-            className="absolute inset-x-0 top-full z-20 mt-1.5 overflow-hidden rounded-lg border border-border bg-panel-2"
+            className="absolute inset-x-0 top-full z-20 mt-1.5 overflow-hidden rounded-lg border border-border bg-panel-2 shadow-lg"
           >
             {body}
           </div>
