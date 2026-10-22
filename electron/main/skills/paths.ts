@@ -7,7 +7,7 @@ import { contains } from '../fs/contains';
 /**
  * Where the user's skills and the generated plugin live (HIVE-96).
  *
- * Two roots, and they are deliberately not the same place. `~/.hivetty/skills` is
+ * Two roots, and they are deliberately not the same place. `~/.hive/skills` is
  * the **user's** — hand-editable, backed up with their dotfiles, and the thing
  * Settings writes. `<userData>/hive/plugin` is the **app's** — regenerated from
  * the first, never edited by hand, and disposable. `harness/claude-code/settings.ts` draws the
@@ -20,7 +20,7 @@ import { contains } from '../fs/contains';
  * `configPath()` honours `HIVE_CONFIG_PATH`, which story 085's Playwright
  * fixture sets per test. Deriving this from it means a test that relocates the
  * config relocates the skills with it; reaching for `homedir()` here would have
- * every e2e run write into the developer's own `~/.hivetty` — and the e2e step
+ * every e2e run write into the developer's own `~/.hive` — and the e2e step
  * this story adds creates a skill, so that would not stay theoretical.
  *
  * Read per call rather than captured, for the reason `configPath` itself gives:
@@ -253,7 +253,7 @@ async function assertWithinRoot(
  * *project* the config knows and this one resolves against a directory main
  * owns outright.
  *
- * The root is `realpath`'d too, so a symlinked `~/.hivetty` — the dotfiles case,
+ * The root is `realpath`'d too, so a symlinked `~/.hive` — the dotfiles case,
  * which `read.ts` deliberately supports — does not make every path look
  * outside.
  *
@@ -289,7 +289,7 @@ async function assertWithinRoot(
  * second, adversarial process winning a timing window against this one
  * between two syscalls — a materially different threat from the one this
  * module otherwise defends against, which is a bundle's own on-disk shape.
- * `~/.hivetty/skills` is hand-editable and backed up with the user's dotfiles
+ * `~/.hive/skills` is hand-editable and backed up with the user's dotfiles
  * (see the top of this file), so main is emphatically *not* the tree's only
  * writer.
  *

@@ -14,12 +14,12 @@ import { AUTH_ENV_KEYS } from '../../../../../electron/shared/config-contract';
  */
 describe('claudeCodeAdapter.launch equals the pre-port command line (HIVE-234)', () => {
   const UUID = '00000000-0000-4000-8000-000000000000';
-  const USER = '/Users/dev/Library/Application Support/HiveTTY';
+  const USER = '/Users/dev/Library/Application Support/The Hive';
   const map = createPathMap({ projectPath: '/Users/dev/p', userDataPath: USER, workspace: '/workspace', hiveDir: '/hive' });
   const config = { workspace: '/workspace', hiveDir: '/hive', envArg: '-e {name}={value}', freshness: 'exec-env' as const, hostAlias: 'host.docker.internal' };
   const container = { config, map, env: { FOO: 'bar', HIVE_SESSION_ID: 'sess-01' } };
   const paths = { settingsPath: `${USER}/hive/settings.json`, pluginDir: `${USER}/hive/plugin`, mcpConfig: `${USER}/hive/mcp.json` };
-  const HOST_FLAGS = "--settings '/Users/dev/Library/Application Support/HiveTTY/hive/settings.json' --plugin-dir '/Users/dev/Library/Application Support/HiveTTY/hive/plugin' --mcp-config '/Users/dev/Library/Application Support/HiveTTY/hive/mcp.json'";
+  const HOST_FLAGS = "--settings '/Users/dev/Library/Application Support/The Hive/hive/settings.json' --plugin-dir '/Users/dev/Library/Application Support/The Hive/hive/plugin' --mcp-config '/Users/dev/Library/Application Support/The Hive/hive/mcp.json'";
   const BOX_FLAGS = "--settings '/hive/settings.json' --plugin-dir '/hive/plugin' --mcp-config '/hive/mcp.json'";
   const UNSET = 'unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; ';
 

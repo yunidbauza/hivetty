@@ -6,14 +6,14 @@ import { isSkillFolder } from './read';
 /**
  * Every skill name an agent definition may name.
  *
- * ## Why this is wider than `~/.hivetty/skills`
+ * ## Why this is wider than `~/.hive/skills`
  *
  * `parseAgent` used to validate `skills:` against the Hive's own folder alone,
  * and that was wrong in both directions. Too narrow, because an agent runs as a
  * `claude -p` process on this machine: it loads the user's `~/.claude/skills`
  * and their installed plugins whether or not the definition names them, so
  * refusing `jira-writer:jira-writer` refused a skill the agent could reach
- * regardless. And wrong in practice, because `~/.hivetty/skills` is empty on a
+ * regardless. And wrong in practice, because `~/.hive/skills` is empty on a
  * fresh install — which made the field refuse *every* name a person could type.
  *
  * So the field is not a sandbox and this is not a permission list. It is the
@@ -26,13 +26,13 @@ import { isSkillFolder } from './read';
  * ## Why the roots are arguments
  *
  * The harness's own roots (the user's skills, its installed plugins) are the
- * adapter's (`harness/claude-code/installed.ts`, HIVE-345), and HiveTTY's own
+ * adapter's (`harness/claude-code/installed.ts`, HIVE-345), and The Hive's own
  * root is an argument, so a unit test reads temp directories rather than the
  * developer's machine. One that read `~/.claude` would assert on whatever
  * happened to be installed that week —
  * green here, red on CI, and untestable for the case that matters most (a
  * machine with nothing installed). `createAgentsRuntime` is the only caller
- * that knows HiveTTY's real root, exactly as it is already the only caller
+ * that knows The Hive's real root, exactly as it is already the only caller
  * that knows `agentsRoot()`.
  */
 
@@ -88,15 +88,15 @@ export async function skillsUnder(root: string): Promise<string[]> {
 }
 
 /**
- * The names an agent may reference, and the subset HiveTTY itself owns.
+ * The names an agent may reference, and the subset The Hive itself owns.
  *
  * Two sets rather than one, because `parseAgent` asks two different questions
  * of them. `all` answers *may this definition name this skill*, and has to be
  * as wide as the machine. `hive` answers *may an agent take this name*, and
- * must not be — that rule exists because an agent and a skill HiveTTY manages
+ * must not be — that rule exists because an agent and a skill The Hive manages
  * share one namespace, and widening it silently reserved every name in the
  * user's personal skills folder: with `~/.claude/skills/graphify` present, no
- * agent could be called `graphify`, refused on account of a folder HiveTTY
+ * agent could be called `graphify`, refused on account of a folder The Hive
  * neither manages nor mentions.
  */
 interface AvailableSkills {

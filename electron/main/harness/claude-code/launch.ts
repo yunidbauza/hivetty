@@ -56,7 +56,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * `git diff` or rerun the tests without starting a new session. That was a
  * deliberate decision and this deliberately undoes it.
  *
- * The reason is that HiveTTY is a fleet view. A session whose agent has quit
+ * The reason is that The Hive is a fleet view. A session whose agent has quit
  * is finished work, and leaving thirteen idle login shells in the rail — each
  * indistinguishable from a session that is merely quiet — makes the one list
  * the app exists to render steadily less true. `/exit` should retire the row.

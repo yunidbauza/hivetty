@@ -201,7 +201,7 @@ export interface SessionsOptions {
    * A **function**, not a snapshot, for the reason `config` is one and the
    * reason `createAgentsRuntime` gives for `skillNames`: a definition can be
    * written while the app is running, and a set captured at construction would
-   * pin whatever `~/.hivetty/agents` held at boot — leaving an agent the user
+   * pin whatever `~/.hive/agents` held at boot — leaving an agent the user
    * created five minutes ago unable to report its own turns.
    *
    * Absent means "this build has no agents", which answers every hook under an
@@ -2440,7 +2440,7 @@ export function createSessions(options: SessionsOptions): Sessions {
        *
        * Every session this app has ever spawned carries a `custom-title` and no
        * `ai-title` for exactly this reason — 25+ transcripts, some 3,000 lines
-       * long, all of them mute. HiveTTY was not failing to infer names; it was
+       * long, all of them mute. The Hive was not failing to infer names; it was
        * stopping Claude from inferring them.
        *
        * So the id fallback is gone. A session opens unnamed, Claude titles it

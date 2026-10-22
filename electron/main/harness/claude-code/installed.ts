@@ -8,7 +8,7 @@ import { skillsUnder } from '../../skills/available';
 import type { HarnessInstalled } from '../port';
 
 /**
- * Claude Code's own configuration directory — **not** HiveTTY's.
+ * Claude Code's own configuration directory — **not** The Hive's.
  *
  * A third root, and the first one here that belongs to another application.
  * It is read, never written: an agent is a `claude -p` process, so the skills
@@ -29,7 +29,7 @@ import type { HarnessInstalled } from '../port';
 const claudeRoot = (): string =>
   process.env['CLAUDE_CONFIG_DIR'] ?? join(homedir(), '.claude');
 
-/** The user's own skills, which HiveTTY lists but does not manage. */
+/** The user's own skills, which The Hive lists but does not manage. */
 const userSkillsRoot = (): string => join(claudeRoot(), 'skills');
 
 /**

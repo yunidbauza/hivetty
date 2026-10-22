@@ -41,7 +41,7 @@ export interface HarnessAdapter {
   meters(body: string): SessionMetrics | null;
   /** Where the harness keeps a conversation, and what it says about it (HIVE-239). */
   readonly record: HarnessRecord;
-  /** What the user installed for the harness themselves, which HiveTTY reads and never manages (HIVE-345). */
+  /** What the user installed for the harness themselves, which The Hive reads and never manages (HIVE-345). */
   readonly installed: HarnessInstalled;
 }
 
@@ -68,7 +68,7 @@ export interface HarnessRecord {
 
 /** What the user installed for a harness themselves: its skills and plugins (HIVE-345). */
 export interface HarnessInstalled {
-  /** Skill names the harness loads beyond HiveTTY's own: the user's skills, and `plugin:skill` per installed plugin. Unsorted. */
+  /** Skill names the harness loads beyond The Hive's own: the user's skills, and `plugin:skill` per installed plugin. Unsorted. */
   skillNames(): Promise<string[]>;
   /** Installed plugin names a session switch can act on, sorted; `[]` with no registry. */
   pluginNames(): Promise<string[]>;
@@ -192,7 +192,7 @@ export interface LaunchSpec {
   /**
    * What to call the session inside Claude (HIVE-61).
    *
-   * HiveTTY's own entity id, so the agent's prompt box, its `/resume` picker
+   * The Hive's own entity id, so the agent's prompt box, its `/resume` picker
    * entry and its terminal title all say `sess-07` rather than an auto-title
    * derived from whatever the first message happened to be.
    *

@@ -5230,7 +5230,7 @@ export function registerIpcHandlers(
      * regeneration is free of that constraint.
      *
      * Per spawn rather than at launch: a skill saved from Settings, or written
-     * by hand into `~/.hivetty/skills` with the app already running, has to be on
+     * by hand into `~/.hive/skills` with the app already running, has to be on
      * *this* command line. A readdir over a handful of small files is cheaper
      * than any protocol that would tell us the tree changed.
      */

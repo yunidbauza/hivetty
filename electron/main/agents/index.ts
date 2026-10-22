@@ -10,7 +10,7 @@
  * the app runs, and an agent naming a skill the user added a minute ago must
  * validate against the folder as it is now, not as it was at boot.
  *
- * It reads **three** roots: HiveTTY's, and the two the harness answers through
+ * It reads **three** roots: The Hive's, and the two the harness answers through
  * `installed`. An agent is a `claude -p` process on
  * this machine, so it already loads the user's `~/.claude/skills` and their
  * installed plugins; validating against `~/.hive/skills` alone refused names
