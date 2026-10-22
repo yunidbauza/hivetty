@@ -262,7 +262,7 @@ import { answerPrLookup } from '../integrations/github/lookup';
 import { runAsync, type RunAsync } from '../integrations/github/run';
 import { createJira } from '../integrations/jira';
 import { credentialFile } from '../integrations/jira/auth';
-import { jiraToolsFor } from '../integrations/jira/tools';
+import { announceIssueWrites, jiraToolsFor } from '../integrations/jira/tools';
 import { createSlackBridge, type SlackBridge } from '../integrations/slack/bridge';
 import { openSlackSocket, openSlackWeb } from '../integrations/slack/clients';
 import { signInToSlack, signOutOfSlack } from '../integrations/slack/login';
@@ -800,7 +800,7 @@ let history: SessionHistory | null = null;
 let skills: SkillsRuntime | null = null;
 let agents: AgentRegistry | null = null;
 /**
- * `~/.hivetty/ledger/agents.json`, or `null` before registration (HIVE-115).
+ * `~/.hive/ledger/agents.json`, or `null` before registration (HIVE-115).
  *
  * Held beside `agents` rather than inside it because they are two different
  * kinds of fact about the same names — the registry owns what the user wrote,
@@ -1953,7 +1953,7 @@ export function registerIpcHandlers(
    * (HIVE-87).
    *
    * Constructed before the session layer because that layer takes it as an
-   * option. Nothing about it touches `~/.claude` — it records what HiveTTY
+   * option. Nothing about it touches `~/.claude` — it records what The Hive
    * knows about its own rows, not anything Claude wrote.
    */
   history = createSessionHistory(
@@ -1963,7 +1963,7 @@ export function registerIpcHandlers(
   /**
    * The ledger lives beside the config, not in `userData` (HIVE-111).
    *
-   * `~/.hivetty/` is the user's own directory — the one they can open, read and
+   * `~/.hive/` is the user's own directory — the one they can open, read and
    * back up. A correspondence log between their agents belongs there for the
    * same reason the config does, and `userData` belongs to the app.
    *
@@ -1997,7 +1997,7 @@ export function registerIpcHandlers(
         happened. A party is an identity, not a process, and this is the arm
         that finally says so.
 
-        It is a set of names read off `~/.hivetty/agents`, not a pattern: a name
+        It is a set of names read off `~/.hive/agents`, not a pattern: a name
         that is not a folder on this machine is still refused, so the rule is
         no looser than the two above it — it is the same rule applied to a
         second register of identities.
@@ -2586,7 +2586,7 @@ export function registerIpcHandlers(
   onShutdown(() => remoteListener?.stop());
 
   /*
-    The shipped skills and agents land in `~/.hivetty` before anything reads them
+    The shipped skills and agents land in `~/.hive` before anything reads them
     (HIVE-162). Started here, not awaited here: this function is synchronous.
     The skills runtime waits for it before its first regeneration, and the
     agents registry below watches its folder, so a definition the seed writes
@@ -3960,13 +3960,16 @@ export function registerIpcHandlers(
    * Electron is 43, so it is there. Wrapped rather than passed by reference so
    * `this` cannot matter and the seam stays a plain function.
    */
-  const jira = createJira({
-    store: safeStorage,
-    file: credentialFile(join(app.getPath('userData'), 'jira-credential.bin')),
-    env: process.env,
-    config: getConfig,
-    fetch: (url, init) => globalThis.fetch(url, init),
-  });
+  const jira = announceIssueWrites(
+    createJira({
+      store: safeStorage,
+      file: credentialFile(join(app.getPath('userData'), 'jira-credential.bin')),
+      env: process.env,
+      config: getConfig,
+      fetch: (url, init) => globalThis.fetch(url, init),
+    }),
+    (issue) => send(CH.jiraIssueChanged, issue),
+  );
 
   /**
    * The device credential this machine was handed when it attached to
@@ -4909,7 +4912,7 @@ export function registerIpcHandlers(
    * Takes the same name guard as `read` and `remove`, and can only ever reach a
    * child this app spawned and still holds: the tracker looks the name up in
    * its own map and answers `false` for anything it does not find. There is no
-   * pid on this channel and no way to reach a process HiveTTY did not start.
+   * pid on this channel and no way to reach a process The Hive did not start.
    *
    * `false` is not an error. A run can end between the row rendering its stop
    * button and the click arriving, and reporting that as a failure would teach
