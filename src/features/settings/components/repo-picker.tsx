@@ -30,7 +30,7 @@ import type { UserRepo } from '@shared/github-contract';
  * renders nothing: the field never depends on the picker.
  */
 
-const TAG = 'shrink-0 rounded-[4px] bg-chip px-1.5 text-[10.5px] text-muted';
+const TAG = 'shrink-0 rounded-full bg-chip px-1.5 text-micro text-muted';
 
 /** Mouse-down would blur the field and unmount the list before the click lands. */
 const keepFocus = (event: MouseEvent): void => {
@@ -62,7 +62,7 @@ function RepoOption({
       onMouseDown={keepFocus}
       onClick={() => onPick(repo)}
       className={cn(
-        'flex w-full items-center gap-2 border-t border-border-soft px-3 py-1.5 text-left text-[12.5px] text-ink hover:bg-hover',
+        'flex w-full items-center gap-2 border-t border-border-soft px-3 py-1.5 text-left text-control text-ink hover:bg-hover',
         active && 'bg-active',
       )}
     >
@@ -81,14 +81,14 @@ function RepoOption({
         )}
       </span>
       {repo.isProject ? (
-        <span className="shrink-0 rounded-full border border-green px-1.5 text-[10.5px] text-green">
+        <span className="shrink-0 rounded-full border border-green px-1.5 text-micro text-green">
           already a project
         </span>
       ) : null}
       {repo.isFork ? <span className={TAG}>fork</span> : null}
       {repo.isArchived ? <span className={TAG}>archived</span> : null}
       {repo.isPrivate ? <span className={TAG}>private</span> : null}
-      <span className="w-[80px] shrink-0 text-right text-[11px] text-subtle">{pushed}</span>
+      <span className="w-[80px] shrink-0 text-right text-ui-sm text-subtle">{pushed}</span>
     </button>
   );
 }
@@ -155,10 +155,10 @@ export function RepoPicker({
 
   let body: ReactNode = null;
   if (status.state === 'loading') {
-    body = <p className="px-3 py-2.5 text-[11.5px] text-muted">Loading your repositories…</p>;
+    body = <p className="px-3 py-2.5 text-ui-sm text-muted">Loading your repositories…</p>;
   } else if (status.state === 'failed') {
     body = (
-      <div className="flex flex-col gap-1.5 px-3 py-2.5 text-[11.5px]">
+      <div className="flex flex-col gap-1.5 px-3 py-2.5 text-ui-sm">
         <p className="text-amber">{status.error.message}</p>
         <button
           type="button"
@@ -181,22 +181,22 @@ export function RepoPicker({
 
     if (status.snapshot.repos.length === 0) {
       body = (
-        <p className="px-3 py-2.5 text-[11.5px] text-muted">
+        <p className="px-3 py-2.5 text-ui-sm text-muted">
           No repositories on this GitHub account.
         </p>
       );
     } else if (result.rows.length === 0) {
       body = (
-        <p className="px-3 py-2.5 text-[11.5px] text-muted">
+        <p className="px-3 py-2.5 text-ui-sm text-muted">
           None of your repositories match "{query}". Paste a full URL to clone anything else.
         </p>
       );
     } else {
       body = (
         <>
-          <div className="flex justify-between px-3 pt-2 pb-1 text-[10.5px] uppercase tracking-wide text-subtle">
-            <span>{query === '' ? 'Recent' : 'Matching'}</span>
-            <span className="normal-case">{count}</span>
+          <div className="flex justify-between px-3 pt-2 pb-1 text-ui-sm text-subtle">
+            <span className="font-semibold uppercase tracking-[0.06em]">{query === '' ? 'Recent' : 'Matching'}</span>
+            <span>{count}</span>
           </div>
           <div id={listId} role="listbox" aria-label="Your repositories">
             {result.rows.map((match, index) => (
@@ -216,10 +216,10 @@ export function RepoPicker({
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor="clone-url" className="text-[11.5px] text-muted">
+      <label htmlFor="clone-url" className="text-ui-sm text-muted">
         Repository URL
       </label>
-      <div className="flex items-center gap-2 rounded-md border border-border bg-bg px-2.5 py-1.5 focus-within:border-brand">
+      <div className="flex items-center gap-2 rounded-full border border-border bg-bg px-3 py-1.5 focus-within:border-brand">
         <MagnifyingGlass size={12} className="shrink-0 text-subtle" />
         <input
           id="clone-url"
@@ -243,7 +243,7 @@ export function RepoPicker({
           placeholder="Search your repositories, or paste any git URL"
           spellCheck={false}
           autoComplete="off"
-          className="min-w-0 flex-1 bg-transparent text-[12.5px] text-ink outline-none placeholder:text-subtle"
+          className="min-w-0 flex-1 bg-transparent text-control text-ink outline-none placeholder:text-subtle"
         />
       </div>
       {/*
@@ -255,7 +255,7 @@ export function RepoPicker({
       {open && body !== null ? (
         <div
           data-escape-scope=""
-          className="overflow-hidden rounded-[7px] border border-border bg-panel-2"
+          className="overflow-hidden rounded-lg border border-border bg-panel-2"
         >
           {body}
         </div>
