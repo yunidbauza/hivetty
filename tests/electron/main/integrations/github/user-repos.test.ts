@@ -16,9 +16,10 @@ import {
  * repository is dropped, and one bad row never sinks the list.
  */
 
+/** The URL follows `nameWithOwner` unless a case overrides it, as GitHub's does. */
 const node = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   nameWithOwner: 'acme/nova-web',
-  url: 'https://github.com/acme/nova-web',
+  url: `https://github.com/${typeof over.nameWithOwner === 'string' ? over.nameWithOwner : 'acme/nova-web'}`,
   isPrivate: true,
   isFork: false,
   isArchived: false,
@@ -63,6 +64,11 @@ describe('parseUserRepos', () => {
     expect(parsed?.repos[0]?.url).toBe('https://github.com/acme/nova-web.git');
   });
 
+  it('accepts a path that differs from nameWithOwner only in case', () => {
+    const parsed = parseUserRepos(reply([node({ url: 'https://github.com/Acme/Nova-Web' })]));
+    expect(parsed?.repos[0]?.url).toBe('https://github.com/Acme/Nova-Web.git');
+  });
+
   it("keeps an enterprise host, because the URL is GitHub's own", () => {
     const parsed = parseUserRepos(reply([node({ url: 'https://ghe.acme.io/acme/nova-web' })]));
     expect(parsed?.repos[0]?.url).toBe('https://ghe.acme.io/acme/nova-web.git');
@@ -75,6 +81,12 @@ describe('parseUserRepos', () => {
     ['a URL that does not parse', { url: 'not a url' }],
     ['an ssh URL', { url: 'ssh://git@github.com/acme/nova-web' }],
     ['a non-string URL', { url: 42 }],
+    ['credentials in the URL', { url: 'https://user:tok@github.com/acme/nova-web' }],
+    ['a query string', { url: 'https://github.com/acme/nova-web?a=b' }],
+    ['a fragment', { url: 'https://github.com/acme/nova-web#f' }],
+    ['an embedded newline', { url: 'https://github.com/acme/nova-web\n--upload-pack=sh' }],
+    ['a path naming another repository', { url: 'https://github.com/evil/other' }],
+    ['leading whitespace', { url: ' https://github.com/acme/nova-web' }],
     ['a non-boolean flag', { isPrivate: 'yes' }],
     ['a null pushedAt (an empty repository: nothing to clone)', { pushedAt: null }],
     ['a pushedAt that is not a date', { pushedAt: 'yesterday' }],

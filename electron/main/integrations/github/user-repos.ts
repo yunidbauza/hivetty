@@ -70,6 +70,21 @@ function toRow(node: unknown): UserRepoRow | null {
 
   const match = NAME_WITH_OWNER.exec(nameWithOwner.trim());
   if (match === null) return null;
+  const [, owner, name] = match;
+
+  /*
+    The clone URL is rebuilt from the parsed parts, never copied from the raw
+    string, and the row must say exactly what the picker will show.
+
+    `new URL` forgives what a clone URL must not carry: it trims surrounding
+    whitespace and silently drops a tab or newline anywhere. So whitespace is
+    refused before parsing, credentials, a query and a fragment after it, and
+    the path has to *be* `/<owner>/<name>` (GitHub's names are
+    case-insensitive), so a row can never display one repository and clone
+    another. `parse-url.ts` still validates whatever the field finally holds;
+    this keeps the picker from being the thing that puts it there.
+  */
+  if (/\s/.test(url)) return null;
 
   let parsed: URL;
   try {
@@ -78,11 +93,16 @@ function toRow(node: unknown): UserRepoRow | null {
     return null;
   }
   if (parsed.protocol !== 'https:') return null;
+  if (parsed.username !== '' || parsed.password !== '') return null;
+  if (parsed.search !== '' || parsed.hash !== '') return null;
+
+  const path = parsed.pathname.replace(/\/+$/, '');
+  if (path.toLowerCase() !== `/${owner}/${name}`.toLowerCase()) return null;
 
   return {
-    owner: match[1],
-    name: match[2],
-    url: `${url.replace(/\/+$/, '')}.git`,
+    owner,
+    name,
+    url: `${parsed.origin}${path}.git`,
     isPrivate,
     isFork,
     isArchived,
