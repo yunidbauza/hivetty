@@ -1,4 +1,4 @@
-import { NEWLINE_SEQUENCE } from '@lib/terminal/keymap';
+import type { InputProfile } from '@lib/harness/input-profile';
 import { sessionChannelState } from '@lib/terminal/pty-transport';
 import { normalizeLines } from '@lib/terminal/text';
 
@@ -26,7 +26,7 @@ type SendResult = { ok: true } | { ok: false; reason: string };
  * otherwise submit its first line and leave the rest sitting at the prompt as a
  * half-typed second command — which was correct while `\r` was the only thing
  * this module could send. It is not any more: the terminal half of this story
- * gives the pty {@link NEWLINE_SEQUENCE}, which starts a line without
+ * gives the pty the profile's `newline` (`NEWLINE_SEQUENCE` by default), which starts a line without
  * submitting. Flattening now would mean the console offers a key that inserts a
  * line break and then silently removes it on the way out.
  *
@@ -38,7 +38,7 @@ export function normalizeInput(text: string): string {
   return normalizeLines(text);
 }
 
-export function sendToSession(entityId: string, text: string): SendResult {
+export function sendToSession(entityId: string, text: string, profile: InputProfile): SendResult {
   const message = normalizeInput(text);
   /**
    * An empty message is refused rather than sent.
@@ -82,7 +82,7 @@ export function sendToSession(entityId: string, text: string): SendResult {
   }
 
   /**
-   * One {@link NEWLINE_SEQUENCE} between the lines, one `\r` at the end.
+   * The profile's `newline` (`NEWLINE_SEQUENCE` by default) between the lines, one `\r` at the end.
    *
    * `\r`, not `\n`, for the submit. A terminal's Enter key sends carriage
    * return, and the line discipline is what turns it into "line submitted". A
@@ -96,7 +96,7 @@ export function sendToSession(entityId: string, text: string): SendResult {
    * sends for `Shift+Enter`, so a message assembled here and a message typed by
    * hand reach the child process as the same bytes.
    */
-  const body = message.split('\n').join(NEWLINE_SEQUENCE);
+  const body = message.split('\n').join(profile.newline);
   bridge.pty.write({ sessionId: entityId, data: `${body}\r` });
   return { ok: true };
 }

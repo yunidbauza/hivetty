@@ -55,6 +55,7 @@ import {
   writePrThread,
   writePrViewed,
 } from '@lib/github';
+import { inputProfileFor } from '@lib/harness/input-profile';
 import {
   readJiraComments,
   readJiraDetail,
@@ -2334,6 +2335,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     const session: Session = {
       kind: 'session',
       id,
+      harness: 'claude-code',
       project: projectId,
       /**
        * Only present when the picker was opened from a ticket card, which is
@@ -2778,7 +2780,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
        * The *messages* still name the row, because that is what the user typed
        * and what they see in the rails.
        */
-      const result = sendToSession(terminalOf(entity), msg);
+      const result = sendToSession(terminalOf(entity), msg, inputProfileFor(entity.harness));
 
       /**
        * No echo, and no acknowledgement timer.
@@ -4140,6 +4142,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
         entities[item.id] = stampLifecycle({
           kind: 'session',
           id: item.id,
+          harness: 'claude-code',
           project: item.project,
           status,
           task: item.task,
@@ -5103,6 +5106,7 @@ export const useHiveStore = create<HiveState>()((set, get) => ({
     const successor: Session = {
       kind: 'session',
       id: successorId,
+      harness: 'claude-code',
       terminalId: terminalOf(current),
       project: current.project,
       status: 'idle',

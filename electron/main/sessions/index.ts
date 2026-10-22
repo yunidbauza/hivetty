@@ -359,6 +359,8 @@ interface OpenTerminalRequest {
 export interface Sessions {
   /** Spawn, bootstrap and attach — or attach to what is already running. */
   open(request: OpenRequest): void;
+  /** The adapter for an entity: its harness's, else the shared one (HIVE-236's fallback). For `deliver` (HIVE-240). */
+  adapterOf(entityId: string): HarnessAdapter;
   /**
    * Spawn a bare command in a PTY — no project, no bootstrap, no activity
    * tracking (story 102). `onExit` fires once, for whichever of exit, host
@@ -2657,6 +2659,7 @@ export function createSessions(options: SessionsOptions): Sessions {
   }
 
   return {
+    adapterOf,
     openCommand(request) {
       /**
        * Registered *before* the spawn, because a failure to start is reported

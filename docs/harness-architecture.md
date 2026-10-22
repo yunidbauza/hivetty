@@ -30,13 +30,15 @@ with why it is not a behaviour change.
 | `readHook`, `contextReply` | HIVE-236 (landed); HIVE-237 and HIVE-238 (landed) change what it says |
 | `foldEdits` | HIVE-238 (landed) |
 | `record`, `meters` | HIVE-239 (landed) |
-| `deliverContext` | HIVE-240 |
+| `promptMarker` | HIVE-240 (landed) |
 
 ### Capabilities: build one, shape for three
 
 `Capabilities` is an interface; each field landed with the story whose core code reads it.
 `resume: 'by-id' | 'none'` (HIVE-239) gates the spawn's `history.resumable` lookup;
-`meters: boolean` (HIVE-239) gates the receiver's `/statusline` route (404 when false).
+`meters: boolean` (HIVE-239) gates the receiver's `/statusline` route (404 when false);
+`contextDelivery: 'prompt-marker' | 'none'` (HIVE-240) gates `deliver.ts`'s write; `none` types
+nothing and records no receipt.
 No field is added for a harness that does not exist yet.
 
 ### launch
@@ -154,6 +156,41 @@ carry no harness), `titleOrigin(cwd, uuid, name)` (rename or the harness's own g
 argument, since `harness/**` may not import `sessions/**`). `meters(body)` reads a status-line body into the
 neutral `SessionMetrics`. Claude Code's live in `claude-code/{record,title-origin,title,metrics}.ts`.
 
+## Context delivery (HIVE-240)
+
+- ***When* is shared:** `electron/main/ledger/deliver.ts` decides it: idle, the empty-prompt
+  read, the HIVE-135 draft hold, and receipts written only for a write that landed.
+- ***What* is the adapter's:** `promptMarker(entry)`. Claude's is `📒 <ref>\r`, in
+  `claude-code/prompt-marker.ts`.
+- **The other half is the receiver:** `parseLedgerMarker` and `markerContext` stay shared, and the
+  adapter only wraps the reply (`contextReply`).
+- `deliver` reaches the adapter through `Sessions.adapterOf`, which falls back to `sessionAdapter()`
+  for an entity no harness drives. An adapter that is absent (the session layer is not up) or
+  declares `none` gets nothing typed and no receipt, so the next idle or ready transition asks again.
+
+## Input profile (renderer, HIVE-240)
+
+- `src/lib/harness/input-profile.ts` holds `InputProfile { newline, lineKill, lineMotion,
+  claimsBareBack }`, `DEFAULT_INPUT_PROFILE` (today's keymap values: `NEWLINE_SEQUENCE`,
+  `LINE_KILL_SEQUENCE`, `LINE_MOTION_SEQUENCE`, `claimBareBack`) and `inputProfileFor(harness)`.
+- `Session.harness` is stamped where the store mints a session: a spawn, a `/clear` successor and
+  history hydration.
+- The profile flows `inputProfileOf(id)` (`src/lib/terminal/resolve-transport.ts`) → `center-stage`
+  → the `TerminalHost` entry → `TerminalSurface`'s `inputProfile` prop. The store's
+  `sendToSession` takes it too, for the line break inside a sent message.
+- The surface still imports no store. It holds the prop in a ref, read per keystroke and per prompt
+  read, so the key handler installed once never pins a stale profile.
+
+## The port as built
+
+- `launch(spec): LaunchPlan`.
+- `prepare: HarnessFiles`, a property reached through `sessionAdapter()`, whose result travels as
+  `PreparedFiles` on `OpenRequest.files`.
+- `readHook(input): HookReading`, `contextReply(text)`, `promptMarker(entry)`,
+  `foldEdits(tallies, lines)` and `meters(body)`.
+- `record: { transcriptPath, hasTranscript, titleOrigin, nameFromTitle }`.
+- `capabilities: { resume, meters, contextDelivery }`.
+
 ## The fences
 
 Both are `import/no-restricted-paths` zones in `eslint.config.mjs`, and
@@ -167,6 +204,26 @@ Both are `import/no-restricted-paths` zones in `eslint.config.mjs`, and
 
 ## Adding a second harness
 
+The checklist, member by member, with the live suite that proves each:
+
+- [ ] A `HarnessId` member in `electron/shared/harness-contract.ts`.
+- [ ] An adapter in `electron/main/harness/<id>/`, registered in `registry.ts` (`adapters` is a
+  `Record<HarnessId, …>`, so a missing one fails to compile).
+- [ ] `launch` (`test:pty` for the spawn, `test:ready` for boot).
+- [ ] `prepare` (`test:hooks`, `test:skills`, `test:mcp-http`, `test:container`).
+- [ ] `readHook` (`test:hooks`, `test:plan`, `test:done`).
+- [ ] `contextReply` (`test:hook-context`).
+- [ ] `promptMarker`, if `contextDelivery: 'prompt-marker'` (`test:marker`, `test:nudge`).
+- [ ] `foldEdits` (unit; transcript fixtures).
+- [ ] `meters`, if `meters: true` (`test:statusline`).
+- [ ] `record` (`test:title`, plus `test:back` for resume, if `resume: 'by-id'`).
+- [ ] An `InputProfile` in `PROFILES` in `src/lib/harness/input-profile.ts`, keyed by `HarnessId`,
+  so a missing one fails to compile (`test:back` for `claimsBareBack`; `test:pty` for the bytes).
+- [ ] Stamp the new `harness` where the store mints that kind of session.
+- [ ] Re-run the Epic grep.
+
+The wiring, in order:
+
 1. Add its id to `HarnessId` in `electron/shared/harness-contract.ts`.
 2. Add `electron/main/harness/<id>/index.ts` exporting a `HarnessAdapter`.
 3. Add it to the registry's `adapters` table (the compiler insists).
@@ -176,3 +233,7 @@ Both are `import/no-restricted-paths` zones in `eslint.config.mjs`, and
    `'claude-code'` for every agent session.
 6. Implement `prepare`: a `HarnessFiles` table writing the files the harness reads at
    launch. `sessionAdapter()` decides which adapter the shared runtimes write for.
+
+## Known remainder
+
+`skills/paths.ts`'s `~/.claude` readers move in HIVE-345.

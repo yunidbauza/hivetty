@@ -20,6 +20,7 @@ import type { StatusSignal } from '../../../../electron/shared/harness-contract'
 import { CH } from '../../../../electron/shared/ipc-contract';
 
 import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
+import { sessionAdapter } from '../../../../electron/main/harness/registry';
 import type { RunAsync } from '../../../../electron/main/integrations/github/run';
 import type { PtyHostSupervisor } from '../../../../electron/main/pty-host/supervisor';
 import {
@@ -3750,6 +3751,14 @@ describe('terminals', () => {
       entityId: 'hero-refresh',
       ending: { kind: 'lost', reason: 'the pty host crashed' },
     });
+  });
+
+  it('answers the adapter for an entity: Claude Code for a session, the shared one for a terminal (HIVE-240)', () => {
+    sessions.open(OPEN);
+    sessions.openTerminal(TERMINAL);
+    expect(sessions.adapterOf('hero-refresh')).toBe(claudeCodeAdapter);
+    expect(sessions.adapterOf('term-01')).toBe(sessionAdapter());
+    expect(sessions.adapterOf('never-opened')).toBe(sessionAdapter());
   });
 });
 

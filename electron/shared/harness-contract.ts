@@ -10,7 +10,7 @@ export type HarnessId = 'claude-code';
 
 /**
  * What a harness can do ("build one, shape for three"). A field lands only with the
- * story whose core code reads it (HIVE-239 brought the first two).
+ * story whose core code reads it (HIVE-239 brought the first two, HIVE-240 the third).
  */
 export interface Capabilities {
   /**
@@ -20,6 +20,12 @@ export interface Capabilities {
   resume: 'by-id' | 'none';
   /** The harness posts a status line that the receiver's `/statusline` route reads into metrics. */
   meters: boolean;
+  /**
+   * How a ledger entry reaches the agent (HIVE-240). `prompt-marker`: a marker typed at an idle,
+   * empty prompt, which the prompt hook answers with the entry as context (`contextReply`).
+   * `none`: nothing is typed; the session reads the ledger through its tools.
+   */
+  contextDelivery: 'prompt-marker' | 'none';
 }
 
 /** Why a session is blocked on a human (HIVE-237): a tool wants a yes, the agent asked, or a server wants input. */

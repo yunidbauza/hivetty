@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isLiveTerminal, resolveTransport } from '@lib/terminal/resolve-transport';
+import { DEFAULT_INPUT_PROFILE, inputProfileFor } from '@lib/harness/input-profile';
+import {
+  inputProfileOf,
+  isLiveTerminal,
+  resolveTransport,
+} from '@lib/terminal/resolve-transport';
 import { ORCHESTRATOR_ID } from '@lib/terminal/static-transport';
 import { useHiveStore } from '@stores/hive-store';
 import { seedDemoFleet } from '@tests/support/demo-fleet';
@@ -274,6 +279,24 @@ describe('isLiveTerminal', () => {
     // the browser target surviving at all is that it degrades visibly.
     expect(isLiveTerminal(SESSION_ID)).toBe(false);
     expect(isLiveTerminal(ORCHESTRATOR_ID)).toBe(false);
+  });
+});
+
+describe('inputProfileOf (HIVE-240)', () => {
+  it('gives a session its harness’s profile', () => {
+    withBridge();
+    const id = useHiveStore.getState().spawnSession('nova-web');
+
+    expect(inputProfileOf(id)).toBe(inputProfileFor('claude-code'));
+  });
+
+  it('gives a terminal, the console and an unknown id the default', () => {
+    withBridge();
+    const terminal = useHiveStore.getState().spawnTerminal('nova-web');
+
+    expect(inputProfileOf(terminal)).toBe(DEFAULT_INPUT_PROFILE);
+    expect(inputProfileOf(ORCHESTRATOR_ID)).toBe(DEFAULT_INPUT_PROFILE);
+    expect(inputProfileOf('nope')).toBe(DEFAULT_INPUT_PROFILE);
   });
 });
 

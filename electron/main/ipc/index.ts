@@ -2083,6 +2083,8 @@ export function registerIpcHandlers(
     // input is queued and may never be sent. Passed straight through, because
     // `deliver` records a receipt on the strength of it.
     write: (id, text) => sessions?.write(id, text) ?? false,
+    // Lazy for the reason its siblings are: `sessions` is bound after this point (HIVE-240).
+    adapterOf: (id) => sessions?.adapterOf(id),
   });
 
   /*

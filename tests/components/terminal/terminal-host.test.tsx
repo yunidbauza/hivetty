@@ -13,6 +13,7 @@ import {
   TerminalHost,
   type TerminalHostEntry,
 } from '@components/terminal/terminal-host';
+import { DEFAULT_INPUT_PROFILE } from '@lib/harness/input-profile';
 import { TERM } from '@lib/terminal/ansi';
 import type { TerminalTransport } from '@lib/terminal/terminal-transport';
 
@@ -137,6 +138,19 @@ describe('TerminalHost', () => {
     );
 
     expect(terminalInstances[0].options).toMatchObject({ disableStdin: true });
+  });
+
+  it('passes an entry’s input profile through to the surface (HIVE-240)', () => {
+    const live = entry('hero-refresh', {
+      inputProfile: { ...DEFAULT_INPUT_PROFILE, newline: '<NL>' },
+    });
+    render(<TerminalHost entries={[live]} activeId="hero-refresh" palette={TERM} />);
+
+    terminalInstances[0].keyEventHandler!(
+      new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, cancelable: true }),
+    );
+
+    expect(live.transport.write).toHaveBeenCalledWith('<NL>');
   });
 
   /**

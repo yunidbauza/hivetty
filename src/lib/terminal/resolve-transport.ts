@@ -7,6 +7,7 @@ import {
 } from '@/types/entity';
 
 import { isDesktop } from '@config/runtime';
+import { inputProfileFor, type InputProfile } from '@lib/harness/input-profile';
 import {
   createPtyTransport,
   createTerminalTransport,
@@ -132,6 +133,12 @@ function liveEntity(entityId: string): Session | Terminal | null {
  */
 export const isLiveTerminal = (entityId: string): boolean =>
   liveEntity(entityId) !== null;
+
+/** The keys a surface types for this entity (HIVE-240): its harness's profile, else the default. */
+export function inputProfileOf(entityId: string): InputProfile {
+  const entity = liveEntity(entityId);
+  return inputProfileFor(entity !== null && isSession(entity) ? entity.harness : undefined);
+}
 
 export function resolveTransport(entityId: string): TerminalTransport {
   const entity = liveEntity(entityId);

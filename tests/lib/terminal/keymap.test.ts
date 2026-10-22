@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_INPUT_PROFILE } from '@lib/harness/input-profile';
 import {
   LINE_KILL_SEQUENCE,
   LINE_MOTION_SEQUENCE,
@@ -39,8 +40,8 @@ function key(overrides: Partial<KeyEventLike> = {}): KeyEventLike {
   };
 }
 
-const MAC = { isMac: true, hasSelection: false };
-const PC = { isMac: false, hasSelection: false };
+const MAC = { isMac: true, hasSelection: false, profile: DEFAULT_INPUT_PROFILE };
+const PC = { isMac: false, hasSelection: false, profile: DEFAULT_INPUT_PROFILE };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -163,6 +164,7 @@ describe('decideTerminalKey — macOS', () => {
     expect(
       decideTerminalKey(key({ key: 'c', ctrlKey: true }), {
         isMac: true,
+        profile: DEFAULT_INPUT_PROFILE,
         hasSelection: true,
       }),
     ).toBe('to-pty');
@@ -172,6 +174,7 @@ describe('decideTerminalKey — macOS', () => {
     expect(
       decideTerminalKey(key({ key: 'c', metaKey: true }), {
         isMac: true,
+        profile: DEFAULT_INPUT_PROFILE,
         hasSelection: true,
       }),
     ).toBe('copy');
@@ -214,6 +217,7 @@ describe('decideTerminalKey — Linux and Windows', () => {
     expect(
       decideTerminalKey(key({ key: 'c', ctrlKey: true }), {
         isMac: false,
+        profile: DEFAULT_INPUT_PROFILE,
         hasSelection: true,
       }),
     ).toBe('copy');
@@ -223,6 +227,7 @@ describe('decideTerminalKey — Linux and Windows', () => {
     expect(
       decideTerminalKey(key({ key: 'c', metaKey: true }), {
         isMac: false,
+        profile: DEFAULT_INPUT_PROFILE,
         hasSelection: true,
       }),
     ).toBe('to-pty');
@@ -945,6 +950,19 @@ describe('decideTerminalKey — bare ← at an empty Claude prompt', () => {
       }),
     ).toBe('line-start');
   });
+
+  it('asks the profile, not Claude, whether a bare ← is the app’s (HIVE-240)', () => {
+    const claimsBareBack = vi.fn(() => 'claim' as const);
+    const cursor = { rows: [''], caretRow: 0, caretText: '' };
+    expect(
+      decideTerminalKey(key({ key: 'ArrowLeft' }), {
+        ...MAC,
+        cursor,
+        profile: { ...DEFAULT_INPUT_PROFILE, claimsBareBack },
+      }),
+    ).toBe('app-chord');
+    expect(claimsBareBack).toHaveBeenCalledWith(cursor);
+  });
 });
 
 describe('decideTerminalKey — after the process has ended (story 108)', () => {
@@ -991,6 +1009,7 @@ describe('decideTerminalKey — after the process has ended (story 108)', () => 
     expect(
       decideTerminalKey(key({ key: 'c', metaKey: true }), {
         isMac: true,
+        profile: DEFAULT_INPUT_PROFILE,
         hasSelection: true,
         ended: true,
       }),

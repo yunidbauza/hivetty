@@ -83,6 +83,13 @@ describe('applyAttachSnapshot', () => {
     expect(state().order).toEqual(expect.arrayContaining(['sess-old', 'sess-new']));
   });
 
+  it('stamps a hydrated session with the harness that drives it (HIVE-240)', () => {
+    state().hydrateSessions([sessionRecord({ id: 'sess-old' })]);
+    const entity = state().entities['sess-old'];
+
+    expect(entity !== undefined && isSession(entity) && entity.harness).toBe('claude-code');
+  });
+
   it('unions the ledger tail by id', () => {
     state().hydrateLedger([ledgerEntry({ id: '20260830-140000-0001' })]);
 
