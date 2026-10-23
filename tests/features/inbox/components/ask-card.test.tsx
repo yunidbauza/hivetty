@@ -850,6 +850,15 @@ describe('AskCard head (HIVE-198)', () => {
     expect(openEntity).toHaveBeenCalledWith('drone');
   });
 
+  it('Open <asker> › closes the drawer it sits in, once the asker is on stage', async () => {
+    seedLedger([ask]);
+    useUiStore.getState().openInboxDrawer('a41');
+    useHiveStore.setState({ openEntity: vi.fn(() => true) });
+    render(<AskCard notif={notif} thread="a41" openLink />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open drone ›' }));
+    expect(useUiStore.getState().inboxDrawer.open).toBe(false);
+  });
+
   it('always draws the float head: glyph, asker, verb and the wait (HIVE-213)', () => {
     seedLedger([ask]);
     render(<AskCard notif={notif} thread="a41" />);

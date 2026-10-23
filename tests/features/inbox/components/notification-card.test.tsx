@@ -262,6 +262,20 @@ describe('NotificationCard', () => {
       expect(useUiStore.getState().activeTab).toBe('hero-refresh');
     });
 
+    it('closes the drawer it was clicked in, once the session is on stage', async () => {
+      useUiStore.getState().openInboxDrawer();
+      render(
+        <NotificationCard
+          notif={notif({ action: { type: 'session', entityId: 'hero-refresh' } })}
+        />,
+      );
+
+      await userEvent.click(screen.getByRole('button'));
+
+      expect(useUiStore.getState().activeTab).toBe('hero-refresh');
+      expect(useUiStore.getState().inboxDrawer.open).toBe(false);
+    });
+
     it('follows the terminal to its live row after a /clear', async () => {
       /**
        * The reported bug. Notifications come from hooks, and hooks speak
