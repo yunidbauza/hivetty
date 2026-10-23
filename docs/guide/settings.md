@@ -18,7 +18,8 @@ and editor preferences stay on this machine.
 ## Projects
 
 Add a folder, **Clone from URL**, rename, re-point, reorder, remove, and edit each project's
-two-to-four letter key.
+two-to-four letter key. When cloning, the URL field lists your GitHub repositories (the ten
+most recently pushed, filtered as you type, through `gh`); pick one, or paste any git URL.
 
 ![Settings › Projects](../assets/guide/11-settings-projects.png)
 

@@ -13,6 +13,7 @@ import type {
   PrViewedRequest,
   RunJob,
   RunRef,
+  UserReposSnapshot,
 } from '@shared/github-contract';
 
 /**
@@ -184,6 +185,25 @@ export const writePrViewed = async (request: PrViewedRequest): Promise<GhResult<
     return await bridge.github.prViewed(request);
   } catch (cause) {
     console.error('[hive] github.prViewed failed:', cause);
+    return null;
+  }
+};
+
+/**
+ * The `gh` account's repositories, for the clone picker.
+ *
+ * The same two `null` cases as {@link readPullRequests}: no bridge is the
+ * browser demo, and a rejected channel is a hiccup. The picker treats both as
+ * "no list to offer" and leaves the field exactly as it was.
+ */
+export const readUserRepos = async (): Promise<GhResult<UserReposSnapshot> | null> => {
+  const bridge = window.hive;
+  if (!bridge) return null;
+
+  try {
+    return await bridge.github.userRepos();
+  } catch (cause) {
+    console.error('[hive] github.userRepos failed:', cause);
     return null;
   }
 };
