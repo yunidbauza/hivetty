@@ -5,6 +5,7 @@ import type { HiveNotification } from '@/types/notification';
 
 import { Button } from '@components/ui/button';
 import { useCurrentRow, useDisplayName, useEntity, useOpenEntity } from '@stores/hive-store';
+import { useInboxActions } from '@stores/ui-store';
 
 interface SessionNoteProps {
   notif: HiveNotification;
@@ -16,7 +17,10 @@ interface SessionNoteProps {
 
 /**
  * A session off stage that waits on you (HIVE-198): it asked, or its turn is
- * over. Either is answered in its own terminal, so this only takes you there.
+ * over. Either is answered in its own terminal, so this only takes you there,
+ * and the drawer closes behind you: the session now on stage is the one you
+ * came for, and a panel still covering it would be one more click every time.
+ * A refused open (an ended row) leaves the drawer where it was.
  */
 export function SessionNote({ notif, variant, onFold }: SessionNoteProps) {
   const terminalId = notif.action.type === 'session' ? notif.action.entityId : '';
@@ -24,8 +28,11 @@ export function SessionNote({ notif, variant, onFold }: SessionNoteProps) {
   const entity = useEntity(rowId);
   const name = useDisplayName(terminalId);
   const openEntity = useOpenEntity();
+  const { closeInboxDrawer } = useInboxActions();
   const project = entity !== undefined && isSession(entity) ? entity.project : '';
-  const open = () => openEntity(rowId);
+  const open = () => {
+    if (openEntity(rowId)) closeInboxDrawer();
+  };
   const asked = notif.kind === 'session.blocked';
 
   if (variant === 'row') {

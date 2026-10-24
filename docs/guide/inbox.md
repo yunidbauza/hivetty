@@ -114,7 +114,10 @@ input.
   pill pulses once instead. With Settings open, arrivals wait and rise when it
   closes. The session on stage never shows.
 - **The drawer.** **Open all** opens a 400px panel on the right, "Needs you", with
-  every ask whole and the sessions off stage under it. Esc or ✕ closes it.
+  every ask whole and the sessions off stage under it. Esc or ✕ closes it, and so
+  does opening a session from it: click a session's row, a card about a session,
+  or an ask's **Open ‹asker› ›**, and the drawer closes behind you as the session
+  comes on stage.
   Clicking an ask's desktop notification opens the drawer on that ask.
 - **Yours again.** A session in the Sessions panel that finished and is
   waiting for you reads "yours again" until you open it.

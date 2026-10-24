@@ -6,6 +6,7 @@ import type { Session } from '@/types/entity';
 
 import { SessionNote } from '@features/inbox/components/session-note';
 import { useHiveStore } from '@stores/hive-store';
+import { useUiStore } from '@stores/ui-store';
 
 import { notif, resetNotifIds } from '@tests/support/notifications';
 
@@ -20,13 +21,17 @@ const session: Session = {
   lines: [],
 };
 
+// `reset()` leaves a stubbed action in place; the real one comes back here for the tests that open for real.
+const realOpenEntity = useHiveStore.getState().openEntity;
+
 const blocked = () =>
   notif({ id: 's1', kind: 'session.blocked', title: 'needs approval', action: { type: 'session', entityId: 'nova' } });
 
 beforeEach(() => {
   resetNotifIds();
   useHiveStore.getState().reset();
-  useHiveStore.setState({ entities: { 'sess-03': session }, order: ['sess-03'] });
+  useUiStore.getState().reset();
+  useHiveStore.setState({ entities: { 'sess-03': session }, order: ['sess-03'], openEntity: realOpenEntity });
 });
 
 describe('SessionNote (HIVE-198)', () => {
@@ -66,5 +71,21 @@ describe('SessionNote (HIVE-198)', () => {
     await userEvent.click(screen.getByText('answer it', { exact: false }));
     expect(openEntity).toHaveBeenCalledWith('sess-03');
     expect(screen.getByRole('button', { name: 'Open sess-03, needs approval' })).toBeInTheDocument();
+  });
+
+  it('a drawer row closes the drawer once the session is on stage', async () => {
+    useUiStore.getState().openInboxDrawer();
+    render(<SessionNote notif={blocked()} variant="row" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open sess-03, needs approval' }));
+    expect(useUiStore.getState().activeTab).toBe('sess-03');
+    expect(useUiStore.getState().inboxDrawer.open).toBe(false);
+  });
+
+  it('a refused open leaves the drawer where it was', async () => {
+    useUiStore.getState().openInboxDrawer();
+    useHiveStore.setState({ openEntity: vi.fn(() => false) });
+    render(<SessionNote notif={blocked()} variant="row" />);
+    await userEvent.click(screen.getByRole('button', { name: 'Open sess-03, needs approval' }));
+    expect(useUiStore.getState().inboxDrawer.open).toBe(true);
   });
 });
