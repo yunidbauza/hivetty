@@ -133,6 +133,7 @@ vi.mock('../../../../electron/main/sessions/index', async (importOriginal) => {
     createSessions: (options: Parameters<typeof actual.createSessions>[0]) => {
       const real = actual.createSessions(options);
       capturedPlanStore = real.planStore();
+      capturedOnPlanRestored = options.onPlanRestored;
       return { ...real, entities: () => liveIds };
     },
   };
@@ -149,6 +150,8 @@ let capturedIsGoneSession: ((id: string) => boolean) | undefined;
 let capturedOnChangeListener: ((entry: unknown) => void) | undefined;
 /** The real sessions' plans store (HIVE-180), so a test can give a session a plan-file plan. */
 let capturedPlanStore: import('../../../../electron/main/plans').Plans | undefined;
+/** What main does once a resumed session's plan file is re-read (HIVE-201 follow-up). */
+let capturedOnPlanRestored: ((entityId: string) => void) | undefined;
 /**
  * `knowsParty`'s answer evaluated *inside* the `createLedger` call itself —
  * the one moment `sessions` is provably still `null`, because
@@ -455,6 +458,41 @@ describe('ledger fan-out ticks a build onto its plan (HIVE-180)', () => {
         ],
       },
     });
+  });
+});
+
+describe('a restored plan replays its builds from the ledger (HIVE-201 follow-up)', () => {
+  it("ticks a resumed session's plan from the day's entries, and only once it is re-read", () => {
+    const send = vi.fn();
+    windows.push({ isDestroyed: () => false, webContents: { send } });
+    liveIds = ['sess-02'];
+    const entries = [
+      { id: 'A9', ts: 10, kind: 'ask', from: 'sess-02', to: 'builder', body: 'Build it', meta: { stage: 'build', plan: '.hive/plans/q.md' } },
+      { id: 'P9', ts: 20, kind: 'post', from: 'builder', thread: 'A9', body: 'task 1 done', meta: { stage: 'build', task: 1 } },
+    ];
+    ledgerRead.mockReturnValue({ entries, openAsks: [], claims: {} } as never);
+    capturedPlanStore?.offer('sess-02', 'plan-file', {
+      entityId: 'sess-02',
+      source: 'plan-file',
+      file: '/repo/.hive/plans/q.md',
+      allDone: false,
+      tasks: [
+        { id: '1', title: 'One', status: 'pending', steps: [] },
+        { id: '2', title: 'Two', status: 'pending', steps: [] },
+      ],
+    });
+
+    capturedOnPlanRestored?.('sess-02');
+
+    expect(capturedPlanStore?.get('sess-02')).toMatchObject({
+      build: { askId: 'A9', state: 'building' },
+      tasks: [
+        { id: '1', status: 'completed', endedAt: 20 },
+        { id: '2', status: 'pending' },
+      ],
+    });
+    ledgerRead.mockReset();
+    ledgerRead.mockReturnValue({ entries: [], openAsks: [], claims: {} });
   });
 });
 

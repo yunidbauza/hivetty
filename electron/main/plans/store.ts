@@ -193,6 +193,6 @@ export function createPlans({
       drop(entityId);
     },
     restore: readPlan,
-    list:() => [...plans.values()],
+    list: () => [...plans.values()],
   };
 }
