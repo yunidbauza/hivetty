@@ -1,6 +1,6 @@
 import type { SessionPlan } from '@shared/plan-contract';
 
-import { PlanGlyph } from './plan-glyph';
+import { PlanGlyph, ringIndex } from './plan-glyph';
 
 /**
  * The plan at rest (HIVE-201): a `done/total` count, or ✓, over one ring per
@@ -19,7 +19,7 @@ export function PlanRings({ plan }: { plan: SessionPlan }) {
       <span aria-hidden className="flex flex-col items-center">
         {plan.tasks.map((task, index) => (
           <span key={task.id} className="grid h-[26px] place-items-center">
-            <PlanGlyph index={index} status={task.status} proposed={proposed} />
+            <PlanGlyph index={ringIndex(plan, task, index)} status={task.status} proposed={proposed} />
           </span>
         ))}
       </span>

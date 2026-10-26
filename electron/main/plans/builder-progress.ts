@@ -2,7 +2,7 @@ import type { LedgerEntry } from '@shared/ledger-contract';
 import type { PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 
 import type { Plans } from './store';
-import { isAllDone } from './task-tools';
+import { isAllDone, stamped } from './task-tools';
 
 /** A build ask, tied to the session that asked it and the plan file it names. */
 interface Link {
@@ -11,6 +11,8 @@ interface Link {
   builder: string | undefined;
   /** The plan file's realpath when the link was made. */
   file: string;
+  /** Task ids this build ticked: the ones its answer completes. */
+  ticked: Set<string>;
 }
 
 /**
@@ -29,9 +31,12 @@ interface Link {
  *   file sets `build: building`.
  * - **Ticks.** A `build` post from the builder in the ask's thread, with an
  *   integer `meta.task`: `state: 'started'` is in progress, otherwise done.
+ *   Each is stamped from `now`, so the panel shows how long a task took.
  * - **End.** An answer in the thread: `failed:` or `blocked:` marks the build
- *   and keeps the ticks; anything else completes every task, and the plan
- *   stays all done. The link is forgotten either way.
+ *   and keeps the ticks; anything else completes the tasks this build ticked,
+ *   or every task when it ticked none. A plan split across PRs keeps the later
+ *   PR's tasks pending (sess-a7: PR1's answer showed PR2's 15–21 done). The
+ *   link is forgotten either way.
  *
  * A plan that has since been replaced — another source, another file, another
  * build — is never edited on this build's word.
@@ -44,9 +49,11 @@ export interface BuilderProgress {
 export function createBuilderProgress({
   plans,
   knowsSession,
+  now = Date.now,
 }: {
   plans: Plans;
   knowsSession: (id: string) => boolean;
+  now?: () => number;
 }): BuilderProgress {
   const links = new Map<string, Link>();
 
@@ -75,7 +82,7 @@ export function createBuilderProgress({
     const plan = plans.get(entry.from);
     const suffix = `/${planPath.replace(/^\.?\//, '')}`;
     if (plan?.source !== 'plan-file' || plan.file === undefined || !plan.file.endsWith(suffix)) return;
-    links.set(entry.id, { entityId: entry.from, builder: entry.to, file: plan.file });
+    links.set(entry.id, { entityId: entry.from, builder: entry.to, file: plan.file, ticked: new Set() });
     plans.offer(entry.from, 'plan-file', { ...plan, build: { askId: entry.id, state: 'building' } });
   }
 
@@ -95,9 +102,10 @@ export function createBuilderProgress({
         if (entry.from !== linked.builder || meta.stage !== 'build' || !Number.isInteger(task)) return;
         const id = String(task);
         const status: PlanTaskStatus = meta.state === 'started' ? 'in_progress' : 'completed';
+        linked.ticked.add(id);
         edit(askId, linked, (plan) => {
           if (!plan.tasks.some((t) => t.id === id)) return plan;
-          const tasks = plan.tasks.map((t) => (t.id === id ? { ...t, status } : t));
+          const tasks = plan.tasks.map((t) => (t.id === id ? stamped(t, status, now()) : t));
           return { ...plan, tasks, allDone: isAllDone(tasks) };
         });
         return;
@@ -110,8 +118,9 @@ export function createBuilderProgress({
             const state = ended[1]?.toLowerCase() === 'blocked' ? 'blocked' : 'failed';
             return { ...plan, build: { askId, state } };
           }
-          const tasks = plan.tasks.map((t) => ({ ...t, status: 'completed' as const }));
-          return { ...plan, tasks, allDone: true };
+          const all = linked.ticked.size === 0;
+          const tasks = plan.tasks.map((t) => (all || linked.ticked.has(t.id) ? stamped(t, 'completed', now()) : t));
+          return { ...plan, tasks, allDone: isAllDone(tasks) };
         });
         links.delete(askId);
       }

@@ -1,5 +1,5 @@
 import { CH } from '@shared/ipc-contract';
-import type { PlanChangedEvent, PlanSource, PlanUpdate, SessionPlan } from '@shared/plan-contract';
+import type { PlanChangedEvent, PlanSource, PlanTask, PlanUpdate, SessionPlan } from '@shared/plan-contract';
 
 import { parsePlanFile } from './parse-plan-file';
 import { readPlanFile } from './read-plan-file';
@@ -29,6 +29,27 @@ export const PLAN_SOURCE_RANK: Readonly<Record<PlanSource, number>> = {
   'plan-file': 2,
   'plan-mode': 3,
 };
+
+const PROGRESS = { pending: 0, in_progress: 1, completed: 2 } as const;
+
+/**
+ * A re-read of a file under a build keeps each task's further status, and its
+ * times. The builder ticks over the ledger and its own worktree copy, never the
+ * session's file, so the checkboxes there stay empty: taken as they are, one
+ * edit to the plan wiped every tick (sess-a7, 14 of 22 shown as 0).
+ */
+const keepTicks = (tasks: PlanTask[], previous: readonly PlanTask[]): PlanTask[] =>
+  tasks.map((task) => {
+    const before = previous.find((t) => t.id === task.id);
+    if (before === undefined || PROGRESS[before.status] < PROGRESS[task.status]) return task;
+    const { status, startedAt, endedAt } = before;
+    return {
+      ...task,
+      status,
+      ...(startedAt === undefined ? {} : { startedAt }),
+      ...(endedAt === undefined ? {} : { endedAt }),
+    };
+  });
 
 /**
  * The plans store: one plan per session, and the rank rule between sources.
@@ -119,11 +140,12 @@ export function createPlans({
       ...(accepts(current, 'plan-file') ? { text: read.text } : {}),
     });
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
+    const shownTasks = build === undefined ? tasks : keepTicks(tasks, current?.tasks ?? []);
     offer(entityId, 'plan-file', {
       entityId,
       source: 'plan-file',
-      tasks,
-      allDone: isAllDone(tasks),
+      tasks: shownTasks,
+      allDone: isAllDone(shownTasks),
       file: read.file,
       fileAt: at,
       ...(build === undefined ? {} : { build }),
