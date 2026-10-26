@@ -462,7 +462,7 @@ describe('ledger fan-out ticks a build onto its plan (HIVE-180)', () => {
 });
 
 describe('a restored plan replays its builds from the ledger (HIVE-201 follow-up)', () => {
-  it("ticks a resumed session's plan from the day's entries, and only once it is re-read", () => {
+  it("ticks a resumed session's plan from the day's entries once it is re-read", () => {
     const send = vi.fn();
     windows.push({ isDestroyed: () => false, webContents: { send } });
     liveIds = ['sess-02'];

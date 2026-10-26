@@ -284,9 +284,13 @@ describe('createBuilderProgress', () => {
       relaunch();
       const before = plans.get('sess-01');
 
+      // A party main has no session for, holding the same plan file.
+      plans.offer('stranger', 'plan-file', { ...filePlan, entityId: 'stranger' });
+      const theirs = plans.get('stranger');
+      progress.replay('stranger', [ask({ from: 'stranger' }), post(1)]);
+      expect(plans.get('stranger')).toBe(theirs);
+
       progress.replay('sess-01', [
-        ask({ from: 'stranger' }),
-        post(1),
         ask({ id: 'A2', to: undefined }),
         post(1, {}, { thread: 'A2' }),
         ask({ id: 'A3' }),
