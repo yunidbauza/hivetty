@@ -44,12 +44,18 @@ describe('JiraSetupPage (HIVE-211)', () => {
     expect(refresh).toHaveBeenCalled();
   });
 
-  it('live and empty says there is nothing assigned', () => {
-    useHiveStore.setState({ ticketSource: { kind: 'live', stale: false, capped: false }, tickets: [] });
+  it('live and empty says there is nothing assigned, and Refresh sweeps now', async () => {
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    useHiveStore.setState({
+      ticketSource: { kind: 'live', stale: false, capped: false },
+      tickets: [],
+      refreshTickets: refresh,
+    });
     render(<JiraSetupPage />);
     expect(screen.getByRole('heading', { name: 'No tickets for you' })).toBeInTheDocument();
     expect(screen.getByText(/Work lists the Jira tickets assigned to you that are not done\./)).toBeInTheDocument();
-    expect(screen.queryByRole('button')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(refresh).toHaveBeenCalled();
     // Empty, not unwired: the plain Kanban glyph stays.
     expect(document.querySelector('[data-glyph="comb"]')).toBeNull();
   });

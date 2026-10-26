@@ -19,7 +19,12 @@ export function JiraSetupPage() {
 
   if (source.kind === 'live') {
     return (
-      <EmptyPlace label="Work" glyph={<Kanban size={40} />} title="No tickets for you">
+      <EmptyPlace
+        label="Work"
+        glyph={<Kanban size={40} />}
+        title="No tickets for you"
+        actions={<Button onClick={() => void refresh()}>Refresh</Button>}
+      >
         Work lists the Jira tickets assigned to you that are not done. The next one lands here on the next
         sweep.
       </EmptyPlace>
