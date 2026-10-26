@@ -132,6 +132,17 @@ describe('session history', () => {
       expect(reopened.all()[0]).toMatchObject({ id: 'sess-01', pr });
     });
 
+    // A restored session re-reads the plan file it last read (HIVE-201 follow-up).
+    it('round-trips the plan file a session last read', () => {
+      const history = createSessionHistory(file, () => 1000);
+      history.record('sess-01', { project: 'the-hive', task: '', status: 'working' });
+      history.record('sess-01', { planFile: '/repo/.hive/plans/p.md' });
+      history.flush();
+
+      const reopened = createSessionHistory(file, () => 2000);
+      expect(reopened.all()[0]).toMatchObject({ id: 'sess-01', planFile: '/repo/.hive/plans/p.md' });
+    });
+
     /**
      * A name the *app* chose, and the defence that keeps it (HIVE-107).
      *

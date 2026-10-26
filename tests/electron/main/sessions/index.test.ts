@@ -3834,3 +3834,56 @@ describe('createSessions forwards the Jira tools (HIVE-174)', () => {
     expect(started?.['onJira']).toBe(onJira);
   });
 });
+
+/**
+ * A session's plan survives an app restart (follow-up to HIVE-201).
+ *
+ * The plans store is in memory, so a relaunch forgot which plan file a session
+ * read, and the Stop re-read found nothing to re-read. The path is main's own
+ * record — the realpath a hook-driven read confined — kept on the history row
+ * and re-read, still confined, when the row is resumed.
+ */
+describe('a restored plan', () => {
+  it('re-reads the plan file a resumed session last read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hive-plan-restart-'));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-root-')));
+    const historyFile = join(dir, 'sessions.json');
+    try {
+      mkdirSync(join(root, '.hive', 'plans'), { recursive: true });
+      const file = join(root, '.hive', 'plans', 'p.md');
+      writeFileSync(file, '## Task 1: A\n- [ ] one\n');
+      const open = (history: ReturnType<typeof createSessionHistory>, onPlanRestored?: (id: string) => void) =>
+        createSessions({
+          supervisor,
+          send: () => {},
+          config: () => CONFIG,
+          userDataPath: USER_DATA_PATH,
+          newSessionUuid: () => TEST_UUID,
+          history,
+          ...(onPlanRestored === undefined ? {} : { onPlanRestored }),
+        });
+
+      const firstHistory = createSessionHistory(historyFile, () => 1000, () => true);
+      const first = open(firstHistory);
+      first.open(OPEN);
+      firstHistory.record('hero-refresh', { cwd: root });
+      await first.planStore().apply({ entityId: 'hero-refresh', op: { kind: 'plan-file-touched', path: file }, cwd: root });
+      firstHistory.flush();
+      first.dispose();
+
+      let onRestored!: (id: string) => void;
+      const restored = new Promise<string>((resolve) => {
+        onRestored = resolve;
+      });
+      const second = open(createSessionHistory(historyFile, () => 2000, () => true), onRestored);
+      second.open({ ...OPEN, resume: true });
+
+      expect(await restored).toBe('hero-refresh');
+      expect(second.plans().plans[0]).toMatchObject({ entityId: 'hero-refresh', source: 'plan-file', file });
+      second.dispose();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

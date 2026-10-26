@@ -196,6 +196,12 @@ export interface SessionsOptions {
    */
   onReady?: (entityId: string) => void;
   /**
+   * A resumed session's plan file has been re-read (HIVE-201 follow-up),
+   * whether or not the read was accepted. The one consumer replays the
+   * ledger's build progress onto it.
+   */
+  onPlanRestored?: (entityId: string) => void;
+  /**
    * The agent names this app has definitions for (HIVE-115).
    *
    * A **function**, not a snapshot, for the reason `config` is one and the
@@ -537,6 +543,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     onIdle,
     onEnded,
     onReady,
+    onPlanRestored,
     /*
       An empty register is the honest default (HIVE-115): a build with no agents
       answers a hook under an unknown name exactly as it did before the second
@@ -556,7 +563,11 @@ export function createSessions(options: SessionsOptions): Sessions {
   } = options;
 
   /** Every session's plan (HIVE-179). Main owns the rules; the renderer mirrors them. */
-  const plans = createPlans({ send });
+  const plans = createPlans({
+    send,
+    // Kept on the row so a resumed session re-reads it (HIVE-201 follow-up).
+    onPlanFile: (entityId, planFile) => history?.record(entityId, { planFile }),
+  });
 
   const registry: SessionRegistry = createSessionRegistry();
   /**
@@ -1221,7 +1232,8 @@ export function createSessions(options: SessionsOptions): Sessions {
        * deliberately ended. Dropped, so a restored row for this terminal opens
        * as a fresh session instead.
        */
-      history?.record(entityId, { sessionUuid: undefined });
+      // The plan file went with the retired conversation, above.
+      history?.record(entityId, { sessionUuid: undefined, planFile: undefined });
       /**
        * The branch dedupe is primed for a row that no longer exists.
        *
@@ -2613,6 +2625,20 @@ export function createSessions(options: SessionsOptions): Sessions {
       },
       { resume },
     );
+
+    /*
+      A resumed conversation gets its plan back (HIVE-201 follow-up). The path
+      is the realpath main confined when the session last read it, and the cwd
+      is the one the history last observed, read before `publishBranch` below
+      overwrites it with the pty's.
+    */
+    const restoredPlan = resume ? history?.all().find((record) => record.id === request.entityId) : undefined;
+    if (restoredPlan?.planFile !== undefined) {
+      const { entityId } = request;
+      void plans
+        .restore(entityId, restoredPlan.planFile, restoredPlan.cwd ?? project.path)
+        .then(() => onPlanRestored?.(entityId));
+    }
 
     /**
      * A container project whose `claudeCommand` has no `{env}` still spawns
