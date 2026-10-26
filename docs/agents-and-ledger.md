@@ -2273,7 +2273,9 @@ whose plan is that `hive:plan` file, ticks task N from the builder's posts in
 that thread, and ends the build on the answer — `failed:` or `blocked:` marks
 it, anything else completes every task. A post without `thread` is invisible
 to it, and the live suite pins the shape (`posts each task's start and its
-commit`).
+commit`). The links are in memory; after a relaunch, a resumed session's
+re-read plan has that day's entries in its own threads replayed through the
+same path (`docs/state-and-data.md`, "The plans slice is a mirror too").
 The fixer (HIVE-169) takes a PR and its findings by `ledger_ask`,
 works on the branch where it is already checked out (git allows one worktree
 per branch, and the builder's may still stand) or in a worktree of its own

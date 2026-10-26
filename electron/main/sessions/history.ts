@@ -241,6 +241,7 @@ function reviveRecord(raw: unknown): SessionRecord | undefined {
     ticket: text(raw.ticket),
     branch: text(raw.branch),
     cwd: text(raw.cwd),
+    planFile: text(raw.planFile),
     sessionUuid: text(raw.sessionUuid),
     pr: prRecord(raw.pr),
     ...(raw.endedBy === 'finished' ? { endedBy: 'finished' as const } : {}),

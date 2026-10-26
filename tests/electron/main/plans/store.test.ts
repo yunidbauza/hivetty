@@ -357,6 +357,57 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     warn.mockRestore();
   });
 
+  it('reports the plan file a session read, once per file, so its history can keep it', async () => {
+    const onPlanFile = vi.fn();
+    const plans = createPlans({ send: vi.fn(), onPlanFile });
+
+    await onTool(plans, fileCall());
+    writeFileSync(file, `${PLAN_TEXT}- [ ] four\n`);
+    await onTool(plans, fileCall('Edit'));
+
+    expect(onPlanFile.mock.calls).toEqual([['sess-01', file]]);
+  });
+
+  it('does not report a refused file', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onPlanFile = vi.fn();
+    const plans = createPlans({ send: vi.fn(), onPlanFile });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-elsewhere-')));
+
+    await onTool(plans, fileCall('Write', { cwd: elsewhere }));
+
+    expect(onPlanFile).not.toHaveBeenCalled();
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it("restores a session's plan in a fresh store from the file its history kept", async () => {
+    const before = createPlans({ send: vi.fn() });
+    await onTool(before, fileCall());
+
+    const after = createPlans({ send: vi.fn() });
+    await after.restore('sess-01', file, root);
+
+    expect(after.get('sess-01')).toEqual(before.get('sess-01'));
+    // And the next Stop re-reads it, which is what was missing after a relaunch.
+    writeFileSync(file, PLAN_TEXT.replace('- [ ] two', '- [x] two'));
+    await after.apply({ entityId: 'sess-01', op: { kind: 'plan-file-reread' }, cwd: root });
+    expect(after.get('sess-01')?.tasks[0]?.status).toBe('completed');
+  });
+
+  it('a restore confined out of the session cwd offers nothing and warns once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const plans = createPlans({ send: vi.fn() });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-elsewhere-')));
+
+    await plans.restore('sess-01', file, elsewhere);
+    await plans.restore('sess-01', join(root, 'missing.md'), root);
+    await plans.restore('sess-01', join(root, 'missing.md'), root);
+
+    expect(plans.get('sess-01')).toBeUndefined();
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('keeps a build link across a re-read of the same file', async () => {
     const plans = createPlans({ send: vi.fn() });
     await onTool(plans, fileCall());

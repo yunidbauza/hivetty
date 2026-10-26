@@ -20,6 +20,12 @@ export interface Plans {
   drop(entityId: string): void;
   /** Session ended: the plan and the plan file it was read from (HIVE-201). */
   forget(entityId: string): void;
+  /**
+   * A resumed session's plan, re-read from the file its history kept. The
+   * path is main's own record, never the ledger's; the read is confined to
+   * `cwd` exactly as a hook-driven one is. Never rejects.
+   */
+  restore(entityId: string, file: string, cwd: string | undefined): Promise<void>;
   list(): SessionPlan[];
 }
 
@@ -61,10 +67,13 @@ const keepTicks = (tasks: PlanTask[], previous: readonly PlanTask[]): PlanTask[]
 export function createPlans({
   send,
   now = Date.now,
+  onPlanFile,
 }: {
   send: (channel: string, payload: unknown) => void;
   /** Stamps task times and the plan file's read (HIVE-201). */
   now?: () => number;
+  /** A session read a plan file it had not read last: its realpath, for the session history. */
+  onPlanFile?: (entityId: string, file: string) => void;
 }): Plans {
   const plans = new Map<string, SessionPlan>();
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
@@ -139,6 +148,7 @@ export function createPlans({
       read: read.text,
       ...(accepts(current, 'plan-file') ? { text: read.text } : {}),
     });
+    if (last?.file !== read.file) onPlanFile?.(entityId, read.file);
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     const shownTasks = build === undefined ? tasks : keepTicks(tasks, current?.tasks ?? []);
     offer(entityId, 'plan-file', {
@@ -182,6 +192,7 @@ export function createPlans({
       planFiles.delete(entityId);
       drop(entityId);
     },
+    restore: readPlan,
     list: () => [...plans.values()],
   };
 }

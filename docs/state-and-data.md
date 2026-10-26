@@ -197,6 +197,18 @@ another source, and goes with the session: `plans.forget` on a session's end
 and on `/clear`, so a retired conversation's plan file and read time never reach
 the next plan (`electron/main/sessions/index.ts:1193`).
 
+Plans live in main's memory, so a relaunch starts with none. What survives is
+the session history row's `planFile`: the realpath of the plan file the session
+last read, recorded by main when the read is accepted (never taken from the
+ledger) and cleared on `/clear`. When a restored row is resumed, main re-reads
+that file through `Plans.restore`. It is confined to the cwd the row last
+observed, exactly as a hook-driven read is, and a refused or missing file warns
+once and offers nothing. The Stop re-read then has a file to re-read again.
+Once the re-read lands, the day's ledger entries in that session's build
+threads are replayed through `BuilderProgress.replay`, the same handler live
+entries take. That restores the build link and its ticks, each stamped with when
+it was posted. Nothing new persists tick state: the ledger is the record.
+
 ### Changed files (HIVE-201)
 
 `changedFiles` is `Record<entityId, ChangedFile[]>`, one list per session in

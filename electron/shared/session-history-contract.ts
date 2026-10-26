@@ -100,6 +100,14 @@ export interface SessionRecord {
   /** As observed by `publishBranch`. Absent means nobody ever looked. */
   branch?: string;
   cwd?: string;
+  /**
+   * The realpath of the plan file this session last read (HIVE-201 follow-up).
+   *
+   * Main's own record — the path a hook-driven read already confined to the
+   * session's cwd — so a resumed row can re-read its plan, confined again,
+   * rather than open with an empty Plan tab. Never taken from the ledger.
+   */
+  planFile?: string;
   task: string;
   model?: SessionModel;
   effort?: SessionEffort;

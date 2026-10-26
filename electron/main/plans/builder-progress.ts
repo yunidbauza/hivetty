@@ -40,10 +40,17 @@ interface Link {
  *
  * A plan that has since been replaced — another source, another file, another
  * build — is never edited on this build's word.
+ *
+ * - **Replay.** The links live in memory, so after a relaunch a restored
+ *   session's re-read plan has the day's entries folded through the same path,
+ *   in order, limited to the threads that session asked. Each tick is stamped
+ *   with when it was posted. Nothing new is persisted: the ledger is the record.
  */
 /** What `ipc/index.ts` feeds every ledger entry to (HIVE-180). */
 export interface BuilderProgress {
   onEntry(entry: LedgerEntry): void;
+  /** Fold `entries` onto `entityId`'s plan once its restore re-read is done. */
+  replay(entityId: string, entries: readonly LedgerEntry[]): void;
 }
 
 export function createBuilderProgress({
@@ -86,43 +93,58 @@ export function createBuilderProgress({
     plans.offer(entry.from, 'plan-file', { ...plan, build: { askId: entry.id, state: 'building' } });
   }
 
+  /** One path for live and replayed entries; `at` stamps the ticks. */
+  function handle(entry: LedgerEntry, at: number): void {
+    const meta = entry.meta ?? {};
+    if (entry.kind === 'ask') {
+      link(entry, meta);
+      return;
+    }
+    const askId = entry.thread;
+    const linked = askId === undefined ? undefined : links.get(askId);
+    if (askId === undefined || linked === undefined) return;
+
+    if (entry.kind === 'post') {
+      const task = meta.task;
+      if (entry.from !== linked.builder || meta.stage !== 'build' || !Number.isInteger(task)) return;
+      const id = String(task);
+      const status: PlanTaskStatus = meta.state === 'started' ? 'in_progress' : 'completed';
+      linked.ticked.add(id);
+      edit(askId, linked, (plan) => {
+        if (!plan.tasks.some((t) => t.id === id)) return plan;
+        const tasks = plan.tasks.map((t) => (t.id === id ? stamped(t, status, at) : t));
+        return { ...plan, tasks, allDone: isAllDone(tasks) };
+      });
+      return;
+    }
+
+    if (entry.kind === 'answer') {
+      const ended = /^(failed|blocked):/i.exec(entry.body.trimStart());
+      edit(askId, linked, (plan) => {
+        if (ended !== null) {
+          const state = ended[1]?.toLowerCase() === 'blocked' ? 'blocked' : 'failed';
+          return { ...plan, build: { askId, state } };
+        }
+        const all = linked.ticked.size === 0;
+        const tasks = plan.tasks.map((t) => (all || linked.ticked.has(t.id) ? stamped(t, 'completed', at) : t));
+        return { ...plan, tasks, allDone: isAllDone(tasks) };
+      });
+      links.delete(askId);
+    }
+  }
+
   return {
-    onEntry(entry) {
-      const meta = entry.meta ?? {};
-      if (entry.kind === 'ask') {
-        link(entry, meta);
-        return;
-      }
-      const askId = entry.thread;
-      const linked = askId === undefined ? undefined : links.get(askId);
-      if (askId === undefined || linked === undefined) return;
-
-      if (entry.kind === 'post') {
-        const task = meta.task;
-        if (entry.from !== linked.builder || meta.stage !== 'build' || !Number.isInteger(task)) return;
-        const id = String(task);
-        const status: PlanTaskStatus = meta.state === 'started' ? 'in_progress' : 'completed';
-        linked.ticked.add(id);
-        edit(askId, linked, (plan) => {
-          if (!plan.tasks.some((t) => t.id === id)) return plan;
-          const tasks = plan.tasks.map((t) => (t.id === id ? stamped(t, status, now()) : t));
-          return { ...plan, tasks, allDone: isAllDone(tasks) };
-        });
-        return;
-      }
-
-      if (entry.kind === 'answer') {
-        const ended = /^(failed|blocked):/i.exec(entry.body.trimStart());
-        edit(askId, linked, (plan) => {
-          if (ended !== null) {
-            const state = ended[1]?.toLowerCase() === 'blocked' ? 'blocked' : 'failed';
-            return { ...plan, build: { askId, state } };
-          }
-          const all = linked.ticked.size === 0;
-          const tasks = plan.tasks.map((t) => (all || linked.ticked.has(t.id) ? stamped(t, 'completed', now()) : t));
-          return { ...plan, tasks, allDone: isAllDone(tasks) };
-        });
-        links.delete(askId);
+    onEntry: (entry) => handle(entry, now()),
+    replay(entityId, entries) {
+      /*
+        Only the session's own threads: another session's links are live, and
+        folding their ticks through again would restamp them, or put a task
+        back to started after it was done.
+      */
+      const asked = new Set<string>();
+      for (const entry of entries) {
+        if (entry.kind === 'ask' && entry.from === entityId) asked.add(entry.id);
+        if (asked.has(entry.kind === 'ask' ? entry.id : (entry.thread ?? ''))) handle(entry, entry.ts);
       }
     },
   };
