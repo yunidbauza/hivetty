@@ -2,13 +2,21 @@ import { Check } from '@phosphor-icons/react';
 
 import { cn } from '@/lib/utils';
 
-import type { PlanTaskStatus } from '@shared/plan-contract';
+import type { PlanTask, PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 
 const LABEL: Record<PlanTaskStatus, string> = {
   pending: 'pending',
   in_progress: 'in progress',
   completed: 'done',
 };
+
+/**
+ * The ring's index for a task. A plan file's task is numbered by its heading,
+ * which is the number a builder ticks by: a task added out of order (`Task 22`
+ * above `Task 21`) must not read as its neighbour. Every other source by position.
+ */
+export const ringIndex = (plan: SessionPlan, task: PlanTask, index: number): number =>
+  plan.source === 'plan-file' ? Number(task.id) - 1 : index;
 
 interface PlanGlyphProps {
   /** 0-based position in the plan; the ring shows `index + 1`. */

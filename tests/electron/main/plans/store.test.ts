@@ -368,6 +368,41 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')?.build).toEqual({ askId: 'A1', state: 'building' });
   });
 
+  it("keeps a build's ticks and times across a re-read that adds a task", async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', {
+      ...current,
+      build: { askId: 'A1', state: 'building' },
+      tasks: current.tasks.map((task) => ({ ...task, status: 'completed', startedAt: 1, endedAt: 2 })),
+    });
+
+    writeFileSync(file, `${PLAN_TEXT}## Task 3: C\n- [ ] four\n`);
+    await onTool(plans, fileCall('Edit'));
+
+    expect(plans.get('sess-01')?.tasks.map(({ status, startedAt, endedAt }) => [status, startedAt, endedAt])).toEqual([
+      ['completed', 1, 2],
+      ['completed', 1, 2],
+      ['pending', undefined, undefined],
+    ]);
+  });
+
+  it('with no build linked, a re-read takes the checkboxes as they are', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', {
+      ...current,
+      tasks: current.tasks.map((task) => ({ ...task, status: 'completed' })),
+    });
+
+    writeFileSync(file, `${PLAN_TEXT}## Task 3: C\n`);
+    await onTool(plans, fileCall('Edit'));
+
+    expect(plans.get('sess-01')?.tasks.map((task) => task.status)).toEqual(['in_progress', 'pending', 'pending']);
+  });
+
   it("plan mode's plan is offered as proposed tasks", () => {
     const plans = createPlans({ send: vi.fn() });
 

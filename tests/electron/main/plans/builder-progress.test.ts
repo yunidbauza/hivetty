@@ -187,6 +187,29 @@ describe('createBuilderProgress', () => {
     expect(plans.get('sess-01')?.allDone).toBe(true);
   });
 
+  it('an answer completes only the tasks its build ticked, so a later PR keeps its own', () => {
+    progress.onEntry(ask());
+    progress.onEntry(post(1, { state: 'started' }));
+    progress.onEntry(post(1));
+    progress.onEntry(post(2, { state: 'started' }));
+
+    progress.onEntry(answer('PR1 open: https://github.com/o/r/pull/9'));
+
+    expect(statuses()).toEqual(['completed', 'completed', 'pending']);
+    expect(plans.get('sess-01')?.allDone).toBe(false);
+  });
+
+  it('stamps a tick with the time it started and the time it was committed', () => {
+    progress.onEntry(ask());
+    vi.setSystemTime(1_000);
+    progress.onEntry(post(1, { state: 'started' }));
+    vi.setSystemTime(5_000);
+    progress.onEntry(post(1));
+
+    const [task] = plans.get('sess-01')?.tasks ?? [];
+    expect([task?.startedAt, task?.endedAt]).toEqual([1_000, 5_000]);
+  });
+
   it('an answer in an unlinked thread changes nothing', () => {
     const before = plans.get('sess-01');
 
