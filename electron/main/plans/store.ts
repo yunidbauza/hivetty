@@ -162,10 +162,14 @@ export function createPlans({
     const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
+    // A builder is working another plan: this file is held for a later build,
+    // not shown over the one in progress (HIVE-359, the 16:55 case).
+    const held = current?.source === 'plan-file' && current.build?.state === 'building' && current.file !== read.file;
     records.delete(read.file);
-    records.set(read.file, { at, read: read.text, ...(accepts(current, 'plan-file') ? { text: read.text } : {}) });
+    records.set(read.file, { at, read: read.text, ...(!held && accepts(current, 'plan-file') ? { text: read.text } : {}) });
     planFiles.set(entityId, records);
     if (last === undefined) onPlanFile?.(entityId, read.file);
+    if (held) return;
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     const shownTasks = build === undefined ? tasks : keepTicks(tasks, current?.tasks ?? []);
     offer(entityId, 'plan-file', {
@@ -181,12 +185,14 @@ export function createPlans({
           return readPlan(entityId, op.path, cwd);
         case 'plan-file-reread': {
           /*
-            A turn's end re-reads the plan file the session last read. A step
-            ticked by a shell edit fires no Write or Edit hook, and the panel sat
-            at 0 of 4 on a finished plan until one did.
+            A turn's end re-reads the plan on screen when it is a plan file, else
+            the plan file the session last read. A step ticked by a shell edit
+            fires no Write or Edit hook, and the panel sat at 0 of 4 on a
+            finished plan until one did.
           */
-          const record = lastRead(entityId);
-          return record === undefined ? undefined : readPlan(entityId, record.file, cwd);
+          const shown = plans.get(entityId);
+          const file = shown?.source === 'plan-file' ? shown.file : lastRead(entityId)?.file;
+          return file === undefined ? undefined : readPlan(entityId, file, cwd);
         }
         case 'plan-proposed':
           // Source 3: plan mode's approved plan, every task proposed.

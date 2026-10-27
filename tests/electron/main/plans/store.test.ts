@@ -246,6 +246,47 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.files('sess-01')).toEqual([]);
   });
 
+  const building = (plans: Plans) => {
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'building', startedAt: 1 } });
+  };
+
+  it("records another plan file written during a build but keeps the build's plan on screen (HIVE-359)", async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    building(plans);
+    const other = second();
+
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.get('sess-01')).toMatchObject({ file, build: { askId: 'A1', state: 'building' } });
+    expect(plans.planOf('sess-01', other)?.tasks).toHaveLength(1);
+  });
+
+  it('a finished build no longer holds the panel against a new plan file (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'done', startedAt: 1 } });
+    const other = second();
+
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.get('sess-01')?.file).toBe(other);
+  });
+
+  it('re-reads the plan on screen at a Stop, not the last file written (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    building(plans);
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: second() } }));
+
+    writeFileSync(file, `${PLAN_TEXT}## Task 3: C\n- [ ] four\n`);
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.tasks).toHaveLength(3);
+  });
+
   it('reads a plan file into a plan-file plan and publishes it', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });
