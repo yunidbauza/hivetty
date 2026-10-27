@@ -1,5 +1,3 @@
-import { createInterface } from 'node:readline';
-
 import { RPC_INTERNAL_ERROR, type JsonRpcRequest } from '@shared/mcp-contract';
 import { handleMessage, rpcFailure, type RpcHandlers } from '@shared/mcp-protocol';
 
@@ -16,7 +14,9 @@ import { handleMessage, rpcFailure, type RpcHandlers } from '@shared/mcp-protoco
  * ## The three rules that matter
  *
  * 1. **One message per line, no embedded newlines.** The spec frames on `\n`,
- *    so `JSON.stringify` without indentation is not a style choice.
+ *    so `JSON.stringify` without indentation is not a style choice. Only `\n`
+ *    frames a message: U+2028 and U+2029 are legal raw inside a JSON string,
+ *    and Electron's Node `readline` broke lines on them (HIVE-354).
  * 2. **A notification draws no reply.** `notifications/initialized` carries no
  *    `id`; answering it puts a response with `id: undefined` on the wire and
  *    the client is entitled to hang up.
@@ -44,9 +44,30 @@ interface ServeOptions {
 
 /** Read messages off `input` until it ends, replying on `write`. */
 export function serve({ input, write, log, handlers }: ServeOptions): void {
-  const reader = createInterface({ input });
+  /*
+    Framed by hand on `\n` alone (HIVE-354). `readline` also breaks on U+2028
+    and U+2029 under Electron's Node 24, and `claude` sends both raw inside
+    JSON strings, so a request carrying one was cut in two, both halves were
+    skipped as unparseable, and the client waited out its 1800s timeout.
+    `setEncoding` lets the decoder hold a character split across chunks.
+  */
+  let pending = '';
+  input.setEncoding('utf8');
+  input.on('data', (chunk: string) => {
+    pending += chunk;
+    let at = pending.indexOf('\n');
+    while (at !== -1) {
+      onLine(pending.slice(0, at));
+      pending = pending.slice(at + 1);
+      at = pending.indexOf('\n');
+    }
+  });
+  input.on('end', () => {
+    if (pending !== '') onLine(pending);
+    pending = '';
+  });
 
-  reader.on('line', (line) => {
+  function onLine(line: string): void {
     const text = line.trim();
     if (text === '') return;
 
@@ -86,5 +107,5 @@ export function serve({ input, write, log, handlers }: ServeOptions): void {
           );
         }
       });
-  });
+  }
 }
