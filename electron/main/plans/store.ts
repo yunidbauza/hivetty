@@ -21,11 +21,11 @@ export interface Plans {
   /** Session ended: the plan and the plan file it was read from (HIVE-201). */
   forget(entityId: string): void;
   /**
-   * A resumed session's plan, re-read from the file its history kept. The
-   * path is main's own record, never the ledger's; the read is confined to
-   * `cwd` exactly as a hook-driven one is. Never rejects.
+   * A resumed session's plans, re-read from every plan file its history kept,
+   * in order. The paths are main's own record, never the ledger's; each read
+   * is confined to `cwd` exactly as a hook-driven one is. Never rejects.
    */
-  restore(entityId: string, file: string, cwd: string | undefined): Promise<void>;
+  restore(entityId: string, files: readonly PlanFileRead[], cwd: string | undefined): Promise<void>;
   list(): SessionPlan[];
   /** Every plan file the session read, in read order (HIVE-359). Main's own record, never the ledger's. */
   files(entityId: string): PlanFileRead[];
@@ -71,13 +71,13 @@ export const keepTicks = (tasks: PlanTask[], previous: readonly PlanTask[]): Pla
 export function createPlans({
   send,
   now = Date.now,
-  onPlanFile,
+  onPlanFiles,
 }: {
   send: (channel: string, payload: unknown) => void;
   /** Stamps task times and the plan file's read (HIVE-201). */
   now?: () => number;
-  /** A session read a plan file it had not read last: its realpath, for the session history. */
-  onPlanFile?: (entityId: string, file: string) => void;
+  /** Every plan file the session read changed: the list, for the session history (HIVE-359). */
+  onPlanFiles?: (entityId: string, files: PlanFileRead[]) => void;
 }): Plans {
   const plans = new Map<string, SessionPlan>();
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
@@ -139,7 +139,7 @@ export function createPlans({
    * came from a hook payload, so `readPlanFile` confines it to the session's
    * cwd. A re-read of the file a builder is working keeps its build link.
    */
-  async function readPlan(entityId: string, filePath: string, cwd: string | undefined): Promise<void> {
+  async function readPlan(entityId: string, filePath: string, cwd: string | undefined, restoredAt?: number): Promise<void> {
     const read = await readPlanFile(filePath, cwd);
     if (read === undefined) {
       if (!refused.has(filePath)) {
@@ -158,17 +158,19 @@ export function createPlans({
     if (tasks.length === 0) return;
     // When the text was first read, not when it was last re-read: a turned-away
     // file is re-read at every Stop, and its time must not drift with them.
-    const at = last !== undefined && last.read === read.text ? last.at : now();
+    const at = last !== undefined && last.read === read.text ? last.at : (restoredAt ?? now());
     const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
     // A builder is working another plan: this file is held for a later build,
     // not shown over the one in progress (HIVE-359, the 16:55 case).
     const held = current?.source === 'plan-file' && current.build?.state === 'building' && current.file !== read.file;
+    const wasLast = lastRead(entityId)?.file === read.file;
     records.delete(read.file);
     records.set(read.file, { at, read: read.text, ...(!held && accepts(current, 'plan-file') ? { text: read.text } : {}) });
     planFiles.set(entityId, records);
-    if (last === undefined) onPlanFile?.(entityId, read.file);
+    // A new file, a new time, or a new order: the history's list changed.
+    if (last?.at !== at || !wasLast) onPlanFiles?.(entityId, filesOf(entityId));
     if (held) return;
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     const shownTasks = build === undefined ? tasks : keepTicks(tasks, current?.tasks ?? []);
@@ -210,7 +212,10 @@ export function createPlans({
       planFiles.delete(entityId);
       drop(entityId);
     },
-    restore: readPlan,
+    async restore(entityId, files, cwd) {
+      // In order, so the last file read is the last one offered.
+      for (const { file, at } of files) await readPlan(entityId, file, cwd, at);
+    },
     list: () => [...plans.values()],
     files: filesOf,
     planOf(entityId, file) {

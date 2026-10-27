@@ -149,6 +149,22 @@ const text = (value: unknown): string | undefined =>
 const finite = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
+/** The plan files a row kept; a row from before HIVE-359 kept one, `planFile`. */
+const planFileList = (value: unknown, legacy: unknown): SessionRecord['planFiles'] => {
+  if (!Array.isArray(value)) {
+    const file = text(legacy);
+    return file === undefined ? undefined : [{ file, at: 0 }];
+  }
+  const list = value.flatMap((item: unknown) => {
+    if (typeof item !== 'object' || item === null) return [];
+    const { file, at } = item as { file?: unknown; at?: unknown };
+    const path = text(file);
+    const time = finite(at);
+    return path === undefined || time === undefined ? [] : [{ file: path, at: time }];
+  });
+  return list.length === 0 ? undefined : list;
+};
+
 /**
  * A stored name, re-cleaned with **today's** rule rather than the one that was
  * in force when it was written.
@@ -241,7 +257,7 @@ function reviveRecord(raw: unknown): SessionRecord | undefined {
     ticket: text(raw.ticket),
     branch: text(raw.branch),
     cwd: text(raw.cwd),
-    planFile: text(raw.planFile),
+    planFiles: planFileList(raw.planFiles, raw.planFile),
     sessionUuid: text(raw.sessionUuid),
     pr: prRecord(raw.pr),
     ...(raw.endedBy === 'finished' ? { endedBy: 'finished' as const } : {}),

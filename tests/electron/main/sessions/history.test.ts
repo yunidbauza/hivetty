@@ -132,15 +132,33 @@ describe('session history', () => {
       expect(reopened.all()[0]).toMatchObject({ id: 'sess-01', pr });
     });
 
-    // A restored session re-reads the plan file it last read (HIVE-201 follow-up).
-    it('round-trips the plan file a session last read', () => {
+    // A restored session re-reads every plan file it read (HIVE-359).
+    it('round-trips the plan files a session read, with their read times', () => {
       const history = createSessionHistory(file, () => 1000);
       history.record('sess-01', { project: 'the-hive', task: '', status: 'working' });
-      history.record('sess-01', { planFile: '/repo/.hive/plans/p.md' });
+      history.record('sess-01', { planFiles: [{ file: '/repo/.hive/plans/a.md', at: 5 }, { file: '/repo/.hive/plans/b.md', at: 6 }] });
       history.flush();
 
       const reopened = createSessionHistory(file, () => 2000);
-      expect(reopened.all()[0]).toMatchObject({ id: 'sess-01', planFile: '/repo/.hive/plans/p.md' });
+      expect(reopened.all()[0]).toMatchObject({
+        id: 'sess-01',
+        planFiles: [{ file: '/repo/.hive/plans/a.md', at: 5 }, { file: '/repo/.hive/plans/b.md', at: 6 }],
+      });
+    });
+
+    // The file is a bare array of rows (as the cases at ~587 write it).
+    const row = { id: 'sess-01', project: 'the-hive', task: '', status: 'working', createdAt: 1 };
+
+    it('loads a row written with the single planFile as a one-file list', () => {
+      writeFileSync(file, JSON.stringify([{ ...row, planFile: '/repo/.hive/plans/p.md' }]), 'utf8');
+
+      expect(createSessionHistory(file, () => 2000).all()[0]?.planFiles).toEqual([{ file: '/repo/.hive/plans/p.md', at: 0 }]);
+    });
+
+    it('drops malformed plan file entries', () => {
+      writeFileSync(file, JSON.stringify([{ ...row, planFiles: [{ file: 1 }, 'x', { file: '/p.md', at: 3 }] }]), 'utf8');
+
+      expect(createSessionHistory(file, () => 2000).all()[0]?.planFiles).toEqual([{ file: '/p.md', at: 3 }]);
     });
 
     /**

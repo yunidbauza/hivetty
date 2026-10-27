@@ -566,7 +566,7 @@ export function createSessions(options: SessionsOptions): Sessions {
   const plans = createPlans({
     send,
     // Kept on the row so a resumed session re-reads it (HIVE-201 follow-up).
-    onPlanFile: (entityId, planFile) => history?.record(entityId, { planFile }),
+    onPlanFiles: (entityId, planFiles) => history?.record(entityId, { planFiles }),
   });
 
   const registry: SessionRegistry = createSessionRegistry();
@@ -1232,8 +1232,8 @@ export function createSessions(options: SessionsOptions): Sessions {
        * deliberately ended. Dropped, so a restored row for this terminal opens
        * as a fresh session instead.
        */
-      // The plan file went with the retired conversation, above.
-      history?.record(entityId, { sessionUuid: undefined, planFile: undefined });
+      // The plan files went with the retired conversation, above.
+      history?.record(entityId, { sessionUuid: undefined, planFiles: undefined });
       /**
        * The branch dedupe is primed for a row that no longer exists.
        *
@@ -2627,16 +2627,16 @@ export function createSessions(options: SessionsOptions): Sessions {
     );
 
     /*
-      A resumed conversation gets its plan back (HIVE-201 follow-up). The path
-      is the realpath main confined when the session last read it, and the cwd
+      A resumed conversation gets its plans back (HIVE-201 follow-up, HIVE-359).
+      The paths are the realpaths main confined when the session read them, and the cwd
       is the one the history last observed, read before `publishBranch` below
       overwrites it with the pty's.
     */
     const restoredPlan = resume ? history?.all().find((record) => record.id === request.entityId) : undefined;
-    if (restoredPlan?.planFile !== undefined) {
+    if (restoredPlan?.planFiles !== undefined) {
       const { entityId } = request;
       void plans
-        .restore(entityId, restoredPlan.planFile, restoredPlan.cwd ?? project.path)
+        .restore(entityId, restoredPlan.planFiles, restoredPlan.cwd ?? project.path)
         .then(() => onPlanRestored?.(entityId));
     }
 

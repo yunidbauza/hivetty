@@ -1,3 +1,4 @@
+import type { PlanFileRead } from './plan-contract';
 import type { SessionEffort, SessionModel } from './session-contract';
 
 /**
@@ -101,13 +102,14 @@ export interface SessionRecord {
   branch?: string;
   cwd?: string;
   /**
-   * The realpath of the plan file this session last read (HIVE-201 follow-up).
+   * Every plan file this session read, in read order, each with when its text
+   * was first read (HIVE-359; one file before it, HIVE-201 follow-up).
    *
-   * Main's own record — the path a hook-driven read already confined to the
-   * session's cwd — so a resumed row can re-read its plan, confined again,
+   * Main's own record — the paths a hook-driven read already confined to the
+   * session's cwd — so a resumed row can re-read its plans, confined again,
    * rather than open with an empty Plan tab. Never taken from the ledger.
    */
-  planFile?: string;
+  planFiles?: PlanFileRead[];
   task: string;
   model?: SessionModel;
   effort?: SessionEffort;
