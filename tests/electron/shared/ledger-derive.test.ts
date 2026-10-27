@@ -21,6 +21,7 @@ import {
   isShipping,
   keepNewest,
   laneOfRun,
+  leftOpen,
   matches,
   mergeAsk,
   mergeWaiting,
@@ -878,6 +879,43 @@ describe('laneOfRun (HIVE-186; shared since HIVE-188)', () => {
   it('only trusts the agent\'s own run.started — first one wins', () => {
     const forged = { ...started('r1', 'thread:Z'), id: 'f', from: 'other' };
     expect(laneOfRun('builder', 'r1', [forged, started('r1', 'thread:A')])).toBe('thread:A');
+  });
+});
+
+describe('leftOpen (HIVE-354)', () => {
+  const ask = entry({ id: 'k1', from: 'sess-a', to: 'builder', kind: 'ask', ref: 'a148', body: 'Build it' });
+  const claim = (id: string, run: string, task = 'HIVE-9'): LedgerEntry =>
+    entry({ id, from: 'builder', kind: 'claim', body: `claimed ${task}`, meta: { task, run } });
+
+  it('names the lane ask while it is open, and the claims this run made', () => {
+    const left = leftOpen([ask, claim('c1', 'r1'), claim('c2', 'r2', 'HIVE-8')], 'builder', 'r1', 'thread:k1', NOW);
+
+    expect(left.ask?.id).toBe('k1');
+    expect(left.claims).toEqual(['HIVE-9']);
+  });
+
+  it('names nothing once the ask is answered', () => {
+    const answered = entry({ id: 'x', from: 'builder', kind: 'answer', thread: 'k1', body: 'done' });
+
+    expect(leftOpen([ask, answered], 'builder', 'r1', 'thread:k1', NOW).ask).toBeUndefined();
+  });
+
+  it('names no ask on a standing or repo lane', () => {
+    expect(leftOpen([ask], 'builder', 'r1', 'standing', NOW).ask).toBeUndefined();
+    expect(leftOpen([ask], 'builder', 'r1', 'repo:o/r', NOW).ask).toBeUndefined();
+  });
+
+  it('skips a claim released since, re-claimed by another run, or held by someone else', () => {
+    const entries = [
+      ask,
+      claim('c1', 'r1'),
+      entry({ id: 'rel', from: 'builder', kind: 'release', meta: { task: 'HIVE-9', run: 'r1' } }),
+      claim('c2', 'r1', 'HIVE-8'),
+      claim('c3', 'r2', 'HIVE-8'),
+      entry({ id: 'c4', from: 'sess-b', kind: 'claim', meta: { task: 'HIVE-7', run: 'r1' } }),
+    ];
+
+    expect(leftOpen(entries, 'builder', 'r1', 'thread:k1', NOW).claims).toEqual([]);
   });
 });
 
