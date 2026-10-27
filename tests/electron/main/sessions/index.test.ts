@@ -3859,6 +3859,14 @@ describe('a restored plan', () => {
           config: () => CONFIG,
           userDataPath: USER_DATA_PATH,
           newSessionUuid: () => TEST_UUID,
+          // Answered at once, not by a spawned git: the open's branch read
+          // records the project path as the cwd, and a real one landed after
+          // the hook's cwd below on a slow CI runner, so the restore refused
+          // the plan file as outside the session.
+          branchReader: {
+            run: vi.fn<RunAsync>().mockResolvedValue({ code: 0, stdout: 'main\n', stderr: '', timedOut: false }),
+            gitPath: () => '/usr/bin/git',
+          },
           history,
           ...(onPlanRestored === undefined ? {} : { onPlanRestored }),
         });
@@ -3866,8 +3874,9 @@ describe('a restored plan', () => {
       const firstHistory = createSessionHistory(historyFile, () => 1000, () => true);
       const first = open(firstHistory);
       first.open(OPEN);
-      firstHistory.record('hero-refresh', { cwd: root });
       await first.planStore().apply({ entityId: 'hero-refresh', op: { kind: 'plan-file-touched', path: file }, cwd: root });
+      // The cwd a later hook observed, after the open's branch read has landed.
+      firstHistory.record('hero-refresh', { cwd: root });
       firstHistory.flush();
       first.dispose();
 
