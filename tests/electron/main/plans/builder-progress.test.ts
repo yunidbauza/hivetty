@@ -116,6 +116,17 @@ describe('createBuilderProgress', () => {
     expect(statuses()).toEqual(['completed', 'completed', 'pending']);
   });
 
+  it('ticks a task the session added to the plan after the build started (HIVE-359 follow-up)', async () => {
+    progress.onEntry(ask());
+    progress.onEntry(post(1));
+    writeFileSync(FILE, `${PLAN}## Task 4: Task 4\n`);
+    await touch(plans, FILE);
+
+    progress.onEntry(post(4));
+
+    expect(statuses()).toEqual(['completed', 'pending', 'pending', 'completed']);
+  });
+
   it('ignores a post in another thread, from another party, or not a build tick', () => {
     progress.onEntry(ask());
     const before = plans.get('sess-01');

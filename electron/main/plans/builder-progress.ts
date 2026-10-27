@@ -157,6 +157,10 @@ export function createBuilderProgress({
       if (entry.from !== linked.builder || meta.stage !== 'build' || !Number.isInteger(task)) return;
       start(askId, linked, at);
       const id = String(task);
+      // A task the session added since the build started: re-take the plan, keeping this build's ticks.
+      if (!linked.tasks.some((t) => t.id === id)) {
+        linked.tasks = keepTicks(plans.planOf(linked.entityId, linked.file)?.tasks ?? [], linked.tasks);
+      }
       if (!linked.tasks.some((t) => t.id === id)) return;
       const status: PlanTaskStatus = meta.state === 'started' ? 'in_progress' : 'completed';
       linked.ticked.add(id);
