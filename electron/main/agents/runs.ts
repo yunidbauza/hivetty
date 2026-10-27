@@ -173,10 +173,21 @@ export interface RunTrackerDeps {
   state: AgentState;
   appendLedger: (entry: {
     from: string;
-    kind: 'event';
+    kind: 'event' | 'failed' | 'release';
+    thread?: string;
     body: string;
     meta: Record<string, unknown>;
   }) => void;
+  /**
+   * The lane ask a closing run leaves open and the claims it wrote
+   * (HIVE-354), from `leftOpen` in `ledger-derive.ts`. Optional so a spec that
+   * never runs a thread lane needs none.
+   */
+  leftOpen?: (
+    name: string,
+    run: string,
+    lane: string,
+  ) => { ask: { id: string; ref?: string } | undefined; claims: string[] };
   /** Did this run leave an ask nobody has answered? */
   openAsksFor: (name: string, run: string) => boolean;
   /**
@@ -748,6 +759,47 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
       body: `run.ended — ${outcome}`,
       meta: { run: info.run, outcome, ...(reason === null ? {} : { reason }) },
     });
+
+    /*
+      A thread lane exists to answer one ask (HIVE-354). A run that ends with
+      it still open, and is not waiting on a question of its own, leaves the
+      asker owed a reply nobody will write: nothing re-wakes a lane whose run
+      already started, and boot flushes only persisted queues, so a quit counts
+      too. Main says so, as the overmind (a party to every thread, so the
+      `failed` reaches the asker and closes the lane), and frees what the run
+      claimed. A paused agent is the person's to resume.
+    */
+    if (outcome !== 'asking' && !asking && current.status !== 'paused') {
+      const left = deps.leftOpen?.(name, info.run, info.lane);
+
+      if (left?.ask !== undefined) {
+        const why = reason === null ? outcome : `${outcome}: ${reason}`;
+        const freed = left.claims.length === 0 ? '' : `\nReleased: ${left.claims.join(', ')}`;
+
+        deps.appendLedger({
+          from: OVERMIND,
+          kind: 'failed',
+          thread: left.ask.id,
+          body: `${name} run ${info.run.slice(0, 8)} ended (${why}) without answering ${left.ask.ref ?? left.ask.id}${freed}`,
+          meta: {
+            run: info.run,
+            agent: name,
+            outcome,
+            ...(reason === null ? {} : { reason }),
+            unanswered: left.ask.id,
+          },
+        });
+
+        for (const task of left.claims) {
+          deps.appendLedger({
+            from: OVERMIND,
+            kind: 'release',
+            body: `released ${task}`,
+            meta: { task, run: info.run, agent: name },
+          });
+        }
+      }
+    }
 
     /*
       Posted as the **overmind**, not as the agent, and gated on that at the
