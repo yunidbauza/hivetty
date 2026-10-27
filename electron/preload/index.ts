@@ -88,6 +88,7 @@ import type {
   PrViewedRequest,
   RunJob,
   RunRef,
+  UserReposSnapshot,
 } from '@shared/github-contract';
 import {
   CH,
@@ -678,6 +679,9 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.githubJobLog, request) as Promise<GhResult<JobLog>>,
     rerunFailed: (request: RunRef): Promise<GhResult<true>> =>
       ipcRenderer.invoke(CH.githubRerunFailed, request) as Promise<GhResult<true>>,
+    /** The account's repositories. No argument — see `CH.githubUserRepos`. */
+    userRepos: (): Promise<GhResult<UserReposSnapshot>> =>
+      ipcRenderer.invoke(CH.githubUserRepos) as Promise<GhResult<UserReposSnapshot>>,
   },
   /*
     HIVE-67. Four verbs, and none of them returns a token — see the contract for

@@ -29,6 +29,7 @@ describe('createRunTracker', () => {
   let ledger: {
     from?: string;
     kind: string;
+    thread?: string;
     body?: string;
     meta?: Record<string, unknown>;
   }[];
@@ -47,6 +48,8 @@ describe('createRunTracker', () => {
   let lastTurn: boolean;
   /** What the run left behind as a handoff, if anything (HIVE-122). */
   let handoff: string | undefined;
+  /** What a closing run leaves open on its lane (HIVE-354). Set per test. */
+  let left: { ask: { id: string; ref?: string } | undefined; claims: string[] };
   /** The prompt hash a session-starting command carries. Set per test. */
   let promptHash: string | undefined;
   let commandCalls: number;
@@ -77,6 +80,7 @@ describe('createRunTracker', () => {
     openAskAnywhere = false;
     lastTurn = false;
     handoff = undefined;
+    left = { ask: undefined, claims: [] };
     promptHash = undefined;
     commandCalls = 0;
     commandArgs = [];
@@ -118,6 +122,7 @@ describe('createRunTracker', () => {
       openAsksFor: () => openAsks,
       hasOpenAsk: () => openAskAnywhere,
       handoffFor: () => handoff,
+      leftOpen: () => left,
       newUuid: () => 'uuid-minted',
       pushStatus: (name) => statuses.push(name),
       pushLines: (name, pushed) =>
@@ -1861,6 +1866,97 @@ describe('createRunTracker', () => {
       parallel = 2;
       limits = { budgetUsd: 100 };
       expect(tracker.run('a', 'ledger')).toMatchObject({ started: true });
+    });
+  });
+
+  describe('a thread lane that ends without answering its ask (HIVE-354)', () => {
+    const abandoned = () => ledger.filter((item) => item.from === OVERMIND && item.kind !== 'event');
+
+    it('fails the ask to the asker, naming the run, then releases what the run claimed', () => {
+      left = { ask: { id: 'k1', ref: 'a148' }, claims: ['HIVE-342'] };
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      childInstances[0]?.emitStdout(resultLine());
+      childInstances[0]?.emitClose(0);
+
+      expect(abandoned()).toEqual([
+        {
+          from: OVERMIND,
+          kind: 'failed',
+          thread: 'k1',
+          body: 'a run run-1 ended (done) without answering a148\nReleased: HIVE-342',
+          meta: { run: 'run-1', agent: 'a', outcome: 'done', unanswered: 'k1' },
+        },
+        {
+          from: OVERMIND,
+          kind: 'release',
+          body: 'released HIVE-342',
+          meta: { task: 'HIVE-342', run: 'run-1', agent: 'a' },
+        },
+      ]);
+    });
+
+    it('carries the reason of a run that was killed', () => {
+      left = { ask: { id: 'k1' }, claims: [] };
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      tracker.kill('a');
+      childInstances[0]?.emitClose(null);
+
+      expect(abandoned()[0]).toMatchObject({
+        body: 'a run run-1 ended (failed: killed) without answering k1',
+        meta: { outcome: 'failed', reason: 'killed', unanswered: 'k1' },
+      });
+    });
+
+    it('fails it when the app closes the run too', () => {
+      left = { ask: { id: 'k1' }, claims: [] };
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      tracker.closeAll('app-closed');
+
+      expect(abandoned()[0]).toMatchObject({ kind: 'failed', meta: { reason: 'app-closed' } });
+    });
+
+    it('leaves the ask alone while the run waits on a question of its own', () => {
+      left = { ask: { id: 'k1' }, claims: ['HIVE-342'] };
+      openAsks = true;
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      childInstances[0]?.emitStdout(resultLine());
+      childInstances[0]?.emitClose(0);
+
+      expect(abandoned()).toEqual([]);
+    });
+
+    it('leaves the ask alone when a killed run left a question of its own open', () => {
+      left = { ask: { id: 'k1' }, claims: ['HIVE-342'] };
+      openAsks = true;
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      tracker.kill('a');
+      childInstances[0]?.emitClose(null);
+
+      expect(abandoned()).toEqual([]);
+    });
+
+    it('leaves the ask alone when the agent is paused', () => {
+      left = { ask: { id: 'k1' }, claims: [] };
+
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      state.patch('a', { status: 'paused' });
+      childInstances[0]?.emitStdout(resultLine());
+      childInstances[0]?.emitClose(0);
+
+      expect(abandoned()).toEqual([]);
+    });
+
+    it('writes nothing when the lane has no open ask', () => {
+      tracker.run('a', 'ledger', undefined, { lane: 'thread:k1' });
+      childInstances[0]?.emitStdout(resultLine());
+      childInstances[0]?.emitClose(0);
+
+      expect(abandoned()).toEqual([]);
     });
   });
 });

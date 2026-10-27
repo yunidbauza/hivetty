@@ -482,6 +482,12 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
    * `prDiff`, `prThread` and `prViewed`: each names a repository and passes the
    * same scope check before `gh` runs. HIVE-208 adds `prTimeline`, which names
    * a repository and passes the same scope check before `gh` runs.
+   *
+   * `userRepos` (the clone picker, spec 2026-10-22) is the widening in *reach*
+   * rather than input. It takes nothing at all, so there is no argv to inject
+   * into, but it tells a page the names and visibility of every repository the
+   * `gh` account reaches, not only the configured ones. Accepted for the
+   * picker; it still reads no contents and no token.
    */
   expect(surface.github).toEqual([
     'jobLog',
@@ -496,6 +502,7 @@ test('window.hive exposes only the documented verbs', async ({ page }) => {
     'rerunFailed',
     'runJobs',
     'searchPrs',
+    'userRepos',
   ]);
   /**
    * `root` is the only verb on this bridge that **answers** with a path.

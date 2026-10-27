@@ -16,6 +16,7 @@ import {
   useDisplayName,
   useOpenEntity,
 } from '@stores/hive-store';
+import { useInboxActions } from '@stores/ui-store';
 
 /**
  * How long the exit animation runs, in ms (HIVE-93).
@@ -71,6 +72,7 @@ interface NotificationCardProps {
 export function NotificationCard({ notif }: NotificationCardProps) {
   const openEntity = useOpenEntity();
   const dismissNotif = useDismissNotif();
+  const { closeInboxDrawer } = useInboxActions();
   const reduced = useReducedMotion();
   const spec = NOTIFICATION_KIND_SPECS[notif.kind];
   const time = useRelativeTime(notif.createdAt);
@@ -140,7 +142,8 @@ export function NotificationCard({ notif }: NotificationCardProps) {
        * things depending on where it was clicked, which is exactly what the
        * comment below forbids.
        */
-      openEntity(currentRowFor(notif.action.entityId));
+      // In the drawer, the row's job ends when the session is on stage: the drawer closes behind it (a no-op in the stack).
+      if (openEntity(currentRowFor(notif.action.entityId))) closeInboxDrawer();
       return;
     }
 
@@ -157,7 +160,7 @@ export function NotificationCard({ notif }: NotificationCardProps) {
      * guard the toast path against exactly this collision.
      */
     if (notif.action.type === 'agent') {
-      openEntity(notif.action.name);
+      if (openEntity(notif.action.name)) closeInboxDrawer();
       return;
     }
     if (notif.action.type === 'none') return;

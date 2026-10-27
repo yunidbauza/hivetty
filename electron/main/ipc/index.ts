@@ -50,7 +50,7 @@ import type {
   SearchResults,
   WriteFileResult,
 } from '@shared/fs-contract';
-import type { GhResult, JobLog, PrDetail, PrRecord, PrRuns, PrsSnapshot, PrTimeline, RunJob } from '@shared/github-contract';
+import type { GhResult, JobLog, PrDetail, PrRecord, PrRuns, PrsSnapshot, PrTimeline, RunJob, UserReposSnapshot } from '@shared/github-contract';
 import {
   isRecord,
   parseAckRequest,
@@ -153,7 +153,7 @@ import type {
   JiraUser,
 } from '@shared/jira-contract';
 import { LEDGER_DIR, OVERMIND } from '@shared/ledger-contract';
-import { closedAskThreads, delegatesOf } from '@shared/ledger-derive';
+import { closedAskThreads, delegatesOf, leftOpen } from '@shared/ledger-derive';
 import {
   isThisMachineAction,
   type NotificationAction,
@@ -779,6 +779,15 @@ let sessions: Sessions | null = null;
  * before `createSessions` runs; cleared with `sessions` on a reset.
  */
 let builderProgress: BuilderProgress | null = null;
+/** {@link builderProgress}, built on first use once `sessions` exists. */
+const progressOfBuilds = (): BuilderProgress | null => {
+  if (sessions === null) return null;
+  builderProgress ??= createBuilderProgress({
+    plans: sessions.planStore(),
+    knowsSession: (id) => sessions?.entities().includes(id) ?? false,
+  });
+  return builderProgress;
+};
 /** Releases the wake subscription `registerIpcHandlers` makes for `sessions`. */
 let stopDisplayWake: (() => void) | null = null;
 /**
@@ -2219,13 +2228,7 @@ export function registerIpcHandlers(
       must not fail the write that triggered it.
     */
     try {
-      if (sessions !== null) {
-        builderProgress ??= createBuilderProgress({
-          plans: sessions.planStore(),
-          knowsSession: (id) => sessions?.entities().includes(id) ?? false,
-        });
-        builderProgress.onEntry(entry);
-      }
+      progressOfBuilds()?.onEntry(entry);
     } catch (cause) {
       console.warn(`[ledger] could not tick a build from ${entry.id}:`, cause);
     }
@@ -2905,6 +2908,7 @@ export function registerIpcHandlers(
     openAsksFor,
     hasOpenAsk,
     handoffFor,
+    leftOpen: (name, run, lane) => leftOpen(ledger.read({}).entries, name, run, lane, Date.now()),
     newUuid,
     pushStatus: pushAgentStatus,
     pushLines: (name, lines) => {
@@ -3168,6 +3172,18 @@ export function registerIpcHandlers(
     },
     // HIVE-167: the asks that were waiting on this terminal go to the inbox.
     onEnded: (entityId) => redirectOpenAsks(entityId),
+    /*
+      A resumed session's plan is back (HIVE-201 follow-up): the day's build
+      progress goes onto it from the ledger, the same replay `notify` makes on
+      restart. Guarded like the live path: a plan is a view.
+    */
+    onPlanRestored: (entityId) => {
+      try {
+        progressOfBuilds()?.replay(entityId, ledger.read({}).entries);
+      } catch (cause) {
+        console.warn(`[ledger] could not replay builds onto ${entityId}:`, cause);
+      }
+    },
     /*
       The same register the ledger authenticates a party against (HIVE-115),
       and deliberately not a second one: an agent that may write to the log is
@@ -4132,6 +4148,12 @@ export function registerIpcHandlers(
     const request = parseRunRef(payload, 'rerunFailed');
     await loginEnvStatus();
     return github.rerunFailed(request);
+  });
+
+  handle(CH.githubUserRepos, async (): Promise<GhResult<UserReposSnapshot>> => {
+    // Same race as `github:prs` — see the note there.
+    await loginEnvStatus();
+    return github.userRepos();
   });
 
   handle(CH.jiraStatus, (): JiraStatus => jira.status());

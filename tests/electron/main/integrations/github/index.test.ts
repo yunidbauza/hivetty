@@ -564,3 +564,123 @@ describe('the Checks verbs (HIVE-206)', () => {
     ]);
   });
 });
+
+describe('userRepos', () => {
+  const LIST = JSON.stringify({
+    data: {
+      viewer: {
+        repositories: {
+          totalCount: 2,
+          nodes: [
+            {
+              nameWithOwner: 'Acme/Nova-Web',
+              url: 'https://github.com/Acme/Nova-Web',
+              isPrivate: true,
+              isFork: false,
+              isArchived: false,
+              pushedAt: '2026-10-22T00:00:00Z',
+            },
+            {
+              nameWithOwner: 'acme/other',
+              url: 'https://github.com/acme/other',
+              isPrivate: false,
+              isFork: true,
+              isArchived: false,
+              pushedAt: '2026-10-21T00:00:00Z',
+            },
+          ],
+        },
+      },
+    },
+  });
+
+  /** `api graphql` gets the list; `repo view` in a project directory names it. */
+  const answering = (nameWithOwner: string | null) =>
+    vi.fn<RunAsync>((_file, args) => {
+      if (args[0] === 'api') {
+        return Promise.resolve({ code: 0, stdout: LIST, stderr: '', timedOut: false });
+      }
+      return Promise.resolve(
+        nameWithOwner === null
+          ? { code: 1, stdout: '', stderr: 'no git remotes found', timedOut: false }
+          : {
+              code: 0,
+              stdout: JSON.stringify({ nameWithOwner }),
+              stderr: '',
+              timedOut: false,
+            },
+      );
+    });
+
+  it('answers not-installed without running anything when gh is absent', async () => {
+    const run = answering('acme/nova-web');
+    const github = createGithub({
+      config: () => config([project()]),
+      env: () => ({ PATH: '/nowhere' }),
+      run,
+      now: () => 0,
+    });
+
+    expect(await github.userRepos()).toEqual({
+      ok: false,
+      error: {
+        kind: 'not-installed',
+        message: 'GitHub CLI (`gh`) was not found on this machine.',
+      },
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('marks a repository a configured project resolves to, ignoring case', async () => {
+    const github = createGithub({
+      config: () => config([project()]),
+      env: () => ({ PATH: withGh() }),
+      run: answering('acme/nova-web'),
+      now: () => 0,
+    });
+
+    const result = await github.userRepos();
+    expect(result.ok && result.value.total).toBe(2);
+    expect(
+      result.ok && result.value.repos.map((repo) => [repo.name, repo.isProject]),
+    ).toEqual([
+      ['Nova-Web', true],
+      ['other', false],
+    ]);
+  });
+
+  it('marks nothing when no project resolves, and still answers', async () => {
+    const github = createGithub({
+      config: () => config([project()]),
+      env: () => ({ PATH: withGh() }),
+      run: answering(null),
+      now: () => 0,
+    });
+
+    const result = await github.userRepos();
+    expect(result.ok && result.value.repos.every((repo) => !repo.isProject)).toBe(true);
+  });
+
+  it('passes a listing failure through without resolving projects', async () => {
+    const run = vi.fn<RunAsync>(() =>
+      Promise.resolve({
+        code: 1,
+        stdout: '',
+        stderr: 'dial tcp: lookup api.github.com: no such host',
+        timedOut: false,
+      }),
+    );
+    const github = createGithub({
+      config: () => config([project()]),
+      env: () => ({ PATH: withGh() }),
+      run,
+      now: () => 0,
+    });
+
+    expect(await github.userRepos()).toEqual({
+      ok: false,
+      error: expect.objectContaining({ kind: 'offline' }),
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});

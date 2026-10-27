@@ -81,6 +81,21 @@ describe('PlanTab (HIVE-201)', () => {
     expect(onOpenFile).toHaveBeenCalledWith('/r/.hive/plans/2026-09-30-hive-193.md');
   });
 
+  it("numbers a plan file's rows by their heading, not their position", () => {
+    const filePlan: SessionPlan = {
+      entityId: 's',
+      source: 'plan-file',
+      allDone: false,
+      tasks: [
+        { id: '22', title: 'Security gaps', status: 'pending' },
+        { id: '21', title: 'Docs and PR2', status: 'pending' },
+      ],
+    };
+    render(<PlanTab plan={filePlan} onOpenFile={vi.fn()} />);
+    expect(screen.getByText('Security gaps').closest('li')?.textContent).toBe('22Security gaps');
+    expect(screen.getByText('Docs and PR2').closest('li')?.textContent).toBe('21Docs and PR2');
+  });
+
   it('no plan file, no block', () => {
     render(<PlanTab plan={plan} onOpenFile={vi.fn()} />);
     expect(screen.queryByText('Where it came from')).toBeNull();

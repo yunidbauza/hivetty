@@ -9,12 +9,13 @@ import {
   readPrTimeline,
   readPullRequests,
   readRunJobs,
+  readUserRepos,
   rerunFailedJobs,
   searchPullRequests,
   writePrThread,
   writePrViewed,
 } from '@lib/github';
-import type { GhResult, PrsSnapshot } from '@shared/github-contract';
+import type { GhResult, PrsSnapshot, UserReposSnapshot } from '@shared/github-contract';
 
 /**
  * The renderer's GitHub bridge.
@@ -246,5 +247,46 @@ describe('the Checks wrappers (HIVE-206)', () => {
     await expect(readRunJobs({ owner: 'a', repo: 'b', id: 1 })).resolves.toBeNull();
     await expect(readJobLog({ owner: 'a', repo: 'b', id: 1 })).resolves.toBeNull();
     await expect(rerunFailedJobs({ owner: 'a', repo: 'b', id: 1 })).resolves.toBeNull();
+  });
+});
+
+describe('readUserRepos (the clone picker)', () => {
+  const LISTED: GhResult<UserReposSnapshot> = { ok: true, value: { repos: [], total: 0 } };
+
+  it('answers null when there is no bridge', async () => {
+    await expect(readUserRepos()).resolves.toBeNull();
+  });
+
+  it('calls the bridge with nothing and returns its answer', async () => {
+    const userRepos = vi.fn().mockResolvedValue(LISTED);
+    window.hive = { github: { userRepos } } as unknown as Window['hive'];
+
+    await expect(readUserRepos()).resolves.toEqual(LISTED);
+    expect(userRepos).toHaveBeenCalledWith();
+  });
+
+  it('passes a refusal through', async () => {
+    const refusal: GhResult<UserReposSnapshot> = {
+      ok: false,
+      error: {
+        kind: 'unauthenticated',
+        message: 'GitHub CLI (`gh`) is not logged in — run `gh auth login`.',
+      },
+    };
+    window.hive = {
+      github: { userRepos: vi.fn().mockResolvedValue(refusal) },
+    } as unknown as Window['hive'];
+
+    await expect(readUserRepos()).resolves.toEqual(refusal);
+  });
+
+  it('answers null and logs once when the channel itself fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    window.hive = {
+      github: { userRepos: vi.fn().mockRejectedValue(new Error('channel closed')) },
+    } as unknown as Window['hive'];
+
+    await expect(readUserRepos()).resolves.toBeNull();
+    expect(error).toHaveBeenCalledTimes(1);
   });
 });

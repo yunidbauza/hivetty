@@ -689,6 +689,15 @@ describe('createLedger', () => {
       expect(ledger.read({ kind: 'done' }).entries[0]).toMatchObject({ to: 'sess-b' });
     });
 
+    it('addresses an overmind failed on an agent\'s thread to the asker (HIVE-354)', () => {
+      const asked = ledger.append({ from: 'sess-a', to: 'builder', kind: 'ask', body: 'build it' });
+      if (!asked.ok) throw new Error('setup failed');
+
+      ledger.append({ from: OVERMIND, kind: 'failed', thread: asked.id, body: 'builder run ended' });
+
+      expect(ledger.read({ kind: 'failed' }).entries[0]).toMatchObject({ from: OVERMIND, to: 'sess-a' });
+    });
+
     /*
       A broadcast ask has no single party to tell, so abandoning one stays a
       broadcast rather than inventing a recipient.

@@ -89,6 +89,20 @@ describe('InboxDrawer (HIVE-198)', () => {
     expect(screen.getByText('Review #12')).toBeInTheDocument();
   });
 
+  it('opening a session from its row closes the drawer, so the stage is yours', async () => {
+    useHiveStore.setState({
+      entities: {
+        nova: { kind: 'session', id: 'nova', terminalId: 'nova', project: 'the-hive', status: 'waiting', task: '', cost: '$0.00', lines: [] },
+      },
+      order: ['nova'],
+    });
+    useUiStore.getState().openInboxDrawer();
+    render(<InboxDrawer onStage={null} />);
+    await userEvent.click(screen.getByRole('button', { name: /^Open nova, / }));
+    expect(useUiStore.getState().activeTab).toBe('nova');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('Esc and ✕ each close it', async () => {
     useUiStore.getState().openInboxDrawer();
     render(<InboxDrawer onStage={null} />);

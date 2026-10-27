@@ -12,7 +12,7 @@ const withTasks = (entityId: string, tasks: PlanTask[]): SessionPlan => ({
 });
 
 /** The times a status change earns. `startedAt` is never re-stamped. */
-const stamped = (task: PlanTask, status: PlanTaskStatus, now: number): PlanTask => ({
+export const stamped = (task: PlanTask, status: PlanTaskStatus, now: number): PlanTask => ({
   ...task,
   status,
   ...(status === 'in_progress' && task.startedAt === undefined ? { startedAt: now } : {}),

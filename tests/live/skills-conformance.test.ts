@@ -156,6 +156,23 @@ const claude = (
     );
   });
 
+/**
+ * Every command `claude` would resolve in `cwd`, from its stream-json `init`
+ * line. What the CLI says about a command it does not know is wording, and it
+ * changed under this file once already (HIVE-348); this list is not.
+ */
+const commands = async (cwd: string, args: readonly string[]): Promise<string[]> => {
+  const { stdout } = await claude(cwd, [...args, '--output-format', 'stream-json', '--verbose', 'say ok']);
+  const init = stdout
+    .split('\n')
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line) as { type?: string; subtype?: string; slash_commands?: string[] })
+    .find((event) => event.type === 'system' && event.subtype === 'init');
+
+  expect(init?.slash_commands, 'the init line lists the commands').toBeInstanceOf(Array);
+  return init!.slash_commands!;
+};
+
 describe.skipIf(!enabled)('custom skills conformance', () => {
   let home: string;
   let cwd: string;
@@ -211,11 +228,16 @@ describe.skipIf(!enabled)('custom skills conformance', () => {
         something wrote to the user's config — the feature has become the thing
         it was designed not to be.
       */
-      const marker = await claude(cwd, ['/hive-marker']);
-      const done = await claude(cwd, ['/done']);
+      // The init line lists a plugin's skills namespaced, though the bare name resolves when typed.
+      const knows = (list: string[], name: string): boolean =>
+        list.includes(name) || list.includes(`hive:${name}`);
+      const without = await commands(cwd, []);
+      // The control: the same read sees both through the flag, so absence below is not a blind read.
+      const withFlag = await commands(cwd, ['--plugin-dir', pluginRoot]);
 
-      expect(marker.stdout + marker.stderr).toMatch(/unknown command/i);
-      expect(done.stdout + done.stderr).toMatch(/unknown command/i);
+      expect(knows(withFlag, 'hive-marker') && knows(withFlag, 'done')).toBe(true);
+      expect(knows(without, 'hive-marker')).toBe(false);
+      expect(knows(without, 'done')).toBe(false);
     },
   );
 

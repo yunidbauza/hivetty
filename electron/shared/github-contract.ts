@@ -96,6 +96,33 @@ export interface GhError {
  */
 export type GhResult<T> = { ok: true; value: T } | { ok: false; error: GhError };
 
+/**
+ * One repository the `gh` account can reach, for the clone view's picker.
+ *
+ * `url` is always https and ends `.git`: main builds it from GitHub's own
+ * `url` field, so a GitHub Enterprise host survives.
+ */
+export interface UserRepo {
+  owner: string;
+  name: string;
+  /** https clone URL, ending `.git`. */
+  url: string;
+  isPrivate: boolean;
+  isFork: boolean;
+  isArchived: boolean;
+  /** ISO 8601. */
+  pushedAt: string;
+  /** One of the configured projects already resolves to this repository. */
+  isProject: boolean;
+}
+
+export interface UserReposSnapshot {
+  /** At most 100, most recently pushed first. */
+  repos: UserRepo[];
+  /** Every repository the viewer can reach; can exceed `repos.length`. */
+  total: number;
+}
+
 /** What `github:prs` answers with. */
 export interface PrsSnapshot {
   prs: PrRecord[];

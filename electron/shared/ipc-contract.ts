@@ -106,6 +106,7 @@ import type {
   PrRunsRequest,
   RunJob,
   RunRef,
+  UserReposSnapshot,
 } from './github-contract';
 import type {
   JiraComment,
@@ -642,6 +643,13 @@ export const CH = {
   githubRunJobs: 'github:run-jobs',
   githubJobLog: 'github:job-log',
   githubRerunFailed: 'github:rerun-failed',
+  /**
+   * Every repository the `gh` account reaches, for the clone picker (spec
+   * 2026-10-22). No payload: the renderer filters the list itself, so nothing
+   * it types reaches `gh`. It is the one GitHub verb whose reach is wider than
+   * the configured projects — names and visibility only.
+   */
+  githubUserRepos: 'github:user-repos',
   notificationsActivate: 'notifications:activate', // main → renderer
   /**
    * A notification was raised (HIVE-75). main → renderer.
@@ -2575,6 +2583,10 @@ export interface HiveBridge {
    * reach a repository the config does not list, or obtain a token — there is
    * no verb for any of it, and the argv `gh` receives contains nothing that
    * arrived over IPC.
+   *
+   * `userRepos` is the exception in reach: it lists the names and visibility
+   * of every repository the account can see, still without contents or a
+   * token, and still with nothing from the renderer in its argv.
    */
   github: {
     prs(): Promise<GhResult<PrsSnapshot>>;
@@ -2605,6 +2617,8 @@ export interface HiveBridge {
     jobLog(request: RunRef): Promise<GhResult<JobLog>>;
     /** Re-run a run's failed jobs (HIVE-206), under the same scope. */
     rerunFailed(request: RunRef): Promise<GhResult<true>>;
+    /** The `gh` account's repositories, for the clone picker. See {@link CH.githubUserRepos}. */
+    userRepos(): Promise<GhResult<UserReposSnapshot>>;
   };
   /**
    * Jira (HIVE-67).

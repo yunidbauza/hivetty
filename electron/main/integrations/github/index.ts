@@ -15,6 +15,7 @@ import type {
   PrViewedRequest,
   RunJob,
   RunRef,
+  UserReposSnapshot,
 } from '../../../shared/github-contract';
 import { probeCommand } from '../../config/probe';
 
@@ -24,6 +25,7 @@ import { createGithubClient, type GithubClient } from './client';
 import type { RepoRef } from './query';
 import { createRepoResolver, type RepoResolver } from './repos';
 import type { RunAsync } from './run';
+import { createUserRepos } from './user-repos';
 import { readWorkflows } from './workflows';
 
 /**
@@ -77,6 +79,13 @@ export interface Github {
    * project it cannot place.
    */
   resolveProjects(): Promise<Map<string, RepoRef>>;
+  /**
+   * Every repository the `gh` account reaches, most recently pushed first, at
+   * most 100, for the clone picker. Each is marked `isProject` when a
+   * configured project already resolves to it. Takes nothing: the renderer
+   * filters, so nothing it types reaches `gh`.
+   */
+  userRepos(): Promise<GhResult<UserReposSnapshot>>;
   /**
    * One PR's page (HIVE-205). Refused, before any GraphQL call, when no
    * configured project maps `owner/repo`; what reaches `gh` is the resolver's
@@ -313,6 +322,50 @@ export function createGithub(deps: GithubDeps): Github {
       }
 
       return client.search(term, repos);
+    },
+
+    async userRepos() {
+      const path = deps.env().PATH ?? '';
+      const { resolved } = probeCommand('gh', path);
+
+      if (resolved === null) {
+        return {
+          ok: false,
+          error: {
+            kind: 'not-installed',
+            message: 'GitHub CLI (`gh`) was not found on this machine.',
+          },
+        };
+      }
+
+      if (cachedFor !== resolved || resolver === null || client === null) {
+        cachedFor = resolved;
+        resolver = createRepoResolver(resolved, deps.run);
+        client = createGithubClient(resolved, deps.run);
+      }
+
+      const listed = await createUserRepos(resolved, deps.run).list();
+      if (!listed.ok) return listed;
+
+      /*
+        The resolver's cache is the PR poller's, so this is usually free. A
+        resolver that places nothing marks nothing; it never fails the list.
+      */
+      const mapped = await resolver.resolveEach(deps.config().projects);
+      const known = new Set(
+        [...mapped.values()].map((repo) => `${repo.owner}/${repo.name}`.toLowerCase()),
+      );
+
+      return {
+        ok: true,
+        value: {
+          total: listed.value.total,
+          repos: listed.value.repos.map((row) => ({
+            ...row,
+            isProject: known.has(`${row.owner}/${row.name}`.toLowerCase()),
+          })),
+        },
+      };
     },
 
     async prDetail({ owner, repo, n }) {

@@ -38,7 +38,7 @@ import type { RunAsync } from './run';
  */
 
 /** `owner/name`, as `nameWithOwner` spells it. */
-const NAME_WITH_OWNER = /^([^/\s]+)\/([^/\s]+)$/;
+export const NAME_WITH_OWNER = /^([^/\s]+)\/([^/\s]+)$/;
 
 interface RepoResolution {
   repos: RepoRef[];

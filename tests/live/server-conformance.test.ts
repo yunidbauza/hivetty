@@ -4121,7 +4121,8 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
         );
       const BUTTON = (text: string, scope = 'document'): string =>
         `[...${scope}.querySelectorAll('button')].find((b) => b.textContent.trim() === ${JSON.stringify(text)})`;
-      const LINE = `[...document.querySelectorAll('[role="status"]')].find((s) => s.innerText.includes('Lost the Hive on'))`;
+      // Found by its countdown, not the app's name, which renames have already broken once (HIVE-348).
+      const LINE = `[...document.querySelectorAll('[role="status"]')].find((s) => s.innerText.includes('Reconnecting'))`;
       const serverName = linkWhileUp.attachedServerName ?? '';
 
       /*
@@ -4152,7 +4153,7 @@ describe.skipIf(!RUN)('server mode, against a real built app (HIVE-142)', () => 
 
       // HIVE-211: across the top of the stage, naming the server, counting down.
       await until(
-        `(${LINE})?.innerText.includes(${JSON.stringify(`Lost the Hive on ${serverName}.`)}) === true && (${LINE}).innerText.includes('Reconnecting in')`,
+        `(${LINE})?.innerText.includes(${JSON.stringify(` on ${serverName}.`)}) === true && (${LINE}).innerText.includes('Reconnecting in')`,
         'the reconnect line to name the lost server and count down',
       );
 

@@ -15,6 +15,7 @@ import { resetPtyChannels } from '@lib/terminal/pty-transport';
 const chooseProjectDirectory = vi.fn();
 const startClone = vi.fn();
 const cancelClone = vi.fn();
+const readUserRepos = vi.fn();
 
 /** The subscriber the view registered, so a test can conclude a clone. */
 let emitDone: ((event: CloneDoneEvent) => void) | null = null;
@@ -24,6 +25,9 @@ vi.mock('@/lib/project-config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/project-config')>();
   return { ...actual, chooseProjectDirectory: () => chooseProjectDirectory() };
 });
+
+/** The picker's list. The clone view's own tests do not depend on it. */
+vi.mock('@lib/github', () => ({ readUserRepos: () => readUserRepos() }));
 
 vi.mock('@/lib/clone-repo', () => ({
   startClone: (request: unknown) => startClone(request),
@@ -74,6 +78,24 @@ beforeEach(() => {
   chooseProjectDirectory.mockResolvedValue(PARENT);
   startClone.mockResolvedValue({ ok: true, targetPath: TARGET });
   cancelClone.mockResolvedValue(undefined);
+  readUserRepos.mockResolvedValue({
+    ok: true,
+    value: {
+      repos: [
+        {
+          owner: 'behiques',
+          name: 'the-hive',
+          url: URL,
+          isPrivate: false,
+          isFork: false,
+          isArchived: false,
+          pushedAt: '2026-10-20T00:00:00Z',
+          isProject: false,
+        },
+      ],
+      total: 1,
+    },
+  });
 });
 
 afterEach(() => {
@@ -127,6 +149,23 @@ describe('CloneRepoView', () => {
     render(<CloneRepoView onDone={() => {}} />);
 
     await compose(user);
+    await user.click(screen.getByRole('button', { name: 'Clone' }));
+
+    expect(startClone).toHaveBeenCalledWith({
+      url: URL,
+      parentPath: PARENT,
+      cols: 80,
+      rows: 24,
+    });
+  });
+
+  it("offers the user's repositories and clones the one picked", async () => {
+    const user = userEvent.setup();
+    render(<CloneRepoView onDone={() => {}} />);
+
+    await user.click(screen.getByLabelText(/repository url/i));
+    await user.click(await screen.findByRole('option', { name: /the-hive/ }));
+    await user.click(screen.getByRole('button', { name: /choose/i }));
     await user.click(screen.getByRole('button', { name: 'Clone' }));
 
     expect(startClone).toHaveBeenCalledWith({

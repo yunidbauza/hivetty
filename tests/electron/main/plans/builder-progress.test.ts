@@ -78,6 +78,22 @@ describe('createBuilderProgress', () => {
     expect(plans.get('sess-01')?.build?.askId).toBe('A1');
   });
 
+  it("links an ask that names its plan only in the body, as work-on's ask text does", () => {
+    progress.onEntry(
+      ask({ meta: { intent: 'wait for the builder' }, body: 'Build X\nrepo: /repo\nplan: .hive/plans/p.md\nship: yes' }),
+    );
+    progress.onEntry(post(1));
+
+    expect(plans.get('sess-01')?.build?.askId).toBe('A1');
+    expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+  });
+
+  it('never links a body plan line on an ask whose meta names another stage', () => {
+    progress.onEntry(ask({ meta: { stage: 'intake' }, body: 'plan: .hive/plans/p.md' }));
+
+    expect(plans.get('sess-01')?.build).toBeUndefined();
+  });
+
   it("ticks tasks from the builder's posts: started, then done", () => {
     progress.onEntry(ask());
 
@@ -171,6 +187,29 @@ describe('createBuilderProgress', () => {
     expect(plans.get('sess-01')?.allDone).toBe(true);
   });
 
+  it('an answer completes only the tasks its build ticked, so a later PR keeps its own', () => {
+    progress.onEntry(ask());
+    progress.onEntry(post(1, { state: 'started' }));
+    progress.onEntry(post(1));
+    progress.onEntry(post(2, { state: 'started' }));
+
+    progress.onEntry(answer('PR1 open: https://github.com/o/r/pull/9'));
+
+    expect(statuses()).toEqual(['completed', 'completed', 'pending']);
+    expect(plans.get('sess-01')?.allDone).toBe(false);
+  });
+
+  it('stamps a tick with the time it started and the time it was committed', () => {
+    progress.onEntry(ask());
+    vi.setSystemTime(1_000);
+    progress.onEntry(post(1, { state: 'started' }));
+    vi.setSystemTime(5_000);
+    progress.onEntry(post(1));
+
+    const [task] = plans.get('sess-01')?.tasks ?? [];
+    expect([task?.startedAt, task?.endedAt]).toEqual([1_000, 5_000]);
+  });
+
   it('an answer in an unlinked thread changes nothing', () => {
     const before = plans.get('sess-01');
 
@@ -193,5 +232,108 @@ describe('createBuilderProgress', () => {
     progress.onEntry(answer('https://github.com/o/r/pull/9'));
 
     expect(plans.get('sess-01')).toBe(replaced);
+  });
+
+  /**
+   * After a relaunch (HIVE-201 follow-up). The links lived in memory, so an ask
+   * sent before the restart never linked again and none of its later ticks
+   * applied. The ledger is the record: a restored session's plan, once re-read,
+   * has the day's entries replayed onto it through the same path live ones take.
+   */
+  describe('replay', () => {
+    const relaunch = () => {
+      plans = createPlans({ send: vi.fn() });
+      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-') });
+      // The restore re-read of the session's plan file.
+      plans.offer('sess-01', 'plan-file', filePlan);
+    };
+
+    it('restores the link and the ticks, stamped with when each was posted', () => {
+      const log = [
+        ask(),
+        post(1, { state: 'started' }, { ts: 1_000 }),
+        post(1, {}, { ts: 2_000 }),
+        post(2, { state: 'started' }, { ts: 3_000 }),
+        post(2, {}, { ts: 4_000 }),
+        post(3, { state: 'started' }, { ts: 5_000 }),
+        post(3, {}, { ts: 6_000 }),
+      ];
+      relaunch();
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')?.build).toEqual({ askId: 'A1', state: 'building' });
+      expect(plans.get('sess-01')?.tasks.map((t) => [t.status, t.startedAt, t.endedAt])).toEqual([
+        ['completed', 1_000, 2_000],
+        ['completed', 3_000, 4_000],
+        ['completed', 5_000, 6_000],
+      ]);
+    });
+
+    it('lets a tick appended live after the replay land', () => {
+      const log = [ask(), post(1)];
+      relaunch();
+      progress.replay('sess-01', log);
+
+      progress.onEntry(post(2));
+
+      expect(statuses()).toEqual(['completed', 'completed', 'pending']);
+    });
+
+    it('changes nothing for an unknown session, a broadcast ask, or another party', () => {
+      relaunch();
+      const before = plans.get('sess-01');
+
+      // A party main has no session for, holding the same plan file.
+      plans.offer('stranger', 'plan-file', { ...filePlan, entityId: 'stranger' });
+      const theirs = plans.get('stranger');
+      progress.replay('stranger', [ask({ from: 'stranger' }), post(1)]);
+      expect(plans.get('stranger')).toBe(theirs);
+
+      progress.replay('sess-01', [
+        ask({ id: 'A2', to: undefined }),
+        post(1, {}, { thread: 'A2' }),
+        ask({ id: 'A3' }),
+        post(1, {}, { thread: 'A3', from: 'sess-02' }),
+      ]);
+
+      expect(plans.get('sess-01')?.tasks).toEqual(before?.tasks);
+      expect(plans.get('sess-01')?.build).toEqual({ askId: 'A3', state: 'building' });
+    });
+
+    it("replays only the session's own threads, so another session's live build is not re-ticked", () => {
+      plans.offer('sess-02', 'plan-file', { ...filePlan, entityId: 'sess-02' });
+      const theirs = ask({ id: 'B1', from: 'sess-02' });
+      progress.onEntry(theirs);
+      const tick = post(1, {}, { thread: 'B1' });
+      progress.onEntry(tick);
+      const shown = plans.get('sess-02');
+
+      progress.replay('sess-01', [theirs, tick, post(1, { state: 'started' }, { thread: 'B1' })]);
+
+      expect(plans.get('sess-02')).toBe(shown);
+    });
+
+    it('leaves the link forgotten when a replayed answer ended the build', () => {
+      const log = [ask(), post(1), answer('PR open: https://github.com/o/r/pull/9')];
+      relaunch();
+      progress.replay('sess-01', log);
+      expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+
+      progress.onEntry(post(2));
+
+      expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+    });
+
+    it('never completes a plan the session has since replaced', () => {
+      const log = [ask(), post(1), answer('PR open')];
+      relaunch();
+      plans.offer('sess-01', 'plan-file', { ...filePlan, file: '/repo/.hive/plans/next.md' });
+      const replaced = plans.get('sess-01');
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')).toBe(replaced);
+    });
   });
 });

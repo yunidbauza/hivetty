@@ -18,7 +18,7 @@ import {
   useOpenEntity,
   useThread,
 } from '@stores/hive-store';
-import { useMarkAnsweredHere } from '@stores/ui-store';
+import { useInboxActions, useMarkAnsweredHere } from '@stores/ui-store';
 
 import { PermissionControls } from './permission-controls';
 
@@ -155,6 +155,7 @@ export function AskCard({ notif, thread, onClose, openLink = false }: AskCardPro
   const age = useRelativeTime(ask?.ts ?? notif.createdAt);
   const askerEntity = useEntity(fromIsAgent ? from : '');
   const openEntity = useOpenEntity();
+  const { closeInboxDrawer } = useInboxActions();
 
   const [draft, setDraft] = useState<string | null>(null);
   const [reply, setReply] = useState('');
@@ -617,9 +618,12 @@ export function AskCard({ notif, thread, onClose, openLink = false }: AskCardPro
       </div>
 
       {openLink ? (
+        // The link lives in the drawer; once the asker is on stage the drawer closes behind it, so nothing covers what you came to see.
         <button
           type="button"
-          onClick={() => openEntity(from)}
+          onClick={() => {
+            if (openEntity(from)) closeInboxDrawer();
+          }}
           className="self-end text-control text-brand hover:underline"
         >
           {`Open ${asker} ›`}

@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { formatDuration } from '@lib/format-duration';
 import type { PlanTask, SessionPlan } from '@shared/plan-contract';
 
-import { PlanGlyph } from './plan-glyph';
+import { PlanGlyph, ringIndex } from './plan-glyph';
 
 /** `.hive/plans/x.md`: the path from the Hive's folder down. `PLAN_FILE_PATH` guarantees `/.hive/`. */
 const planFileLabel = (file: string) => file.slice(file.lastIndexOf('/.hive/') + 1);
@@ -75,7 +75,7 @@ export function PlanTab({
                 current && 'rounded-lg bg-active px-2',
               )}
             >
-              <PlanGlyph index={index} status={task.status} proposed={proposed} />
+              <PlanGlyph index={ringIndex(plan, task, index)} status={task.status} proposed={proposed} />
               <span className="grid min-w-0 flex-1 gap-0.5">
                 <span className={task.status === 'completed' ? 'text-muted' : 'text-ink'}>
                   {task.title}

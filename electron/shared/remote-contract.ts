@@ -68,8 +68,9 @@ import { isThisMachineAction } from './notification-contract';
  * 12 → 13 (HIVE-207): `CH` gained `github:pr-diff`, `github:pr-thread` and `github:pr-viewed`; `PrDetail` gained `files`.
  * 13 → 14 (HIVE-208): `CH` gained `github:pr-timeline`.
  * 14 → 15: `CH` gained `jira:issue-changed` (#336).
+ * 15 → 16: `CH` gained `github:user-repos` (the clone picker).
  */
-export const REMOTE_PROTOCOL_VERSION = 15;
+export const REMOTE_PROTOCOL_VERSION = 16;
 
 /**
  * What a frame is for.
@@ -209,6 +210,7 @@ export const FRAME_KIND = {
   [CH.githubRunJobs]: 'call',
   [CH.githubJobLog]: 'call',
   [CH.githubRerunFailed]: 'call',
+  [CH.githubUserRepos]: 'call',
   [CH.notificationsActivate]: 'event',
   [CH.notificationsNew]: 'event',
   /*
@@ -366,7 +368,7 @@ export const FRAME_KIND = {
  *   `mutate`-granted device could point a project at a directory it controls and
  *   then call a "read" to get code execution as the user on the server.
  * - `github:prs`, `github:search-prs`, `github:pr-detail`, `github:pr-comment`,
- *   `integrations:status` — spawn `gh`. The handler comment at
+ *   `github:user-repos`, `integrations:status` — spawn `gh`. The handler comment at
  *   `ipc/index.ts:1064` says of `integrations:status` that it
  *   "**executes `gh`**", which is as clear a statement as the codebase offers.
  * - `integrations:login-env` — spawns the login shell to snapshot its
@@ -507,6 +509,7 @@ export const CHANNEL_AUTHORIZATION = {
   [CH.githubRunJobs]: 'execute',
   [CH.githubJobLog]: 'execute',
   [CH.githubRerunFailed]: 'execute',
+  [CH.githubUserRepos]: 'execute',
   [CH.notificationsActivate]: 'read',
   [CH.notificationsNew]: 'read',
   [CH.notificationsToast]: 'read',
