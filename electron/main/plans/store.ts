@@ -1,7 +1,7 @@
 import { CH } from '@shared/ipc-contract';
-import type { PlanChangedEvent, PlanSource, PlanTask, PlanUpdate, SessionPlan } from '@shared/plan-contract';
+import type { PlanChangedEvent, PlanFileRead, PlanSource, PlanTask, PlanUpdate, SessionPlan } from '@shared/plan-contract';
 
-import { parsePlanFile } from './parse-plan-file';
+import { parsePlanFile, parsePlanPart } from './parse-plan-file';
 import { readPlanFile } from './read-plan-file';
 import { isAllDone, reduceTaskOp } from './task-tools';
 
@@ -27,6 +27,10 @@ export interface Plans {
    */
   restore(entityId: string, file: string, cwd: string | undefined): Promise<void>;
   list(): SessionPlan[];
+  /** Every plan file the session read, in read order (HIVE-359). Main's own record, never the ledger's. */
+  files(entityId: string): PlanFileRead[];
+  /** A plan file the session read, as a plan, from the text main last read. Never reads the disk. */
+  planOf(entityId: string, file: string): SessionPlan | undefined;
 }
 
 /** Lower wins. A source is accepted over a live plan of the same or a higher number. */
@@ -44,7 +48,7 @@ const PROGRESS = { pending: 0, in_progress: 1, completed: 2 } as const;
  * session's file, so the checkboxes there stay empty: taken as they are, one
  * edit to the plan wiped every tick (sess-a7, 14 of 22 shown as 0).
  */
-const keepTicks = (tasks: PlanTask[], previous: readonly PlanTask[]): PlanTask[] =>
+export const keepTicks = (tasks: PlanTask[], previous: readonly PlanTask[]): PlanTask[] =>
   tasks.map((task) => {
     const before = previous.find((t) => t.id === task.id);
     if (before === undefined || PROGRESS[before.status] < PROGRESS[task.status]) return task;
@@ -78,8 +82,23 @@ export function createPlans({
   const plans = new Map<string, SessionPlan>();
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
   const refused = new Set<string>();
-  /** The last plan file each session read, kept across sources and a finished plan's replacement (HIVE-201). */
-  const planFiles = new Map<string, { file: string; at: number; read: string; text?: string }>();
+  /**
+   * Every plan file each session read (HIVE-359), in read order: a read moves
+   * its file to the end, so the last entry is the last file read. `text` is
+   * set only once the panel took that text.
+   */
+  const planFiles = new Map<string, Map<string, { at: number; read: string; text?: string }>>();
+  const lastRead = (entityId: string): PlanFileRead | undefined => {
+    const last = [...(planFiles.get(entityId) ?? [])].at(-1);
+    return last === undefined ? undefined : { file: last[0], at: last[1].at };
+  };
+  const filesOf = (entityId: string): PlanFileRead[] =>
+    [...(planFiles.get(entityId) ?? [])].map(([file, { at }]) => ({ file, at }));
+  /** A plan-file plan from `text`, with its part when the header names one. */
+  const filePlan = (entityId: string, file: string, at: number, text: string, tasks = parsePlanFile(text)): SessionPlan => {
+    const part = parsePlanPart(text);
+    return { entityId, source: 'plan-file', tasks, allDone: isAllDone(tasks), file, fileAt: at, ...(part === undefined ? {} : { part }) };
+  };
 
   const publish = (entityId: string, plan: SessionPlan | null): void => {
     send(CH.planChanged, { entityId, plan } satisfies PlanChangedEvent);
@@ -97,7 +116,7 @@ export function createPlans({
     }
     let next = proposed;
     // A plan from another source still names the session's plan file (HIVE-201).
-    const record = planFiles.get(entityId);
+    const record = lastRead(entityId);
     if (record !== undefined && next.file === undefined) {
       next = { ...next, file: record.file, fileAt: record.at };
     }
@@ -129,35 +148,28 @@ export function createPlans({
       }
       return;
     }
-    const last = planFiles.get(entityId);
+    const records = planFiles.get(entityId) ?? new Map<string, { at: number; read: string; text?: string }>();
+    const last = records.get(read.file);
     const shown = plans.get(entityId);
-    // Unchanged and a plan on screen, whatever its source: nothing to publish,
-    // its time stands, and a newer plan is not displaced by the old file.
-    if (shown !== undefined && last?.file === read.file && last.text === read.text) return;
+    // Unchanged and on screen, whatever its source: nothing to publish, its
+    // time stands, and a newer plan is not displaced by the old file.
+    if (shown !== undefined && lastRead(entityId)?.file === read.file && last?.text === read.text) return;
     const tasks = parsePlanFile(read.text);
     if (tasks.length === 0) return;
-    // When the file was written, not when it was last re-read: a turned-away
+    // When the text was first read, not when it was last re-read: a turned-away
     // file is re-read at every Stop, and its time must not drift with them.
-    const at = last?.file === read.file && last.read === read.text ? last.at : now();
+    const at = last !== undefined && last.read === read.text ? last.at : now();
     const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
-    planFiles.set(entityId, {
-      file: read.file,
-      at,
-      read: read.text,
-      ...(accepts(current, 'plan-file') ? { text: read.text } : {}),
-    });
-    if (last?.file !== read.file) onPlanFile?.(entityId, read.file);
+    records.delete(read.file);
+    records.set(read.file, { at, read: read.text, ...(accepts(current, 'plan-file') ? { text: read.text } : {}) });
+    planFiles.set(entityId, records);
+    if (last === undefined) onPlanFile?.(entityId, read.file);
     const build = current?.source === 'plan-file' && current.file === read.file ? current.build : undefined;
     const shownTasks = build === undefined ? tasks : keepTicks(tasks, current?.tasks ?? []);
     offer(entityId, 'plan-file', {
-      entityId,
-      source: 'plan-file',
-      tasks: shownTasks,
-      allDone: isAllDone(shownTasks),
-      file: read.file,
-      fileAt: at,
+      ...filePlan(entityId, read.file, at, read.text, shownTasks),
       ...(build === undefined ? {} : { build }),
     });
   }
@@ -173,7 +185,7 @@ export function createPlans({
             ticked by a shell edit fires no Write or Edit hook, and the panel sat
             at 0 of 4 on a finished plan until one did.
           */
-          const record = planFiles.get(entityId);
+          const record = lastRead(entityId);
           return record === undefined ? undefined : readPlan(entityId, record.file, cwd);
         }
         case 'plan-proposed':
@@ -194,5 +206,12 @@ export function createPlans({
     },
     restore: readPlan,
     list: () => [...plans.values()],
+    files: filesOf,
+    planOf(entityId, file) {
+      const record = planFiles.get(entityId)?.get(file);
+      if (record === undefined) return undefined;
+      const tasks = parsePlanFile(record.read);
+      return tasks.length === 0 ? undefined : filePlan(entityId, file, record.at, record.read, tasks);
+    },
   };
 }

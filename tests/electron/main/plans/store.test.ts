@@ -210,6 +210,42 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     toolResponse: {},
   });
 
+  const second = () => {
+    const other = join(root, '.hive', 'plans', 'b.md');
+    writeFileSync(other, `# B\nPR: 2 of 2\n\n## Task 1: X\n- [ ] x\n`);
+    return other;
+  };
+
+  it('remembers every plan file a session read, in read order (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    const other = second();
+    await onTool(plans, fileCall());
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.files('sess-01').map((read) => read.file)).toEqual([file, other]);
+    expect(plans.get('sess-01')).toMatchObject({ file: other, part: { index: 2, of: 2 } });
+  });
+
+  it('builds a held plan from the text it read, without reading the disk again (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: second() } }));
+    writeFileSync(file, '## Task 9: changed on disk\n');
+
+    expect(plans.planOf('sess-01', file)).toMatchObject({ source: 'plan-file', file, tasks: parsePlanFile(PLAN_TEXT) });
+    expect(plans.planOf('sess-01', join(root, 'never-read.md'))).toBeUndefined();
+    expect(plans.planOf('sess-02', file)).toBeUndefined();
+  });
+
+  it('forgets every plan file with the session (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+
+    plans.forget('sess-01');
+
+    expect(plans.files('sess-01')).toEqual([]);
+  });
+
   it('reads a plan file into a plan-file plan and publishes it', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });
