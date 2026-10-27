@@ -1,5 +1,7 @@
 // @vitest-environment node
-import { hostname } from 'node:os';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -412,21 +414,30 @@ describe('ledger:changed — the push channel (HIVE-111)', () => {
  * session whose plan is that plan file, then the builder's post in the ask's
  * thread, reaches the renderer as a ticked plan.
  */
+/**
+ * The session's own read of a plan file: a build links only to a file the
+ * session read (HIVE-359), so the plan is read, not offered.
+ */
+let planRoot: string | undefined;
+const readPlanFile = async (entityId: string, name: string) => {
+  planRoot ??= realpathSync(mkdtempSync(join(tmpdir(), 'hive-ledger-plans-')));
+  mkdirSync(join(planRoot, '.hive', 'plans'), { recursive: true });
+  const path = join(planRoot, '.hive', 'plans', name);
+  writeFileSync(path, '## Task 1: One\n## Task 2: Two\n');
+  await capturedPlanStore?.apply({ entityId, op: { kind: 'plan-file-touched', path }, cwd: planRoot });
+};
+
+afterEach(() => {
+  if (planRoot !== undefined) rmSync(planRoot, { recursive: true, force: true });
+  planRoot = undefined;
+});
+
 describe('ledger fan-out ticks a build onto its plan (HIVE-180)', () => {
-  it("a builder's task post completes that task on the asking session's plan", () => {
+  it("a builder's task post completes that task on the asking session's plan", async () => {
     const send = vi.fn();
     windows.push({ isDestroyed: () => false, webContents: { send } });
     liveIds = ['sess-01'];
-    capturedPlanStore?.offer('sess-01', 'plan-file', {
-      entityId: 'sess-01',
-      source: 'plan-file',
-      file: '/repo/.hive/plans/p.md',
-      allDone: false,
-      tasks: [
-        { id: '1', title: 'One', status: 'pending', steps: [] },
-        { id: '2', title: 'Two', status: 'pending', steps: [] },
-      ],
-    });
+    await readPlanFile('sess-01', 'p.md');
 
     capturedOnChangeListener?.({
       id: 'A1',
@@ -462,7 +473,7 @@ describe('ledger fan-out ticks a build onto its plan (HIVE-180)', () => {
 });
 
 describe('a restored plan replays its builds from the ledger (HIVE-201 follow-up)', () => {
-  it("ticks a resumed session's plan from the day's entries once it is re-read", () => {
+  it("ticks a resumed session's plan from the day's entries once it is re-read", async () => {
     const send = vi.fn();
     windows.push({ isDestroyed: () => false, webContents: { send } });
     liveIds = ['sess-02'];
@@ -471,16 +482,7 @@ describe('a restored plan replays its builds from the ledger (HIVE-201 follow-up
       { id: 'P9', ts: 20, kind: 'post', from: 'builder', thread: 'A9', body: 'task 1 done', meta: { stage: 'build', task: 1 } },
     ];
     ledgerRead.mockReturnValue({ entries, openAsks: [], claims: {} } as never);
-    capturedPlanStore?.offer('sess-02', 'plan-file', {
-      entityId: 'sess-02',
-      source: 'plan-file',
-      file: '/repo/.hive/plans/q.md',
-      allDone: false,
-      tasks: [
-        { id: '1', title: 'One', status: 'pending', steps: [] },
-        { id: '2', title: 'Two', status: 'pending', steps: [] },
-      ],
-    });
+    await readPlanFile('sess-02', 'q.md');
 
     capturedOnPlanRestored?.('sess-02');
 
