@@ -54,6 +54,11 @@ describe('PlanTab (HIVE-201)', () => {
     expect(screen.getByText('40s')).toBeInTheDocument();
   });
 
+  it("leads the summary with which PR's plan it is (HIVE-359)", () => {
+    render(<PlanTab plan={{ ...plan, part: { index: 1, of: 2 } }} onOpenFile={vi.fn()} />);
+    expect(summary('PR 1 of 2 · 1 of 3 tasks · 4m 50s')).toBeInTheDocument();
+  });
+
   it('tints the current task with its activeForm; a task with no startedAt shows no time', () => {
     render(<PlanTab plan={plan} onOpenFile={vi.fn()} />);
     expect(screen.getByText('Pushing and opening the draft PR…')).toBeInTheDocument();

@@ -72,10 +72,10 @@ Then one of two things happens:
 
 Either way the branch ends as a **draft** pull request. Nothing marks it ready yet.
 
-A plan split into several PRs goes out as one ask per PR. The builder takes each ask as its
-own conversation, two at a time, so independent PRs build in parallel. A PR that depends on
-another is posted held on the PR it needs (`meta.after`), and reaches the builder when that
-PR merges.
+A plan split into several PRs goes out as one ask per PR, and they build one at a time, in
+order, so the Plan tab can follow each build. Every PR after the first is posted held on the
+one before it (`meta.after`), even when independent, and reaches the builder when that PR
+merges.
 
 ## Ship
 

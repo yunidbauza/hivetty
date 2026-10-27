@@ -148,6 +148,13 @@ describe('SessionPanel (HIVE-201)', () => {
     expect(screen.getByRole('tab', { name: 'Files 2' })).toHaveAttribute('aria-controls', panel.id);
   });
 
+  it("names which PR's plan it is on the Plan tab (HIVE-359)", () => {
+    useHiveStore.getState().setPlan('hero-refresh', { ...plan('hero-refresh'), part: { index: 1, of: 2 } });
+    render(<SessionPanel rowRef={createRef()} />);
+
+    expect(screen.getByRole('tab', { name: 'Plan 1/2' })).toBeInTheDocument();
+  });
+
   it('may shrink to its minimum beside a crowded stage (HIVE-223)', () => {
     render(<SessionPanel rowRef={createRef()} />);
     const panel = screen.getByRole('complementary', { name: 'Session panel' });

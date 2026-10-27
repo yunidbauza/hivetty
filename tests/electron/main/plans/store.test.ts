@@ -210,6 +210,83 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     toolResponse: {},
   });
 
+  const second = () => {
+    const other = join(root, '.hive', 'plans', 'b.md');
+    writeFileSync(other, `# B\nPR: 2 of 2\n\n## Task 1: X\n- [ ] x\n`);
+    return other;
+  };
+
+  it('remembers every plan file a session read, in read order (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    const other = second();
+    await onTool(plans, fileCall());
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.files('sess-01').map((read) => read.file)).toEqual([file, other]);
+    expect(plans.get('sess-01')).toMatchObject({ file: other, part: { index: 2, of: 2 } });
+  });
+
+  it('builds a held plan from the text it read, without reading the disk again (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: second() } }));
+    writeFileSync(file, '## Task 9: changed on disk\n');
+
+    expect(plans.planOf('sess-01', file)).toMatchObject({ source: 'plan-file', file, tasks: parsePlanFile(PLAN_TEXT) });
+    expect(plans.planOf('sess-01', join(root, 'never-read.md'))).toBeUndefined();
+    expect(plans.planOf('sess-02', file)).toBeUndefined();
+  });
+
+  it('forgets every plan file with the session (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+
+    plans.forget('sess-01');
+
+    expect(plans.files('sess-01')).toEqual([]);
+  });
+
+  const building = (plans: Plans) => {
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'building', startedAt: 1 } });
+  };
+
+  it("records another plan file written during a build but keeps the build's plan on screen (HIVE-359)", async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    building(plans);
+    const other = second();
+
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.get('sess-01')).toMatchObject({ file, build: { askId: 'A1', state: 'building' } });
+    expect(plans.planOf('sess-01', other)?.tasks).toHaveLength(1);
+  });
+
+  it('a finished build no longer holds the panel against a new plan file (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    const current = plans.get('sess-01') as SessionPlan;
+    plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'done', startedAt: 1 } });
+    const other = second();
+
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+
+    expect(plans.get('sess-01')?.file).toBe(other);
+  });
+
+  it('re-reads the plan on screen at a Stop, not the last file written (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    building(plans);
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: second() } }));
+
+    writeFileSync(file, `${PLAN_TEXT}## Task 3: C\n- [ ] four\n`);
+    await onTool(plans, { entityId: 'sess-01', toolName: 'Stop', toolInput: undefined, toolResponse: undefined, cwd: root });
+
+    expect(plans.get('sess-01')?.tasks).toHaveLength(3);
+  });
+
   it('reads a plan file into a plan-file plan and publishes it', async () => {
     const send = vi.fn();
     const plans = createPlans({ send });
@@ -357,26 +434,44 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     warn.mockRestore();
   });
 
-  it('reports the plan file a session read, once per file, so its history can keep it', async () => {
-    const onPlanFile = vi.fn();
-    const plans = createPlans({ send: vi.fn(), onPlanFile });
+  it('reports every plan file a session read, with when, so its history can keep them (HIVE-359)', async () => {
+    // Before the store: it binds `Date.now` when made.
+    vi.useFakeTimers({ now: 1_000 });
+    const onPlanFiles = vi.fn();
+    const plans = createPlans({ send: vi.fn(), onPlanFiles });
 
     await onTool(plans, fileCall());
-    writeFileSync(file, `${PLAN_TEXT}- [ ] four\n`);
-    await onTool(plans, fileCall('Edit'));
+    await onTool(plans, fileCall('Edit')); // unchanged text: nothing new to keep
+    vi.setSystemTime(2_000);
+    const other = second();
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
 
-    expect(onPlanFile.mock.calls).toEqual([['sess-01', file]]);
+    expect(onPlanFiles.mock.calls).toEqual([
+      ['sess-01', [{ file, at: 1_000 }]],
+      ['sess-01', [{ file, at: 1_000 }, { file: other, at: 2_000 }]],
+    ]);
+    vi.useRealTimers();
+  });
+
+  it('restores every plan file with the time history kept, the last one on screen (HIVE-359)', async () => {
+    const plans = createPlans({ send: vi.fn() });
+    const other = second();
+
+    await plans.restore('sess-01', [{ file, at: 10 }, { file: other, at: 20 }], root);
+
+    expect(plans.files('sess-01')).toEqual([{ file, at: 10 }, { file: other, at: 20 }]);
+    expect(plans.get('sess-01')).toMatchObject({ file: other, fileAt: 20 });
   });
 
   it('does not report a refused file', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const onPlanFile = vi.fn();
-    const plans = createPlans({ send: vi.fn(), onPlanFile });
+    const onPlanFiles = vi.fn();
+    const plans = createPlans({ send: vi.fn(), onPlanFiles });
     const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-elsewhere-')));
 
     await onTool(plans, fileCall('Write', { cwd: elsewhere }));
 
-    expect(onPlanFile).not.toHaveBeenCalled();
+    expect(onPlanFiles).not.toHaveBeenCalled();
     vi.mocked(console.warn).mockRestore();
   });
 
@@ -385,7 +480,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     await onTool(before, fileCall());
 
     const after = createPlans({ send: vi.fn() });
-    await after.restore('sess-01', file, root);
+    await after.restore('sess-01', before.files('sess-01'), root);
 
     expect(after.get('sess-01')).toEqual(before.get('sess-01'));
     // And the next Stop re-reads it, which is what was missing after a relaunch.
@@ -399,9 +494,9 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     const plans = createPlans({ send: vi.fn() });
     const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), 'hive-plan-elsewhere-')));
 
-    await plans.restore('sess-01', file, elsewhere);
-    await plans.restore('sess-01', join(root, 'missing.md'), root);
-    await plans.restore('sess-01', join(root, 'missing.md'), root);
+    await plans.restore('sess-01', [{ file, at: 0 }], elsewhere);
+    await plans.restore('sess-01', [{ file: join(root, 'missing.md'), at: 0 }], root);
+    await plans.restore('sess-01', [{ file: join(root, 'missing.md'), at: 0 }], root);
 
     expect(plans.get('sess-01')).toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(2);

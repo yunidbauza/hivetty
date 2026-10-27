@@ -2283,10 +2283,12 @@ Its progress is two posts per task, both in the build ask's thread
 (`thread: <the ask's id>`): `meta: { ticket, stage: "build", task: N, state:
 "started" }` when the task starts, and `meta: { ticket, stage: "build", task:
 N, worktree, checkout }` when its commit lands (HIVE-180). The plan panel reads
-them: `electron/main/plans/builder-progress.ts` links a build ask from a session
-whose plan is that `hive:plan` file, ticks task N from the builder's posts in
-that thread, and ends the build on the answer — `failed:` or `blocked:` marks
-it, anything else completes every task. A post without `thread` is invisible
+them: `electron/main/plans/builder-progress.ts` links a build ask to any `hive:plan`
+file the session read, and moves the panel to it on the builder's first post
+in the thread (HIVE-359). It ticks task N from the builder's posts in that
+thread, and ends the build on the answer — `failed:` or `blocked:` marks it,
+anything else completes the tasks it ticked (every task if none) and marks it
+done. A post without `thread` is invisible
 to it, and the live suite pins the shape (`posts each task's start and its
 commit`). The links are in memory; after a relaunch, a resumed session's
 re-read plan has that day's entries in its own threads replayed through the
