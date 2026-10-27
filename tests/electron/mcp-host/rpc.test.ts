@@ -33,7 +33,7 @@ describe('serve', () => {
 
     for (const line of lines) input.write(`${line}\n`);
     input.end();
-    // Let the readline listener and its promises settle.
+    // Let the data listener and its promises settle.
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -117,5 +117,62 @@ describe('serve', () => {
 
     // The reader is still alive: the second message got its own reply.
     expect(replies).toContainEqual(expect.objectContaining({ id: 2, result: { tools: [] } }));
+  });
+
+  /*
+    U+2028 and U+2029 are legal raw inside a JSON string, and `claude` sends
+    them raw. Electron's Node 24 `readline` breaks lines on both, so a request
+    carrying one was cut in two and never answered (HIVE-354). The PATH Node
+    this suite runs on does not, so the live suite (`pnpm test:mcp-host`) is
+    what proves the fix; this pins the property.
+  */
+  it('reads a message carrying U+2028 and U+2029 as one message', async () => {
+    const { written, logged } = await drive([
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'ledger_read', arguments: { note: 'a\u2028b\u2029c' } },
+      }),
+    ]);
+
+    expect(logged).toEqual([]);
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0] as string)).toMatchObject({ id: 7 });
+  });
+
+  it('joins a message written across chunks, a character split mid-byte included', async () => {
+    const input = new PassThrough();
+    const written: string[] = [];
+
+    serve({ input, write: (line) => written.push(line), log: () => undefined, handlers: handlers() });
+
+    const bytes = Buffer.from(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'ledger_read', arguments: { note: 'é\u2028' } } })}\n`,
+      'utf8',
+    );
+    const cut = bytes.indexOf(Buffer.from('é', 'utf8')) + 1;
+    input.write(bytes.subarray(0, cut));
+    input.write(bytes.subarray(cut));
+    input.end();
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0] as string)).toMatchObject({ id: 8 });
+  });
+
+  it('handles a last message with no trailing newline when the input ends', async () => {
+    const input = new PassThrough();
+    const written: string[] = [];
+
+    serve({ input, write: (line) => written.push(line), log: () => undefined, handlers: handlers() });
+
+    input.end(JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'tools/list' }));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0] as string)).toMatchObject({ id: 9 });
   });
 });
