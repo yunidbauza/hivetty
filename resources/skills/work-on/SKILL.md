@@ -110,9 +110,9 @@ will raise one. To merge unattended, turn on Settings › Projects › ⋯ › M
 PRs unattended." Never change `autoMerge` yourself, in the config or any other
 way; it is the person's consent.
 
-A plan split into PRs is one ask per PR. The builder takes each ask as its own
-conversation, two at a time, so independent PRs go out together and build in
-parallel. A PR that depends on another goes out held (below).
+A plan split into PRs is one ask per PR, and they build **one at a time**: the
+Plan tab follows one build per session (HIVE-359). Post PR 1's ask now; every
+later PR goes out held on the one before it (below), even when independent.
 
 A PR that must wait for another to merge goes out as a held ask: add
 `meta.after: "<owner>/<repo>#<N>"` naming the PR it depends on, and it reaches
@@ -120,7 +120,7 @@ the builder only when that PR's shipper `closed` entry lands. It waits up to
 seven days. The number exists only once the earlier PR is open, so post the
 first ask now and carry the rest of the chain in its `meta.intent` ("when A
 opens as #N, post B with `after: <owner>/<repo>#N`"). When every number is
-already known, post them all at once.
+already known, post them all at once, each still held on the one before it.
 
 *Attached (default).* Stay open. A `📒` marker from the builder is a question.
 Answer it with `ledger_answer` when the spec, the plan or this conversation

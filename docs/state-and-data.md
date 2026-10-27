@@ -191,23 +191,31 @@ against the newly attached one wearing the same id.
 The plan's task now carries `activeForm` (Claude's spinner wording, task tools
 only), `startedAt` (first `in_progress`, never re-stamped, so a `TodoWrite`
 rewrite keeps it) and `endedAt` (`completed`). The plan carries `file`, the
-session's last plan file, and `fileAt`, when main accepted the read
-(`electron/shared/plan-contract.ts:19`). `file` survives a later plan from
+plan file on screen, else the session's last one read, and `fileAt`, when main
+accepted the read (`electron/shared/plan-contract.ts:19`). A plan-file plan
+carries `part` when its header has a `PR: n of N` line (HIVE-359), and a build
+is `build: { askId, state, startedAt? }` with `state` one of `building`,
+`done`, `failed` or `blocked`. `file` survives a later plan from
 another source, and goes with the session: `plans.forget` on a session's end
 and on `/clear`, so a retired conversation's plan file and read time never reach
 the next plan (`electron/main/sessions/index.ts:1193`).
 
 Plans live in main's memory, so a relaunch starts with none. What survives is
-the session history row's `planFile`: the realpath of the plan file the session
-last read, recorded by main when the read is accepted (never taken from the
-ledger) and cleared on `/clear`. When a restored row is resumed, main re-reads
-that file through `Plans.restore`. It is confined to the cwd the row last
-observed, exactly as a hook-driven read is, and a refused or missing file warns
-once and offers nothing. The Stop re-read then has a file to re-read again.
-Once the re-read lands, the day's ledger entries in that session's build
-threads are replayed through `BuilderProgress.replay`, the same handler live
-entries take. That restores the build link and its ticks, each stamped with when
-it was posted. Nothing new persists tick state: the ledger is the record.
+the session history row's `planFiles`: every plan file the session read, in read
+order, each realpath with when its text was first read, recorded by main when
+the read is accepted (never taken from the ledger) and cleared on `/clear`. A
+row written before HIVE-359 kept one `planFile`, which loads as a one-file list.
+When a restored row is resumed, main re-reads those files in order through
+`Plans.restore`, the last one on screen. Each is confined to the cwd the row
+last observed, exactly as a hook-driven read is, and a refused or missing file
+warns once and offers nothing. The Stop re-read then has a file to re-read
+again: the plan on screen, else the last file read. Once the re-reads land,
+the day's ledger entries in that session's build threads are replayed through
+`BuilderProgress.replay`, the same handler live entries take, folded quietly
+and shown once. It shows the build last started if it is still live, else the
+build last started if no other plan file was written after it ended, else the
+restored plan stays. Ticks are stamped with when each was posted. Nothing new
+persists tick state: the ledger is the record.
 
 ### Changed files (HIVE-201)
 
