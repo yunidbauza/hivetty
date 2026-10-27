@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readHook } from '../../../../electron/main/harness/claude-code/hooks';
 import { createPlans, type Plans } from '../../../../electron/main/plans';
 import { parsePlanFile } from '../../../../electron/main/plans/parse-plan-file';
+import { STALE_BUILD_MS } from '../../../../electron/main/plans/store';
 import { CH } from '../../../../electron/shared/ipc-contract';
 import { type SessionPlan } from '../../../../electron/shared/plan-contract';
 import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
@@ -249,6 +250,7 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
   const building = (plans: Plans) => {
     const current = plans.get('sess-01') as SessionPlan;
     plans.offer('sess-01', 'plan-file', { ...current, build: { askId: 'A1', state: 'building', startedAt: 1 } });
+    plans.buildSeen('sess-01', Date.now());
   };
 
   it("records another plan file written during a build but keeps the build's plan on screen (HIVE-359)", async () => {
@@ -261,6 +263,24 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
 
     expect(plans.get('sess-01')).toMatchObject({ file, build: { askId: 'A1', state: 'building' } });
     expect(plans.planOf('sess-01', other)?.tasks).toHaveLength(1);
+  });
+
+  it('a build with no builder post for STALE_BUILD_MS no longer holds the panel (HIVE-359 follow-up)', async () => {
+    vi.useFakeTimers({ now: 1_000 });
+    const plans = createPlans({ send: vi.fn() });
+    await onTool(plans, fileCall());
+    building(plans);
+    const other = second();
+
+    vi.setSystemTime(1_000 + STALE_BUILD_MS - 1);
+    await onTool(plans, fileCall('Write', { toolInput: { file_path: other } }));
+    expect(plans.get('sess-01')?.file).toBe(file);
+
+    vi.setSystemTime(1_000 + STALE_BUILD_MS);
+    writeFileSync(other, `# B\nPR: 2 of 2\n\n## Task 1: X\n- [x] x\n`);
+    await onTool(plans, fileCall('Edit', { toolInput: { file_path: other } }));
+    expect(plans.get('sess-01')?.file).toBe(other);
+    vi.useRealTimers();
   });
 
   it('a finished build no longer holds the panel against a new plan file (HIVE-359)', async () => {

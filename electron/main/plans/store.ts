@@ -31,6 +31,8 @@ export interface Plans {
   files(entityId: string): PlanFileRead[];
   /** A plan file the session read, as a plan, from the text main last read. Never reads the disk. */
   planOf(entityId: string, file: string): SessionPlan | undefined;
+  /** The builder of the session's shown build posted at `at` (HIVE-359 follow-up). Main's memory only, never published. */
+  buildSeen(entityId: string, at: number): void;
 }
 
 /** Lower wins. A source is accepted over a live plan of the same or a higher number. */
@@ -39,6 +41,15 @@ export const PLAN_SOURCE_RANK: Readonly<Record<PlanSource, number>> = {
   'plan-file': 2,
   'plan-mode': 3,
 };
+
+/**
+ * A build with no builder post for this long no longer holds the panel
+ * against the session's next plan file (HIVE-359 follow-up): a builder that
+ * died without answering would otherwise keep it until the session ended.
+ * A task runs about 5 builder minutes and HIVE-144's worst was 104.
+ * ponytail: a fixed window; take liveness from the builder's run if a live build ever goes quiet longer.
+ */
+export const STALE_BUILD_MS = 3 * 60 * 60 * 1000;
 
 const PROGRESS = { pending: 0, in_progress: 1, completed: 2 } as const;
 
@@ -82,6 +93,8 @@ export function createPlans({
   const plans = new Map<string, SessionPlan>();
   /** Plan-file paths already refused once, so a refused file warns once, not per edit. */
   const refused = new Set<string>();
+  /** Each session's shown build's last builder post (HIVE-359 follow-up): main's memory only. */
+  const buildSeenAt = new Map<string, number>();
   /**
    * Every plan file each session read (HIVE-359), in read order: a read moves
    * its file to the end, so the last entry is the last file read. `text` is
@@ -165,7 +178,12 @@ export function createPlans({
     // away by rank must still be offered after the plan ahead of it finishes.
     // A builder is working another plan: this file is held for a later build,
     // not shown over the one in progress (HIVE-359, the 16:55 case).
-    const held = current?.source === 'plan-file' && current.build?.state === 'building' && current.file !== read.file;
+    // Only while its builder is alive: a build silent for STALE_BUILD_MS holds nothing.
+    const held =
+      current?.source === 'plan-file' &&
+      current.build?.state === 'building' &&
+      current.file !== read.file &&
+      now() - (buildSeenAt.get(entityId) ?? Number.NEGATIVE_INFINITY) < STALE_BUILD_MS;
     const wasLast = lastRead(entityId)?.file === read.file;
     records.delete(read.file);
     records.set(read.file, { at, read: read.text, ...(!held && accepts(current, 'plan-file') ? { text: read.text } : {}) });
@@ -211,6 +229,7 @@ export function createPlans({
     drop,
     forget(entityId) {
       planFiles.delete(entityId);
+      buildSeenAt.delete(entityId);
       drop(entityId);
     },
     async restore(entityId, files, cwd) {
@@ -224,6 +243,9 @@ export function createPlans({
       if (record === undefined) return undefined;
       const tasks = parsePlanFile(record.read);
       return tasks.length === 0 ? undefined : filePlan(entityId, file, record.at, record.read, tasks);
+    },
+    buildSeen(entityId, at) {
+      buildSeenAt.set(entityId, at);
     },
   };
 }

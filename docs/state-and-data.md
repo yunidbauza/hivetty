@@ -195,7 +195,10 @@ plan file on screen, else the session's last one read, and `fileAt`, when main
 accepted the read (`electron/shared/plan-contract.ts:19`). A plan-file plan
 carries `part` when its header has a `PR: n of N` line (HIVE-359), and a build
 is `build: { askId, state, startedAt? }` with `state` one of `building`,
-`done`, `failed` or `blocked`. `file` survives a later plan from
+`done`, `failed` or `blocked`. A plan file the session writes while a build is
+`building` is recorded but held off screen, until the build has had no builder
+post for three hours (`STALE_BUILD_MS`), so a builder that died without
+answering cannot hold the panel for the rest of the session. `file` survives a later plan from
 another source, and goes with the session: `plans.forget` on a session's end
 and on `/clear`, so a retired conversation's plan file and read time never reach
 the next plan (`electron/main/sessions/index.ts:1193`).
@@ -214,7 +217,8 @@ the day's ledger entries in that session's build threads are replayed through
 `BuilderProgress.replay`, the same handler live entries take, folded quietly
 and shown once. It shows the build last started if it is still live, else the
 build last started if no other plan file was written after it ended, else the
-restored plan stays. Ticks are stamped with when each was posted. Nothing new
+restored plan stays. A build with no post for `STALE_BUILD_MS` counts as ended
+at its last post. Ticks are stamped with when each was posted. Nothing new
 persists tick state: the ledger is the record.
 
 ### Changed files (HIVE-201)
