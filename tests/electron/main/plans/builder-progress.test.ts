@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createPlans, type Plans } from '../../../../electron/main/plans';
 import { createBuilderProgress } from '../../../../electron/main/plans/builder-progress';
+import { STALE_BUILD_MS } from '../../../../electron/main/plans/store';
 import type { LedgerEntry } from '../../../../electron/shared/ledger-contract';
 import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
 
@@ -114,6 +115,43 @@ describe('createBuilderProgress', () => {
     progress.onEntry(post(1));
     progress.onEntry(post(2));
     expect(statuses()).toEqual(['completed', 'completed', 'pending']);
+  });
+
+  it("a dead builder's build stops holding the session's next plan (HIVE-359 follow-up)", async () => {
+    vi.setSystemTime(1_000);
+    progress.onEntry(ask());
+    progress.onEntry(post(1));
+    const b = write('b.md', '## Task 1: X\n');
+
+    vi.setSystemTime(1_000 + STALE_BUILD_MS);
+    await touch(plans, b);
+
+    expect(plans.get('sess-01')?.file).toBe(b);
+  });
+
+  it('a builder post keeps the build holding (HIVE-359 follow-up)', async () => {
+    vi.setSystemTime(1_000);
+    progress.onEntry(ask());
+    progress.onEntry(post(1));
+    vi.setSystemTime(1_000 + STALE_BUILD_MS - 10);
+    progress.onEntry(post(2));
+    const b = write('b.md', '## Task 1: X\n');
+
+    vi.setSystemTime(1_000 + STALE_BUILD_MS + 10);
+    await touch(plans, b);
+
+    expect(plans.get('sess-01')?.file).toBe(FILE);
+  });
+
+  it('ticks a task the session added to the plan after the build started (HIVE-359 follow-up)', async () => {
+    progress.onEntry(ask());
+    progress.onEntry(post(1));
+    writeFileSync(FILE, `${PLAN}## Task 4: Task 4\n`);
+    await touch(plans, FILE);
+
+    progress.onEntry(post(4));
+
+    expect(statuses()).toEqual(['completed', 'pending', 'pending', 'completed']);
   });
 
   it('ignores a post in another thread, from another party, or not a build tick', () => {
@@ -373,6 +411,7 @@ describe('createBuilderProgress', () => {
     it('shows the plan being built mid-build, not the last plan written (HIVE-359)', async () => {
       const b = write('b.md', '## Task 1: X\n');
       const log = [ask(), post(1, {}, { ts: 3_000 })];
+      vi.setSystemTime(3_001);
       await relaunchWith([{ file: FILE, at: 1_000 }, { file: b, at: 2_000 }]);
 
       progress.replay('sess-01', log);
@@ -395,6 +434,17 @@ describe('createBuilderProgress', () => {
       const b = write('b.md', '## Task 1: X\n');
       const log = [ask(), post(1, {}, { ts: 3_000 }), { ...answer('PR open'), ts: 4_000 }];
       await relaunchWith([{ file: FILE, at: 1_000 }, { file: b, at: 5_000 }]);
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')?.file).toBe(b);
+    });
+
+    it('treats a build silent past STALE_BUILD_MS as ended at its last post (HIVE-359 follow-up)', async () => {
+      const b = write('b.md', '## Task 1: X\n');
+      const log = [ask(), post(1, {}, { ts: 1_000 })];
+      vi.setSystemTime(1_000 + STALE_BUILD_MS + 1);
+      await relaunchWith([{ file: FILE, at: 500 }, { file: b, at: 2_000 }]);
 
       progress.replay('sess-01', log);
 

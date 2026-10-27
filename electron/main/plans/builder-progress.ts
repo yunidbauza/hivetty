@@ -1,7 +1,7 @@
 import type { LedgerEntry } from '@shared/ledger-contract';
 import type { PlanBuild, PlanTask, PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 
-import { keepTicks, type Plans } from './store';
+import { keepTicks, type Plans, STALE_BUILD_MS } from './store';
 import { isAllDone, stamped } from './task-tools';
 
 /** A build ask, tied to the session that asked it and the plan file it names. */
@@ -20,6 +20,8 @@ interface Link {
   startedAt?: number;
   /** The answer. */
   endedAt?: number;
+  /** The builder's last post in the thread (HIVE-359 follow-up). */
+  lastAt?: number;
 }
 
 /**
@@ -32,6 +34,7 @@ interface Link {
  * header, never body text — and only the party the ask went to may tick it.
  * Main never reads a file on the ledger's word: an ask links only to a plan
  * file the session itself read, from the text main read then.
+ * A build silent for `STALE_BUILD_MS` stops holding the session's next plan file.
  *
  * - **Link.** A `build` ask naming `meta.plan` (or, with no `meta.stage`, a
  *   body `plan:` line) from a known session links to any plan file that
@@ -58,8 +61,9 @@ interface Link {
  *   threads that session asked, each tick stamped with when it was posted.
  *   It folds quietly, then shows the build last started if it is still live,
  *   else the build last started if no other plan file was written after it
- *   ended, else leaves the restored plan. Nothing new is persisted: the
- *   ledger is the record.
+ *   ended, else leaves the restored plan. A build with no post for
+ *   `STALE_BUILD_MS` counts as ended at its last post. Nothing new is
+ *   persisted: the ledger is the record.
  */
 /** What `ipc/index.ts` feeds every ledger entry to (HIVE-180). */
 export interface BuilderProgress {
@@ -105,11 +109,19 @@ export function createBuilderProgress({
   const start = (askId: string, link: Link, at: number): void => {
     if (link.startedAt !== undefined) return;
     link.startedAt = at;
+    link.lastAt = at;
     link.tasks = plans.planOf(link.entityId, link.file)?.tasks ?? [];
     shown.set(link.entityId, askId);
+    plans.buildSeen(link.entityId, at);
     if (replaying) return;
     const next = compose(askId, link);
     if (next !== undefined) plans.offer(link.entityId, 'plan-file', next);
+  };
+
+  /** The builder is alive: stamp the link, and the store when this build is the one shown. */
+  const seen = (askId: string, link: Link, at: number): void => {
+    link.lastAt = at;
+    if (shown.get(link.entityId) === askId) plans.buildSeen(link.entityId, at);
   };
 
   function link(entry: LedgerEntry, meta: Record<string, unknown>): void {
@@ -156,7 +168,12 @@ export function createBuilderProgress({
       const task = meta.task;
       if (entry.from !== linked.builder || meta.stage !== 'build' || !Number.isInteger(task)) return;
       start(askId, linked, at);
+      seen(askId, linked, at);
       const id = String(task);
+      // A task the session added since the build started: re-take the plan, keeping this build's ticks.
+      if (!linked.tasks.some((t) => t.id === id)) {
+        linked.tasks = keepTicks(plans.planOf(linked.entityId, linked.file)?.tasks ?? [], linked.tasks);
+      }
       if (!linked.tasks.some((t) => t.id === id)) return;
       const status: PlanTaskStatus = meta.state === 'started' ? 'in_progress' : 'completed';
       linked.ticked.add(id);
@@ -204,14 +221,18 @@ export function createBuilderProgress({
           (best, item) => ((best?.[1].startedAt ?? -Infinity) < (item[1].startedAt ?? 0) ? item : best),
           undefined,
         );
-      const live = latest(started.filter(([, link]) => link.state === 'building'));
+      const quiet = (link: Link) => now() - (link.lastAt ?? link.startedAt ?? 0) >= STALE_BUILD_MS;
+      const live = latest(started.filter(([, link]) => link.state === 'building' && !quiet(link)));
       const last = live ?? latest(started);
       if (last === undefined) return;
       const [askId, link] = last;
       // An ended build stays only if the session wrote no other plan after it ended.
-      const later = plans.files(entityId).some((read) => read.file !== link.file && read.at > (link.endedAt ?? Infinity));
+      // A silent build ended, for this rule, at its last post.
+      const end = link.endedAt ?? (quiet(link) ? link.lastAt : undefined) ?? Infinity;
+      const later = plans.files(entityId).some((read) => read.file !== link.file && read.at > end);
       if (live === undefined && later) return;
       shown.set(entityId, askId);
+      if (link.lastAt !== undefined) plans.buildSeen(entityId, link.lastAt);
       const next = compose(askId, link);
       if (next !== undefined) plans.offer(entityId, 'plan-file', next);
     },

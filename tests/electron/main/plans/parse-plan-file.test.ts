@@ -121,6 +121,8 @@ describe('parsePlanPart (HIVE-359)', () => {
     expect(parsePlanPart(header('PR: 3 of 2'))).toBeUndefined();
     expect(parsePlanPart(header('PR: 1 of 1'))).toBeUndefined();
     expect(parsePlanPart(header('PRs: 2. This is PR C'))).toBeUndefined();
+    expect(parsePlanPart(header(`PR: 1 of ${'9'.repeat(400)}`))).toBeUndefined();
+    expect(parsePlanPart(header(`PRs: ${'9'.repeat(400)}. This is PR A`))).toBeUndefined();
   });
 
   it('reads only the header, never a task body', () => {
