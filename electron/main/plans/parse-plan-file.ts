@@ -80,7 +80,7 @@ export function parsePlanPart(markdown: string): PlanPart | undefined {
         : legacy !== null
           ? [(legacy[2] ?? '').charCodeAt(0) - 64, Number(legacy[1])]
           : [Number.NaN, Number.NaN];
-    if (of >= 2 && index >= 1 && index <= of) return { index, of };
+    if (Number.isSafeInteger(index) && Number.isSafeInteger(of) && of >= 2 && index >= 1 && index <= of) return { index, of };
   }
   return undefined;
 }
