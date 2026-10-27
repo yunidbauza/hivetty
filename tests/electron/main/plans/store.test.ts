@@ -463,6 +463,18 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     expect(plans.get('sess-01')).toMatchObject({ file: other, fileAt: 20 });
   });
 
+  it("reads a legacy row's unknown time (0) as now, and reports it so history keeps a real one (HIVE-359 follow-up)", async () => {
+    vi.useFakeTimers({ now: 9_000 });
+    const onPlanFiles = vi.fn();
+    const plans = createPlans({ send: vi.fn(), onPlanFiles });
+
+    await plans.restore('sess-01', [{ file, at: 0 }], root);
+
+    expect(plans.get('sess-01')?.fileAt).toBe(9_000);
+    expect(onPlanFiles).toHaveBeenLastCalledWith('sess-01', [{ file, at: 9_000 }]);
+    vi.useRealTimers();
+  });
+
   it('does not report a refused file', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const onPlanFiles = vi.fn();

@@ -158,7 +158,8 @@ export function createPlans({
     if (tasks.length === 0) return;
     // When the text was first read, not when it was last re-read: a turned-away
     // file is re-read at every Stop, and its time must not drift with them.
-    const at = last !== undefined && last.read === read.text ? last.at : (restoredAt ?? now());
+    // 0 is a pre-HIVE-359 history row's "unknown", never a real read time.
+    const at = last !== undefined && last.read === read.text ? last.at : restoredAt || now();
     const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
