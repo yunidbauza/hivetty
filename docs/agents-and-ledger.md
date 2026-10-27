@@ -797,6 +797,21 @@ permanently suppress the real expiry. The card is dismissed rather than marked
 expired in place: the thread is closed, so `Ledger.append` refuses every button
 the card offers.
 
+### An abandoned lane ask
+
+A thread lane exists to answer the ask that opened it. When a run on one ends
+(`done`, `failed`, `turns`, `budget`, a kill, a stall, a quit) with that ask
+still open, and the run is not `asking` a question of its own, `finalizeRun`
+appends as the overmind a `failed` on the ask's thread, naming the agent, the
+run, the outcome and its reason, then a `release` for every task the agent
+still holds by a claim that run wrote (`leftOpen` in `ledger-derive.ts`). The
+overmind is a party to every thread, so the `failed` is addressed to the asker,
+wakes or nudges it, and closes the lane. Nothing else would: a lane's ask is no
+longer in any wake queue once its run started, and boot flushes only persisted
+queues. A paused agent is skipped; resuming it is the person's call. Standing
+and repo lanes keep the day-long expiry above, because their queue is cleared
+at flush and nothing records which ask a run owed (HIVE-354).
+
 ### Notifications
 
 `electron/main/ledger/notify.ts` is `deliver.ts`'s counterpart for the
