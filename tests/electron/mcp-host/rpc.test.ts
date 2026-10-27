@@ -122,9 +122,10 @@ describe('serve', () => {
   /*
     U+2028 and U+2029 are legal raw inside a JSON string, and `claude` sends
     them raw. Electron's Node 24 `readline` breaks lines on both, so a request
-    carrying one was cut in two and never answered (HIVE-354). The PATH Node
-    this suite runs on does not, so the live suite (`pnpm test:mcp-host`) is
-    what proves the fix; this pins the property.
+    carrying one was cut in two and never answered (HIVE-354). Whether the
+    PATH Node this suite runs on does too depends on its version, so the live
+    suite (`pnpm test:mcp-host`) is what proves the fix under Electron; this
+    pins the property.
   */
   it('reads a message carrying U+2028 and U+2029 as one message', async () => {
     const { written, logged } = await drive([
@@ -144,8 +145,9 @@ describe('serve', () => {
   it('joins a message written across chunks, a character split mid-byte included', async () => {
     const input = new PassThrough();
     const written: string[] = [];
+    const set = handlers();
 
-    serve({ input, write: (line) => written.push(line), log: () => undefined, handlers: handlers() });
+    serve({ input, write: (line) => written.push(line), log: () => undefined, handlers: set });
 
     const bytes = Buffer.from(
       `${JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'ledger_read', arguments: { note: 'é\u2028' } } })}\n`,
@@ -160,6 +162,10 @@ describe('serve', () => {
 
     expect(written).toHaveLength(1);
     expect(JSON.parse(written[0] as string)).toMatchObject({ id: 8 });
+    // Decoded whole: each half on its own would be a replacement character.
+    const note = (vi.mocked(set.callTool).mock.calls[0]?.[1] as { note?: string } | undefined)?.note;
+    expect(note?.charCodeAt(0)).toBe(0xe9);
+    expect(note).toHaveLength(2);
   });
 
   it('handles a last message with no trailing newline when the input ends', async () => {
