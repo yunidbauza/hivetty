@@ -306,6 +306,32 @@ describe('createBuilderProgress', () => {
     expect(plans.get('sess-01')?.build).toBeUndefined();
   });
 
+  it('never links a plan file only another session read (HIVE-359)', async () => {
+    const b = write('b.md');
+    await touch(plans, b, 'sess-02');
+
+    progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/b.md' } }));
+    progress.onEntry(post(1));
+
+    expect(plans.get('sess-01')?.build).toBeUndefined();
+    expect(plans.get('sess-02')?.build).toBeUndefined();
+  });
+
+  it('with two builds live, shows the one started last and still ticks the other (HIVE-359)', async () => {
+    const b = write('b.md', '## Task 1: X\n## Task 2: Y\n');
+    await touch(plans, b);
+    progress.onEntry(ask());
+    progress.onEntry(post(1));
+    progress.onEntry(ask({ id: 'B1', meta: { stage: 'build', plan: '.hive/plans/b.md' } }));
+    progress.onEntry(post(1, {}, { thread: 'B1' }));
+
+    progress.onEntry(post(2)); // A's builder, off screen
+
+    expect(plans.get('sess-01')?.file).toBe(b);
+    progress.onEntry(answer('PR B open')); // ends A (thread A1)
+    expect(plans.get('sess-01')?.file).toBe(b);
+  });
+
   it('a successful answer marks the build done (HIVE-359)', () => {
     progress.onEntry(ask());
     progress.onEntry(post(1));
@@ -337,6 +363,43 @@ describe('createBuilderProgress', () => {
       // The restore re-read of the session's plan file.
       await plans.restore('sess-01', [{ file: FILE, at: 0 }], root);
     };
+
+    const relaunchWith = async (files: { file: string; at: number }[]) => {
+      plans = createPlans({ send: vi.fn() });
+      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-') });
+      await plans.restore('sess-01', files, root);
+    };
+
+    it('shows the plan being built mid-build, not the last plan written (HIVE-359)', async () => {
+      const b = write('b.md', '## Task 1: X\n');
+      const log = [ask(), post(1, {}, { ts: 3_000 })];
+      await relaunchWith([{ file: FILE, at: 1_000 }, { file: b, at: 2_000 }]);
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')).toMatchObject({ file: FILE, build: { askId: 'A1', state: 'building', startedAt: 3_000 } });
+      expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+    });
+
+    it("shows a finished build's plan when nothing was written after it ended (HIVE-359)", async () => {
+      const b = write('b.md', '## Task 1: X\n');
+      const log = [ask(), post(1, {}, { ts: 3_000 }), { ...answer('PR open'), ts: 4_000 }];
+      await relaunchWith([{ file: FILE, at: 1_000 }, { file: b, at: 2_000 }]);
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')).toMatchObject({ file: FILE, build: { state: 'done' } });
+    });
+
+    it('keeps a plan written after the last build ended (HIVE-359)', async () => {
+      const b = write('b.md', '## Task 1: X\n');
+      const log = [ask(), post(1, {}, { ts: 3_000 }), { ...answer('PR open'), ts: 4_000 }];
+      await relaunchWith([{ file: FILE, at: 1_000 }, { file: b, at: 5_000 }]);
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')?.file).toBe(b);
+    });
 
     it('restores the link and the ticks, stamped with when each was posted', async () => {
       const log = [
@@ -405,7 +468,7 @@ describe('createBuilderProgress', () => {
       expect(plans.get('sess-02')).toBe(shown);
     });
 
-    it('leaves the link forgotten when a replayed answer ended the build', async () => {
+    it('takes no more ticks once a replayed answer ended the build', async () => {
       const log = [ask(), post(1), answer('PR open: https://github.com/o/r/pull/9')];
       await relaunch();
       progress.replay('sess-01', log);
@@ -418,18 +481,13 @@ describe('createBuilderProgress', () => {
 
     it('never completes a plan the session has since replaced', async () => {
       const log = [ask(), post(1), answer('PR open')];
-      await relaunch();
-      void onTool(plans, {
-        entityId: 'sess-01',
-        toolName: 'TaskCreate',
-        toolInput: { subject: 'Other work' },
-        toolResponse: { task: { id: '1', subject: 'Other work' } },
-      });
-      const replaced = plans.get('sess-01');
+      const next = write('next.md');
+      await relaunchWith([{ file: FILE, at: 0 }, { file: next, at: Number.MAX_SAFE_INTEGER }]);
 
       progress.replay('sess-01', log);
 
-      expect(plans.get('sess-01')).toBe(replaced);
+      expect(plans.get('sess-01')?.file).toBe(next);
+      expect(statuses()).toEqual(['pending', 'pending', 'pending']);
     });
   });
 });

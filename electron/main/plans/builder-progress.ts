@@ -50,13 +50,16 @@ interface Link {
  *   across PRs keeps the later PR's tasks pending (sess-a7: PR1's answer
  *   showed PR2's 15–21 done). An ended build takes no more posts.
  *
- * A plan that has since been replaced — another source, another file, another
- * build — is never edited on this build's word.
+ * Past its start, a build whose plan has since been replaced (another source,
+ * another file, another build) is never edited on its word.
  *
  * - **Replay.** The links live in memory, so after a relaunch a restored
- *   session's re-read plan has the day's entries folded through the same path,
- *   in order, limited to the threads that session asked. Each tick is stamped
- *   with when it was posted. Nothing new is persisted: the ledger is the record.
+ *   session's day is folded through the same path, in order, limited to the
+ *   threads that session asked, each tick stamped with when it was posted.
+ *   It folds quietly, then shows the build last started if it is still live,
+ *   else the build last started if no other plan file was written after it
+ *   ended, else leaves the restored plan. Nothing new is persisted: the
+ *   ledger is the record.
  */
 /** What `ipc/index.ts` feeds every ledger entry to (HIVE-180). */
 export interface BuilderProgress {
@@ -77,6 +80,8 @@ export function createBuilderProgress({
   const links = new Map<string, Link>();
   /** Each session's build last started: the one on screen (HIVE-359). */
   const shown = new Map<string, string>();
+  /** Replay folds without offering, then shows once (HIVE-359). */
+  let replaying = false;
 
   /** The link's plan as the panel should draw it: the session's last read of the file, with this build's ticks. */
   const compose = (askId: string, link: Link): SessionPlan | undefined => {
@@ -89,7 +94,7 @@ export function createBuilderProgress({
 
   /** Offer the link's plan, but only while it is the session's build on screen and the panel still holds it. */
   const refresh = (askId: string, link: Link): void => {
-    if (shown.get(link.entityId) !== askId) return;
+    if (replaying || shown.get(link.entityId) !== askId) return;
     const plan = plans.get(link.entityId);
     if (plan?.source !== 'plan-file' || plan.file !== link.file || plan.build?.askId !== askId) return;
     const next = compose(askId, link);
@@ -102,6 +107,7 @@ export function createBuilderProgress({
     link.startedAt = at;
     link.tasks = plans.planOf(link.entityId, link.file)?.tasks ?? [];
     shown.set(link.entityId, askId);
+    if (replaying) return;
     const next = compose(askId, link);
     if (next !== undefined) plans.offer(link.entityId, 'plan-file', next);
   };
@@ -111,7 +117,7 @@ export function createBuilderProgress({
       A session sometimes sends the ask with `plan:` only in its body, meta
       reduced to `intent` (INCORP-620). The body's line counts when meta names
       no stage: the suffix match below still confines it to the session's own
-      plan file.
+      plan files.
     */
     const bodyPlan = meta.stage === undefined ? /^plan:\s*(\S+)\s*$/m.exec(entry.body)?.[1] : undefined;
     const planPath = meta.plan ?? bodyPlan;
@@ -179,13 +185,35 @@ export function createBuilderProgress({
       /*
         Only the session's own threads: another session's links are live, and
         folding their ticks through again would restamp them, or put a task
-        back to started after it was done.
+        back to started after it was done. Folded quietly, then shown once,
+        as the live panel would have it (HIVE-359).
       */
       const asked = new Set<string>();
-      for (const entry of entries) {
-        if (entry.kind === 'ask' && entry.from === entityId) asked.add(entry.id);
-        if (asked.has(entry.kind === 'ask' ? entry.id : (entry.thread ?? ''))) handle(entry, entry.ts);
+      replaying = true;
+      try {
+        for (const entry of entries) {
+          if (entry.kind === 'ask' && entry.from === entityId) asked.add(entry.id);
+          if (asked.has(entry.kind === 'ask' ? entry.id : (entry.thread ?? ''))) handle(entry, entry.ts);
+        }
+      } finally {
+        replaying = false;
       }
+      const started = [...links].filter(([id, link]) => asked.has(id) && link.startedAt !== undefined);
+      const latest = (list: typeof started) =>
+        list.reduce<(typeof started)[number] | undefined>(
+          (best, item) => ((best?.[1].startedAt ?? -Infinity) < (item[1].startedAt ?? 0) ? item : best),
+          undefined,
+        );
+      const live = latest(started.filter(([, link]) => link.state === 'building'));
+      const last = live ?? latest(started);
+      if (last === undefined) return;
+      const [askId, link] = last;
+      // An ended build stays only if the session wrote no other plan after it ended.
+      const later = plans.files(entityId).some((read) => read.file !== link.file && read.at > (link.endedAt ?? Infinity));
+      if (live === undefined && later) return;
+      shown.set(entityId, askId);
+      const next = compose(askId, link);
+      if (next !== undefined) plans.offer(entityId, 'plan-file', next);
     },
   };
 }
