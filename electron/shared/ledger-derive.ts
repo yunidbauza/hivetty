@@ -895,6 +895,34 @@ export function laneOfRun(agent: string, run: unknown, entries: readonly LedgerE
 }
 
 /**
+ * What a closing run leaves behind it (HIVE-354): the ask its thread lane
+ * exists to answer, while that ask is still open, and every task the agent
+ * still holds by a claim this run wrote. A standing or repo lane names no ask:
+ * its wake queue is cleared at flush, so nothing records which ask it owed.
+ */
+export function leftOpen(
+  entries: readonly LedgerEntry[],
+  agent: string,
+  run: string,
+  lane: string,
+  now: number,
+): { ask: OpenAsk | undefined; claims: string[] } {
+  const askId = lane.startsWith('thread:') ? lane.slice('thread:'.length) : undefined;
+  const ask = askId === undefined ? undefined : openAsks(entries, now).find((open) => open.id === askId);
+
+  const latest = new Map<string, LedgerEntry>();
+  for (const item of entries) {
+    const task = taskOf(item);
+    if (item.kind === 'claim' && task !== undefined) latest.set(task, item);
+  }
+  const held = Object.entries(claims(entries))
+    .filter(([task, holder]) => holder === agent && latest.get(task)?.meta?.['run'] === run)
+    .map(([task]) => task);
+
+  return { ask, claims: held };
+}
+
+/**
  * An agent this party asked directly, still on the job, and the agents it
  * brought in for the same job (idle with agents, 6 Oct 2026).
  */
