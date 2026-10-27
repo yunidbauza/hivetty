@@ -14,6 +14,7 @@ import { RailHandle } from '@components/layout/rail-handle';
 import { SessionPanelStrip, type StripTab } from '@components/layout/session-panel-strip';
 import { ExplorerPanel } from '@features/explorer/components/explorer-panel';
 import { PlanTab } from '@features/plan/components/plan-tab';
+import { planFact } from '@features/plan/plan-fact';
 import { FLAP_DOT } from '@features/pull-requests/components/flap';
 import { SessionPrTab } from '@features/pull-requests/components/session-pr-tab';
 import { prFact } from '@features/pull-requests/session-pr';
@@ -73,14 +74,11 @@ interface TabSpec {
 const TABS: readonly TabSpec[] = [
   {
     id: 'plan',
-    label: () => 'Plan',
+    label: ({ plan }) => (plan?.part === undefined ? 'Plan' : `Plan ${String(plan.part.index)}/${String(plan.part.of)}`),
     exists: ({ plan }) => plan !== undefined && plan.tasks.length > 0,
     Icon: ListChecks,
     // The strip draws Plan as rings with their own label (SessionPanelStrip), so this fact is the tab's tooltip only.
-    fact: ({ plan }) =>
-      plan === undefined || plan.allDone
-        ? 'Plan, all done'
-        : `Plan, ${String(plan.tasks.filter((task) => task.status === 'completed').length)} of ${String(plan.tasks.length)} done`,
+    fact: ({ plan }) => (plan === undefined ? 'Plan, all done' : planFact(plan)),
     body: ({ plan, openPlanFile }) =>
       plan === undefined ? null : <PlanTab plan={plan} onOpenFile={openPlanFile} />,
   },

@@ -51,6 +51,12 @@ describe('SessionPanelStrip (HIVE-201)', () => {
     expect(onOpen.mock.calls).toEqual([['plan'], ['files']]);
   });
 
+  it("names which PR's plan the rings show (HIVE-359)", () => {
+    render(<SessionPanelStrip plan={{ ...plan, part: { index: 1, of: 2 } }} tabs={[]} onOpen={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Plan, PR 1 of 2, 1 of 2 done' })).toBeInTheDocument();
+  });
+
   it('a zero count draws no number', () => {
     render(<SessionPanelStrip plan={plan} tabs={[files(0)]} onOpen={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Files' })).toHaveTextContent('');
