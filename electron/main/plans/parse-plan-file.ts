@@ -1,4 +1,4 @@
-import type { PlanStep, PlanTask, PlanTaskStatus } from '@shared/plan-contract';
+import type { PlanPart, PlanStep, PlanTask, PlanTaskStatus } from '@shared/plan-contract';
 
 /** `## Task 3: Name` or `### Task: Name`; the number is optional. */
 const TASK = /^#{2,3}\s+Task\s*(\d+)?\s*:\s*(.+)$/;
@@ -55,4 +55,32 @@ export function parsePlanFile(markdown: string): PlanTask[] {
     }
   }
   return tasks.map(({ id, title, steps }) => ({ id, title, status: statusOf(steps), steps }));
+}
+
+const PART = /^PR:\s*(\d+)\s+of\s+(\d+)\s*$/;
+/** The free-text form plans used before `PR: n of N`: `PRs: 2. This is PR B …`. */
+const LEGACY_PART = /^PRs:\s*(\d+)\b.*?\bThis (?:plan )?is PR ([A-Z])\b/;
+
+/**
+ * Which PR of a split a plan is (HIVE-359), from its header: the lines before
+ * the first `## ` heading. `PR: n of N` is the skill's line; the legacy line
+ * counts only with two or more PRs, so `PRs: 1 — PR 3 of 4` (an Epic
+ * position, not a split) and `PR: <url>` give nothing.
+ */
+export function parsePlanPart(markdown: string): PlanPart | undefined {
+  for (const line of markdown.split(/\r?\n/)) {
+    if (line.startsWith('## ')) return undefined;
+    const plain = line.replaceAll('**', '');
+    const part = PART.exec(plain);
+    const legacy = LEGACY_PART.exec(plain);
+    // A is 1: char code 65.
+    const [index, of] =
+      part !== null
+        ? [Number(part[1]), Number(part[2])]
+        : legacy !== null
+          ? [(legacy[2] ?? '').charCodeAt(0) - 64, Number(legacy[1])]
+          : [Number.NaN, Number.NaN];
+    if (of >= 2 && index >= 1 && index <= of) return { index, of };
+  }
+  return undefined;
 }

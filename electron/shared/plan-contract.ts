@@ -30,9 +30,24 @@ export interface PlanTask {
   steps?: PlanStep[];
 }
 
-interface PlanBuild {
+/** A builder working this plan (HIVE-180); `done` once its answer completed it (HIVE-359). */
+export interface PlanBuild {
   askId: string;
-  state: 'building' | 'failed' | 'blocked';
+  state: 'building' | 'done' | 'failed' | 'blocked';
+  /** Epoch ms of the builder's first post in the thread: when the panel moved to it (HIVE-359). */
+  startedAt?: number;
+}
+
+/** This plan's place in a ticket split into PRs: `PR: 2 of 3` (HIVE-359). */
+export interface PlanPart {
+  index: number;
+  of: number;
+}
+
+/** A plan file a session read, and when its current text was first read (HIVE-359). */
+export interface PlanFileRead {
+  file: string;
+  at: number;
 }
 
 export interface SessionPlan {
@@ -41,12 +56,14 @@ export interface SessionPlan {
   tasks: PlanTask[];
   /** No task left unfinished. The plan stays until the session ends or a new plan replaces it (HIVE-229). */
   allDone: boolean;
-  /** The session's last plan file, absolute (HIVE-180). Set on a plan-file plan, and carried onto a later plan from any source (HIVE-201). */
+  /** The plan file on screen, or the session's last one read, absolute (HIVE-180). Set on a plan-file plan, and carried onto a later plan from any source (HIVE-201). */
   file?: string;
   /** Epoch ms main accepted the read of {@link file} (HIVE-201). */
   fileAt?: number;
   /** A builder is working this plan (HIVE-180). */
   build?: PlanBuild;
+  /** Which PR of a split this plan is; absent for a one-PR plan (HIVE-359). */
+  part?: PlanPart;
 }
 
 /** `plan: null` means the session has no plan any more. */

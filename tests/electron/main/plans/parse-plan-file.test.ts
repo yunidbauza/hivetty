@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parsePlanFile } from '../../../../electron/main/plans/parse-plan-file';
+import { parsePlanFile, parsePlanPart } from '../../../../electron/main/plans/parse-plan-file';
 
 /** A condensed `hive:plan` file in the skill's own shape (`.hive/` is gitignored, so inlined). */
 const PLAN = [
@@ -98,5 +98,32 @@ describe('parsePlanFile', () => {
       status: 'completed',
       steps: [{ text: 'done', done: true }],
     });
+  });
+});
+
+describe('parsePlanPart (HIVE-359)', () => {
+  const header = (line: string) => `# X plan\n\nGoal: g\n${line}\nArchitecture: a\n\n## Task 1: A\n- [ ] one\n`;
+
+  it('reads the structured PR line', () => {
+    expect(parsePlanPart(header('PR: 2 of 3'))).toEqual({ index: 2, of: 3 });
+  });
+
+  it('reads the free-text form plans were written in before it, letter to number', () => {
+    expect(parsePlanPart(header('PRs: 2. This is PR B (Tasks 1-7). PR A (`a.md`) is independent.'))).toEqual({ index: 2, of: 2 });
+    expect(parsePlanPart(header('PRs: 2. **This plan is PR A**'))).toEqual({ index: 1, of: 2 });
+  });
+
+  it('gives no part to a one-PR plan, a PR link, or an Epic position', () => {
+    expect(parsePlanPart(header('PRs: 1 (all tasks)'))).toBeUndefined();
+    expect(parsePlanPart(header('PRs: 1 — PR 3 of 4.'))).toBeUndefined();
+    expect(parsePlanPart(header('PRs: 1, PR C of 4. Starts after A and B.'))).toBeUndefined();
+    expect(parsePlanPart(header('PR: https://github.com/o/r/pull/331'))).toBeUndefined();
+    expect(parsePlanPart(header('PR: 3 of 2'))).toBeUndefined();
+    expect(parsePlanPart(header('PR: 1 of 1'))).toBeUndefined();
+    expect(parsePlanPart(header('PRs: 2. This is PR C'))).toBeUndefined();
+  });
+
+  it('reads only the header, never a task body', () => {
+    expect(parsePlanPart('# X\n\n## Task 1: A\nPR: 1 of 2\n')).toBeUndefined();
   });
 });
