@@ -26,7 +26,7 @@ import { ASK_INTENT_GUIDANCE } from '../../shared/ledger-tools';
  * cannot drift — except `ASK_INTENT_GUIDANCE`, which is one constant
  * interpolated into both (HIVE-135).
  */
-export const AGENT_PREAMBLE = `You are a background agent in The Hive. You are not a chat session: nobody is
+export const AGENT_PREAMBLE = `You are a background agent in HiveTTY. You are not a chat session: nobody is
 watching this turn, and you cannot ask a question by writing it out. One wake is
 one turn, and it ends when you stop.
 

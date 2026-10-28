@@ -761,7 +761,7 @@ exports[`the files a Claude Code session is launched with > alias container set 
   },
   "hive/container/aliases/gateway/statusline.sh": {
     "content": "#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
@@ -799,13 +799,13 @@ exports[`the files a Claude Code session is launched with > plugin dir, done url
     "content": "---
 name: done
 description: >-
-  Finish this session — mark it done in The Hive and close its terminal. Use it
+  Finish this session — mark it done in HiveTTY and close its terminal. Use it
   when the work a session was opened for is complete, either because the user
   asked to finish or because a skill has finished its task and is handing off.
   Closing is recoverable; the transcript stays readable afterwards.
 ---
 
-This session cannot be closed automatically: The Hive is not reachable from it,
+This session cannot be closed automatically: HiveTTY is not reachable from it,
 so there is nowhere to report that the work is finished.
 
 Tell the user exactly that, in one line, and suggest they type \`/exit\` to close
@@ -843,7 +843,7 @@ exports[`the files a Claude Code session is launched with > plugin dir, done url
     "content": "---
 name: done
 description: >-
-  Finish this session — mark it done in The Hive and close its terminal. Use it
+  Finish this session — mark it done in HiveTTY and close its terminal. Use it
   when the work a session was opened for is complete, either because the user
   asked to finish or because a skill has finished its task and is handing off.
   Closing is recoverable; the transcript stays readable afterwards.
@@ -856,7 +856,7 @@ Run exactly this command:
 curl -sS --fail -m 5 -X POST "$HIVE_RECEIVER_URL/done" -H "x-hive-session: $HIVE_SESSION_ID" -H "x-hive-token: $HIVE_HOOK_TOKEN"
 \`\`\`
 
-That request tells The Hive this session is finished. The app closes the
+That request tells HiveTTY this session is finished. The app closes the
 terminal itself once the turn ends — you cannot close it yourself, and you do
 not need to.
 
@@ -1241,7 +1241,7 @@ exports[`the files a Claude Code session is launched with > session rewrite cont
   },
   "hive/container/sessions/sess-07/statusline.sh": {
     "content": "#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 curl -s -m 5 -o /dev/null \\
@@ -1590,7 +1590,7 @@ exports[`the files a Claude Code session is launched with > session settings, co
   },
   "hive/statusline.sh": {
     "content": "#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
@@ -2118,7 +2118,7 @@ exports[`the files a Claude Code session is launched with > session settings, ht
   },
   "hive/statusline.sh": {
     "content": "#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0
@@ -2481,7 +2481,7 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
   },
   "hive/container/statusline.sh": {
     "content": "#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0

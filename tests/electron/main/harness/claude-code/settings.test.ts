@@ -654,7 +654,7 @@ describe('metricsScript — freshness (HIVE-132)', () => {
   it('is byte-for-byte what it was before the freshness parameter', () => {
     expect(metricsScript('http://127.0.0.1:63999/statusline')).toBe(
       `#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 [ -n "$HIVE_SESSION_ID" ] || exit 0

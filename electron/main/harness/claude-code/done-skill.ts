@@ -131,7 +131,7 @@ const frontmatter = (allowedTools?: string): string =>
   `---
 name: done
 description: >-
-  Finish this session — mark it done in The Hive and close its terminal. Use it
+  Finish this session — mark it done in HiveTTY and close its terminal. Use it
   when the work a session was opened for is complete, either because the user
   asked to finish or because a skill has finished its task and is handing off.
   Closing is recoverable; the transcript stays readable afterwards.
@@ -159,7 +159,7 @@ Run exactly this command:
 ${doneCommand()}
 \`\`\`
 
-That request tells The Hive this session is finished. The app closes the
+That request tells HiveTTY this session is finished. The app closes the
 terminal itself once the turn ends — you cannot close it yourself, and you do
 not need to.
 
@@ -174,7 +174,7 @@ Then stop. Do not summarise, do not explain, and do not run anything else.
  * that is the difference between one keystroke and a stare.
  */
 const INERT = `${frontmatter()}
-This session cannot be closed automatically: The Hive is not reachable from it,
+This session cannot be closed automatically: HiveTTY is not reachable from it,
 so there is nowhere to report that the work is finished.
 
 Tell the user exactly that, in one line, and suggest they type \`/exit\` to close
