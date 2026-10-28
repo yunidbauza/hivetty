@@ -275,10 +275,10 @@ describe('ArrivalStack (HIVE-198, HIVE-228)', () => {
     const ready = notif({
       kind: 'app.update_ready',
       title: 'Update ready — 1.2.0',
-      body: 'Click to restart Hive TTY on the new version.',
+      body: 'Click to restart HiveTTY on the new version.',
       action: { type: 'update.install' },
     });
-    expect(announcement(ready, '')).toBe('Update ready — 1.2.0. Click to restart Hive TTY on the new version.');
+    expect(announcement(ready, '')).toBe('Update ready — 1.2.0. Click to restart HiveTTY on the new version.');
     const review = notif({ kind: 'pr.review_requested', title: 'Review #12', body: '', action: { type: 'none' } });
     expect(announcement(review, '')).toBe('Review #12');
   });

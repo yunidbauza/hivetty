@@ -28,7 +28,7 @@ describe('GhSetupPage (HIVE-211)', () => {
     render(<GhSetupPage />);
     expect(screen.getByRole('heading', { name: "The GitHub CLI isn't signed in" })).toBeInTheDocument();
     expect(screen.getByText(/PRs come from/)).toHaveTextContent(
-      'PRs come from gh, run as you. Hive TTY stores no GitHub token.',
+      'PRs come from gh, run as you. HiveTTY stores no GitHub token.',
     );
     expect(screen.getByText('gh auth login').tagName).toBe('CODE');
     expect(screen.getByText(/Settings › Integrations › Command line shows which/)).toBeInTheDocument();

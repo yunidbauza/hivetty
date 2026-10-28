@@ -297,7 +297,7 @@ describe('AgentDefinition', () => {
       setSurfaceText('Agent source', GOOD.replace('slack-watcher', 'overmind'));
       await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-      expect(await screen.findByText('"overmind" is reserved by Hive TTY.')).toBeInTheDocument();
+      expect(await screen.findByText('"overmind" is reserved by HiveTTY.')).toBeInTheDocument();
       expect(bridge.write).not.toHaveBeenCalled();
     });
   });

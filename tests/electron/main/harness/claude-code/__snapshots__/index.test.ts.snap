@@ -787,7 +787,7 @@ exports[`the files a Claude Code session is launched with > plugin dir, done url
     "content": "{
   "name": "hive",
   "version": "1.2.3",
-  "description": "Skills Hive TTY injects into the sessions it starts.",
+  "description": "Skills HiveTTY injects into the sessions it starts.",
   "skills": [
     "./skills/"
   ]
@@ -831,7 +831,7 @@ exports[`the files a Claude Code session is launched with > plugin dir, done url
     "content": "{
   "name": "hive",
   "version": "1.2.3",
-  "description": "Skills Hive TTY injects into the sessions it starts.",
+  "description": "Skills HiveTTY injects into the sessions it starts.",
   "skills": [
     "./skills/"
   ]

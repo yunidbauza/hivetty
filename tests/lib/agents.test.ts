@@ -410,7 +410,7 @@ describe('templateFor / nameProblem (moved, HIVE-204)', () => {
 
   it('names each problem', () => {
     expect(nameProblem('', [])).toBe('Give the agent a name in its frontmatter.');
-    expect(nameProblem('overmind', [])).toBe('"overmind" is reserved by Hive TTY.');
+    expect(nameProblem('overmind', [])).toBe('"overmind" is reserved by HiveTTY.');
     expect(nameProblem('Bad', [])).toBe('Lowercase letters, digits and dashes only.');
     expect(nameProblem('acr', ['acr'])).toBe('You already have an agent called acr.');
     expect(nameProblem('scout', [])).toBeNull();

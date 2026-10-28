@@ -502,7 +502,7 @@ Watch … , and when you find … , do … .
 export function nameProblem(name: string, taken: readonly string[]): string | null {
   if (name === '') return 'Give the agent a name in its frontmatter.';
   if (isReservedAgentName(name)) {
-    return `"${name}" is reserved by Hive TTY.`;
+    return `"${name}" is reserved by HiveTTY.`;
   }
   if (!AGENT_NAME_PATTERN.test(name)) {
     return 'Lowercase letters, digits and dashes only.';

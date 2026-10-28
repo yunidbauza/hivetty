@@ -36,7 +36,7 @@ test('renders the round-two frame', async ({ page }) => {
 });
 
 test('renders the bar', async ({ page }) => {
-  const brand = bar(page).getByRole('img', { name: 'Hive TTY' });
+  const brand = bar(page).getByRole('img', { name: 'HiveTTY' });
   await expect(brand).toBeVisible();
   // Loaded, not just laid out: a broken src still takes its 28px box.
   await expect.poll(() => brand.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);

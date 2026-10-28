@@ -56,7 +56,7 @@ export function GhSetupPage() {
     return (
       <EmptyPlace label="Pull requests" glyph={glyph} title="The GitHub CLI isn't signed in" actions={actions}>
         <p>
-          PRs come from <code className="font-mono">gh</code>, run as you. Hive TTY stores no GitHub token.
+          PRs come from <code className="font-mono">gh</code>, run as you. HiveTTY stores no GitHub token.
         </p>
         <pre className="my-3 rounded-md bg-chip px-3 py-2 text-left font-mono text-control text-ink">
           <code>gh auth login</code>

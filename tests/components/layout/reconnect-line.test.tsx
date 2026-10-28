@@ -44,7 +44,7 @@ describe('ReconnectLine (HIVE-211)', () => {
     const line = screen.getByRole('status');
     expect(line).toHaveClass('text-amber-text');
     expect(line).toHaveTextContent(
-      'Lost Hive TTY on mac-mini. Reconnecting in 4s. The sessions keep running there.',
+      'Lost HiveTTY on mac-mini. Reconnecting in 4s. The sessions keep running there.',
     );
 
     act(() => vi.advanceTimersByTime(1_000));
@@ -60,7 +60,7 @@ describe('ReconnectLine (HIVE-211)', () => {
     act(() => useHiveStore.getState().setRemoteLink(link({ nextAttemptAt: null })));
     render(<ReconnectLine />);
     expect(screen.getByRole('status')).toHaveTextContent(
-      'Lost Hive TTY on mac-mini. Reconnecting. The sessions keep running there.',
+      'Lost HiveTTY on mac-mini. Reconnecting. The sessions keep running there.',
     );
   });
 

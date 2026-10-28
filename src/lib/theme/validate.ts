@@ -126,10 +126,10 @@ function colourComplaint(value: unknown): string {
   if (typeof value === 'string') {
     const family = ANY_FUNCTION.exec(value.trim())?.[1].toLowerCase();
     if (family !== undefined && !SUPPORTED_FUNCTIONS.has(family)) {
-      return `uses ${family}(), which Hive TTY does not read. Use ${ACCEPTED_FORMS}.`;
+      return `uses ${family}(), which HiveTTY does not read. Use ${ACCEPTED_FORMS}.`;
     }
   }
-  return 'is not a colour Hive TTY can read.';
+  return 'is not a colour HiveTTY can read.';
 }
 
 const MODE_NAMES = THEME_MODES;
@@ -273,7 +273,7 @@ export function importTheme(raw: string, fileName: string): ImportResult {
   if (parsed.hiveThemeVersion !== 1) {
     return fail(
       fileName,
-      `hiveThemeVersion is ${JSON.stringify(parsed.hiveThemeVersion)}, but Hive TTY only reads version 1 theme files. Export a compatible theme, or wait for a newer Hive TTY.`,
+      `hiveThemeVersion is ${JSON.stringify(parsed.hiveThemeVersion)}, but HiveTTY only reads version 1 theme files. Export a compatible theme, or wait for a newer HiveTTY.`,
     );
   }
 
@@ -385,7 +385,7 @@ export function importTheme(raw: string, fileName: string): ImportResult {
       if (terminal.bg !== ui.termBg) {
         return fail(
           fileName,
-          `modes.${mode}.terminal.bg is ${terminal.bg} but modes.${mode}.ui.termBg is ${ui.termBg}. xterm paints its own background and the surrounding chrome paints the other — if they disagree, a visible seam appears at the terminal's edge. Make them match, or drop either one and Hive TTY will derive it from the one you keep.`,
+          `modes.${mode}.terminal.bg is ${terminal.bg} but modes.${mode}.ui.termBg is ${ui.termBg}. xterm paints its own background and the surrounding chrome paints the other — if they disagree, a visible seam appears at the terminal's edge. Make them match, or drop either one and HiveTTY will derive it from the one you keep.`,
         );
       }
     } else if (fileHadTerminalBg) {
@@ -562,6 +562,6 @@ function checkContrast(
   const ratio = contrastRatio(fg, bg);
   if (ratio === null || ratio >= threshold) return;
   notes.push(
-    `modes.${mode}: ${fgName} on ${bgName} is only ${ratio.toFixed(1)}:1 — below the ${threshold}:1 Hive TTY aims for.`,
+    `modes.${mode}: ${fgName} on ${bgName} is only ${ratio.toFixed(1)}:1 — below the ${threshold}:1 HiveTTY aims for.`,
   );
 }

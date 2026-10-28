@@ -1,6 +1,6 @@
 /**
  * The app's one name (HIVE-326). It used to be two names, `The Hive`
- * underneath and `Hive TTY` on screen, until the identity itself moved to
+ * underneath and a two-word display name on screen, until the identity itself moved to
  * HiveTTY.
  *
  * Changing it is not cosmetic:

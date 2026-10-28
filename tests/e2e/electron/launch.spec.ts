@@ -52,7 +52,7 @@ test('shows no white flash — the window paints the app background', async ({
 
 test('loads the dock icon as the bar\'s brand under file://', async ({ page }) => {
   // A root-relative src 404s silently under file:// (story 083); a loaded image has a natural width.
-  const brand = page.getByRole('navigation', { name: 'Places' }).getByRole('img', { name: 'Hive TTY' });
+  const brand = page.getByRole('navigation', { name: 'Places' }).getByRole('img', { name: 'HiveTTY' });
   await expect(brand).toBeVisible();
   await expect.poll(() => brand.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
 });

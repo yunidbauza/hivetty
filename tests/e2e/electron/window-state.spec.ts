@@ -101,7 +101,7 @@ test('a saved rect on a disconnected display falls back to a visible window', as
 
 test('each test gets its own profile — the developer’s window is never moved', async ({}, testInfo) => {
   // Running the suite twice must give identical results, which it cannot if
-  // specs share ~/Library/Application Support/the-hive.
+  // specs share ~/Library/Application Support/hivetty-dev.
   const userDataDir = testInfo.outputPath('user-data');
   const app = await launchHive({
     userDataDir,

@@ -63,7 +63,7 @@ export function ActivityBar() {
       {/* The dock icon's plates without its tile (`public/app-mark.png`, from the icon script); `BASE_URL` because the app is served from `./` under file://. */}
       <img
         src={`${import.meta.env.BASE_URL}app-mark.png`}
-        alt="Hive TTY"
+        alt="HiveTTY"
         width={28}
         height={28}
         className="mb-2.5 size-7"

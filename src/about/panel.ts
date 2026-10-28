@@ -31,7 +31,7 @@ export function scheduleWordmark(root: ParentNode): void {
   glyphs.forEach((glyph, i) => {
     glyph.style.animationDelay = `${WORDMARK_START + i * WORDMARK_STEP}s`;
   });
-  // "Hive TTY", as on the splash: a cursor after HIVE, then `tty` typed in. About
+  // "HiveTTY", as on the splash: a cursor after HIVE, then `tty` typed in. About
   // has no log to wait for, so it types as soon as the cursor has shown.
   const cursorAt = WORDMARK_START + (glyphs.length - 1) * WORDMARK_STEP + 0.3;
   root.querySelectorAll<HTMLElement>('.wordmark .cursor').forEach((cursor) => {

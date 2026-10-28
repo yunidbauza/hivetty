@@ -203,10 +203,10 @@ function socketPill(
  * own credential store. This caption and the one below it are the only place
  * the product says so.
  */
-const SIGN_IN_PROMISE = 'Opens your browser once. Hive TTY never sees the token.';
+const SIGN_IN_PROMISE = 'Opens your browser once. HiveTTY never sees the token.';
 
 /** The same claim, restated where it matters most: while you are signed in. */
-const TOKEN_HOLDER = ' · token held by Claude Code, not Hive TTY';
+const TOKEN_HOLDER = ' · token held by Claude Code, not HiveTTY';
 
 /** Who is using it — the fallback slot when there is no error and no approval to report. */
 function usedBySummary(agents: SlackGroupAgent[]): ReactNode {
@@ -457,7 +457,7 @@ function SocketTestVerdict({ result }: { result: SlackSocketTestResult }) {
  * the rejection, and the pane reported a broken IPC bridge.
  */
 const NO_KEYRING =
-  'This system has no keyring, so Hive TTY will not store a Slack token — it ' +
+  'This system has no keyring, so HiveTTY will not store a Slack token — it ' +
   'will not write one in plaintext instead. Real-time events stay off until ' +
   'the operating system offers one.';
 
@@ -750,7 +750,7 @@ function AdvancedFields({
           <p className="text-ui-sm text-subtle">
             Off, agents reach Slack on their own schedule. On, they wake within
             seconds and <span className="tabular-nums">@hive</span> can command one.
-            Needs a Slack app of your own, and two tokens Hive TTY stores.
+            Needs a Slack app of your own, and two tokens HiveTTY stores.
           </p>
         ) : (
           <RealTimeFields

@@ -1334,7 +1334,7 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         return {
           started: false,
           refused: 'unknown',
-          reason: 'Hive TTY is shutting down.',
+          reason: 'HiveTTY is shutting down.',
         };
       }
 

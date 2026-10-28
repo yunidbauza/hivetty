@@ -739,7 +739,7 @@ export const endedReason = (session: Session): string => {
         case 'finished':
           return `${label} finished with /done — resume to pick it up`;
         case 'app-closed':
-          return `${label} was open when Hive TTY last closed — resume to pick it back up`;
+          return `${label} was open when HiveTTY last closed — resume to pick it back up`;
         /*
           `cleared` and absent share a sentence, and absent is the older
           ending: every `done` row predating `endedBy` was a cleared one,
