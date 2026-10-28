@@ -11,9 +11,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const exit = vi.fn();
 vi.mock('electron', () => ({
-  app: { getVersion: () => '0.1.0', exit },
+  // Unpackaged, so the HiveTTY migration stays inert: it needs a signed bundle.
+  app: { getVersion: () => '0.1.0', exit, getPath: () => '/tmp/never-used', isPackaged: false, quit: vi.fn() },
   dialog: { showMessageBox: vi.fn() },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal: vi.fn(), trashItem: vi.fn() },
 }));
 
 vi.mock('../../../../electron/main/aux-windows', () => ({ primaryWindow: () => undefined }));
@@ -27,6 +28,7 @@ vi.mock('../../../../electron/main/updates/capability', () => ({
   probeUpdateCapability: () =>
     Promise.resolve({ canCheck: true, mode: 'self-install', reason: 'Signed.' }),
   demoteToManual: vi.fn(),
+  readSignature: vi.fn(),
 }));
 
 const engine = {

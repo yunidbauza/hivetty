@@ -110,7 +110,7 @@ describe('the boot path of a served machine', () => {
     expect(call).toBeGreaterThan(-1);
     expect(count('runUnattended(')).toBe(1);
     expect(call).toBeGreaterThan(source.indexOf('claimServerLock()'));
-    expect(call).toBeLessThan(source.indexOf('startUpdateChecks()'));
+    expect(call).toBeLessThan(source.indexOf('startUpdateChecks(fleetIsIdle)'));
   });
 
   it('leaves the relaunch after a headless update to launchd when the config serves', () => {

@@ -498,6 +498,58 @@ xattr -dr com.apple.quarantine "/Applications/The Hive.app"
 An update the app fetches itself is never quarantined, which was a real argument
 for the in-app path even back when the swap was refused.
 
+## Migrating to HiveTTY
+
+HiveTTY is this app under a new name and a new app ID (`com.behiques.hivetty`,
+HIVE-326). The app ID is part of the designated requirement Squirrel enforces,
+so **no in-place update can turn The Hive into HiveTTY**. The Hive moves its
+users itself (HIVE-328), in `updates/migration.ts`:
+
+1. **Find it.** Before every update check, background or menu, The Hive reads
+   `https://github.com/yunidbauza/hivetty/releases/latest/download/latest-mac.yml`.
+   A HiveTTY release is one whose zip is `HiveTTY-*`. A 404 is silent, and that
+   is what every check gets until the repo is renamed. When it asks, the
+   normal check stands down (`UpdaterDeps.preempt`).
+2. **Ask.** "The Hive is now HiveTTY" → *Install HiveTTY* / *Later*. A
+   background "Later" holds until the next launch; "Check for Updates…" always
+   asks.
+3. **Install beside it.** The zip is downloaded, its SHA-512 is checked against
+   the feed, it is unpacked with `ditto`, and it must pass
+   `codesign --verify --deep --strict` with `Identifier=com.behiques.hivetty`, a
+   Developer ID authority, and **the same Team ID as the running app**. It is
+   then copied to `/Applications/HiveTTY.app`, or to `~/Applications` when this
+   user cannot write `/Applications`. An already installed `HiveTTY.app` is
+   verified the same way and reused.
+4. **Switch.** "Switch to HiveTTY" → *Switch now* / *Later*. It warns when a
+   session or agent run would be stopped. On yes it does four things, in order:
+   - carries over `sessions.json`, `window-state.json` and `Local Storage/` into
+     `~/Library/Application Support/HiveTTY/`, never over a file already there;
+   - starts a detached shell that waits for this PID to exit, then `open`s
+     HiveTTY. The two apps share `~/.hive` and its lock, so they cannot overlap;
+   - moves every `com.behiques.the-hive` bundle Spotlight knows of, plus the
+     running one, to the Trash;
+   - quits.
+
+What carries over without being copied: everything in `~/.hive` (config,
+skills, agents, the ledger), because HiveTTY keeps that directory by name.
+What does not: credentials. `safeStorage`'s Keychain item is named after the
+app, so HiveTTY cannot decrypt The Hive's `*-credential.bin`. It already reads
+an undecryptable credential as "not set", so the user pastes their Jira, Slack
+and pairing tokens once more. The old `userData` is left in place.
+
+It is inert on a server (nobody to answer; moving the LaunchAgent is HIVE-329),
+in a dev or unsigned build (there is no Team ID to compare against), and in any
+build whose identity is no longer `The Hive`, which includes HiveTTY itself
+until the file is deleted.
+
+**The feed once both apps share a repo.** After the rename,
+`yunidbauza/the-hive` redirects to `yunidbauza/hivetty`, so The Hive's
+electron-updater reads HiveTTY's releases too. `engine.ts` offers a found
+release in place only when its zip carries this app's own name
+(`The-Hive-*` for The Hive, `HiveTTY-*` for HiveTTY), so The Hive never tries
+the swap Squirrel would refuse, and HiveTTY, running the same file, still
+updates itself.
+
 ## Where the code lives
 
 | File | Owns |
@@ -507,6 +559,8 @@ for the in-app path even back when the swap was refused.
 | `electron/main/updates/updater.ts` | Every decision. Imports no Electron and no `electron-updater`, which is what makes it testable. |
 | `electron/main/updates/engine.ts` | The only file that touches `electron-updater`. |
 | `electron/main/updates/index.ts` | The singleton, the dialogs, the wiring. |
+| `electron/main/updates/migration.ts` | The HiveTTY move's decisions. Imports no Electron. |
+| `electron/main/updates/migration-io.ts` | Its effects: fetch, `ditto`, `codesign`, `mdfind`, the carry-over, the hand-off. |
 
 `autoUpdater` is read **inside** `createElectronUpdaterEngine`, never at module
 scope. It is a lazy getter that constructs a `MacUpdater` on first access, which
