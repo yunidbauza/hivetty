@@ -171,8 +171,15 @@ nothing in between. Anything in between, including a wait, voids it: re-run
 the gate verbatim.
 
 ```
-gh pr merge <N> --squash --match-head-commit <the SHA the CLEAR line printed> --repo <owner>/<repo>
+gh pr merge <N> --squash --match-head-commit <the SHA the CLEAR line printed> --subject "<PR title, stripped> (#<N>)" --body "<KEY> · https://github.com/<owner>/<repo>/pull/<N>" --repo <owner>/<repo>
 ```
+
+The subject and body are always explicit: GitHub's default squash message
+lists every commit and adds a `Co-authored-by` line per commit author, bots
+included, and each one becomes a contributor (HIVE-349). Strip `;` `&` `|`
+`<` `>` `` ` `` `$` `"` `\` from the title: each either breaks the quoting
+or stops the line matching the auto-merge grant. No ticket: the body is the
+PR URL alone. Both stay on one line.
 
 The SHA is copied from the CLEAR line; carrying it is the check. `--repo` is
 **last** and stays last: the shipper's auto-merge grant pins the slug at the

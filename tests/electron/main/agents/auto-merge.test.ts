@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -35,6 +38,23 @@ describe('autoMergeRule', () => {
           'gh pr merge 214 --squash --match-head-commit 0211110354 --repo yunidbauza/the-hive',
       }),
     ).toBe(true);
+  });
+
+  it('matches the merge line merge-pr documents, explicit squash message included (HIVE-349)', () => {
+    const skill = readFileSync(join(__dirname, '../../../../resources/skills/merge-pr/SKILL.md'), 'utf8');
+    const line = skill.split('\n').find((l) => l.startsWith('gh pr merge <N> --squash'));
+    const command = line!
+      .replaceAll('<N>', '214')
+      .replace('<the SHA the CLEAR line printed>', '0211110354')
+      .replace('<PR title, stripped>', 'Plan tab follows the builder')
+      .replace('<KEY> · ', 'HIVE-349 · ')
+      .replaceAll('<owner>/<repo>', 'yunidbauza/the-hive');
+
+    // GitHub's default squash body lists every commit and a Co-authored-by line per author.
+    expect(command).toContain('--subject "Plan tab follows the builder (#214)"');
+    expect(command).toContain('--body "HIVE-349 · https://github.com/yunidbauza/the-hive/pull/214"');
+    expect(command).not.toContain('<');
+    expect(matches(autoMergeRule(hive)!, 'Bash', { command })).toBe(true);
   });
 
   it('does not match another repository, another verb, or a chained command', () => {

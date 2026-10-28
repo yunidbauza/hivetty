@@ -176,6 +176,13 @@ interface HookSettings {
    * the once-only tools; the agent file carries `*`.
    */
   permissions?: { ask: string[] };
+  /**
+   * Claude Code's commit and PR attribution, emptied for agents (HIVE-349).
+   * An agent runs with `--setting-sources ""`, so the user's own `attribution`
+   * never reaches it; without this every builder and fixer commit carries a
+   * `Co-Authored-By: Claude` trailer, and GitHub counts each as a contributor.
+   */
+  attribution?: { commit: string; pr: string };
 }
 
 /**
@@ -361,6 +368,7 @@ export function agentSettings(
       by `--permission-prompt-tool`, which decides against the agent's grants.
     */
     permissions: { ask: ['*'] },
+    attribution: { commit: '', pr: '' },
   };
 }
 

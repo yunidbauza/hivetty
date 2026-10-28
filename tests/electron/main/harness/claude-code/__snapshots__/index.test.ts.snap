@@ -153,6 +153,10 @@ exports[`the files a Claude Code session is launched with > agent settings, comm
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
@@ -402,6 +406,10 @@ exports[`the files a Claude Code session is launched with > agent settings, http
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
@@ -563,6 +571,10 @@ exports[`the files a Claude Code session is launched with > alias container set 
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
@@ -1039,6 +1051,10 @@ exports[`the files a Claude Code session is launched with > session rewrite cont
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
@@ -2275,6 +2291,10 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
@@ -2634,6 +2654,10 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
     "ask": [
       "*"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
 ",
