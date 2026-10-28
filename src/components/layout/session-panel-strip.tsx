@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import type { FlapTone } from '@/types/pull-request';
 
 import { PlanRings } from '@features/plan/components/plan-rings';
+import { planFact } from '@features/plan/plan-fact';
 import { FLAP_DOT } from '@features/pull-requests/components/flap';
 import type { SessionPlan } from '@shared/plan-contract';
 import type { SessionPanelTab } from '@stores/appearance-store';
@@ -34,9 +35,6 @@ interface SessionPanelStripProps {
  * opens the panel on that tab.
  */
 export function SessionPanelStrip({ plan, tabs, onOpen }: SessionPanelStripProps) {
-  const done = plan?.tasks.filter((task) => task.status === 'completed').length ?? 0;
-  const total = plan?.tasks.length ?? 0;
-
   return (
     <aside
       aria-label="Session panel"
@@ -46,7 +44,7 @@ export function SessionPanelStrip({ plan, tabs, onOpen }: SessionPanelStripProps
         <>
           <button
             type="button"
-            aria-label={plan.allDone ? 'Plan, all done' : `Plan, ${String(done)} of ${String(total)} done`}
+            aria-label={planFact(plan)}
             onClick={() => {
               onOpen('plan');
             }}

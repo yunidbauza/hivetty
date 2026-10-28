@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 
 import { cn } from '@/lib/utils';
 
+import { partLabel } from '@features/plan/plan-fact';
 import { formatDuration } from '@lib/format-duration';
 import type { PlanTask, SessionPlan } from '@shared/plan-contract';
 
@@ -54,6 +55,7 @@ export function PlanTab({
   return (
     <section aria-label="Plan" className="flex min-h-0 flex-col">
       <p className="px-1 pb-2.5 text-control text-muted">
+        {plan.part === undefined ? null : `${partLabel(plan.part)} · `}
         <b className="font-semibold text-ink">{`${String(done)} of ${String(total)}`}</b>
         {` tasks · ${formatDuration(sum)}`}
       </p>

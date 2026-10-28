@@ -1,5 +1,7 @@
 import electronUpdater from 'electron-updater';
 
+import { APP_IDENTITY_NAME } from '@shared/app-name';
+
 import type { UpdateEngine } from './updater';
 
 /**
@@ -57,7 +59,14 @@ function isNewer(
  */
 export function createElectronUpdaterEngine(
   currentVersion: string,
-  { relaunch = true }: { relaunch?: boolean } = {},
+  {
+    relaunch = true,
+    identity = APP_IDENTITY_NAME,
+  }: {
+    relaunch?: boolean;
+    /** Whose zips this engine may swap in: `The Hive` → `The-Hive-*`. */
+    identity?: string;
+  } = {},
 ): UpdateEngine {
   const { autoUpdater } = electronUpdater;
 
@@ -97,6 +106,13 @@ export function createElectronUpdaterEngine(
       const result = await autoUpdater.checkForUpdates();
       if (result === null || result === undefined) return null;
       if (!isNewer(result, currentVersion)) return null;
+      /*
+        Only this app's own zip. After the repo rename The Hive and HiveTTY
+        read one feed, and Squirrel refuses a zip with another app ID; The Hive
+        reaches HiveTTY through `migration.ts` instead.
+      */
+      const zip = result.updateInfo.files?.[0]?.url ?? result.updateInfo.path;
+      if (!zip.startsWith(`${identity.replaceAll(' ', '-')}-`)) return null;
       return { version: result.updateInfo.version };
     },
 

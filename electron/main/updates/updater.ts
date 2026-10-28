@@ -100,6 +100,12 @@ export interface UpdaterDeps {
    * release page it points at is useful from any machine.
    */
   unattended?: { isIdle: () => boolean };
+  /**
+   * Asked before every check (HIVE-328): resolves true when it took the turn,
+   * and this check then stands down. The HiveTTY migration, which must win:
+   * once the repo is renamed, this check's feed is HiveTTY's feed too.
+   */
+  preempt?: (origin: 'auto' | 'menu') => Promise<boolean>;
 }
 
 export interface Updater {
@@ -357,6 +363,11 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     error = null;
 
     try {
+      if (deps.preempt !== undefined && (await deps.preempt(origin))) {
+        state = 'idle';
+        return;
+      }
+
       const found = await engine.check();
 
       if (found === null) {

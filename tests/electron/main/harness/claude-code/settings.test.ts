@@ -308,6 +308,11 @@ describe('agentSettings', () => {
     expect(settings.permissions).toEqual({ ask: ['*'] });
   });
 
+  it('turns off commit and PR attribution, which no user setting reaches under --setting-sources "" (HIVE-349)', () => {
+    expect(agentSettings('http://127.0.0.1:1/hook').attribution).toEqual({ commit: '', pr: '' });
+    expect(hookSettings('http://127.0.0.1:1/hook').attribution).toBeUndefined();
+  });
+
   it('gives an agent the same hooks a session gets', () => {
     const url = 'http://127.0.0.1:1/hook';
     expect(agentSettings(url).hooks).toEqual(hookSettings(url).hooks);

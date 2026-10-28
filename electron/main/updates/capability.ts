@@ -76,7 +76,7 @@ interface CapabilityProbeDeps {
  * and the probe would conclude "unsigned" about every app it was ever pointed
  * at. Both streams are concatenated so the parse cannot care.
  */
-async function readSignature(bundlePath: string): Promise<string> {
+export async function readSignature(bundlePath: string): Promise<string> {
   const { stdout, stderr } = await run('codesign', [
     '--display',
     '--verbose=2',
