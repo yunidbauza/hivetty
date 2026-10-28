@@ -1,4 +1,4 @@
-# How The Hive becomes something you can install.
+# How HiveTTY becomes something you can install.
 #
 # `electron-vite` already produces `out/{main,preload,renderer}`; this turns that
 # into a `.app` inside a `.dmg`, plus the `.zip` and `latest-mac.yml` that
@@ -128,7 +128,7 @@ mac:
   hardenedRuntime: true
 
   # The template stopped being enough at the microphone (#307). A `claude` in a
-  # Hive pty asks for it as The Hive, the process macOS holds responsible, and
+  # Hive pty asks for it as HiveTTY, the process macOS holds responsible, and
   # the hardened runtime refuses a bundle without `device.audio-input` *silently*:
   # no prompt, no row in Privacy › Microphone, Claude Code's voice mode just
   # never hears anything. So the plist is carried now, the template's three

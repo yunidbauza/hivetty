@@ -227,9 +227,9 @@ if (!app.requestSingleInstanceLock()) {
   */
   const hiveLock = claimServerLock(hiveLockPath());
   if (hiveLock.kind === 'active') {
-    const message = `Another copy of The Hive (pid ${hiveLock.pid === null ? 'unknown' : String(hiveLock.pid)}) is using ${dirname(configPath())}. Quit it first, or point this one at another folder with HIVE_CONFIG_PATH.`;
+    const message = `Another copy of HiveTTY (pid ${hiveLock.pid === null ? 'unknown' : String(hiveLock.pid)}) is using ${dirname(configPath())}. Quit it first, or point this one at another folder with HIVE_CONFIG_PATH.`;
     console.error(`[hive] ${message}`);
-    if (!serverMode) dialog.showErrorBox('The Hive is already running', message);
+    if (!serverMode) dialog.showErrorBox('HiveTTY is already running', message);
     process.exit(1);
   }
   process.on('exit', hiveLock.release);

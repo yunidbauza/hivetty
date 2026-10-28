@@ -25,7 +25,7 @@ import { createReceiverClient } from './client';
 import type { RpcHandlers } from './rpc';
 
 /**
- * The Hive's MCP server, minus the process wiring (HIVE-112).
+ * HiveTTY's MCP server, minus the process wiring (HIVE-112).
  *
  * Started by `claude`, not by the app: the Hive writes a config file naming
  * `electron/mcp-host/index.ts`'s build output, and every session it spawns is
@@ -144,7 +144,7 @@ export function createHandlers(
       ],
       callTool: async () =>
         unreachable(
-          'The ledger is not reachable: this process was started outside The Hive, or the app is not running. Nothing was written.',
+          'The ledger is not reachable: this process was started outside HiveTTY, or the app is not running. Nothing was written.',
         ),
     };
   }

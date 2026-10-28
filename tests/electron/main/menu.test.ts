@@ -127,7 +127,7 @@ describe('buildMenuTemplate', () => {
   });
 
   it('names Hide and Quit after the app, as their roles would after app.getName()', () => {
-    // The roles' own labels read app.getName(), which is the identity ("The Hive"), not the display name.
+    // The roles' own labels read app.getName(); the menu labels them from appName instead.
     const submenu = buildMenuTemplate({ ...mac, appName: 'HiveTTY' })[0]?.submenu as MenuItemConstructorOptions[];
     const hide = submenu.find((item) => item.role === 'hide');
     const quit = submenu.find((item) => item.role === 'quit');

@@ -29,7 +29,7 @@ const answer: LedgerEntry = {
 describe('entryContext (HIVE-138)', () => {
   it("speaks as the app, names the marker, and says it is not the user's words", () => {
     const text = entryContext(ask);
-    expect(text.startsWith('The Hive, the desktop app that runs this terminal session, delivered')).toBe(true);
+    expect(text.startsWith('HiveTTY, the desktop app that runs this terminal session, delivered')).toBe(true);
     expect(text).toContain('"📒 a12"');
     expect(text).toContain('from the app, not from the user');
   });
