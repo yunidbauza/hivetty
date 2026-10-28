@@ -57,8 +57,11 @@ export const versionLine = (info: AppInfo): string => `Version ${info.version}`;
  * The versions Electron's own panel showed are kept rather than dropped: they
  * are genuinely useful in a bug report, and the complaint about the default
  * panel was that it showed *only* them, under the framework's name.
+ *
+ * The edition rides the platform line because it describes the build, not the
+ * version (HIVE-326).
  */
-export const platformLine = (info: AppInfo): string => info.platform;
+export const platformLine = (info: AppInfo): string => `community edition · ${info.platform}`;
 
 export const runtimeLine = (info: AppInfo): string =>
   `electron ${info.electron} · chromium ${info.chrome}`;

@@ -75,7 +75,7 @@ describe('the build lines', () => {
      * showed *only* these, under the framework's name — not that these are
      * useless.
      */
-    expect(platformLine(appInfo())).toBe('darwin');
+    expect(platformLine(appInfo())).toBe('community edition · darwin');
     expect(runtimeLine(appInfo())).toBe('electron 43.2.0 · chromium 130.0.6723.191');
   });
 
@@ -88,7 +88,8 @@ describe('the build lines', () => {
      * line is short enough to fit, which is what this pins.
      */
     const info = appInfo();
-    expect(platformLine(info)).not.toContain('·');
+    expect(platformLine(info)).not.toContain(info.electron);
+    expect(platformLine(info).length).toBeLessThan(46);
     expect(runtimeLine(info)).not.toContain(info.platform);
     expect(runtimeLine(info).length).toBeLessThan(46);
   });
