@@ -1,6 +1,6 @@
 import electronUpdater from 'electron-updater';
 
-import { APP_IDENTITY_NAME } from '@shared/app-name';
+import { APP_NAME } from '@shared/app-name';
 
 import type { UpdateEngine } from './updater';
 
@@ -61,10 +61,10 @@ export function createElectronUpdaterEngine(
   currentVersion: string,
   {
     relaunch = true,
-    identity = APP_IDENTITY_NAME,
+    identity = APP_NAME,
   }: {
     relaunch?: boolean;
-    /** Whose zips this engine may swap in: `The Hive` → `The-Hive-*`. */
+    /** Whose zips this engine may swap in: `HiveTTY` → `HiveTTY-*`. */
     identity?: string;
   } = {},
 ): UpdateEngine {

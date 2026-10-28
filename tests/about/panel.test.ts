@@ -113,7 +113,7 @@ describe('updateCopy', () => {
   it('says it is up to date only once a check has completed', () => {
     const copy = updateCopy(status({ state: 'idle', checked: true }));
 
-    expect(copy.note).toBe('Hive TTY is up to date.');
+    expect(copy.note).toBe('HiveTTY is up to date.');
     expect(copy.label).toBeNull();
   });
 

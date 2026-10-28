@@ -3,7 +3,7 @@ import path from 'node:path';
 import { app, type BrowserWindow, dialog, shell } from 'electron';
 
 
-import { APP_DISPLAY_NAME, APP_IDENTITY_NAME } from '@shared/app-name';
+import { APP_NAME } from '@shared/app-name';
 import {
   idleUpdateStatus,
   RELEASES_URL,
@@ -124,7 +124,7 @@ const informDialog: UpdaterDeps['inform'] = ({ message, detail }) => {
   const parent = parentWindow();
   const options = {
     type: 'info' as const,
-    title: APP_DISPLAY_NAME,
+    title: APP_NAME,
     message,
     detail,
     buttons: ['OK'],
@@ -151,7 +151,7 @@ export async function ensureUpdater(): Promise<Updater> {
     const ownBundle = path.resolve(app.getPath('exe'), '..', '..', '..');
     const migration = createMigration({
       ...createMigrationIo({ userData: app.getPath('userData'), readSignature }),
-      identity: APP_IDENTITY_NAME,
+      identity: APP_NAME,
       unattended: unattended !== null,
       ownSignature: () => (app.isPackaged ? readSignature(ownBundle) : Promise.resolve('')),
       ownBundle,

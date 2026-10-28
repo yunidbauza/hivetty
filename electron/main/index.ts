@@ -2,7 +2,7 @@ import { dirname, join } from 'node:path';
 
 import { app, dialog, powerSaveBlocker } from 'electron';
 
-import { APP_IDENTITY_NAME } from '@shared/app-name';
+import { APP_NAME, DEV_USER_DATA_NAME } from '@shared/app-name';
 
 import { applyDevDockIcon } from './app-icon';
 import { primaryWindow } from './aux-windows';
@@ -45,37 +45,35 @@ import { createWindow } from './window';
  */
 
 /**
- * The app's identity is "The Hive", and stays so; what people read is
- * `APP_DISPLAY_NAME`, "Hive TTY" (`@shared/app-name` says why the two differ).
- * The menu is built with the display name, so this only decides `userData`
- * and the Keychain item `safeStorage` uses.
+ * The app's one name is `APP_NAME`, "HiveTTY" (`@shared/app-name` says what
+ * hangs off it). The menu is built with it, and this decides `userData` and
+ * the Keychain item `safeStorage` uses.
  *
  * Without this, `app.getName()` falls back to `package.json`'s `name` field and
- * every role-driven menu item reads `About the-hive`, `Quit the-hive`. The
+ * every role-driven menu item reads `About hivetty`, `Quit hivetty`. The
  * package name is an npm identifier; it was never meant to be shown to anyone.
  *
  * **What this does not fix**, and cannot: the *leftmost* menu title. macOS
  * takes that from `CFBundleName` in the running bundle's `Info.plist`, and
- * under `pnpm desktop:dev` the running bundle is Electron's own — so dev shows
+ * under `pnpm desktop:dev` the running bundle is Electron's own, so dev shows
  * `Electron` no matter what any API says. The packaged app's `CFBundleName` is
- * `productName` ("The Hive"), and it has to be: Electron finds its helper apps
- * by that key (see `mac.extendInfo` in `electron-builder.yml`). Patching
- * Electron's `Info.plist` in `node_modules` would make dev *look* right while
- * changing nothing about what ships. See `docs/packaging-and-updates.md`.
+ * `productName` ("HiveTTY"), and it has to be: Electron finds its helper apps
+ * by that key. Patching Electron's `Info.plist` in `node_modules` would make
+ * dev *look* right while changing nothing about what ships. See
+ * `docs/packaging-and-updates.md`.
  */
-app.setName(APP_IDENTITY_NAME);
+app.setName(APP_NAME);
 
 /**
- * Development keeps the userData directory it already has.
+ * Development keeps a userData directory of its own, `DEV_USER_DATA_NAME`.
  *
- * `setName` moves it: `userData` is derived from the app name, so renaming
- * would silently relocate `~/Library/Application Support/the-hive` to
- * `…/The Hive` and leave the window state, the hook settings and — the one that
- * would actually hurt — the encrypted Jira credential behind, with no error and
- * no hint that a re-authentication was caused by a cosmetic rename.
+ * `setName` would otherwise put a dev run on `~/Library/Application
+ * Support/HiveTTY`, the packaged app's folder (APFS matches `hivetty` to it
+ * case-insensitively), so the window state, the hook settings and the
+ * encrypted Jira credential would be shared with the installed app.
  *
  * Pinning it in dev has a second and larger benefit: the packaged app resolves
- * `userData` to `The Hive`, so the two stay **separate instances**. They can run
+ * `userData` to `HiveTTY`, so the two stay **separate instances**. They can run
  * side by side. Had both landed on one directory, `requestSingleInstanceLock`
  * would treat a development run and the installed app as the same app, and
  * launching one while the other was open would just focus the wrong window.
@@ -89,7 +87,7 @@ app.setName(APP_IDENTITY_NAME);
  * each, none of them saying anything about a profile.
  */
 if (!app.isPackaged && !app.commandLine.hasSwitch('user-data-dir')) {
-  app.setPath('userData', join(app.getPath('appData'), 'the-hive'));
+  app.setPath('userData', join(app.getPath('appData'), DEV_USER_DATA_NAME));
 }
 
 /*

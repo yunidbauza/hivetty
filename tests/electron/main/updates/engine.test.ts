@@ -47,18 +47,19 @@ describe('createElectronUpdaterEngine', () => {
   it('offers only its own app in place: another app ID is the migration\'s, not Squirrel\'s', async () => {
     const found = (path: string) => ({ isUpdateAvailable: true, updateInfo: { version: '1.3.0', path } });
 
-    const hive = createElectronUpdaterEngine('1.2.3');
-    autoUpdater.checkForUpdates.mockResolvedValueOnce(found('HiveTTY-1.3.0-arm64-mac.zip'));
-    expect(await hive.check()).toBeNull();
-    autoUpdater.checkForUpdates.mockResolvedValueOnce(found('The-Hive-1.3.0-arm64-mac.zip'));
-    expect(await hive.check()).toEqual({ version: '1.3.0' });
-
-    // HiveTTY ships this file too, and must go on updating itself.
-    const hivetty = createElectronUpdaterEngine('1.3.0', { identity: 'HiveTTY' });
+    // This build is HiveTTY (HIVE-326): it updates itself and never swaps in The Hive.
+    const hivetty = createElectronUpdaterEngine('1.3.0');
     autoUpdater.checkForUpdates.mockResolvedValueOnce(found('HiveTTY-1.3.1-arm64-mac.zip'));
     expect(await hivetty.check()).toEqual({ version: '1.3.0' });
     autoUpdater.checkForUpdates.mockResolvedValueOnce(found('The-Hive-1.2.4-arm64-mac.zip'));
     expect(await hivetty.check()).toBeNull();
+
+    // An engine told it is The Hive leaves a HiveTTY zip to the migration.
+    const hive = createElectronUpdaterEngine('1.2.3', { identity: 'The Hive' });
+    autoUpdater.checkForUpdates.mockResolvedValueOnce(found('HiveTTY-1.3.0-arm64-mac.zip'));
+    expect(await hive.check()).toBeNull();
+    autoUpdater.checkForUpdates.mockResolvedValueOnce(found('The-Hive-1.3.0-arm64-mac.zip'));
+    expect(await hive.check()).toEqual({ version: '1.3.0' });
   });
 
   it('installs through quitAndInstall', () => {

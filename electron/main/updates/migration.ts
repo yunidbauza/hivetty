@@ -41,7 +41,7 @@ export interface HiveTtyRelease {
 }
 
 export interface MigrationDeps {
-  /** `APP_IDENTITY_NAME`. Anything but `The Hive` turns this off. */
+  /** `APP_NAME`. Anything but `The Hive` turns this off. */
   identity: string;
   /** A server (HIVE-147): nobody is there to answer a dialog. */
   unattended: boolean;
