@@ -521,11 +521,13 @@ users itself (HIVE-328), in `updates/migration.ts`:
    user cannot write `/Applications`. An already installed `HiveTTY.app` is
    verified the same way and reused.
 4. **Switch.** "Switch to HiveTTY" → *Switch now* / *Later*. It warns when a
-   session or agent run would be stopped. On yes it does four things, in order:
-   - carries over `sessions.json`, `window-state.json` and `Local Storage/` into
-     `~/Library/Application Support/HiveTTY/`, never over a file already there;
-   - starts a detached shell that waits for this PID to exit, then `open`s
-     HiveTTY. The two apps share `~/.hive` and its lock, so they cannot overlap;
+   session or agent run would be stopped. On yes it does three things, in order:
+   - starts a detached shell that waits for this PID to exit. It then copies
+     `sessions.json`, `window-state.json` and `Local Storage/` into
+     `~/Library/Application Support/HiveTTY/`, skipping whole any entry already
+     there, and `open`s HiveTTY. The copy waits for the exit because
+     `before-quit` is where session history and Local Storage are flushed, and
+     the two apps share `~/.hive` and its lock, so they cannot overlap;
    - moves every `com.behiques.the-hive` bundle Spotlight knows of, plus the
      running one, to the Trash;
    - quits.
@@ -560,7 +562,7 @@ updates itself.
 | `electron/main/updates/engine.ts` | The only file that touches `electron-updater`. |
 | `electron/main/updates/index.ts` | The singleton, the dialogs, the wiring. |
 | `electron/main/updates/migration.ts` | The HiveTTY move's decisions. Imports no Electron. |
-| `electron/main/updates/migration-io.ts` | Its effects: fetch, `ditto`, `codesign`, `mdfind`, the carry-over, the hand-off. |
+| `electron/main/updates/migration-io.ts` | Its effects: fetch, `ditto`, `codesign`, `mdfind`, and the hand-off shell that copies the data after exit. |
 
 `autoUpdater` is read **inside** `createElectronUpdaterEngine`, never at module
 scope. It is a lazy getter that constructs a `MacUpdater` on first access, which

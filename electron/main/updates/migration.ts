@@ -13,7 +13,8 @@
  * - `~/.hive` (config, skills, agents, the ledger) is shared by name and is
  *   never touched.
  * - From `userData`: session history, window state and `Local Storage`
- *   (appearance). Copied by the `carryOver` dep, never over HiveTTY's own.
+ *   (appearance). Copied by the hand-off after this process exits, so the
+ *   quit's own flush is what moves; never over HiveTTY's own.
  * - Not credentials. `safeStorage`'s Keychain item is named after the app, so
  *   HiveTTY cannot decrypt what The Hive stored, and it already reads an
  *   undecryptable credential as "not set". The old `userData` stays put.
@@ -65,12 +66,13 @@ export interface MigrationDeps {
   verify: (app: string) => Promise<string>;
   /** Copy the app into place; resolves with where it landed. */
   install: (app: string) => Promise<string>;
-  /** Copy The Hive's app data into HiveTTY's, never over what is there. */
-  carryOver: () => Promise<void>;
   /** Every `com.behiques.the-hive` bundle on this machine. */
   oldBundles: () => Promise<string[]>;
   trash: (path: string) => Promise<void>;
-  /** Open `target` once this process has exited (the two share `~/.hive`). */
+  /**
+   * Once this process has exited (the two share `~/.hive`), copy The Hive's
+   * app data into HiveTTY's, never over what is there, and open `target`.
+   */
   handOff: (target: string) => void;
   quit: () => void;
   /** No session or agent run would be cut off by quitting. */
@@ -142,12 +144,6 @@ export function createMigration(deps: MigrationDeps): Migration {
     });
     if (!yes) return;
 
-    try {
-      await deps.carryOver();
-    } catch (cause) {
-      // The old userData is kept, so nothing is lost; HiveTTY just starts fresh.
-      log(`[hive] carrying app data over to HiveTTY failed: ${String(cause)}`);
-    }
     deps.handOff(target);
     const bundles = new Set([deps.ownBundle, ...(await deps.oldBundles().catch(() => []))]);
     for (const bundle of bundles) {

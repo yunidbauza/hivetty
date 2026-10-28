@@ -1,7 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, constants, cp, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { access, constants, mkdir, mkdtemp, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -13,7 +13,7 @@ import { HIVETTY_FEED_URL, type MigrationDeps } from './migration';
  * The effects `migration.ts` decides on, done for real.
  *
  * Every command is an argv, never a shell string: the only shell is the
- * hand-off, and it takes its two values as positional parameters.
+ * hand-off, and it takes every value as a positional parameter.
  */
 
 const run = promisify(execFile);
@@ -33,15 +33,32 @@ const exists = (target: string): Promise<boolean> =>
     () => false,
   );
 
-/** Copy `CARRIED_OVER` from `from` to `to`, leaving anything already at `to` alone. */
-export async function carryOver(from: string, to: string): Promise<void> {
-  await mkdir(to, { recursive: true });
-  for (const name of CARRIED_OVER) {
-    const source = path.join(from, name);
-    const target = path.join(to, name);
-    if (!(await exists(source)) || (await exists(target))) continue;
-    await cp(source, target, { recursive: true });
-  }
+/**
+ * Wait for `$1` to exit, carry `CARRIED_OVER` from `$3` to `$4`, then open `$2`
+ * with `$5`.
+ *
+ * The copy runs here, after the exit, because `before-quit` is where session
+ * history and Local Storage are flushed: copied any earlier, the last of them
+ * would be left behind in an app that is already in the Trash. An entry
+ * HiveTTY already has is skipped whole, never merged: half of one leveldb
+ * inside another is a corrupt store.
+ */
+const HAND_OFF = `while kill -0 "$1" 2>/dev/null; do sleep 0.2; done
+mkdir -p "$4"
+for name in ${CARRIED_OVER.map((name) => `'${name}'`).join(' ')}; do
+  if [ -e "$3/$name" ] && [ ! -e "$4/$name" ]; then cp -R "$3/$name" "$4/$name"; fi
+done
+exec "$5" "$2"`;
+
+export function handOffArgs(options: {
+  pid: number;
+  target: string;
+  from: string;
+  to: string;
+  opener: string;
+}): string[] {
+  const { pid, target, from, to, opener } = options;
+  return ['-c', HAND_OFF, 'hand-off', String(pid), target, from, to, opener];
 }
 
 /** The first of `dirs` holding a `HiveTTY.app`, or null. */
@@ -62,7 +79,6 @@ type MigrationIo = Pick<
   | 'unpack'
   | 'verify'
   | 'install'
-  | 'carryOver'
   | 'oldBundles'
   | 'handOff'
 >;
@@ -134,9 +150,6 @@ export function createMigrationIo({
       return target;
     },
 
-    carryOver: () =>
-      carryOver(userData, path.join(home, 'Library', 'Application Support', 'HiveTTY')),
-
     async oldBundles() {
       const { stdout } = await run('mdfind', ["kMDItemCFBundleIdentifier == 'com.behiques.the-hive'"]);
       return stdout.split('\n').filter((line) => line.endsWith('.app'));
@@ -149,7 +162,13 @@ export function createMigrationIo({
       */
       spawn(
         '/bin/sh',
-        ['-c', 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec open "$2"', 'hand-off', String(process.pid), target],
+        handOffArgs({
+          pid: process.pid,
+          target,
+          from: userData,
+          to: path.join(home, 'Library', 'Application Support', 'HiveTTY'),
+          opener: 'open',
+        }),
         { detached: true, stdio: 'ignore' },
       ).unref();
     },

@@ -69,9 +69,6 @@ function harness(over: Partial<MigrationDeps> = {}) {
       calls.push(`install ${app}`);
       return '/Applications/HiveTTY.app';
     }),
-    carryOver: vi.fn(async () => {
-      calls.push('carryOver');
-    }),
     oldBundles: vi.fn(async () => ['/Applications/The Hive.app', '/Users/me/Applications/The Hive.app']),
     trash: vi.fn(async (path: string) => {
       calls.push(`trash ${path}`);
@@ -107,7 +104,7 @@ describe('parseFeed', () => {
 });
 
 describe('createMigration', () => {
-  it('installs a verified HiveTTY, carries the data over, hands off, trashes every old bundle, then quits', async () => {
+  it('installs a verified HiveTTY, hands off (the copy runs after exit), trashes every old bundle, then quits', async () => {
     const { migration, calls, deps } = harness();
 
     expect(await migration.check('auto')).toBe(true);
@@ -117,7 +114,6 @@ describe('createMigration', () => {
       'download https://github.com/yunidbauza/hivetty/releases/download/v1.3.0/HiveTTY-1.3.0-arm64-mac.zip',
       'verify /tmp/x/out/HiveTTY.app',
       'install /tmp/x/out/HiveTTY.app',
-      'carryOver',
       'handOff /Applications/HiveTTY.app',
       'trash /Applications/The Hive.app',
       'trash /Users/me/Applications/The Hive.app',
@@ -212,7 +208,7 @@ describe('createMigration', () => {
     await flush();
 
     expect(calls).toContain('install /tmp/x/out/HiveTTY.app');
-    expect(calls.some((c) => c.startsWith('trash') || c === 'quit' || c === 'carryOver')).toBe(false);
+    expect(calls.some((c) => c.startsWith('trash') || c === 'quit' || c.startsWith('handOff'))).toBe(false);
   });
 
   it.each([
