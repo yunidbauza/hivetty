@@ -158,6 +158,25 @@ describe('createMigration', () => {
     expect(deps.download).not.toHaveBeenCalled();
   });
 
+  it('a check while HiveTTY is still downloading starts nothing new, and says so on the menu', async () => {
+    let finish: (path: string) => void = () => undefined;
+    const download = vi.fn(() => new Promise<string>((resolve) => (finish = resolve)));
+    const { migration, deps } = harness({ download });
+
+    await migration.check('auto');
+    await flush();
+    expect(await migration.check('menu')).toBe(true);
+    expect(await migration.check('auto')).toBe(true);
+
+    expect(download).toHaveBeenCalledTimes(1);
+    expect(deps.confirm).toHaveBeenCalledTimes(1);
+    expect(deps.inform).toHaveBeenCalledWith(expect.objectContaining({ message: 'HiveTTY is downloading.' }));
+
+    finish('/tmp/x/HiveTTY.zip');
+    await flush();
+    expect(deps.quit).toHaveBeenCalled();
+  });
+
   it('offers the switch straight away when HiveTTY is already installed, verifying it first', async () => {
     const { migration, calls, deps } = harness({
       installedApp: vi.fn(async () => '/Applications/HiveTTY.app'),

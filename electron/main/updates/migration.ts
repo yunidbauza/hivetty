@@ -126,6 +126,8 @@ export function createMigration(deps: MigrationDeps): Migration {
   const { confirm, inform, log } = deps;
   /** A background "Later" holds until the next launch. */
   let asked = false;
+  /** A download or install is under way: a second one would race it into the same path. */
+  let installing = false;
 
   const releasePage = (version: string): string => `${HIVETTY_RELEASES_URL}/tag/v${version}`;
 
@@ -159,6 +161,7 @@ export function createMigration(deps: MigrationDeps): Migration {
   };
 
   const installAndSwitch = async (release: HiveTtyRelease, team: string): Promise<void> => {
+    installing = true;
     try {
       const zip = await deps.download(
         `${HIVETTY_RELEASES_URL}/download/v${release.version}/${release.file}`,
@@ -174,11 +177,19 @@ export function createMigration(deps: MigrationDeps): Migration {
       log(`[hive] HiveTTY ${release.version} was not installed: ${message}`);
       inform({ message: 'HiveTTY could not be installed.', detail: `${message}. The download page has it.` });
       deps.openExternal(releasePage(release.version));
+    } finally {
+      installing = false;
     }
   };
 
   const check = async (origin: 'auto' | 'menu'): Promise<boolean> => {
     if (deps.identity !== 'The Hive' || deps.unattended) return false;
+    if (installing) {
+      if (origin === 'menu') {
+        inform({ message: 'HiveTTY is downloading.', detail: "You'll be asked to switch once it is installed." });
+      }
+      return true;
+    }
     if (origin === 'auto' && asked) return false;
 
     try {
