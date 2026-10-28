@@ -1,7 +1,7 @@
 # Agents and the ledger
 
 **Scope:** two things that belong together — the **ledger**, one append-only log
-every party in Hive TTY reads from and writes to, and the **agent definition**,
+every party in HiveTTY reads from and writes to, and the **agent definition**,
 the file that makes a party an agent in the first place.
 
 Load this when working on `electron/main/ledger/`, `electron/main/agents/`,
@@ -966,7 +966,7 @@ there over every visit, and its holder: `acr` or `fixer` when the shipper asked
 one about the PR during the visit (by `meta.pr` + `meta.repo`, or `slug#n` in the
 ask's body), else `shipper`. `prEvents` is every entry naming the PR, for the
 Conversation's Everything; `reviewUrls` is acr's `meta.review_url`s, so a GitHub
-review written through Hive TTY shows as acr; `prOpener` is who sent the
+review written through HiveTTY shows as acr; `prOpener` is who sent the
 shipper's intake ask. `mergeAsk(open, slug, n)` returns the shipper's open
 `gh pr merge … --repo` permission card itself (`mergeWaiting` is
 `mergeAsk(...) !== undefined`): the page's Merge answers that card with
@@ -1079,7 +1079,7 @@ already has.
 
 ## The MCP host
 
-Every `claude` session Hive TTY launches is handed `--mcp-config` pointing at
+Every `claude` session HiveTTY launches is handed `--mcp-config` pointing at
 a generated file (`electron/main/harness/claude-code/mcp-config.ts`) naming one server: the built
 output of `electron/mcp-host/`, run as `${execPath} out/main/mcp-host.js`
 with `ELECTRON_RUN_AS_NODE=1` so the app's own binary runs it as plain Node
@@ -1103,7 +1103,7 @@ guarantee: the receiver's per-launch token is shared by every session it
 spawns, so a model with shell access could still `curl` the
 receiver directly using another session's header value. Closing that is
 tracked separately, not attempted here. If any of the three is missing — the
-process was started outside Hive TTY, or by hand in a plain terminal —
+process was started outside HiveTTY, or by hand in a plain terminal —
 `createHandlers` still lists all sixteen tools (so
 `/mcp` shows a connected server, not a broken one) but every *call* answers
 with a sentence explaining why the ledger is out of reach, rather than the
@@ -1268,7 +1268,7 @@ a tool rather than by opening `~/.hive/config.json`. The projection
 (`projectsDirectoryFor`, beside `agentsDirectoryFor`) is a whitelist: `env`,
 `shell` and `claudeCommand` never cross.
 
-`mcp__hive__pr { repo: "owner/name", number }` answers Hive TTY's own
+`mcp__hive__pr { repo: "owner/name", number }` answers HiveTTY's own
 `PrRecord` for one PR, from the same GitHub sweep the PRs panel runs, run
 fresh on each call since main keeps no snapshot of it:
 `state`, `findings` (unresolved review threads), `checks`, `branch`, `url`,
@@ -1288,7 +1288,7 @@ honest defaults, an empty list and "not wired", so a receiver composed without
 a config (the live suites) still answers. Both are reads, and both are in the
 standing grants every agent holds.
 
-### Jira through Hive TTY: `mcp__hive__jira_get`, `jira_transition`, `jira_comment`, `jira_users`
+### Jira through HiveTTY: `mcp__hive__jira_get`, `jira_transition`, `jira_comment`, `jira_users`
 
 Three tools (HIVE-174), and a fourth (HIVE-216), over the Jira integration the Work tab already uses,
 through the token the app holds. An agent, or a container, reads and writes
@@ -1327,11 +1327,11 @@ comment, and a comment may be mentions alone with `markdown` empty. The account 
 come from `jira_users { query }`, a read over `/rest/api/3/user/search` that answers
 up to eight active people, each an `accountId` and a `displayName`.
 
-**Via Hive TTY (HIVE-216).** When the receiver's caller header names a known agent
+**Via HiveTTY (HIVE-216).** When the receiver's caller header names a known agent
 that is not also a session, the comment is posted with the comment property
 `hive.via = { agent }`; a session's comment, and every renderer comment, carries
 none, and no payload can set it. `jira.comments` reads it back
-(`expand=properties`) as `JiraComment.via`, keeping only Hive TTY's key and a valid
+(`expand=properties`) as `JiraComment.via`, keeping only HiveTTY's key and a valid
 agent name, and the ticket page draws it. It is a label for drawing, never a grant
 and never proof: anyone who can edit the issue can write a property, so nothing
 reads `via` to decide anything, and an agent reading `jira_get` should not either.
@@ -1428,7 +1428,7 @@ starts a comment" silently truncates the first:
 
 ### What `wake.on` names, and who names it
 
-Three shapes, and all three strings are **Hive TTY's** rather than any external
+Three shapes, and all three strings are **HiveTTY's** rather than any external
 service's — which matters most for the middle one, because it reads like a Slack
 event name and is not one.
 
@@ -1436,7 +1436,7 @@ event name and is not one.
 | --- | --- |
 | `ledger` | An `ask` or `answer` whose `to` is this agent wakes it, whoever wrote it: the overmind through the console's `ask` verb, a terminal session through `ledger_ask`, or another agent through the same tools. A broadcast (no `to`) wakes nobody — parties read those on their own schedule. |
 | `slack.mention` | *Search my mentions on the wakes this agent already takes.* Slack's real `app_mention` fires for mentions of a Slack **app**, never of a person, so there is no push to subscribe to. It adds no wakes of its own. |
-| `slack.app_mention` | A genuine push trigger: Slack's own `app_mention`, for mentions of Hive TTY's app. Requires Socket Mode on and both tokens stored. An `@hive <agent> <task>` from an allow-listed author is a task run instead; see below. |
+| `slack.app_mention` | A genuine push trigger: Slack's own `app_mention`, for mentions of HiveTTY's app. Requires Socket Mode on and both tokens stored. An `@hive <agent> <task>` from an allow-listed author is a task run instead; see below. |
 | `slack.channel:#name` | A genuine push trigger, requiring Socket Mode and the app being a member of that channel. Inert without it. |
 
 `ledger` is the one worth understanding before turning it off, because its
@@ -1500,7 +1500,7 @@ a server arrived by, a token does **not** transfer between routes — a server
 named `slack` in a `--mcp-config` file reports `needs-auth` even when an
 identical URL is already authorised under a plugin's own delivery, because the
 two keys differ and Claude Code has no way to know they name the same service.
-This is why Hive TTY cannot piggyback on a plugin-based Slack sign-in the user
+This is why HiveTTY cannot piggyback on a plugin-based Slack sign-in the user
 already has and needs its own sign-in flow (`signInToSlack`, `login.ts`). `tools`
 decides which of the tools that exist may run unattended, and it is worth
 wording as *without asking* rather than *allowed*. Naming a system while
@@ -1654,7 +1654,7 @@ A Hive skill is its whole *folder* rather than a single SKILL.md, and that
 change deliberately did not reach here. This module resolves **names**, and a name is
 what an agent definition declares — the contents of the folder behind it are the
 plugin mirror's business, and `~/.claude/skills` and installed plugins are
-directories Hive TTY reads and never manages.
+directories HiveTTY reads and never manages.
 
 Making it a real sandbox would mean `--restricted`, which ignores the user's
 settings sources entirely — and would therefore cut off exactly the external
@@ -1662,14 +1662,14 @@ skills the widening exists to allow. That trade was declined: the wake
 command carries `--setting-sources ""` instead, which stops the user's own
 `settings.json` (and the `permissions.defaultMode: "auto"` a developer machine
 routinely carries) from leaking into an unattended turn, while `--settings`
-still applies alongside it so Hive TTY's own hooks keep firing. The skills stay
+still applies alongside it so HiveTTY's own hooks keep firing. The skills stay
 reachable and the field stays a declaration.
 
 Two details worth knowing before changing `available.ts` or `installed.ts`:
 
 - **`isSkillFolder`, not `entry.isDirectory()`.** `readdir` reports `lstat`
   semantics, so a symlinked skill folder answers `false` — and a personal skills
-  folder is *more* likely to be symlinked than Hive TTY's, because that is how
+  folder is *more* likely to be symlinked than HiveTTY's, because that is how
   dotfile repos carry skills. `read.ts` fixed this once and the helper is shared
   rather than copied, so it cannot be fixed twice and broken a third time.
 - **A user-scoped install beats the array order.** `installed_plugins.json` lists
@@ -1748,7 +1748,7 @@ which is why `approve` never lets a thrown error surface as an MCP error:
 every path through `approve` itself returns a `decision(...)` instead. The one
 place a permission prompt still answers with `isError: true` is the
 unreachable-environment branch in `electron/mcp-host/host.ts`, which refuses
-*every* call — `approve` included — when the host was started outside Hive TTY.
+*every* call — `approve` included — when the host was started outside HiveTTY.
 That is deliberate and safe precisely because `isError` fails closed: a Hive
 that is not running denies rather than allows.
 

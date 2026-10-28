@@ -1,6 +1,6 @@
-# Hive TTY documentation
+# HiveTTY documentation
 
-Two layers. **Guides** show you how to use Hive TTY, one task per section, with a
+Two layers. **Guides** show you how to use HiveTTY, one task per section, with a
 screenshot or a diagram on every page. **Internals** explain how each part is built, for
 anyone changing the code.
 

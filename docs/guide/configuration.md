@@ -19,7 +19,7 @@ names any field that only takes effect after a restart.
 ├── work/<agent>/             each agent's working folder
 └── ledger/YYYY-MM-DD.jsonl   the ledger, one file per day
 
-~/Library/Application Support/The Hive/     the app's own data folder
+~/Library/Application Support/HiveTTY/      the app's own data folder
 ├── sessions.json             session history
 ├── jira-credential.bin       encrypted with the Keychain
 ├── slack-tokens.bin          encrypted with the Keychain
@@ -33,14 +33,14 @@ Set `HIVE_CONFIG_PATH` to use another file. Skills, agents and the ledger move w
 
 ```json
 {
-  "//": "Hive TTY workspace config. Keys starting with // are comments.",
+  "//": "HiveTTY workspace config. Keys starting with // are comments.",
   "version": 2,
   "shell": "/bin/zsh",
   "claudeCommand": "claude",
   "env": { "NODE_ENV": "development" },
   "importLoginEnv": true,
   "projects": [
-    { "id": "the-hive", "key": "hive", "name": "Hive TTY", "path": "~/Projects/the-hive" },
+    { "id": "the-hive", "key": "hive", "name": "HiveTTY", "path": "~/Projects/the-hive" },
     {
       "id": "nova-web",
       "key": "nw",

@@ -26,7 +26,7 @@ Agents can read and post in Slack, and Slack can wake or command them.
 3. In the agent: `mcp: [slack]`, and grant the tools it may use without asking, like
    `mcp__slack__*`.
 
-Hive TTY needs its own sign-in; a Slack login from another Claude plugin does not carry over.
+HiveTTY needs its own sign-in; a Slack login from another Claude plugin does not carry over.
 
 ## Real-time events (Socket Mode)
 

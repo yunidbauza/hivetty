@@ -1,7 +1,7 @@
 # Custom skills
 
 A skill is a slash command you write once and every Hive session gets. Skills live under
-`~/.hive/skills` and reach **only** sessions Hive TTY starts, never a `claude` you run
+`~/.hive/skills` and reach **only** sessions HiveTTY starts, never a `claude` you run
 elsewhere.
 
 **On this page:** [What a skill is](#what-a-skill-is) · [Create a skill](#create-a-skill) ·
@@ -67,10 +67,10 @@ skill is named by its frontmatter; a `SKILL.md` with no frontmatter or no `name`
 
 A skill that fails validation shows in Settings with its reason and is not injected.
 
-A session Hive TTY starts also loads your own Claude Code plugins, except the ones switched
+A session HiveTTY starts also loads your own Claude Code plugins, except the ones switched
 off in **Settings › Skills › Manage Installed Plugins**; the row beside that button names the
 ones that are off (or counts them, when the names would not fit). `workstream` and `superpowers` are
-off by default, because their skills overlap Hive TTY's own: `workstream:work-on` beside
+off by default, because their skills overlap HiveTTY's own: `workstream:work-on` beside
 `hive:work-on` makes "work on HIVE-123" a coin toss. The switch only affects sessions the app
 starts, from the next one on; `claude` started anywhere else still loads every plugin you
 enabled. A hand edit of `disabledSessionPlugins` or a plugin installed while the app is open
@@ -79,7 +79,7 @@ none of your plugins either way.
 
 ## Skills the app ships
 
-Some skills come with Hive TTY: the app's own `resources/skills/` is copied into
+Some skills come with HiveTTY: the app's own `resources/skills/` is copied into
 `~/.hive/skills` when the app starts: the implementation workflow, `/work-on` and
 `/goal-on` at the front, `/brainstorm`, `/plan`, `/execute`, `/tdd`, `/debug`, `/verify`
 and `/worktree` behind them, and the PR tail: `/ship`, `/review-pr-findings`, `/merge-pr`,

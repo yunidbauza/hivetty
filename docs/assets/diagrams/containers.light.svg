@@ -48,7 +48,7 @@
 <rect x="461.67" y="243.75" width="74.9" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="889.08" y="258" width="246.50000000000003" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="903.38" y="198" width="217.9" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
-<text x="104.6" y="116" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Hive TTY</text>
+<text x="104.6" y="116" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">HiveTTY</text>
 <text x="1012.33" y="116" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Receiver · hook · ledger · mcp</text>
 <text x="499.12" y="116" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">App data hive folder · settings · skills</text>
 <text x="499.12" y="261.75" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">claude</text>

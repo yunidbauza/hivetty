@@ -1,6 +1,6 @@
 # Packaging and updates
 
-How Hive TTY becomes something you install, how a new version gets published,
+How HiveTTY becomes something you install, how a new version gets published,
 and how a running copy finds out about it.
 
 Load this when working on `electron-builder.yml`, `.github/workflows/release.yml`,
@@ -43,8 +43,8 @@ publishes three assets to a GitHub Release:
 
 | Asset | For |
 | --- | --- |
-| `The Hive-<v>-arm64.dmg` | A human downloading the app. |
-| `The Hive-<v>-arm64-mac.zip` | **The updater.** Squirrel.Mac swaps a zip, never a dmg. |
+| `HiveTTY-<v>-arm64.dmg` | A human downloading the app. |
+| `HiveTTY-<v>-arm64-mac.zip` | **The updater.** Squirrel.Mac swaps a zip, never a dmg. |
 | `latest-mac.yml` | How a running app learns a newer version exists, and its SHA-512. |
 
 **Never move a published tag.** `latest-mac.yml` pins a checksum per asset, so
@@ -154,7 +154,7 @@ v0.10.0 shipped an app that died before it drew a window:
 Uncaught Exception:
 Error: Cannot find module 'undici'
 Require stack:
-- /Applications/The Hive.app/Contents/Resources/app.asar/
+- /Applications/HiveTTY.app/Contents/Resources/app.asar/
   node_modules/@slack/socket-mode/dist/src/SocketModeClient.js
 ```
 
@@ -193,8 +193,8 @@ ad-hoc signer, because there is no point signing a bundle that cannot launch.
 Run it against any build, or against an installed copy, without rebuilding:
 
 ```
-pnpm verify:bundle                          # dist/mac-arm64/The Hive.app
-pnpm verify:bundle "/Applications/The Hive.app"
+pnpm verify:bundle                          # dist/mac-arm64/HiveTTY.app
+pnpm verify:bundle "/Applications/HiveTTY.app"
 ```
 
 ## The app's name
@@ -204,71 +204,55 @@ submenu read **About the-hive**. Those are two different bugs.
 
 | What you see | Where it comes from | Set by |
 | --- | --- | --- |
-| Leftmost menu title | `CFBundleName` in the **running bundle's** `Info.plist` | `productName`: **The Hive** (it cannot be overridden, see below) |
-| `About …`, `Hide …`, `Quit …` | the menu template's labels | `APP_DISPLAY_NAME` (`electron/shared/app-name.ts`): **Hive TTY** |
-| About window, update dialogs, the server's tray | their own strings | `APP_DISPLAY_NAME`: **Hive TTY** |
-| Dock and Cmd-Tab while running, Launchpad | `CFBundleDisplayName` (macOS prefers the display name where it has one) | `mac.extendInfo`: **Hive TTY** |
-| Finder, the Applications folder, the file on disk | the bundle's **file name** | `productName`: **The Hive** |
+| Leftmost menu title | `CFBundleName` in the **running bundle's** `Info.plist` | `productName`: **HiveTTY** |
+| `About …`, `Hide …`, `Quit …` | the menu template's labels | `APP_NAME` (`electron/shared/app-name.ts`): **HiveTTY** |
+| About window, update dialogs, the server's tray | their own strings | `APP_NAME`: **HiveTTY** |
+| Dock and Cmd-Tab while running, Launchpad | `CFBundleName` | `productName`: **HiveTTY** |
+| Finder, the Applications folder, the file on disk | the bundle's **file name** | `productName`: **HiveTTY** |
 
-The app has two names on purpose. **Hive TTY is what people read; The Hive is
-what the app is.** The identity is load-bearing:
+The app has one name, HiveTTY (HIVE-326), and it is load-bearing:
 
-- `app.setName(APP_IDENTITY_NAME)` derives `userData`
-  (`~/Library/Application Support/The Hive`): the window state, the hook
+- `app.setName(APP_NAME)` derives `userData`
+  (`~/Library/Application Support/HiveTTY`): the window state, the hook
   settings, the session history, and the generated plugin every session loads.
 - Electron names the Keychain item `safeStorage` encrypts with after the app's
-  name, so the Jira and remote credentials decrypt only under The Hive.
-- `productName` names the bundle, its executable, the `.dmg` and `.zip`, and
-  the path a server's LaunchAgent runs (`/Applications/The Hive.app/Contents/MacOS/The Hive`).
+  name, so the Jira and remote credentials decrypt only under HiveTTY.
+- `productName` names the bundle, its executable, its helper apps, the `.dmg`
+  and `.zip`, and the path a server's LaunchAgent runs
+  (`/Applications/HiveTTY.app/Contents/MacOS/HiveTTY`).
 
-Finder and the Applications folder still say The Hive: they read the file name,
-and the file name is the identity. (The Dock and Launchpad read the `Info.plist`
-keys above, so they are expected to say Hive TTY; that has not been seen on a
-machine yet.) Putting Hive TTY in Finder means changing `productName`, which is
-a migration rather than a rename:
-
-- **Data.** Keep `app.setName` and pin `userData` to `The Hive`, or the app opens
-  empty and every stored credential has to be entered again.
-- **Updates.** Squirrel.Mac installs a new version in place, at the old path, so
-  an existing install stays `The Hive.app` on disk (and in Finder) until it is
-  reinstalled; only fresh installs are `Hive TTY.app`. The `.zip` and `.dmg` names
-  change, which `latest-mac.yml` carries, so the updater follows; the `appId`
-  must not change, or in-place updating breaks (see the note on it in
-  `electron-builder.yml`).
-- **Server mode.** The executable inside the bundle would become `Hive TTY`, so a
-  LaunchAgent that runs `…/The Hive.app/Contents/MacOS/The Hive` stops starting
-  after the update unless `executableName` stays `The Hive`.
-- **Scripts and docs** that name the bundle (`verify:bundle`, `docs/server-mode.md`).
-
-`CFBundleDisplayName` is not part of the designated requirement, so setting it
-over the identity costs nothing at update time.
+Changing it again is a migration rather than a rename: `userData` and the
+Keychain item move with it, the executable a LaunchAgent runs is renamed, and
+an install updated in place keeps its old file name on disk. HIVE-328's
+migration (below) is what moving from The Hive took.
 
 **`CFBundleName` cannot be overridden.** Electron's main process locates its
 helper apps as `<CFBundleName> Helper.app` under `Contents/Frameworks`, falls
 back to `Electron Helper.app`, and otherwise aborts before any JavaScript runs
 (`FATAL: Unable to find helper app`, `electron_main_delegate_mac.mm`). The
 helpers are named from `productName`, so the two keys must agree. 1.0.0 shipped
-with `CFBundleName: Hive TTY` and crashed with `EXC_BREAKPOINT` 85ms after
+with a `CFBundleName` override and crashed with `EXC_BREAKPOINT` 85ms after
 launch on every install; 1.0.1 removed the override. The updater cannot recover
 a build that never starts, so before pushing a tag, launch the packaged app once:
 
 ```sh
 pnpm desktop:dist
-timeout 5 "dist/mac-arm64/The Hive.app/Contents/MacOS/The Hive"; echo $?   # 124 = still alive
+timeout 5 "dist/mac-arm64/HiveTTY.app/Contents/MacOS/HiveTTY"; echo $?   # 124 = still alive
 ```
 
 `app.setName` cannot fix the first. Under `pnpm desktop:dev` the running bundle
 is `node_modules/electron/dist/Electron.app`, and macOS reads that title from
 the bundle before any JavaScript runs. **Dev will always say `Electron`, and the
-packaged app says `The Hive`.** Patching Electron's `Info.plist` from a
+packaged app says `HiveTTY`.** Patching Electron's `Info.plist` from a
 postinstall would make dev *look* right while changing nothing that ships; it is
 deliberately not done.
 
-`setName` moves `userData`, so `electron/main/index.ts` pins the development
-path back to `the-hive`. That keeps the encrypted Jira credential and the window
-state where they already are, and — more usefully — keeps a development run and
-the installed app as two separate instances that can run side by side. Sharing
-one `userData` would make `requestSingleInstanceLock` treat them as the same app.
+`setName` would put a development run on the packaged app's `userData`, so
+`electron/main/index.ts` pins the development path to `DEV_USER_DATA_NAME`,
+`hivetty-dev` (not `hivetty`: APFS is case-insensitive, and that is the
+packaged `HiveTTY` folder). That keeps a development run and the installed app
+as two separate instances that can run side by side. Sharing one `userData`
+would make `requestSingleInstanceLock` treat them as the same app.
 
 ## Updating
 
@@ -313,7 +297,7 @@ requirement**. For a Developer ID that names the certificate and holds across
 every build you ever sign. For an ad-hoc signature it is the binary's cdhash:
 
 ```
-$ codesign -d -r- "The Hive.app"
+$ codesign -d -r- "HiveTTY.app"
 # designated => cdhash H"4070118b4071c5c37facee2a4e06c36b9a79dd4c"
 ```
 
@@ -326,7 +310,7 @@ packaged 0.1.0 was driven through the whole flow. The check found 0.1.1, the
 reported the update **ready** — and the swap failed:
 
 ```
-[Error: Code signature at URL file:///…/The Hive.app/ did not pass validation:
+[Error: Code signature at URL file:///…/HiveTTY.app/ did not pass validation:
  code failed to satisfy specified code requirement(s)]
   code: -1, domain: 'SQRLCodeSignatureErrorDomain'
 ```
@@ -395,7 +379,7 @@ loaded and executed out of `app.asar.unpacked`.
 The template proved insufficient at the microphone (#307), so
 `resources/entitlements.mac.plist` carries it verbatim plus
 `com.apple.security.device.audio-input`. A `claude` running in a Hive pty asks
-for the microphone as The Hive, the process macOS holds responsible, and the
+for the microphone as HiveTTY, the process macOS holds responsible, and the
 hardened runtime refuses a bundle without that entitlement silently: no prompt,
 no row under Privacy › Microphone, and Claude Code's voice mode (hold space)
 records nothing. `entitlements` signs the app, `entitlementsInherit` every
@@ -407,9 +391,9 @@ Only a Developer ID build proves this. `pnpm desktop:dev` runs Electron's own
 `Electron.app`, ad-hoc signed without the hardened runtime, so voice mode works
 there with or without the entitlement; an ad-hoc `desktop:dist` is the same.
 After installing a signed build, holding space in a session should raise
-"The Hive would like to access the microphone"; if an earlier build was already
-refused, `tccutil reset Microphone com.behiques.the-hive` clears it, and
-`codesign -d --entitlements - "/Applications/The Hive.app"` lists what shipped.
+"HiveTTY would like to access the microphone"; if an earlier build was already
+refused, `tccutil reset Microphone com.behiques.hivetty` clears it, and
+`codesign -d --entitlements - "/Applications/HiveTTY.app"` lists what shipped.
 
 `scripts/adhoc-sign.mjs` skips itself when a real identity is available. It runs
 in `afterPack`, which electron-builder documents as happening *before* signing,
@@ -453,8 +437,8 @@ half-configured repository is the case worth failing on.
 Verify a build rather than trusting it:
 
 ```bash
-codesign -d --verbose=2 "dist/mac-arm64/The Hive.app"   # Authority=Developer ID Application: …
-xcrun stapler validate  "dist/mac-arm64/The Hive.app"   # the notarization ticket
+codesign -d --verbose=2 "dist/mac-arm64/HiveTTY.app"     # Authority=Developer ID Application: …
+xcrun stapler validate  "dist/mac-arm64/HiveTTY.app"     # the notarization ticket
 ```
 
 And then verify the thing those two cannot prove: publish a later version and
@@ -464,11 +448,13 @@ it.
 
 #### The bundle identifier is part of this
 
-`appId` is `com.behiques.the-hive`, changed from `dev.yunidbauza.the-hive` in the
-release that introduced signing. For a Developer ID build the identifier is part
-of the designated requirement Squirrel enforces, so changing it breaks in-place
-updating across exactly one release. That release required a manual install
-anyway — the only moment the change is free.
+`appId` is `com.behiques.hivetty`. It was `dev.yunidbauza.the-hive` until the
+release that introduced signing, then `com.behiques.the-hive`, and changed to
+`com.behiques.hivetty` in HIVE-326. For a Developer ID build the identifier is
+part of the designated requirement Squirrel enforces, so changing it breaks
+in-place updating across exactly one release. The first change rode a release
+that required a manual install anyway; The Hive's users arrive at the second
+through the migration below.
 
 Two consequences of moving to a certificate, both one-time and both expected:
 
@@ -492,7 +478,7 @@ browser is quarantined, and macOS then checks what is inside it:
   load-bearing one. The escape:
 
 ```bash
-xattr -dr com.apple.quarantine "/Applications/The Hive.app"
+xattr -dr com.apple.quarantine "/Applications/HiveTTY.app"
 ```
 
 An update the app fetches itself is never quarantined, which was a real argument
@@ -539,10 +525,12 @@ app, so HiveTTY cannot decrypt The Hive's `*-credential.bin`. It already reads
 an undecryptable credential as "not set", so the user pastes their Jira, Slack
 and pairing tokens once more. The old `userData` is left in place.
 
-It is inert on a server (nobody to answer; moving the LaunchAgent is HIVE-329),
-in a dev or unsigned build (there is no Team ID to compare against), and in any
-build whose identity is no longer `The Hive`, which includes HiveTTY itself
-until the file is deleted.
+It is inert on a server (nobody to answer; moving the LaunchAgent is HIVE-329,
+and `docs/server-mode.md` says how to do it by hand), in a dev or unsigned
+build (there is no Team ID to compare against), and in any build whose identity
+is no longer `The Hive`. This build is HiveTTY (HIVE-326), so here it always
+stands down; it runs only in The Hive's last releases, until the file is
+deleted.
 
 **The feed once both apps share a repo.** After the rename,
 `yunidbauza/the-hive` redirects to `yunidbauza/hivetty`, so The Hive's

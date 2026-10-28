@@ -1,6 +1,6 @@
 # Updates
 
-Hive TTY updates itself, but never without asking.
+HiveTTY updates itself, but never without asking.
 
 **On this page:** [Automatic updates](#automatic-updates) · [Check by hand](#check-by-hand) ·
 [Update from the command line](#update-from-the-command-line) ·
@@ -51,9 +51,9 @@ the-hive --update
 On a server, stop the LaunchAgent, update, then start it again:
 
 ```sh
-launchctl bootout gui/$(id -u)/com.behiques.the-hive.server
+launchctl bootout gui/$(id -u)/com.behiques.hivetty.server
 the-hive --update
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.the-hive.server.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.hivetty.server.plist
 ```
 
 `the-hive` is a small shim for the app binary; [Server mode](../server-mode.md) shows how to

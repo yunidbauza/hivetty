@@ -22,7 +22,7 @@ last one, so it remembers.
 
 ## Agents the app ships
 
-Agents come with Hive TTY: the app's own `resources/agents/` is copied into
+Agents come with HiveTTY: the app's own `resources/agents/` is copied into
 `~/.hive/agents` on launch, the way shipped skills are ([Custom skills](skills.md)).
 Today that is **builder**, which builds an approved plan in its own worktree and opens
 the draft PR, **shipper**, the PR endgame, **acr**, the reviewer it asks (named after the

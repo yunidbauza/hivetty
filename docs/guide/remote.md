@@ -1,6 +1,6 @@
 # Server mode and remote attach
 
-Run Hive TTY on an always-on Mac and drive its sessions from your laptop. The
+Run HiveTTY on an always-on Mac and drive its sessions from your laptop. The
 sessions, agents, ledger and inbox all live on the server; the laptop is a window onto them.
 
 This page is the overview. The step-by-step runbook is [Server mode](../server-mode.md).
@@ -66,7 +66,7 @@ The connection item at the bar's foot turns amber and the laptop redials after 1
 every 30 seconds, forever. Terminals pick up where they left off. **Work locally** is the way
 out. A revoked token or a version mismatch is shown in red and not retried.
 
-A line across the top of every stage says so too: **Lost Hive TTY on mini.
+A line across the top of every stage says so too: **Lost HiveTTY on mini.
 Reconnecting in 4s. The sessions keep running there.** It counts down to the next redial, and
 **Try now** dials at once and starts the backoff again from its first step. Once the laptop is
 back the line goes; when the link is given up it turns red and gives the reason, with no Try now.

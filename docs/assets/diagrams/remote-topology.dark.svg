@@ -45,7 +45,7 @@
 <rect x="653.29" y="343.5" width="275.1" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="88.6" y="158" width="225.05" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="138.65" y="98" width="124.95" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
-<text x="201.125" y="351.5" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Hive TTY · menu-bar item, no window</text>
+<text x="201.125" y="351.5" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">HiveTTY · menu-bar item, no window</text>
 <text x="790.8399999999999" y="301.5" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Listener · tailnet address :7433</text>
 <text x="790.8399999999999" y="361.5" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Sessions · agents · ledger · inbox</text>
 <text x="201.125" y="176" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Laptop · remote.mode remote</text>

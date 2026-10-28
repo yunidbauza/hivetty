@@ -1,6 +1,6 @@
 flowchart TB
   you((You)) --> ui[Hive window · rails · console · inbox]
-  subgraph app [Hive TTY]
+  subgraph app [HiveTTY]
     ui --> main[Main process · config · ledger · receiver]
     main --> pty[PTY host]
   end

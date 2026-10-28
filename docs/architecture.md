@@ -8,7 +8,7 @@ The map for contributors. Each box below has a deep dive; this page says which.
 
 ## At a glance
 
-Hive TTY is one Electron app with a strict process model. The renderer (`src/`) is React,
+HiveTTY is one Electron app with a strict process model. The renderer (`src/`) is React,
 four Zustand stores and xterm; it reaches the main process only through verbs the preload
 exposes on `window.hive`. Main (`electron/main`) is the single policy point: it validates
 every call, owns the config, the ledger, session history and the hook receiver. Terminals run

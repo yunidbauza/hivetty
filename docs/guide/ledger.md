@@ -57,7 +57,7 @@ typing. Held nudges retry until they fit.
 
 ## The hive MCP tools
 
-Every session and agent Hive TTY starts gets one MCP server, `hive`. The tools appear to
+Every session and agent HiveTTY starts gets one MCP server, `hive`. The tools appear to
 Claude as `mcp__hive__<name>`.
 
 | Tool | Does |

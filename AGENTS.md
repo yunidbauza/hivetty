@@ -8,7 +8,7 @@ carrying all of it every turn.
 
 ## Project overview
 
-Hive TTY is a **command center for multiple agentic terminal sessions** running on
+HiveTTY is a **command center for multiple agentic terminal sessions** running on
 a single machine. An orchestrator ("Concierge"-style coordinator, called *maestro*
 in the console) routes messages between the user and sessions, surfaces questions
 and permission requests as an inbox, tracks PRs and tickets, and spawns new
@@ -52,7 +52,7 @@ done.** Neither is optional, and no rule may be disabled inline to make a task p
 
 ## Working a ticket
 
-The workflow is Hive TTY's own (Epic HIVE-161; the guide is [`docs/guide/workflow.md`](docs/guide/workflow.md)):
+The workflow is HiveTTY's own (Epic HIVE-161; the guide is [`docs/guide/workflow.md`](docs/guide/workflow.md)):
 `hive:work-on` for a ticket or `hive:goal-on` for a request, then `hive:brainstorm`, `hive:plan` and `hive:execute`
 in the **builder** agent when the machine has one (inline otherwise), `hive:verify`; the **shipper** runs `hive:ship`.
 

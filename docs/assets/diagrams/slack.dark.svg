@@ -51,7 +51,7 @@
 <rect x="39.99999999999997" y="319" width="117.80000000000001" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="249.30999999999995" y="319" width="103.5" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <text x="151.80999999999995" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">@hive mention</text>
-<text x="241.29999999999995" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Hive TTY</text>
+<text x="241.29999999999995" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">HiveTTY</text>
 <text x="307.90999999999997" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Message in #eng</text>
 <text x="241.29999999999995" y="244" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Agent · wake.on slack.app_mention</text>
 <text x="98.89999999999998" y="337" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Slack thread</text>

@@ -250,7 +250,7 @@ every record that any session had run: `hive-store` boots empty by design and
 the session registry is a `Map` cleared on quit. Claude Code itself does not
 behave that way — it writes each conversation to
 `~/.claude/projects/<escaped-cwd>/<uuid>.jsonl` and lists them again on the next
-launch — and this is the equivalent for Hive TTY's own rows.
+launch — and this is the equivalent for HiveTTY's own rows.
 
 Main authors it, from the four moments it already knows something worth keeping:
 the spawn (which is also the only moment the `--session-id` uuid can be
@@ -288,7 +288,7 @@ moment, differing in nothing else:
 ```
 
 Every session this app had ever spawned carried a `custom-title` and no
-`ai-title` for that reason. Hive TTY was not failing to infer names; it was
+`ai-title` for that reason. HiveTTY was not failing to infer names; it was
 stopping Claude from inferring them.
 
 So a session now opens unnamed, Claude titles it from the conversation, and the
@@ -584,7 +584,7 @@ by design. The plugin-hosted ones are not free: a single Telegram channel MCP
 server measured ~96 MB RSS, and its `start` script runs `bun install` on every
 session start.
 
-Hive TTY opts out of that path already — `hookSettings` sets
+HiveTTY opts out of that path already — `hookSettings` sets
 `disableAgentView: true` unconditionally, which also disables the on-demand
 daemon inside Hive sessions, so a Hive terminal's MCP servers are ordinary
 descendants of its shell and are swept with it.

@@ -1,6 +1,6 @@
 # Working a ticket
 
-From a Jira ticket to Done, with Hive TTY's own skills and agents doing the repetitive
+From a Jira ticket to Done, with HiveTTY's own skills and agents doing the repetitive
 parts. Everything here ships with the app: the skills under `~/.hive/skills`, the agents
 under `~/.hive/agents`. Nothing depends on a plugin from outside.
 
@@ -36,7 +36,7 @@ or type the key in any session:
 /work-on HIVE-123
 ```
 
-`work-on` reads the ticket through Hive TTY's Jira connection, reconciles it with the code,
+`work-on` reads the ticket through HiveTTY's Jira connection, reconciles it with the code,
 reports, and stops for your go-ahead. Then `brainstorm` sorts the work, asking its questions
 in one batch: a spike, a bounded change with a short design in the chat, or an architectural
 one whose design is written down. Anything with more than one step gets a plan. The ticket
@@ -133,7 +133,7 @@ not there.
 
 ## The tools the agents use
 
-Agents and sessions reach Hive TTY through MCP tools. The reads and the ledger are granted to
+Agents and sessions reach HiveTTY through MCP tools. The reads and the ledger are granted to
 every agent; the two that write to your Jira are not, and an agent calls them only with a
 `tools:` entry or your consent on a card. `project_auto_merge` is narrower still: every
 call asks you, and no `tools:` entry can grant it:
@@ -143,7 +143,7 @@ call asks you, and no `tools:` entry can grant it:
 | `ledger_*` | the shared log: post, ask, answer, claim, release, done, failed, hand off | standing |
 | `agents` | who else is on this machine and what each can do | standing |
 | `projects` | the config's projects: id, key, path, `autoMerge`, container workspace | standing |
-| `pr` | one pull request from Hive TTY's own GitHub sweep, with its unresolved-thread count | standing |
+| `pr` | one pull request from HiveTTY's own GitHub sweep, with its unresolved-thread count | standing |
 | `jira_get` | the ticket: description, parent, comments and links, through the token the Work tab holds | standing |
 | `jira_transition` | a status move by name; never backwards; `assignToMe` fills an empty assignee | `tools:` entry or a card |
 | `jira_comment` | a comment, from markdown, optionally @mentioning people | `tools:` entry or a card |
@@ -154,4 +154,4 @@ call asks you, and no `tools:` entry can grant it:
 The builder and the shipper list `jira_transition`; nobody shipped lists `jira_comment`. The
 Jira tools are why a builder in a container needs no `jira-writer` on its PATH and no
 Atlassian credential in its environment. The skills prefer them and fall back to the CLI
-where a session runs without Hive TTY.
+where a session runs without HiveTTY.

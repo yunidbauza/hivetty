@@ -1,6 +1,6 @@
 # Harness architecture
 
-A **harness** is the CLI that drives an agent session. The Hive speaks to it through a
+A **harness** is the CLI that drives an agent session. HiveTTY speaks to it through a
 port, so that Claude Code is the first adapter rather than an assumption spread through
 main. Epic HIVE-232 is phase 1; HIVE-233 built the skeleton this doc describes, and each
 later story fills in its section.

@@ -1,6 +1,6 @@
 # Server mode
 
-Hive TTY can run on an always-on Mac and hold the sessions, the agents, the
+HiveTTY can run on an always-on Mac and hold the sessions, the agents, the
 ledger and the hook receiver there. The desktop app on any other machine
 attaches to it and becomes a window onto it, from home or from a hotel four
 time zones away.
@@ -72,7 +72,7 @@ digest of each, in the config file, and needs no keychain to check one.
 
 ## 1. Prepare the server
 
-1. **Install Hive TTY** from the dmg into `/Applications`, and open it once from
+1. **Install HiveTTY** from the dmg into `/Applications`, and open it once from
    Finder so Gatekeeper records it. Quit it again; launchd starts it from step 4
    on. Use a Developer ID signed build if you want the server to update itself
    (see [Updates](#updates)).
@@ -110,7 +110,7 @@ digest of each, in the config file, and needs no keychain to check one.
    sudo mkdir -p /usr/local/bin
    sudo tee /usr/local/bin/the-hive >/dev/null <<'EOF'
    #!/bin/sh
-   exec "/Applications/The Hive.app/Contents/MacOS/The Hive" "$@"
+   exec "/Applications/HiveTTY.app/Contents/MacOS/HiveTTY" "$@"
    EOF
    sudo chmod 755 /usr/local/bin/the-hive
    ```
@@ -165,18 +165,18 @@ item needs a menu bar.
 
 ```sh
 mkdir -p ~/Library/LaunchAgents ~/Library/Logs
-cat > ~/Library/LaunchAgents/com.behiques.the-hive.server.plist <<EOF
+cat > ~/Library/LaunchAgents/com.behiques.hivetty.server.plist <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.behiques.the-hive.server</string>
+  <string>com.behiques.hivetty.server</string>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>sleep 20; exec "/Applications/The Hive.app/Contents/MacOS/The Hive"</string>
+    <string>sleep 20; exec "/Applications/HiveTTY.app/Contents/MacOS/HiveTTY"</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -191,8 +191,8 @@ cat > ~/Library/LaunchAgents/com.behiques.the-hive.server.plist <<EOF
 </dict>
 </plist>
 EOF
-plutil -lint ~/Library/LaunchAgents/com.behiques.the-hive.server.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.the-hive.server.plist
+plutil -lint ~/Library/LaunchAgents/com.behiques.hivetty.server.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.hivetty.server.plist
 ```
 
 The heredoc is unquoted on purpose: `$HOME` is expanded when the file is
@@ -210,25 +210,44 @@ What each part is for:
   Tailscale a head start, though nothing depends on that: a bind that fails
   because the tailnet address is not up yet is retried, after 5 s and then
   doubling to once a minute, until it lands.
-- **Do not also add Hive TTY to Login Items.** Two copies at login means one
+- **Do not also add HiveTTY to Login Items.** Two copies at login means one
   loses the single-instance lock and quits, and launchd relaunches it every
   twenty seconds forever.
 
 Day to day:
 
 ```sh
-launchctl print gui/$(id -u)/com.behiques.the-hive.server | head -20   # state and pid
+launchctl print gui/$(id -u)/com.behiques.hivetty.server | head -20   # state and pid
 lsof -nP -iTCP:7433 -sTCP:LISTEN                                         # the socket
 tail -f ~/Library/Logs/the-hive-server.log                               # the log
-launchctl bootout gui/$(id -u)/com.behiques.the-hive.server             # stop
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.the-hive.server.plist  # start
+launchctl bootout gui/$(id -u)/com.behiques.hivetty.server             # stop
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.hivetty.server.plist  # start
 ```
 
-A running server has a menu-bar item whose tooltip reads *Hive TTY · serving*.
+A running server has a menu-bar item whose tooltip reads *HiveTTY · serving*.
 Its menu shows the bound address (or *Not serving* with the reason), the paired
-devices, *Pair a device…* and *Open Hive TTY*. The dock
+devices, *Pair a device…* and *Open HiveTTY*. The dock
 icon is hidden, and no unread badge appears there: each attached client badges
 its own dock.
+
+### Moving a served Mac from The Hive
+
+The Hive's move to HiveTTY (HIVE-328) never runs on a server: nobody is there
+to answer its dialogs. Move a served Mac by hand, over SSH:
+
+```sh
+launchctl bootout gui/$(id -u)/com.behiques.the-hive.server
+rm ~/Library/LaunchAgents/com.behiques.the-hive.server.plist
+```
+
+Then install HiveTTY from [the release page](https://github.com/yunidbauza/hivetty/releases/latest),
+point the `the-hive` command at `/Applications/HiveTTY.app/Contents/MacOS/HiveTTY`
+(step 5 above), and write and `launchctl bootstrap` the new plist above.
+
+`~/.hive` carries over by name, and the pairings and the server token live in
+`~/.hive/config.json`, so attached clients keep working. Credentials kept in the
+Keychain (Jira, Slack) do not: HiveTTY cannot read The Hive's, so enter them
+again once.
 
 ## 4. Pair each client
 
@@ -301,9 +320,9 @@ row pointing at the release page instead, and changes nothing.
 ### By hand, over SSH
 
 ```sh
-launchctl bootout gui/$(id -u)/com.behiques.the-hive.server
+launchctl bootout gui/$(id -u)/com.behiques.hivetty.server
 the-hive --update
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.the-hive.server.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.behiques.hivetty.server.plist
 ```
 
 `--update` refuses while the server is running, so installation cannot drop
@@ -435,6 +454,6 @@ bytes at normal flush sizes.
 | Client gets a 403 | It dialed a name the server did not bind. Use the exact `bind.host` string. The server's log names the refused host. |
 | Client says the versions differ | Update whichever side the message names. |
 | Jira or Slack shows signed out after a reboot | The login keychain is locked: automatic login is off, or the keychain password differs from the account password. |
-| Log says another server is already running for this config | Two copies started. Remove Hive TTY from Login Items; keep only the LaunchAgent. |
+| Log says another server is already running for this config | Two copies started. Remove HiveTTY from Login Items; keep only the LaunchAgent. |
 | Server never updates | Something is always live. Check for a long-lived session or a busy agent schedule, or update by hand. |
 | Menu-bar item shows the text "Hive" | The bundle is missing `Contents/Resources/tray/`. Reinstall. |

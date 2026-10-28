@@ -3,7 +3,7 @@
 The problems people hit first, and the fix for each.
 
 **On this page:** [claude is not found](#claude-is-not-found) ·
-[posix_spawnp failed](#posix_spawnp-failed) · [The Hive is damaged](#the-hive-is-damaged) ·
+[posix_spawnp failed](#posix_spawnp-failed) · [HiveTTY is damaged](#hivetty-is-damaged) ·
 [The PRs tab is empty](#the-prs-tab-is-empty) · [The Work tab is empty](#the-work-tab-is-empty) ·
 [A session is stuck on needs input](#a-session-is-stuck-on-needs-input) ·
 [A theme will not import](#a-theme-will-not-import) · [Still stuck](#still-stuck)
@@ -31,12 +31,12 @@ pnpm check:abi --fix
 
 `pnpm install` normally repairs this on its own.
 
-## The Hive is damaged
+## HiveTTY is damaged
 
 macOS says this about a build without a notarized signature. Remove the quarantine flag:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/The Hive.app"
+xattr -dr com.apple.quarantine "/Applications/HiveTTY.app"
 ```
 
 For a signed but not notarized build, right-click the app and choose **Open** once.

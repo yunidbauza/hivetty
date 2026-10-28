@@ -1,5 +1,5 @@
 flowchart TD
-  m[@hive mention] -->|Socket Mode| h[Hive TTY]
+  m[@hive mention] -->|Socket Mode| h[HiveTTY]
   c[Message in #eng] -->|Socket Mode| h
   h -->|wake| a[Agent · wake.on slack.app_mention]
   a -->|Slack MCP: read, draft| sl[Slack thread]

@@ -9,7 +9,7 @@ requests. Both refresh every 60 seconds; overscroll either list to refresh now.
 ## Connect Jira
 
 Until Jira is connected, Work has no list at all: the stage reads **Jira isn't connected**,
-with **Connect Jira** and **Learn what Hive TTY reads**, both of which open
+with **Connect Jira** and **Learn what HiveTTY reads**, both of which open
 **Settings › Integrations**. If the first read fails, the same page shows Jira's error and
 **Retry**. Connected with nothing assigned, it reads **No tickets for you**.
 
@@ -83,7 +83,7 @@ takes its place (the first, when it was the last). PRs and Agents do the same.
   Enter picks a person into a chip, Esc closes the list. **Could not search Jira** means the
   search failed; the box still works. A comment may be mentions alone. The box posts to
   Jira, where everyone on the ticket sees it, and Jira notifies each person mentioned.
-  A comment Hive TTY posted for an agent shows the agent's glyph, its name and **via the
+  A comment HiveTTY posted for an agent shows the agent's glyph, its name and **via the
   Hive**. That is a label, not proof: anyone who can edit the issue can set it.
 - **Properties**, on the right: status, priority and side (read off a title's `[P4]` and
   `[BE]` tags when it has them), project, assignee, the agent on it and its epic; the
@@ -193,7 +193,7 @@ is:pr author:@me is:merged sort:updated-desc    (kept for 24 hours)
 ```
 
 Each row opens the pull request's page on the stage, with its conversation, files, checks
-and the session whose branch made it. **Search pull requests** filters the list. Hive TTY stores no GitHub token; `gh` uses its own login, or `GH_TOKEN` /
+and the session whose branch made it. **Search pull requests** filters the list. HiveTTY stores no GitHub token; `gh` uses its own login, or `GH_TOKEN` /
 `GITHUB_TOKEN` if set.
 
 **Checks.** The PR page's Checks tab shows the branch's latest run without
@@ -209,7 +209,7 @@ preview, a scanner) sit in a row under the graph with a link out. The tab reads
 GitHub only while it is open.
 
 If the list stays empty, run `gh auth status`. **Settings › Integrations › Command line** shows
-which `gh` Hive TTY found and who it is signed in as.
+which `gh` HiveTTY found and who it is signed in as.
 
 The PRs place says this itself. With `gh` signed out the stage reads **The
 GitHub CLI isn't signed in**, shows `gh auth login`, and offers **Open a terminal** (in the

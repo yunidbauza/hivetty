@@ -22,7 +22,7 @@ The bar runs down the left edge.
 
 | Part | What it does |
 | --- | --- |
-| App icon at the top | Hive TTY. Your team name is at the right of Home's headline |
+| App icon at the top | HiveTTY. Your team name is at the right of Home's headline |
 | **Home** | Everything at a glance. See [The stage](#the-stage) |
 | **Sessions** | Your projects and their sessions, and the Overmind |
 | **Work** | Your Jira tickets. See [Jira and pull requests](work-and-prs.md) |

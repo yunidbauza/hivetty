@@ -52,7 +52,7 @@
 <rect x="329.65000000000003" y="583.9" width="175" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <rect x="528.65" y="583.9" width="82.05000000000001" height="36" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
 <text x="286.625" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">claude in its terminal</text>
-<text x="286.625" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Receiver in Hive TTY</text>
+<text x="286.625" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Receiver in HiveTTY</text>
 <text x="156.10000000000002" y="227" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Status tracker</text>
 <text x="156.10000000000002" y="405.95" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Status dot and bar counts</text>
 <text x="417.15000000000003" y="227" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Notifier picks a kind</text>

@@ -63,7 +63,7 @@ Status comes from Claude Code's own hooks, so "needs input" is exact rather than
 ## Names and branches
 
 - Every session gets an id like `sess-07` that never changes.
-- Claude titles the session from its conversation. Hive TTY tidies that into a short
+- Claude titles the session from its conversation. HiveTTY tidies that into a short
   hyphenated name, at most four words.
 - A ticket key always leads the name. Typing `work on ABC-123` links the session to
   that Jira issue once Jira confirms it exists:
@@ -74,10 +74,10 @@ Status comes from Claude Code's own hooks, so "needs input" is exact rather than
 
 ## Finish with /done
 
-Type `/done` in a session. Hive TTY marks it done and closes its terminal when the turn
+Type `/done` in a session. HiveTTY marks it done and closes its terminal when the turn
 ends. The row stays under **ENDED** and is still readable.
 
-`/done` is a skill Hive TTY adds to every session it starts. Your own skills can end with
+`/done` is a skill HiveTTY adds to every session it starts. Your own skills can end with
 it too ([Custom skills](skills.md)). If the app cannot be reached, the skill tells you to
 type `/exit` instead.
 

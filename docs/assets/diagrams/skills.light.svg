@@ -45,7 +45,7 @@
 <text x="181.125" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">~/.hive/skills · your skill folders</text>
 <text x="305.65" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Generated plugin</text>
 <text x="430.175" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Built-in done skill</text>
-<text x="305.65" y="244" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Sessions and agents Hive TTY starts</text>
+<text x="305.65" y="244" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Sessions and agents HiveTTY starts</text>
 <text x="650.625" y="58" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">claude in your own terminal</text>
 <text x="650.625" y="151" text-anchor="middle" dy="0.35em" font-size="13" font-weight="500" fill="var(--_text)">Unchanged</text>
 </svg>

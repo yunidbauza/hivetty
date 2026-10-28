@@ -502,7 +502,7 @@ keyed by `prKey(owner, repo, n)` lowercased, holds each opened PR's detail
 `PR_DETAIL_CAP`; a PR leaving the sweep drops its detail). `commentOnPr`
 answers the `GhResult` and re-reads on success. The readings, all memoised over
 the ledger: `useShipTrack`, `usePrEvents` (Everything), `usePrOpener` ("opened
-by"), `useReviewUrls` ("via Hive TTY"), `useHolderPost` (the track's now line)
+by"), `useReviewUrls` ("via HiveTTY"), `useHolderPost` (the track's now line)
 and `useMergeAsk`. `usePrsQuiet()` is the empty Hatchery.
 
 **The Files tab (HIVE-207).** `PrDetail.files` holds the first 100 changed files: path, +/−, change type and GitHub's `viewerViewedState` as `viewed`/`unviewed`/`dismissed`. `changedFiles` is the true total. The diff text lives in its own PR-keyed slice, `prDiffs`, read at the detail's `headSha`: once per sha, and again when the 60s detail poll sees the head move. It has its own slice because `loadPrDetail` replaces a detail wholesale. The same cap applies, and it is dropped with the PR. Parsing (`src/lib/unified-diff.ts`), the tree, counts and thread placement (`src/lib/pr-files.ts`) are computed on render, never stored. **Viewed state lives on GitHub, not in a store.** `setPrFileViewed` patches the one file at once, rolls it back on a refusal, and re-reads the detail either way. Thread writes (`replyToPrThread`, `setPrThreadResolved`) are not optimistic; the reload shows them.
