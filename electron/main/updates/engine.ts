@@ -109,7 +109,7 @@ export function createElectronUpdaterEngine(
       /*
         Only this app's own zip. After the repo rename The Hive and HiveTTY
         read one feed, and Squirrel refuses a zip with another app ID; The Hive
-        reaches HiveTTY through `migration.ts` instead.
+        1.2.3 carries its own move to HiveTTY (HIVE-328, tag v1.2.3).
       */
       const zip = result.updateInfo.files?.[0]?.url ?? result.updateInfo.path;
       if (!zip.startsWith(`${identity.replaceAll(' ', '-')}-`)) return null;

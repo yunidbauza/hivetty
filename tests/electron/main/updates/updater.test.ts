@@ -106,22 +106,6 @@ function harness(
   };
 }
 
-describe('createUpdater — the HiveTTY migration goes first', () => {
-  it('stands down when the migration asked, and checks as usual when it did not', async () => {
-    const asked = harness(SELF_INSTALL);
-    const preempt = vi.fn().mockResolvedValue(true);
-    await createUpdater({ ...asked.deps, preempt }).check('menu');
-    expect(preempt).toHaveBeenCalledWith('menu');
-    expect(asked.engine.check).not.toHaveBeenCalled();
-    expect(asked.inform).not.toHaveBeenCalled();
-
-    const passed = harness(SELF_INSTALL);
-    await createUpdater({ ...passed.deps, preempt: vi.fn().mockResolvedValue(false) }).check('auto');
-    expect(passed.engine.check).toHaveBeenCalledTimes(1);
-    expect(passed.notify).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('createUpdater — background checks', () => {
   it('announces a found release into the inbox, and says nothing when there is none', async () => {
     const withUpdate = harness(SELF_INSTALL);

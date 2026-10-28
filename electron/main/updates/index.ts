@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import { app, type BrowserWindow, dialog, shell } from 'electron';
 
 
@@ -14,10 +12,8 @@ import {
 import { primaryWindow } from '../aux-windows';
 import { claimServerLock, serverLockPath } from '../server/server-lock';
 
-import { probeUpdateCapability, readSignature } from './capability';
+import { probeUpdateCapability } from './capability';
 import { createElectronUpdaterEngine } from './engine';
-import { createMigration } from './migration';
-import { createMigrationIo } from './migration-io';
 import { runUpdateOneShot } from './one-shot';
 import { createUpdater, type Updater, type UpdaterDeps } from './updater';
 
@@ -64,9 +60,6 @@ export function runUnattended(isIdle: () => boolean): void {
   unattended = { isIdle };
 }
 
-/** Whether quitting would cut off a session or agent run. Set by {@link startUpdateChecks}. */
-let fleetIdle: () => boolean = () => true;
-
 /**
  * What `status()` answers before the probe has landed.
  *
@@ -94,7 +87,7 @@ function parentWindow(): BrowserWindow | undefined {
   return primaryWindow();
 }
 
-/** A yes/no the user is waiting on, shared by the updater and the migration. */
+/** A yes/no the user is waiting on. */
 const confirmDialog: UpdaterDeps['confirm'] = async ({ title, message, detail, confirmLabel }) => {
   const parent = parentWindow();
   const options = {
@@ -148,27 +141,6 @@ export async function ensureUpdater(): Promise<Updater> {
   starting ??= (async () => {
     const capability = await probeUpdateCapability();
     const currentVersion = app.getVersion();
-    const ownBundle = path.resolve(app.getPath('exe'), '..', '..', '..');
-    const migration = createMigration({
-      ...createMigrationIo({ userData: app.getPath('userData'), readSignature }),
-      identity: APP_NAME,
-      unattended: unattended !== null,
-      ownSignature: () => (app.isPackaged ? readSignature(ownBundle) : Promise.resolve('')),
-      ownBundle,
-      trash: (bundle) => shell.trashItem(bundle),
-      quit: () => {
-        app.quit();
-      },
-      isIdle: () => fleetIdle(),
-      confirm: confirmDialog,
-      inform: informDialog,
-      openExternal: (url) => {
-        void shell.openExternal(url);
-      },
-      log: (message) => {
-        console.error(message);
-      },
-    });
     const built = createUpdater({
       engine: createElectronUpdaterEngine(currentVersion, { relaunch: unattended === null }),
       capability,
@@ -187,7 +159,6 @@ export async function ensureUpdater(): Promise<Updater> {
       },
       confirm: confirmDialog,
       inform: informDialog,
-      preempt: (origin) => migration.check(origin),
     });
     updater = built;
     return built;
@@ -233,8 +204,7 @@ export function setUpdateNotificationSink(sink: NotifySink): void {
  * swallowed: the app runs perfectly well without an updater, and the Settings
  * pane still reports what it knows.
  */
-export function startUpdateChecks(isIdle: () => boolean = () => true): void {
-  fleetIdle = isIdle;
+export function startUpdateChecks(): void {
   void ensureUpdater()
     .then((instance) => {
       instance.start();
@@ -299,7 +269,6 @@ export function resetUpdater(): void {
   starting = null;
   notifySink = null;
   unattended = null;
-  fleetIdle = () => true;
 }
 
 export { createUpdater } from './updater';

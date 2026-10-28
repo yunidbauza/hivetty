@@ -489,13 +489,13 @@ for the in-app path even back when the swap was refused.
 HiveTTY is this app under a new name and a new app ID (`com.behiques.hivetty`,
 HIVE-326). The app ID is part of the designated requirement Squirrel enforces,
 so **no in-place update can turn The Hive into HiveTTY**. The Hive moves its
-users itself (HIVE-328), in `updates/migration.ts`:
+users itself (HIVE-328) from its last release, 1.2.3. The code lives in
+`updates/migration.ts` at tag `v1.2.3`; HiveTTY deleted it (HIVE-329).
 
 1. **Find it.** Before every update check, background or menu, The Hive reads
    `https://github.com/yunidbauza/hivetty/releases/latest/download/latest-mac.yml`.
-   A HiveTTY release is one whose zip is `HiveTTY-*`. A 404 is silent, and that
-   is what every check gets until the repo is renamed. When it asks, the
-   normal check stands down (`UpdaterDeps.preempt`).
+   A HiveTTY release is one whose zip is `HiveTTY-*`. A 404 is silent. When it
+   asks, the normal check stands down.
 2. **Ask.** "The Hive is now HiveTTY" → *Install HiveTTY* / *Later*. A
    background "Later" holds until the next launch; "Check for Updates…" always
    asks.
@@ -525,12 +525,9 @@ app, so HiveTTY cannot decrypt The Hive's `*-credential.bin`. It already reads
 an undecryptable credential as "not set", so the user pastes their Jira, Slack
 and pairing tokens once more. The old `userData` is left in place.
 
-It is inert on a server (nobody to answer; moving the LaunchAgent is HIVE-329,
-and `docs/server-mode.md` says how to do it by hand), in a dev or unsigned
-build (there is no Team ID to compare against), and in any build whose identity
-is no longer `The Hive`. This build is HiveTTY (HIVE-326), so here it always
-stands down; it runs only in The Hive's last releases, until the file is
-deleted.
+It is inert on a server (nobody to answer; `docs/server-mode.md` says how to
+move one by hand), in a dev or unsigned build (there is no Team ID to compare
+against), and in any build whose identity is not `The Hive`.
 
 **The feed once both apps share a repo.** After the rename,
 `yunidbauza/the-hive` redirects to `yunidbauza/hivetty`, so The Hive's
@@ -549,8 +546,6 @@ updates itself.
 | `electron/main/updates/updater.ts` | Every decision. Imports no Electron and no `electron-updater`, which is what makes it testable. |
 | `electron/main/updates/engine.ts` | The only file that touches `electron-updater`. |
 | `electron/main/updates/index.ts` | The singleton, the dialogs, the wiring. |
-| `electron/main/updates/migration.ts` | The HiveTTY move's decisions. Imports no Electron. |
-| `electron/main/updates/migration-io.ts` | Its effects: fetch, `ditto`, `codesign`, `mdfind`, and the hand-off shell that copies the data after exit. |
 
 `autoUpdater` is read **inside** `createElectronUpdaterEngine`, never at module
 scope. It is a lazy getter that constructs a `MacUpdater` on first access, which

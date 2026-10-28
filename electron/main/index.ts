@@ -321,7 +321,7 @@ if (!app.requestSingleInstanceLock()) {
      * depends on it, and a failure to schedule an update check must never be
      * able to stop a window from opening.
      */
-    startUpdateChecks(fleetIsIdle);
+    startUpdateChecks();
 
     if (serverMode) {
       /**
