@@ -17,6 +17,10 @@ const manifest = JSON.parse(
 );
 
 describe('package.json', () => {
+  it('is named hivetty', () => {
+    expect(manifest.name).toBe('hivetty');
+  });
+
   it('allowlists every dependency that needs an install script', () => {
     // pnpm 10 blocks dependency lifecycle scripts unless named here. Without
     // `electron` the runtime binary is never downloaded; without `node-pty`
@@ -75,6 +79,19 @@ describe('package.json', () => {
  */
 describe('electron-builder.yml', () => {
   const config = readFileSync(join(process.cwd(), 'electron-builder.yml'), 'utf8');
+
+  /**
+   * HIVE-326. The app ID is part of the designated requirement Squirrel checks,
+   * so it never changes casually; `productName` names the bundle and its helper
+   * apps, and `CFBundleName` must follow it (an override shipped 1.0.0 crashing
+   * at launch), so no `CFBundleDisplayName` papers over it any more.
+   */
+  it('builds HiveTTY, com.behiques.hivetty, published from yunidbauza/hivetty', () => {
+    expect(config).toMatch(/^appId: com\.behiques\.hivetty$/m);
+    expect(config).toMatch(/^productName: HiveTTY$/m);
+    expect(config).not.toContain('CFBundleDisplayName');
+    expect(config).toMatch(/^ {2}owner: yunidbauza\n {2}repo: hivetty$/m);
+  });
 
   it('runs the composed afterPack hook, not the signer alone', () => {
     expect(config).toMatch(/^afterPack: scripts\/after-pack\.mjs$/m);

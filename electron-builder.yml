@@ -7,20 +7,20 @@
 # The bundle identifier, and **not** a cosmetic string.
 #
 # For a Developer ID build it is part of the *designated requirement* Squirrel
-# checks before swapping one version for the next, so changing it after signed
-# releases begin breaks in-place updating across exactly one release. It was
-# changed from `dev.yunidbauza.the-hive` in the same release that introduced
-# signing, because that release already required a manual install — the one
-# moment the change costs nothing.
-appId: com.behiques.the-hive
+# checks before swapping one version for the next, so no in-place update
+# crosses a change to it. It became `com.behiques.hivetty` in HIVE-326, when
+# the app stopped being The Hive (the earlier IDs are in
+# `docs/packaging-and-updates.md`). The Hive's users do not update across that
+# change: HIVE-328's migration carries them over to HiveTTY.
+appId: com.behiques.hivetty
 
-# The app's identity, not its display name: it names the bundle (`The Hive.app`),
-# its executable, the dmg and zip the updater fetches, and so the Finder
-# label and the path a server's LaunchAgent runs. The name people read,
-# "Hive TTY", is set over it below as `CFBundleDisplayName` (`mac.extendInfo`)
-# and in `electron/shared/app-name.ts`. Changing this one is a migration, not a rename:
-# see "The app's name" in `docs/packaging-and-updates.md`.
-productName: The Hive
+# The app's one name, the same string as `APP_NAME` in
+# `electron/shared/app-name.ts`. It names the bundle (`HiveTTY.app`), its
+# executable, its helper apps, and the dmg and zip the updater fetches
+# (`HiveTTY-<v>-arm64-mac.zip`, the prefix `engine.ts` and `migration.ts` match
+# on), and so the Finder label and the path a server's LaunchAgent runs. See
+# "The app's name" in `docs/packaging-and-updates.md`.
+productName: HiveTTY
 
 copyright: Copyright © 2026 Behiques Consulting LLC
 
@@ -75,20 +75,12 @@ extraResources:
 mac:
   category: public.app-category.developer-tools
   icon: resources/icon.icns
-  # The name people read, over the identity `productName` keeps
-  # (`electron/shared/app-name.ts`): the Dock, Cmd-Tab and Launchpad prefer
-  # the display name, so they say "Hive TTY"; Finder still says "The Hive"
-  # (the file name). The key is not part of the code signature's designated
-  # requirement, so in-place updates are unaffected.
-  #
-  # `CFBundleName` must stay `productName`. Electron locates its helper apps
-  # as `<CFBundleName> Helper.app` under Contents/Frameworks and aborts at
-  # launch (`FATAL: Unable to find helper app`, electron_main_delegate_mac.mm)
-  # when that bundle is missing, while electron-builder names the helpers
-  # from `productName`. Overriding it shipped 1.0.0 crashing 85ms after
-  # launch on every install; so the leftmost menu title reads "The Hive".
-  extendInfo:
-    CFBundleDisplayName: Hive TTY
+  # `CFBundleName` follows `productName` and nothing overrides it. Electron
+  # locates its helper apps as `<CFBundleName> Helper.app` under
+  # Contents/Frameworks and aborts at launch (`FATAL: Unable to find helper
+  # app`, electron_main_delegate_mac.mm) when that bundle is missing, while
+  # electron-builder names the helpers from `productName`. Overriding it
+  # shipped 1.0.0 crashing 85ms after launch on every install.
   target:
     - target: dmg
       arch: [arm64]
@@ -191,7 +183,7 @@ dmg:
 publish:
   provider: github
   owner: yunidbauza
-  repo: the-hive
+  repo: hivetty
   # **The workflow owns publication, not electron-builder.**
   #
   # `draft` here does not mean "ship drafts". `.github/workflows/release.yml`
