@@ -163,7 +163,7 @@ describe('createUpdater — background checks', () => {
     expect(h.notify.mock.calls[0][0]).toMatchObject({
       action: {
         type: 'url',
-        url: 'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+        url: 'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
       },
     });
   });
@@ -295,7 +295,7 @@ describe('createUpdater — download and install', () => {
 
     expect(h.engine.download).not.toHaveBeenCalled();
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
   });
 });
@@ -414,7 +414,7 @@ describe('createUpdater — a swap macOS refuses', () => {
     await updater.download();
 
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
     expect(updater.status().capability).toMatchObject({ mode: 'manual' });
     expect(updater.status().capability.reason).toContain(
@@ -459,7 +459,7 @@ describe('createUpdater — a swap macOS refuses', () => {
     await updater.install();
 
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
     expect(updater.status().capability.mode).toBe('manual');
     expect(updater.status().capability.reason).toContain(
