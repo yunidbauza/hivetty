@@ -100,7 +100,7 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --draft \
             --verify-tag \
-            --notes "Download the \`.dmg\` below. Once installed, The Hive checks for new versions itself and tells you in the Inbox."
+            --notes "Download the \`.dmg\` below. Once installed, HiveTTY checks for new versions itself and tells you in the Inbox."
 
       # `APPLE_API_KEY` is a **path**, not a key.
       #
@@ -231,4 +231,4 @@ jobs:
           echo "--- dist ---"
           ls -la dist || true
           echo "--- codesign ---"
-          codesign --display --verbose=2 "dist/mac-arm64/The Hive.app" 2>&1 || true
+          codesign --display --verbose=2 "dist/mac-arm64/HiveTTY.app" 2>&1 || true
