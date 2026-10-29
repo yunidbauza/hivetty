@@ -275,7 +275,7 @@ import {
 import { createSlackTokens } from '../integrations/slack/tokens';
 import { createLedger } from '../ledger';
 import { createDeliver } from '../ledger/deliver';
-import { createLedgerNotifier } from '../ledger/notify';
+import { createLedgerNotifier, replayOpenAsks } from '../ledger/notify';
 import { agentMcpConfigFile, createMcpRuntime } from '../mcp';
 import {
   createNotificationHub,
@@ -2033,6 +2033,14 @@ export function registerIpcHandlers(
       */
       history?.resumable(id) !== undefined,
   });
+
+  // HIVE-364. The ledger loads without calling a listener and the hub keeps
+  // nothing, so an ask open at shutdown gets its card back here, once.
+  try {
+    replayOpenAsks(ledger.read({}), notifyLedgerEntry);
+  } catch (cause) {
+    console.warn('[ledger] could not replay open asks:', cause);
+  }
 
   /**
    * The other half of HIVE-167: asks that were open when their session ended.
