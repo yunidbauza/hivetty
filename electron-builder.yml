@@ -17,8 +17,8 @@ appId: com.behiques.hivetty
 # The app's one name, the same string as `APP_NAME` in
 # `electron/shared/app-name.ts`. It names the bundle (`HiveTTY.app`), its
 # executable, its helper apps, and the dmg and zip the updater fetches
-# (`HiveTTY-<v>-arm64-mac.zip`, the prefix `engine.ts` and `migration.ts` match
-# on), and so the Finder label and the path a server's LaunchAgent runs. See
+# (`HiveTTY-<v>-arm64-mac.zip`, the prefix `engine.ts` matches on), and so
+# the Finder label and the path a server's LaunchAgent runs. See
 # "The app's name" in `docs/packaging-and-updates.md`.
 productName: HiveTTY
 

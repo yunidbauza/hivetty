@@ -224,7 +224,7 @@ The app has one name, HiveTTY (HIVE-326), and it is load-bearing:
 Changing it again is a migration rather than a rename: `userData` and the
 Keychain item move with it, the executable a LaunchAgent runs is renamed, and
 an install updated in place keeps its old file name on disk. HIVE-328's
-migration (below) is what moving from The Hive took.
+migration ("Migrating to HiveTTY" below) is what moving from The Hive took.
 
 **`CFBundleName` cannot be overridden.** Electron's main process locates its
 helper apps as `<CFBundleName> Helper.app` under `Contents/Frameworks`, falls
@@ -454,7 +454,7 @@ release that introduced signing, then `com.behiques.the-hive`, and changed to
 part of the designated requirement Squirrel enforces, so changing it breaks
 in-place updating across exactly one release. The first change rode a release
 that required a manual install anyway; The Hive's users arrive at the second
-through the migration below.
+through the migration described in "Migrating to HiveTTY" below.
 
 Two consequences of moving to a certificate, both one-time and both expected:
 
