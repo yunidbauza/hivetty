@@ -78,6 +78,16 @@ describe('SwarmCreature', () => {
     expect(container.querySelector('[data-creature]')).toHaveStyle({ height: '120px' });
   });
 
+  // The canvas is absolute, so the box has no content height to defend it: in a
+  // flex column that overflows, a shrinkable box collapses and the creature
+  // paints over whatever follows it.
+  it.each(['overlord', 'egg'] as const)('never lets a flex parent shrink the %s box', (creature) => {
+    stubMatchMedia(false);
+    const { container } = render(<SwarmCreature creature={creature} />);
+
+    expect(container.querySelector('[data-creature]')).toHaveStyle({ flexShrink: '0' });
+  });
+
   it('draws the egg as the Hatchery does, in a box its height tall', () => {
     stubMatchMedia(false);
     const { container } = render(<SwarmCreature creature="egg" size={120} />);

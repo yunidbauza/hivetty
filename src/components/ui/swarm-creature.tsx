@@ -92,11 +92,14 @@ function BroodCanvas({
        */
       aria-hidden="true"
       data-creature={creature}
-      style={{ display: 'inline-block', position: 'relative', height: size, width }}
+      style={{ display: 'inline-block', position: 'relative', flexShrink: 0, height: size, width }}
       className={className}
     >
       {/*
-        The layout keeps `size`; the canvas bleeds BLEED past it on every side
+        The layout keeps `size`, and `flexShrink: 0` holds it there: the
+        canvas is absolute, so the box has no content height, and an
+        overflowing flex column would collapse it and paint the creature over
+        whatever follows (the picker's title). The canvas bleeds BLEED past it on every side
         (HIVE-222), so a ring, a glow or a wingtip drawn past the box fades out
         instead of ending in a hard edge. It takes no pointer events, so the air
         around the creature never covers what sits beside it.
@@ -163,7 +166,7 @@ export function SwarmCreature({
       <span
         aria-hidden="true"
         data-creature="egg"
-        style={{ display: 'inline-block', height: size, width: (size * EGG_BOX[2]) / EGG_BOX[3] }}
+        style={{ display: 'inline-block', flexShrink: 0, height: size, width: (size * EGG_BOX[2]) / EGG_BOX[3] }}
         className={cls}
       >
         <BroodEgg className="block h-full w-full" viewBox={EGG_BOX.join(' ')} />
