@@ -419,7 +419,7 @@ export function wakeCommand(input: WakeInput): WakeCommand {
     headless child with no tty. What a headless child does need is
     `isSessionEnvDenied`, and it needs it more than a pty does.
 
-    Launch The Hive with `pnpm desktop:dev` from inside a Claude Code session —
+    Launch HiveTTY with `pnpm desktop:dev` from inside a Claude Code session —
     which is how it gets developed — and main inherits `CLAUDECODE=1`,
     `CLAUDE_CODE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION=1`. Handed on, every
     agent **joins the launching session instead of starting its own**: `--name`

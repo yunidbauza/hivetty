@@ -142,7 +142,7 @@ html body {
   animation: glyph-in 0.45s cubic-bezier(0.16, 0.9, 0.3, 1) both;
 }
 
-/* "Hive TTY", as on the splash: `tty` typed after HIVE, small and blue, behind a cursor. */
+/* "HiveTTY", as on the splash: `tty` typed after HIVE, small and blue, behind a cursor. */
 .wordmark .tty {
   display: inline-flex;
   align-items: baseline;

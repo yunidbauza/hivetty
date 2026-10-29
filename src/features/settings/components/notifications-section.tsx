@@ -269,5 +269,5 @@ const SOURCE_DESCRIPTIONS: Record<string, string> = {
   session: 'The fleet asking for you, or telling you it is done.',
   github: 'Pull requests across the repositories your projects map to.',
   agent: 'Anything a background agent posts to the local notify endpoint.',
-  app: 'Hive TTY itself.',
+  app: 'HiveTTY itself.',
 };

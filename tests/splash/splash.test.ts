@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { THEME_STYLE_ID } from '@lib/theme/apply';
@@ -29,5 +32,12 @@ describe('the splash window', () => {
     expect(document.body.dataset.theme).toBe('light');
     expect(document.getElementById(THEME_STYLE_ID)).not.toBeNull();
     expect(seenAtPaletteRead).toEqual([{ theme: 'light', styled: true }]);
+  });
+});
+
+describe('the splash footer (HIVE-326)', () => {
+  it('marks the community edition beside the platform', () => {
+    const html = readFileSync(join(process.cwd(), 'splash.html'), 'utf8');
+    expect(html).toContain('<p class="build">community edition · darwin arm64</p>');
   });
 });

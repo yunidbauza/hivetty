@@ -588,7 +588,7 @@ describe('SessionTable', () => {
       expect(row).toBeDisabled();
       expect(row).toHaveAttribute(
         'title',
-        'old-01 was open when Hive TTY last closed — resume to pick it back up',
+        'old-01 was open when HiveTTY last closed — resume to pick it back up',
       );
 
       const resume = screen.getByRole('button', { name: /^resume old-01/ });

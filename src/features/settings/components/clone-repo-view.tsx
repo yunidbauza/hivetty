@@ -162,7 +162,7 @@ export function CloneRepoView({ onDone }: { onDone: () => void }) {
         }
         description={
           phase === 'compose'
-            ? 'Hive TTY runs git in a terminal, so it can ask you for credentials'
+            ? 'HiveTTY runs git in a terminal, so it can ask you for credentials'
             : (targetPath ?? '')
         }
       />

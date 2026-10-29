@@ -386,7 +386,7 @@ export function createToolHandlers(
 
     if (directory.projects.length === 0) {
       return ok(
-        'No projects are configured in The Hive. Ask for an absolute checkout path instead of a project name.',
+        'No projects are configured in HiveTTY. Ask for an absolute checkout path instead of a project name.',
         { projects: [] },
       );
     }

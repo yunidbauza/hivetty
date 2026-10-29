@@ -106,22 +106,6 @@ function harness(
   };
 }
 
-describe('createUpdater — the HiveTTY migration goes first', () => {
-  it('stands down when the migration asked, and checks as usual when it did not', async () => {
-    const asked = harness(SELF_INSTALL);
-    const preempt = vi.fn().mockResolvedValue(true);
-    await createUpdater({ ...asked.deps, preempt }).check('menu');
-    expect(preempt).toHaveBeenCalledWith('menu');
-    expect(asked.engine.check).not.toHaveBeenCalled();
-    expect(asked.inform).not.toHaveBeenCalled();
-
-    const passed = harness(SELF_INSTALL);
-    await createUpdater({ ...passed.deps, preempt: vi.fn().mockResolvedValue(false) }).check('auto');
-    expect(passed.engine.check).toHaveBeenCalledTimes(1);
-    expect(passed.notify).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe('createUpdater — background checks', () => {
   it('announces a found release into the inbox, and says nothing when there is none', async () => {
     const withUpdate = harness(SELF_INSTALL);
@@ -163,7 +147,7 @@ describe('createUpdater — background checks', () => {
     expect(h.notify.mock.calls[0][0]).toMatchObject({
       action: {
         type: 'url',
-        url: 'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+        url: 'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
       },
     });
   });
@@ -199,7 +183,7 @@ describe('createUpdater — the menu', () => {
 
     expect(h.inform).toHaveBeenCalledWith({
       message: "You're up to date.",
-      detail: 'Hive TTY 0.1.0 is the latest version.',
+      detail: 'HiveTTY 0.1.0 is the latest version.',
     });
   });
 
@@ -207,7 +191,7 @@ describe('createUpdater — the menu', () => {
     const yes = harness(SELF_INSTALL);
     await createUpdater(yes.deps).check('menu');
     expect(yes.confirm.mock.calls[0][0]).toMatchObject({
-      message: 'Hive TTY 0.2.0 is available.',
+      message: 'HiveTTY 0.2.0 is available.',
       confirmLabel: 'Download',
     });
     expect(yes.engine.download).toHaveBeenCalledTimes(1);
@@ -295,7 +279,7 @@ describe('createUpdater — download and install', () => {
 
     expect(h.engine.download).not.toHaveBeenCalled();
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
   });
 });
@@ -341,7 +325,7 @@ describe('createUpdater — a staged update is not lost', () => {
 
     expect(h.confirm).not.toHaveBeenCalled();
     expect(h.inform.mock.calls.at(-1)?.[0]).toMatchObject({
-      message: 'Hive TTY 0.2.0 is ready to install.',
+      message: 'HiveTTY 0.2.0 is ready to install.',
     });
   });
 
@@ -414,7 +398,7 @@ describe('createUpdater — a swap macOS refuses', () => {
     await updater.download();
 
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
     expect(updater.status().capability).toMatchObject({ mode: 'manual' });
     expect(updater.status().capability.reason).toContain(
@@ -459,7 +443,7 @@ describe('createUpdater — a swap macOS refuses', () => {
     await updater.install();
 
     expect(h.openExternal).toHaveBeenCalledWith(
-      'https://github.com/yunidbauza/the-hive/releases/tag/v0.2.0',
+      'https://github.com/yunidbauza/hivetty/releases/tag/v0.2.0',
     );
     expect(updater.status().capability.mode).toBe('manual');
     expect(updater.status().capability.reason).toContain(

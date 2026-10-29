@@ -1,4 +1,4 @@
-import { APP_DISPLAY_NAME } from '@shared/app-name';
+import { APP_NAME } from '@shared/app-name';
 import type { AppInfo } from '@shared/ipc-contract';
 import type { UpdateStatus } from '@shared/update-contract';
 
@@ -31,7 +31,7 @@ export function scheduleWordmark(root: ParentNode): void {
   glyphs.forEach((glyph, i) => {
     glyph.style.animationDelay = `${WORDMARK_START + i * WORDMARK_STEP}s`;
   });
-  // "Hive TTY", as on the splash: a cursor after HIVE, then `tty` typed in. About
+  // "HiveTTY", as on the splash: a cursor after HIVE, then `tty` typed in. About
   // has no log to wait for, so it types as soon as the cursor has shown.
   const cursorAt = WORDMARK_START + (glyphs.length - 1) * WORDMARK_STEP + 0.3;
   root.querySelectorAll<HTMLElement>('.wordmark .cursor').forEach((cursor) => {
@@ -57,8 +57,11 @@ export const versionLine = (info: AppInfo): string => `Version ${info.version}`;
  * The versions Electron's own panel showed are kept rather than dropped: they
  * are genuinely useful in a bug report, and the complaint about the default
  * panel was that it showed *only* them, under the framework's name.
+ *
+ * The edition rides the platform line because it describes the build, not the
+ * version (HIVE-326).
  */
-export const platformLine = (info: AppInfo): string => info.platform;
+export const platformLine = (info: AppInfo): string => `community edition · ${info.platform}`;
 
 export const runtimeLine = (info: AppInfo): string =>
   `electron ${info.electron} · chromium ${info.chrome}`;
@@ -141,8 +144,8 @@ export function updateCopy(status: UpdateStatus): UpdateCopy {
         label: null,
         note:
           availableVersion === null
-            ? `An update is ready — restart ${APP_DISPLAY_NAME} to install it.`
-            : `Version ${availableVersion} is ready — restart ${APP_DISPLAY_NAME} to install it.`,
+            ? `An update is ready — restart ${APP_NAME} to install it.`
+            : `Version ${availableVersion} is ready — restart ${APP_NAME} to install it.`,
         enabled: false,
       };
 
@@ -156,7 +159,7 @@ export function updateCopy(status: UpdateStatus): UpdateCopy {
     case 'idle':
     default:
       return checked
-        ? { label: null, note: `${APP_DISPLAY_NAME} is up to date.`, enabled: false }
+        ? { label: null, note: `${APP_NAME} is up to date.`, enabled: false }
         : { label: 'Check for updates', note: '', enabled: true };
   }
 }

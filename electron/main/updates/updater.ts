@@ -1,4 +1,4 @@
-import { APP_DISPLAY_NAME } from '@shared/app-name';
+import { APP_NAME } from '@shared/app-name';
 import {
   RELEASES_URL,
   releaseUrlFor,
@@ -100,12 +100,6 @@ export interface UpdaterDeps {
    * release page it points at is useful from any machine.
    */
   unattended?: { isIdle: () => boolean };
-  /**
-   * Asked before every check (HIVE-328): resolves true when it took the turn,
-   * and this check then stands down. The HiveTTY migration, which must win:
-   * once the repo is renamed, this check's feed is HiveTTY's feed too.
-   */
-  preempt?: (origin: 'auto' | 'menu') => Promise<boolean>;
 }
 
 export interface Updater {
@@ -217,7 +211,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       kind: 'app.update_ready',
       id: `app.update_ready:${version}`,
       title: `Update ready — ${version}`,
-      body: `Click to restart ${APP_DISPLAY_NAME} on the new version.`,
+      body: `Click to restart ${APP_NAME} on the new version.`,
       action: { type: 'update.install' },
     });
   };
@@ -271,7 +265,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
       setTimer(installWhenIdle, UNATTENDED_INSTALL_RETRY_MS);
       return;
     }
-    log(`[hive] nothing is live; installing ${APP_DISPLAY_NAME} ${String(availableVersion)}`);
+    log(`[hive] nothing is live; installing ${APP_NAME} ${String(availableVersion)}`);
     void install();
   };
 
@@ -328,7 +322,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
             ? `${
                 availableVersion === null
                   ? 'It'
-                  : `${APP_DISPLAY_NAME} ${availableVersion}`
+                  : `${APP_NAME} ${availableVersion}`
               } is on its way. You'll be told when it is ready to install.`
             : 'A check is in progress. Give it a moment and try again.',
         });
@@ -351,7 +345,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     if (state === 'ready' && availableVersion !== null) {
       if (origin === 'menu') {
         inform({
-          message: `${APP_DISPLAY_NAME} ${availableVersion} is ready to install.`,
+          message: `${APP_NAME} ${availableVersion} is ready to install.`,
           detail: 'Restart the app to finish updating.',
         });
       }
@@ -363,11 +357,6 @@ export function createUpdater(deps: UpdaterDeps): Updater {
     error = null;
 
     try {
-      if (deps.preempt !== undefined && (await deps.preempt(origin))) {
-        state = 'idle';
-        return;
-      }
-
       const found = await engine.check();
 
       if (found === null) {
@@ -377,7 +366,7 @@ export function createUpdater(deps: UpdaterDeps): Updater {
         if (origin === 'menu') {
           inform({
             message: "You're up to date.",
-            detail: `${APP_DISPLAY_NAME} ${currentVersion} is the latest version.`,
+            detail: `${APP_NAME} ${currentVersion} is the latest version.`,
           });
         }
         return;
@@ -404,8 +393,8 @@ export function createUpdater(deps: UpdaterDeps): Updater {
        * the app telling them twice and leaving one of the two unread.
        */
       const wanted = await confirm({
-        title: `Update ${APP_DISPLAY_NAME}`,
-        message: `${APP_DISPLAY_NAME} ${found.version} is available.`,
+        title: `Update ${APP_NAME}`,
+        message: `${APP_NAME} ${found.version} is available.`,
         detail:
           capability.mode === 'self-install'
             ? `You're running ${currentVersion}. The update downloads in the background; the app restarts when you're ready.`

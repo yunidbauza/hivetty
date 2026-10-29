@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 
-import { APP_DISPLAY_NAME } from '@shared/app-name';
+import { APP_NAME } from '@shared/app-name';
 
 import { showAboutWindow } from './about';
 import { appWindows, primaryWindow } from './aux-windows';
@@ -100,7 +100,7 @@ export function registerLifecycle({
       installApplicationMenu({
         isMac,
         isDev,
-        appName: APP_DISPLAY_NAME,
+        appName: APP_NAME,
         /**
          * Fire-and-forget: a menu `click` handler cannot be awaited, and every
          * outcome of a check — found, not found, failed — is already reported

@@ -72,16 +72,16 @@ describe('ActivityBar (HIVE-195)', () => {
     expect(useUiStore.getState().settings).toBe(true);
   });
 
-  it('names the glyph Hive TTY whatever the team is called', () => {
+  it('names the glyph HiveTTY whatever the team is called', () => {
     useAppearanceStore.setState({ teamName: 'Platform' });
     renderBar();
-    expect(screen.getByRole('img', { name: 'Hive TTY' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'HiveTTY' })).toBeInTheDocument();
     expect(screen.queryByText('Platform')).not.toBeInTheDocument();
   });
 
   it('draws the app mark, tile-less, as the brand, from the base the app is served at', () => {
     renderBar();
-    const brand = screen.getByRole('img', { name: 'Hive TTY' });
+    const brand = screen.getByRole('img', { name: 'HiveTTY' });
     expect(brand.tagName).toBe('IMG');
     expect(brand).toHaveAttribute('src', `${import.meta.env.BASE_URL}app-mark.png`);
   });

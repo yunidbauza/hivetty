@@ -26,10 +26,10 @@ describe('JiraSetupPage (HIVE-211)', () => {
     expect(useUiStore.getState()).toMatchObject({ settings: true, settingsSection: 'integrations' });
   });
 
-  it('Learn what Hive TTY reads opens the same pane (D3)', async () => {
+  it('Learn what HiveTTY reads opens the same pane (D3)', async () => {
     useHiveStore.setState({ ticketSource: { kind: 'unconfigured' } });
     render(<JiraSetupPage />);
-    await userEvent.click(screen.getByRole('button', { name: 'Learn what Hive TTY reads' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Learn what HiveTTY reads' }));
     expect(useUiStore.getState()).toMatchObject({ settings: true, settingsSection: 'integrations' });
   });
 
@@ -39,7 +39,7 @@ describe('JiraSetupPage (HIVE-211)', () => {
     render(<JiraSetupPage />);
     expect(screen.getByRole('heading', { name: "Couldn't read Jira" })).toBeInTheDocument();
     expect(screen.getByText('Jira said 401')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Learn what Hive TTY reads' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Learn what HiveTTY reads' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(refresh).toHaveBeenCalled();
   });

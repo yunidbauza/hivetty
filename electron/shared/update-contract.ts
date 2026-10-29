@@ -43,7 +43,7 @@
  */
 
 /** Where a user goes when the app cannot update itself. */
-export const RELEASES_URL = 'https://github.com/yunidbauza/the-hive/releases';
+export const RELEASES_URL = 'https://github.com/yunidbauza/hivetty/releases';
 
 /** The release page for one specific version. */
 export const releaseUrlFor = (version: string): string =>

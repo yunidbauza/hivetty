@@ -477,7 +477,7 @@ export function metricsScript(url: string, identity?: HookIdentity): string {
   const token = identity?.token ?? `$${HOOK_ENV_TOKEN}`;
 
   return `#!/bin/sh
-# The Hive — session usage reporter. Written per launch; do not edit.
+# HiveTTY — session usage reporter. Written per launch; do not edit.
 # Reads Claude Code's status line payload on stdin, forwards it to the app, and
 # prints nothing so no status line is rendered. See electron/main/harness/claude-code/settings.ts.
 ${guards}curl -s -m 5 -o /dev/null \\

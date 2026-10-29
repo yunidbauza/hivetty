@@ -18,7 +18,7 @@ export const WORDMARK_STEP = 0.045;
 export const LOG_SCHEDULE = [1.05, 1.35, 1.62, 1.92, 2.28];
 
 /**
- * The wordmark is "Hive TTY": HIVE assembles, a cursor waits after it, and on
+ * The wordmark is "HiveTTY": HIVE assembles, a cursor waits after it, and on
  * "hive cluster online" `tty` types itself in, a key every `TYPE_STEP`. The
  * hive wakes, then the terminal attaches.
  */

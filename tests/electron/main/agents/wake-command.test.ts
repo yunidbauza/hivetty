@@ -173,7 +173,7 @@ describe('createWakeCommand', () => {
 
     const prompt = written['/data/hive/agents/slack-watcher.system.md'];
 
-    expect(prompt).toContain('You are a background agent in The Hive.');
+    expect(prompt).toContain('You are a background agent in HiveTTY.');
     expect(prompt).toContain('Read the channel and report.');
   });
 

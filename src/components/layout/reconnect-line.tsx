@@ -28,7 +28,7 @@ export function ReconnectLine() {
       <span className="flex-1">
         {reconnecting ? (
           <>
-            <b>{`Lost Hive TTY on ${link.serverName}.`}</b>
+            <b>{`Lost HiveTTY on ${link.serverName}.`}</b>
             {link.nextAttemptAt === null ? (
               ' Reconnecting.'
             ) : (

@@ -19,7 +19,7 @@ const appMock = {
   }),
   whenReady: vi.fn(() => Promise.resolve()),
   quit: vi.fn(),
-  getName: vi.fn(() => 'The Hive'),
+  getName: vi.fn(() => 'HiveTTY'),
   requestSingleInstanceLock: vi.fn(() => true),
 };
 
@@ -301,13 +301,12 @@ describe('menu installation', () => {
     await vi.waitFor(() => expect(Menu.setApplicationMenu).toHaveBeenCalled());
   });
 
-  it('names the app menu Hive TTY, the display name, not the identity app.getName() keeps', async () => {
-    // `getName` is "The Hive" here, as in the app: it pins userData and the Keychain key.
+  it('names the app menu HiveTTY', async () => {
     const { Menu } = await import('electron');
     await register({ createWindow: vi.fn(), platform: 'darwin' });
     await appMock.whenReady();
     await vi.waitFor(() => expect(Menu.setApplicationMenu).toHaveBeenCalled());
     const [template] = vi.mocked(Menu.setApplicationMenu).mock.lastCall! as unknown as [{ label?: string }[]];
-    expect(template[0]?.label).toBe('Hive TTY');
+    expect(template[0]?.label).toBe('HiveTTY');
   });
 });

@@ -291,7 +291,7 @@ describe('the creature colours (HIVE-199)', () => {
     const result = importTheme(fullTheme({ modes }), 'bad.json');
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.detail).toBe('modes.dark.ui.creep is not a colour Hive TTY can read.');
+    expect(result.detail).toBe('modes.dark.ui.creep is not a colour HiveTTY can read.');
   });
 });
 
@@ -362,7 +362,7 @@ describe('colour parsing', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.detail).toBe(
-      'modes.dark.terminal.cyan is not a colour Hive TTY can read.',
+      'modes.dark.terminal.cyan is not a colour HiveTTY can read.',
     );
   });
 });
@@ -370,7 +370,7 @@ describe('colour parsing', () => {
 /**
  * The accepted set is a deliberate spec decision and stays exactly as it is.
  * What changes is the sentence: a theme ported from VS Code routinely carries
- * `rgba()`, and "is not a colour Hive TTY can read" reads as *cannot parse
+ * `rgba()`, and "is not a colour HiveTTY can read" reads as *cannot parse
  * that*, sending its author hunting for a typo that is not there.
  */
 describe('a recognised but unsupported colour family', () => {
@@ -384,7 +384,7 @@ describe('a recognised but unsupported colour family', () => {
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.detail).toContain('modes.light.ui.panel');
-      expect(result.detail).toContain('which Hive TTY does not read');
+      expect(result.detail).toContain('which HiveTTY does not read');
       // And it says what would work, so there is something to do about it.
       expect(result.detail).toContain('rgb() or oklch()');
     },
@@ -399,7 +399,7 @@ describe('a recognised but unsupported colour family', () => {
     if (result.ok) return;
     // The family *is* supported — this one really is unreadable.
     expect(result.detail).toBe(
-      'modes.light.ui.panel is not a colour Hive TTY can read.',
+      'modes.light.ui.panel is not a colour HiveTTY can read.',
     );
   });
 });

@@ -39,7 +39,7 @@ const manifest = (version: string): string =>
     {
       name: 'hive',
       version,
-      description: 'Skills Hive TTY injects into the sessions it starts.',
+      description: 'Skills HiveTTY injects into the sessions it starts.',
       skills: ['./skills/'],
     },
     null,

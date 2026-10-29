@@ -205,7 +205,7 @@ export function JiraCredentialGroup({
           </>
         ) : (
           <p className="text-ui-sm text-subtle">
-            Hive TTY will not write a token in plaintext instead. Set{' '}
+            HiveTTY will not write a token in plaintext instead. Set{' '}
             <code className="font-mono">{JIRA_TOKEN_ENV}</code> in this
             app&rsquo;s environment and restart it.
           </p>

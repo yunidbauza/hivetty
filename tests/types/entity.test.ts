@@ -144,7 +144,7 @@ describe('endings', () => {
       endedReason(
         session({ id: 'sess-01', status: 'done', endedBy: 'app-closed' }),
       ),
-    ).toBe('sess-01 was open when Hive TTY last closed — resume to pick it back up');
+    ).toBe('sess-01 was open when HiveTTY last closed — resume to pick it back up');
   });
 
   it('reads a done row with no endedBy as a cleared one', () => {

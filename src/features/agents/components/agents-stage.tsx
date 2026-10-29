@@ -36,7 +36,7 @@ export function AgentsStage() {
             </Button>
           }
         >
-          An agent is a headless Claude that Hive TTY wakes on the ledger or a schedule. Define one and it lists here.
+          An agent is a headless Claude that HiveTTY wakes on the ledger or a schedule. Define one and it lists here.
         </EmptyPlace>
       );
     }

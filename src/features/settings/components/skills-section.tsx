@@ -818,7 +818,7 @@ export function SkillsSection() {
       .length ?? 0;
 
   const description =
-    'Slash commands available only inside sessions Hive TTY starts. Saved as SKILL.md under ~/.hive/skills. A skill can end with /done handoff to close its session.';
+    'Slash commands available only inside sessions HiveTTY starts. Saved as SKILL.md under ~/.hive/skills. A skill can end with /done handoff to close its session.';
 
   /*
     No snapshot is the browser demo, which has no bridge to ask and no disk to

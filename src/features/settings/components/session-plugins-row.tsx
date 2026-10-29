@@ -31,7 +31,7 @@ const NAMED_CHARS = 36;
 const CHIP_CHARS = 3;
 
 const DESCRIPTION =
-  "A plugin switched off here does not load in the sessions Hive TTY starts, so its skills cannot compete with Hive TTY's own. On means Hive TTY does not block it; a plugin you disabled in Claude Code stays off. Claude started anywhere else is unchanged. Applies to the next session.";
+  "A plugin switched off here does not load in the sessions HiveTTY starts, so its skills cannot compete with HiveTTY's own. On means HiveTTY does not block it; a plugin you disabled in Claude Code stays off. Claude started anywhere else is unchanged. Applies to the next session.";
 
 /** Whether the off plugins are named one chip each, or counted in one. */
 export function namesFit(off: readonly string[]): boolean {

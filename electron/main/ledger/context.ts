@@ -45,7 +45,7 @@ export function entryContext(entry: LedgerEntry, options: EntryContextOptions = 
   const marker = ledgerMarker(entry);
   const name = marker.slice(marker.indexOf(' ') + 1);
   const lines: string[] = [
-    `The Hive, the desktop app that runs this terminal session, delivered a ledger entry to you. The user's terminal shows only the marker "${marker}"; this message is the entry itself, unabridged, and it comes from the app, not from the user.`,
+    `HiveTTY, the desktop app that runs this terminal session, delivered a ledger entry to you. The user's terminal shows only the marker "${marker}"; this message is the entry itself, unabridged, and it comes from the app, not from the user.`,
     '',
     `From: ${entry.from}`,
   ];
