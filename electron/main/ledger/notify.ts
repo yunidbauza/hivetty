@@ -1,4 +1,4 @@
-import { OVERMIND, type LedgerEntry } from '@shared/ledger-contract';
+import { OVERMIND, type LedgerEntry, type LedgerSnapshot } from '@shared/ledger-contract';
 import type { NotificationAction, NotificationKind } from '@shared/notification-contract';
 
 /**
@@ -101,7 +101,7 @@ const slackLinkFor = (
  * Which is what makes answering cheap: an `answer` names its thread, the
  * thread *is* the notification, so marking it read is one call with no lookup
  * table to keep. It also makes the whole module idempotent — `raise` dedups on
- * id — so replaying a day's ledger on a restart cannot double-raise.
+ * id — so {@link replayOpenAsks} on a restart cannot double-raise.
  *
  * ## Why a run's own receipt is the fallback, not the source
  *
@@ -429,4 +429,34 @@ export function createLedgerNotifier(
       createdAt: entry.ts,
     });
   };
+}
+
+/**
+ * The cards a restart would otherwise lose (HIVE-364).
+ *
+ * The notifier runs from `ledger.onChange`, which fires for new appends only,
+ * and the hub persists nothing. So an ask still open at shutdown came back
+ * with no card, and its asker sat `asking` with nothing to answer from. Run
+ * once at boot, after the ledger has loaded.
+ *
+ * Reads `openAsks`, so an answered, done, failed or expired thread stays
+ * closed. An ask to the overmind is replayed as itself; an ask to anyone else
+ * only through the overmind's `redirected` event (HIVE-167), which is what
+ * raised its card the first time.
+ */
+export function replayOpenAsks(
+  snapshot: Pick<LedgerSnapshot, 'entries' | 'openAsks'>,
+  notify: (entry: LedgerEntry) => void,
+): void {
+  const redirects = new Map<string, LedgerEntry>();
+  for (const entry of snapshot.entries) {
+    const redirected = str(entry.meta?.redirected);
+    if (entry.kind === 'event' && entry.from === OVERMIND && redirected !== undefined) {
+      redirects.set(redirected, entry);
+    }
+  }
+  for (const ask of snapshot.openAsks) {
+    const entry = ask.to === OVERMIND ? ask : redirects.get(ask.id);
+    if (entry !== undefined) notify(entry);
+  }
 }
