@@ -40,6 +40,7 @@ import {
 } from '@shared/agent-contract';
 
 import { CONTAINER_DIR, CONTAINER_MCP_FILE } from '../container/generated';
+import { sessionAdapter } from '../harness/registry';
 import { agentMcpConfig, type McpServerSpec } from '../mcp/agent-config';
 
 import { resolveClaude } from './claude-path';
@@ -142,6 +143,8 @@ export interface WakeCommandDeps {
   userDataPath: () => string;
   hostAlias: () => string;
   agentContainerSettingsPath: (config: AgentContainer) => string | null;
+  /** Whether a conversation is still on disk (HIVE-404). Absent: Claude Code's `record`. */
+  hasTranscript?: (cwd: string, sessionUuid: string) => boolean;
 }
 
 /**
@@ -170,6 +173,8 @@ type WakeInvocation = WakeCommand & {
    * started with, so a resumed wake has nothing new to record.
    */
   promptHash?: string;
+  /** The conversation this lane lost: its transcript was gone, so this wake starts fresh (HIVE-404). */
+  sessionLost?: string;
 };
 
 type BuildWakeCommand = (
@@ -247,6 +252,7 @@ function parseForWake(
 }
 
 export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
+  const hasTranscript = deps.hasTranscript ?? ((cwd: string, uuid: string) => sessionAdapter().record.hasTranscript(cwd, uuid));
   const fs = deps.fs ?? REAL_FS;
 
   return (name, trigger, extra, options) => {
@@ -403,13 +409,28 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
       with no hash predates this check, and what it holds is unknown.
     */
     const stalePrompt = previous.promptHash !== promptHash;
+    // A task run has always run in the agent's own directory; a lane runs in its own (HIVE-188).
+    const workdir = deps.workdir(name, task ? STANDING_LANE : lane);
+    /*
+      The uuid of a conversation whose transcript is gone (HIVE-404). Claude deletes transcripts
+      after `cleanupPeriodDays`, and `--resume` of a missing one fails every wake, the handoff wake
+      included, so the lane never recovers. Asked in the cwd the session ran in. A container
+      agent's transcript lives inside the container, where the host cannot look.
+    */
+    const lost =
+      !task &&
+      pending === undefined &&
+      def.container === undefined &&
+      previous.sessionUuid !== undefined &&
+      !hasTranscript(workdir, previous.sessionUuid)
+        ? previous.sessionUuid
+        : undefined;
     const lastTurn =
       !task &&
+      lost === undefined &&
       pending === undefined &&
       previous.sessionUuid !== undefined &&
       (forced || stalePrompt || previous.runsSinceRotate >= def.limits.rotateAfter);
-    // A task run has always run in the agent's own directory; a lane runs in its own (HIVE-188).
-    const workdir = deps.workdir(name, task ? STANDING_LANE : lane);
     const systemPrompt = deps.promptFile(name);
     let agentMcp: string | null = null;
 
@@ -450,9 +471,11 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
       deps.state.patchLane(name, lane, { pendingSession: undefined });
       if (forced) deps.state.patch(name, { forceRotate: undefined });
     }
+    // A fresh conversation is not the lost one: left alone, its count would ask it for a handoff.
+    if (lost !== undefined) deps.state.patchLane(name, lane, { runsSinceRotate: 0, rotateFailures: 0 });
 
     const resuming =
-      task || pending !== undefined ? undefined : previous.sessionUuid;
+      task || pending !== undefined || lost !== undefined ? undefined : previous.sessionUuid;
     const minted = task ? deps.newUuid() : (pending?.uuid ?? deps.newUuid());
 
     let command: WakeCommand;
@@ -516,6 +539,7 @@ export function createWakeCommand(deps: WakeCommandDeps): BuildWakeCommand {
       lastTurn,
       kind,
       ...(resuming === undefined ? { promptHash } : {}),
+      ...(lost === undefined ? {} : { sessionLost: lost }),
     };
   };
 }

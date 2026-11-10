@@ -215,3 +215,7 @@ leave a handoff note, and the next wake starts a fresh session that opens with i
 A resumed conversation keeps the instructions it started with, so editing an agent's
 definition (or an app update to its preamble) rotates it the same way: the next wake
 hands off under the old instructions, and the one after starts fresh on the new ones.
+
+Claude Code deletes old conversations after `cleanupPeriodDays` (30 days by default). A lane
+whose conversation is gone starts fresh on its next wake, with no handoff, and the inbox gets
+an event saying that lane's memory was lost.
