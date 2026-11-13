@@ -170,19 +170,35 @@ not a pass, and neither is a JSON you did not read to the end.
 nothing in between. Anything in between, including a wait, voids it: re-run
 the gate verbatim.
 
+Merge with the tool, never through a shell (HIVE-409):
+
+```
+mcp__hive__pr_merge { repo: "<owner>/<repo>", number: <N>, sha: "<the SHA the CLEAR line printed>", subject: "<PR title> (#<N>)", body: "<KEY> · https://github.com/<owner>/<repo>/pull/<N>" }
+```
+
+HiveTTY runs `gh pr merge --squash --match-head-commit` itself, with no
+shell, so a title with `&` or `;` is text and needs no stripping. On a
+project with auto-merge on it runs at once; otherwise the person answers a
+card. The tool answers with what `gh` printed, or why it did not merge.
+
+The subject and body are always explicit: GitHub's default squash message
+lists every commit and adds a `Co-authored-by` line per commit author, bots
+included, and each one becomes a contributor (HIVE-349). No ticket: the body
+is the PR URL alone. The SHA is copied from the CLEAR line; carrying it is
+the check.
+
+If `mcp__hive__pr_merge` is not in your tools (an older HiveTTY), fall back
+to the Bash merge, alone in its own call, `--repo` last:
+
 ```
 gh pr merge <N> --squash --match-head-commit <the SHA the CLEAR line printed> --subject "<PR title, stripped> (#<N>)" --body "<KEY> · https://github.com/<owner>/<repo>/pull/<N>" --repo <owner>/<repo>
 ```
 
-The subject and body are always explicit: GitHub's default squash message
-lists every commit and adds a `Co-authored-by` line per commit author, bots
-included, and each one becomes a contributor (HIVE-349). Strip `;` `&` `|`
-`<` `>` `` ` `` `$` `"` `\` from the title: each either breaks the quoting
-or stops the line matching the auto-merge grant. No ticket: the body is the
-PR URL alone. Both stay on one line.
+For the Bash merge, strip `;` `&` `|` `<` `>` `` ` `` `$` `"` `\` from the
+title: each either breaks the quoting or stops the line matching the
+auto-merge grant. Subject and body stay on one line.
 
-The SHA is copied from the CLEAR line; carrying it is the check. `--repo` is
-**last** and stays last: the shipper's auto-merge grant pins the slug at the
+`--repo` is **last** and stays last: the shipper's auto-merge grant pins the slug at the
 end of the line, because `gh` reads the last `--repo` it is given and a grant
 that allowed anything after it would allow another repository. Never
 `--delete-branch`: from inside a worktree it tries to switch the checkout and
@@ -192,10 +208,10 @@ fails half way. Step 4 owns teardown. Then confirm:
 gh pr view <N> --repo <owner>/<repo> --json state,mergedAt,mergeCommit --jq '[.state, .mergedAt, .mergeCommit.oid]'
 ```
 
-**The fence.** Run by the shipper, `gh pr merge` is granted only for projects
-whose `autoMerge` is on (HIVE-166). For any other project the call stops at
-the Hive's permission fence and becomes an inbox card; the run ends `asking`,
-and the answer wakes a fresh run. That card is the checkpoint, and the wait
+**The fence.** Run by the shipper, the merge (the tool, or the Bash fallback)
+is granted only for projects whose `autoMerge` is on (HIVE-166). For any other
+project the call stops at the Hive's permission fence and becomes an inbox
+card; the run ends `asking`, and the answer wakes a fresh run. That card is the checkpoint, and the wait
 behind it voids the CLEAR like any other wait: **the resumed run re-runs the
 gate** and merges on the new CLEAR, which the one-shot grant now lets through.
 The shipper holds no `gh api` at all, because a merge by REST or by GraphQL

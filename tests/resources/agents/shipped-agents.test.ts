@@ -253,4 +253,15 @@ describe('the shipper merge gate', () => {
   it('merge-pr says the thread count can be ninety seconds old and what a HOLD on it does', () => {
     expect(read('skills', 'merge-pr', 'SKILL.md')).toMatch(/ninety\s+seconds/);
   });
+
+  // HIVE-409: the merge goes through the MCP tool, so a title with `&` or `;` is text; Bash is the fallback.
+  it('merge-pr and the shipper merge with mcp__hive__pr_merge, and name the Bash merge as the fallback', () => {
+    const skill = read('skills', 'merge-pr', 'SKILL.md');
+    expect(skill).toMatch(/mcp__hive__pr_merge \{ repo: [^}]*number: [^}]*sha: [^}]*subject: [^}]*body: [^}]*\}/);
+    expect(skill).toMatch(/not in your tools[^.]*fall back\s+to the Bash merge/);
+    expect(skill).toMatch(/gh pr merge <N> --squash --match-head-commit [^\n]*--repo <owner>\/<repo>\n/);
+    const shipper = read('agents', 'shipper', 'AGENT.md');
+    expect(shipper).toMatch(/mcp__hive__pr_merge/);
+    expect(shipper).toMatch(/fall\s+back\s+to the Bash merge/);
+  });
 });
