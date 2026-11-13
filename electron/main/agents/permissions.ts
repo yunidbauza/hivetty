@@ -472,8 +472,15 @@ export function createPermissions(deps: PermissionDeps): Permissions {
         composed here. Refusing the whole write is the only safe answer —
         writing "most of" a frontmatter value is how the file gets a second
         key in the first place.
+
+        A quote at either end is refused for the same reason (HIVE-355):
+        `parseList` strips one pair, so `"'*'"` in the file reads as `'*'`,
+        and written back unquoted that reads as `*`, which allows every tool.
+        Whitespace at either end is the same hole: `" *"` reads as ` *`, and the
+        unquoted file is trimmed on the next read. `\s` is what `String.trim`
+        removes, NBSP, the BOM and other unicode spaces included.
       */
-      const unwritable = entries.find((entry) => /[\n\r[\]#]/.test(entry));
+      const unwritable = entries.find((entry) => /[\n\r[\]#]|^['"\s]|['"\s]$/.test(entry));
 
       if (unwritable !== undefined) {
         refuse(

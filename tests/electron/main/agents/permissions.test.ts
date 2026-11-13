@@ -549,6 +549,17 @@ describe('onAnswer', () => {
   it.each([
     ['---\nname: drone\ntools: [Read, Wri]te]\n---\n\nBody.\n', '"Wri]te"'],
     ['---\nname: drone\ntools: [Read, W[rite]\n---\n\nBody.\n', '"W[rite"'],
+    // HIVE-355: `parseList` strips one pair, so `"'*'"` reads as `'*'`; written
+    // back unquoted it would read as `*`, which allows every tool.
+    ['---\nname: drone\ntools: ["\'*\'", Grep]\n---\n\nBody.\n', '"\'*\'"'],
+    // Whitespace inside a quote pair survives `parseList` but not the next
+    // read of the unquoted file, which trims it: ` *` becomes `*`.
+    ['---\nname: drone\ntools: [" *", Grep]\n---\n\nBody.\n', '" *"'],
+    ['---\nname: drone\ntools: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
+    ['---\nname: drone\ntools: [" * ", Grep]\n---\n\nBody.\n', '" * "'],
+    ['---\nname: drone\ntools: [" *", Grep]\n---\n\nBody.\n', '" *"'],
+    ['---\nname: drone\ntools: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
+    ['---\nname: drone\ntools: ["﻿*", Grep]\n---\n\nBody.\n', '"﻿*"'],
   ])('refuses the write when an entry cannot go into tools: safely', async (source, quoted) => {
     const d = deps([ask('a1', 'drone', RUNGS)], { read: vi.fn(async () => source) });
     await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-family') as never);
