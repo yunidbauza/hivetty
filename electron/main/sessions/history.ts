@@ -157,10 +157,10 @@ const planFileList = (value: unknown, legacy: unknown): SessionRecord['planFiles
   }
   const list = value.flatMap((item: unknown) => {
     if (typeof item !== 'object' || item === null) return [];
-    const { file, at } = item as { file?: unknown; at?: unknown };
+    const { file, at, noted } = item as { file?: unknown; at?: unknown; noted?: unknown };
     const path = text(file);
     const time = finite(at);
-    return path === undefined || time === undefined ? [] : [{ file: path, at: time }];
+    return path === undefined || time === undefined ? [] : [{ file: path, at: time, ...(noted === true ? { noted: true as const } : {}) }];
   });
   return list.length === 0 ? undefined : list;
 };

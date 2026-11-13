@@ -261,10 +261,10 @@ export function createBuilderProgress({
       const last = live ?? latest(started);
       if (last === undefined) return;
       const [askId, link] = last;
-      // An ended build stays only if the session wrote no other plan after it ended.
-      // A silent build ended, for this rule, at its last post.
+      // An ended build stays only if the session wrote no other plan after it ended; a file only a link read is
+      // not a write (HIVE-420). A silent build ended, for this rule, at its last post.
       const end = link.endedAt ?? (quiet(link) ? link.lastAt : undefined) ?? Infinity;
-      const later = plans.files(entityId).some((read) => read.file !== link.file && read.at > end);
+      const later = plans.files(entityId).some((read) => read.file !== link.file && read.noted !== true && read.at > end);
       if (live === undefined && later) return;
       shown.set(entityId, askId);
       if (link.lastAt !== undefined) plans.buildSeen(entityId, link.lastAt);
