@@ -235,6 +235,39 @@ describe('ticketKeyFromPrompt', () => {
     expect(ticketKeyFromPrompt('work on H2-1')).toBe('H2-1');
     expect(ticketKeyFromPrompt('work on HIVE-104729')).toBe('HIVE-104729');
   });
+
+  /**
+   * The prompt is the user's own text, read on the main process, so every
+   * end-anchored pattern over it must stay linear (HIVE-356).
+   */
+  describe('stays linear inside the scan cap', () => {
+    // A synchronous stall never trips Vitest's timeout, so each case times itself.
+    const timed = (prompt: string) => {
+      const started = performance.now();
+      const key = ticketKeyFromPrompt(prompt);
+      expect(performance.now() - started).toBeLessThan(200);
+      return key;
+    };
+
+    it('a long space run after a verb, then a key on every word', () => {
+      const prompt = `start${' '.repeat(2500)}x ${'A-1 '.repeat(390)}`;
+      expect(prompt.length).toBeLessThan(MAX_PROMPT_SCAN);
+      expect(timed(prompt)).toBeNull();
+    });
+
+    it('a long non-letter run, then a guarded candidate on every word', () => {
+      const prompt = `${'!'.repeat(2700)}a ${'had fix A-1 '.repeat(110)}`;
+      expect(prompt.length).toBeLessThan(MAX_PROMPT_SCAN);
+      expect(timed(prompt)).toBeNull();
+    });
+
+    it.each(['start #  ABC-123', 'pick up the ticket : ABC-123'])(
+      'still reads a `#` or `:` before the key: %s',
+      (prompt) => {
+        expect(ticketKeyFromPrompt(prompt)).toBe('ABC-123');
+      },
+    );
+  });
 });
 
 /**
