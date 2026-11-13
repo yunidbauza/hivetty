@@ -742,6 +742,23 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
       expect(onPlanFiles).toHaveBeenLastCalledWith('sess-01', [{ file: p, at: 2_000 }]);
     });
 
+    it("keeps the noted mark and the link's time through a turn-end re-read (HIVE-420)", async () => {
+      vi.setSystemTime(1_000);
+      const plans = createPlans({ send: vi.fn() });
+      const p = write('linked.md');
+      // Nothing shown: the turn's end re-reads the last file read, here the linked one.
+      await plans.note('sess-01', p, root);
+
+      vi.setSystemTime(2_000);
+      await plans.apply({ entityId: 'sess-01', op: { kind: 'plan-file-reread' }, cwd: root });
+      expect(plans.files('sess-01')).toEqual([{ file: p, at: 1_000, noted: true }]);
+
+      writeFileSync(p, '## Task 1: A\n## Task 2: B\n'); // a shell edit: no hook
+      vi.setSystemTime(3_000);
+      await plans.apply({ entityId: 'sess-01', op: { kind: 'plan-file-reread' }, cwd: root });
+      expect(plans.files('sess-01')).toEqual([{ file: p, at: 1_000, noted: true }]);
+    });
+
     it('keeps the noted mark through a restore (HIVE-420)', async () => {
       const plans = createPlans({ send: vi.fn() });
       const p = write('linked.md');

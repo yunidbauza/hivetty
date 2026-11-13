@@ -170,7 +170,12 @@ export function createPlans({
    * came from a hook payload, so `readPlanFile` confines it to the session's
    * cwd. A re-read of the file a builder is working keeps its build link.
    */
-  async function readPlan(entityId: string, filePath: string, cwd: string | undefined, restored?: PlanFileRead): Promise<void> {
+  async function readPlan(
+    entityId: string,
+    filePath: string,
+    cwd: string | undefined,
+    { restored, own = false }: { restored?: PlanFileRead; own?: boolean } = {},
+  ): Promise<void> {
     const read = await readPlanFile(filePath, cwd);
     if (read === undefined) {
       if (!refused.has(filePath)) {
@@ -190,8 +195,11 @@ export function createPlans({
     // When the text was first read, not when it was last re-read: a turned-away
     // file is re-read at every Stop, and its time must not drift with them.
     // 0 is a pre-HIVE-359 history row's "unknown", never a real read time.
-    // A noted file's time was a link's (HIVE-420): the session's first own read takes a real one.
-    const at = last !== undefined && last.read === read.text && !last.noted ? last.at : restored?.at || now();
+    // A noted file's time was a link's (HIVE-420): only the session's own write (a hook-driven read) clears the
+    // mark and takes a real time. A turn-end re-read or a restore is not a write, so the mark and its time stand.
+    const noted = !own && (restored?.noted === true || last?.noted === true);
+    const at =
+      last !== undefined && (noted || (last.read === read.text && !last.noted)) ? last.at : restored?.at || now();
     const current = plans.get(entityId);
     // The text counts as shown only once the panel takes it: a file turned
     // away by rank must still be offered after the plan ahead of it finishes.
@@ -209,7 +217,7 @@ export function createPlans({
       at,
       read: read.text,
       ...(!held && accepts(current, 'plan-file') ? { text: read.text } : {}),
-      ...(restored?.noted ? { noted: true as const } : {}),
+      ...(noted ? { noted: true as const } : {}),
     });
     planFiles.set(entityId, records);
     // A new file, a new time, or a new order: the history's list changed.
@@ -245,7 +253,7 @@ export function createPlans({
     apply({ entityId, op, cwd }) {
       switch (op.kind) {
         case 'plan-file-touched':
-          return readPlan(entityId, op.path, cwd);
+          return readPlan(entityId, op.path, cwd, { own: true });
         case 'plan-file-reread': {
           /*
             A turn's end re-reads the plan on screen when it is a plan file, else
@@ -276,7 +284,7 @@ export function createPlans({
     },
     async restore(entityId, files, cwd) {
       // In order, so the last file read is the last one offered.
-      for (const read of files) await readPlan(entityId, read.file, cwd, read);
+      for (const read of files) await readPlan(entityId, read.file, cwd, { restored: read });
     },
     list: () => [...plans.values()],
     files: filesOf,
