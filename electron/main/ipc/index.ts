@@ -5361,35 +5361,46 @@ export function registerIpcHandlers(
      * Costs nothing in the ordinary case: the probe starts at boot and has
      * long since resolved by the time anyone opens a session.
      */
-    await loginEnvStatus();
-    const files = await prepareSession(request.sessionId, request.projectId, { container: true });
-    sessions?.open({
-      entityId: request.sessionId,
-      projectId: request.projectId,
-      cols: request.cols,
-      rows: request.rows,
-      task: request.task,
-      model: request.model,
-      effort: request.effort,
-      name: request.name,
-      // HIVE-88. Forwarded only here — a restart is never a resume.
-      resume: request.resume,
-      files,
-    });
+    // HIVE-386: the terminal is on screen through these awaits, so what is typed meanwhile is held.
+    sessions?.beginSpawn(request.sessionId);
+    try {
+      await loginEnvStatus();
+      const files = await prepareSession(request.sessionId, request.projectId, { container: true });
+      sessions?.open({
+        entityId: request.sessionId,
+        projectId: request.projectId,
+        cols: request.cols,
+        rows: request.rows,
+        task: request.task,
+        model: request.model,
+        effort: request.effort,
+        name: request.name,
+        // HIVE-88. Forwarded only here — a restart is never a resume.
+        resume: request.resume,
+        files,
+      });
+    } finally {
+      sessions?.endSpawn(request.sessionId);
+    }
   });
 
   handle(CH.ptySpawnTerminal, async (_event, payload) => {
     const request = parseSpawnTerminalRequest(payload);
     // The login-shell import is the only precondition a plain shell shares
     // with a session: no skills sync, no MCP config, no container files.
-    await loginEnvStatus();
-    sessions?.openTerminal({
-      entityId: request.sessionId,
-      projectId: request.projectId,
-      cols: request.cols,
-      rows: request.rows,
-      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-    });
+    sessions?.beginSpawn(request.sessionId);
+    try {
+      await loginEnvStatus();
+      sessions?.openTerminal({
+        entityId: request.sessionId,
+        projectId: request.projectId,
+        cols: request.cols,
+        rows: request.rows,
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      });
+    } finally {
+      sessions?.endSpawn(request.sessionId);
+    }
   });
 
   handle(CH.ptyRestart, async (_event, payload) => {
