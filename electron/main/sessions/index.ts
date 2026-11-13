@@ -76,7 +76,7 @@ import { createBootstrap, type Bootstrap } from './bootstrap';
 import { createChangedFiles } from './changed-files';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
 import type { SessionHistory } from './history';
-import { livePick } from './live-pick';
+import { livePick, takesEffort } from './live-pick';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
 
@@ -2458,6 +2458,15 @@ export function createSessions(options: SessionsOptions): Sessions {
         : undefined;
     const resume = resumeUuid !== undefined;
     const sessionUuid = resumeUuid ?? newSessionUuid();
+    /*
+      A resume comes back on what the session last ran (Pro #273): the model and effort its meters last reported,
+      over the spawn's pick the renderer still holds. Re-checked by `livePick`, because the history is a file on
+      disk and the launcher types these unquoted.
+    */
+    const saved = resume ? history?.all().find((record) => record.id === request.entityId) : undefined;
+    const live = saved === undefined ? {} : livePick({ model: saved.model, effort: saved.effort });
+    const model = live.model ?? request.model;
+    const effort = live.model !== undefined && !takesEffort(live.model) ? undefined : (live.effort ?? request.effort);
     /**
      * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
      * login shell with it and the session settles to `done`. See its own
@@ -2472,8 +2481,8 @@ export function createSessions(options: SessionsOptions): Sessions {
      */
     const plan = adapter.launch({
       command: runtime.claudeCommand,
-      ...(request.model === undefined ? {} : { model: request.model }),
-      ...(request.effort === undefined ? {} : { effort: request.effort }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
       /**
        * **Nothing is named here any more, and that is the feature** (HIVE-108).
        *
@@ -2659,8 +2668,8 @@ export function createSessions(options: SessionsOptions): Sessions {
         status: 'working',
         sessionUuid,
         ...(request.name === undefined ? {} : { name: request.name }),
-        ...(request.model === undefined ? {} : { model: request.model }),
-        ...(request.effort === undefined ? {} : { effort: request.effort }),
+        ...(model === undefined ? {} : { model }),
+        ...(effort === undefined ? {} : { effort }),
       },
       { resume },
     );

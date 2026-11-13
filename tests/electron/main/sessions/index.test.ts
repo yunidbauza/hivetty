@@ -2304,6 +2304,60 @@ describe('the history', () => {
 
       expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
     });
+
+    describe('on what the session last ran (Pro #273)', () => {
+      const typed = () =>
+        vi
+          .mocked(supervisor.write)
+          .mock.calls.map(([, text]) => text)
+          .join('\n');
+      const recorded = (patch: Record<string, unknown>): Written[] => [{ id: 'hero-refresh', patch }];
+
+      it('relaunches claude on the model and effort its status line last reported', () => {
+        const written = recorded({ model: 'sonnet', effort: 'low' });
+        // The renderer still holds the spawn's pick and sends it.
+        withHistory(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, model: 'opus', effort: 'high', resume: true });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model sonnet --effort low');
+        expect(typed()).toContain(`--resume ${PRIOR}`);
+        // The history's `begin` for this run records the pick it launched with.
+        const begun = patchesFor(written, 'hero-refresh').find((patch) => 'sessionUuid' in patch);
+        expect(begun).toMatchObject({ sessionUuid: PRIOR, model: 'sonnet', effort: 'low' });
+      });
+
+      it('drops the effort when the live model takes none', () => {
+        withHistory(recorded({ model: 'haiku' }), { 'hero-refresh': PRIOR }).open({
+          ...OPEN,
+          model: 'opus',
+          effort: 'high',
+          resume: true,
+        });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model haiku');
+        expect(typed()).not.toContain('--effort');
+      });
+
+      it('keeps the request pick when the history holds nothing usable', () => {
+        withHistory(recorded({ model: 'mystery; rm -rf ~', effort: 'xhigh' }), { 'hero-refresh': PRIOR }).open({
+          ...OPEN,
+          model: 'opus',
+          effort: 'high',
+          resume: true,
+        });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model opus --effort high');
+      });
+
+      it('a fresh spawn ignores the recorded pick', () => {
+        withHistory(recorded({ model: 'sonnet', effort: 'low' })).open({ ...OPEN, model: 'opus', effort: 'high' });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model opus --effort high');
+      });
+    });
   });
 
   it('keeps the history status current as the session reports it', () => {
