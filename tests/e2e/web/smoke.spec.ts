@@ -29,7 +29,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('renders the round-two frame', async ({ page }) => {
-  await expect(page).toHaveTitle('Hive');
+  await expect(page).toHaveTitle('HiveTTY');
   await expect(bar(page)).toBeVisible();
   await expect(page.getByRole('main')).toBeVisible();
   await expect(page.getByRole('banner')).toHaveCount(0);
