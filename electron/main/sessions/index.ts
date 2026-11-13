@@ -76,6 +76,7 @@ import { createBootstrap, type Bootstrap } from './bootstrap';
 import { createChangedFiles } from './changed-files';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
 import type { SessionHistory } from './history';
+import { livePick, takesEffort } from './live-pick';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
 
@@ -389,6 +390,14 @@ export interface Sessions {
    * record a write that never happened and never retry it.
    */
   write(entityId: string, data: string): boolean;
+  /**
+   * A spawn for this entity is on its way (HIVE-386). `ptySpawn` awaits the
+   * login env and the session's files before `open` registers anything, with
+   * the terminal already on screen; input written meanwhile is held, not lost.
+   */
+  beginSpawn(entityId: string): void;
+  /** That spawn landed or was refused: release what it held, or drop it. Call it in a `finally`. */
+  endSpawn(entityId: string): void;
   resize(entityId: string, cols: number, rows: number): void;
   /**
    * Make Claude re-read its size: SIGWINCH at the size it already has.
@@ -615,6 +624,22 @@ export function createSessions(options: SessionsOptions): Sessions {
    * else that arrives in the same window.
    */
   const heldInput = new Map<string, string[]>();
+  /**
+   * Entities whose spawn is still awaiting its preconditions (HIVE-386). Input
+   * for one of these is held like input before the bootstrap; input for any
+   * other unregistered entity is still dropped, so nothing typed at a dead
+   * session replays into a later restart.
+   *
+   * A Set, not a count: two overlapping spawns of one entity (a re-mount)
+   * share it, and the first to end closes the window for both.
+   */
+  const spawning = new Set<string>();
+
+  function hold(entityId: string, data: string): void {
+    const held = heldInput.get(entityId) ?? [];
+    held.push(data);
+    heldInput.set(entityId, held);
+  }
 
   /** Release everything held for this entity, in the order it was written. */
   function flushHeldInput(entityId: string): void {
@@ -1026,6 +1051,24 @@ export function createSessions(options: SessionsOptions): Sessions {
    */
   void skills?.sync();
 
+  /**
+   * Meters on their way to the renderer. The model and effort in them are what the session runs now, after any
+   * `/model` or `/effort` inside it, so the history keeps them: a resume launches with them, not the spawn's pick
+   * (Pro #273). Recorded only when they differ from what the history holds, since every `record` schedules a
+   * whole-file rewrite and the meters repeat the same pick on every status-line tick.
+   */
+  const sendMetrics = (event: SessionMetricsEvent): void => {
+    const pick = livePick(event.metrics);
+    if (history !== undefined && (pick.model !== undefined || pick.effort !== undefined)) {
+      const held = history.all().find((record) => record.id === event.entityId);
+      const changed =
+        (pick.model !== undefined && pick.model !== held?.model) ||
+        (pick.effort !== undefined && pick.effort !== held?.effort);
+      if (changed) history.record(event.entityId, pick);
+    }
+    send(CH.sessionMetrics, event);
+  };
+
   void hooks?.start({
     knowsSession: (entityId) => registry.sessionFor(entityId) !== undefined,
     /*
@@ -1264,11 +1307,7 @@ export function createSessions(options: SessionsOptions): Sessions {
      * one place that would benefit from the comparison already makes it, with
      * the previous value in hand rather than a copy kept here.
      */
-    onMetrics: (entityId, metrics) =>
-      send(CH.sessionMetrics, {
-        entityId,
-        metrics,
-      } satisfies SessionMetricsEvent),
+    onMetrics: (entityId, metrics) => sendMetrics({ entityId, metrics }),
   });
 
   /**
@@ -2419,6 +2458,15 @@ export function createSessions(options: SessionsOptions): Sessions {
         : undefined;
     const resume = resumeUuid !== undefined;
     const sessionUuid = resumeUuid ?? newSessionUuid();
+    /*
+      A resume comes back on what the session last ran (Pro #273): the model and effort its meters last reported,
+      over the spawn's pick the renderer still holds. Re-checked by `livePick`, because the history is a file on
+      disk and the launcher types these unquoted.
+    */
+    const saved = resume ? history?.all().find((record) => record.id === request.entityId) : undefined;
+    const live = saved === undefined ? {} : livePick({ model: saved.model, effort: saved.effort });
+    const model = live.model ?? request.model;
+    const effort = live.model !== undefined && !takesEffort(live.model) ? undefined : (live.effort ?? request.effort);
     /**
      * `sessionCommand` wraps the configured binary so a clean `/exit` takes the
      * login shell with it and the session settles to `done`. See its own
@@ -2433,8 +2481,8 @@ export function createSessions(options: SessionsOptions): Sessions {
      */
     const plan = adapter.launch({
       command: runtime.claudeCommand,
-      ...(request.model === undefined ? {} : { model: request.model }),
-      ...(request.effort === undefined ? {} : { effort: request.effort }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
       /**
        * **Nothing is named here any more, and that is the feature** (HIVE-108).
        *
@@ -2620,8 +2668,8 @@ export function createSessions(options: SessionsOptions): Sessions {
         status: 'working',
         sessionUuid,
         ...(request.name === undefined ? {} : { name: request.name }),
-        ...(request.model === undefined ? {} : { model: request.model }),
-        ...(request.effort === undefined ? {} : { effort: request.effort }),
+        ...(model === undefined ? {} : { model }),
+        ...(effort === undefined ? {} : { effort }),
       },
       { resume },
     );
@@ -2750,7 +2798,11 @@ export function createSessions(options: SessionsOptions): Sessions {
 
     write(entityId, data) {
       const sessionId = registry.sessionFor(entityId);
-      if (sessionId === undefined) return false;
+      if (sessionId === undefined) {
+        // Held for a spawn on its way, reported unwritten for the reason below (HIVE-386).
+        if (spawning.has(entityId)) hold(entityId, data);
+        return false;
+      }
 
       /**
        * Held, not dropped and not delivered early. See {@link heldInput}.
@@ -2767,14 +2819,23 @@ export function createSessions(options: SessionsOptions): Sessions {
        * session that was still starting.
        */
       if (bootstrap.isPending(entityId)) {
-        const held = heldInput.get(entityId) ?? [];
-        held.push(data);
-        heldInput.set(entityId, held);
+        hold(entityId, data);
         return false;
       }
 
       ptyIpc.write(sessionId, data);
       return true;
+    },
+
+    beginSpawn(entityId) {
+      spawning.add(entityId);
+    },
+
+    endSpawn(entityId) {
+      spawning.delete(entityId);
+      // Refused: nothing to deliver to. Bootstrapping: `onComplete` releases it, after the `\r`.
+      if (registry.sessionFor(entityId) === undefined) heldInput.delete(entityId);
+      else if (!bootstrap.isPending(entityId)) flushHeldInput(entityId);
     },
 
     resize(entityId, cols, rows) {

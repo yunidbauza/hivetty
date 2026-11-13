@@ -6,7 +6,7 @@
   "type": "module",
   "packageManager": "pnpm@10.2.1",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "pnpm": {
     "//": "Since pnpm 10, dependency lifecycle scripts are blocked unless allowlisted — a supply-chain default, and the right one. Every entry here is a package granted arbitrary code execution at install time; the list stays minimal and every addition is justified in review. `electron` downloads its runtime binary (story 080); `node-pty` compiles its native addon (story 084). Without them, installs succeed and the app does not run.",
@@ -120,8 +120,8 @@
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.4",
-    "@vitest/coverage-v8": "^4.1.10",
-    "@vitest/ui": "^4.1.10",
+    "@vitest/coverage-v8": "^5.1.0",
+    "@vitest/ui": "^5.1.0",
     "electron": "43.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "6.0.0-beta.1",
@@ -137,6 +137,6 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.65.0",
     "vite": "^8.2.0",
-    "vitest": "^4.1.10"
+    "vitest": "^5.1.0"
   }
 }

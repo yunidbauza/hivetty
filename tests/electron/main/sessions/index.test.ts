@@ -18,6 +18,8 @@ import type {
 } from '../../../../electron/shared/hook-contract';
 import type { StatusSignal } from '../../../../electron/shared/harness-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
+import type { SessionMetrics } from '../../../../electron/shared/metrics-contract';
+import type { SessionRecord } from '../../../../electron/shared/session-history-contract';
 
 import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
 import { sessionAdapter } from '../../../../electron/main/harness/registry';
@@ -571,6 +573,67 @@ describe('what a session runs', () => {
     expect(
       vi.mocked(supervisor.write).mock.calls.some((call) => call[1] === 'never\r'),
     ).toBe(false);
+  });
+
+  /**
+   * The spawn's own awaits (HIVE-386): `ptySpawn` waits on the login env and
+   * the session's files before `open` registers anything, with the terminal
+   * already on screen. Input in that window used to find no session and vanish.
+   */
+  it('holds input written while the spawn is still on its way', () => {
+    sessions.beginSpawn('hero-refresh');
+    expect(sessions.write('hero-refresh', 'kill -9 $$\n')).toBe(false);
+
+    sessions.open(OPEN);
+    sessions.endSpawn('hero-refresh');
+    const sessionId = mintedFor('hero-refresh');
+    expect(vi.mocked(supervisor.write).mock.calls).toHaveLength(0);
+
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(158 + SUBMIT);
+
+    expect(vi.mocked(supervisor.write).mock.calls.map((call) => call[1])).toEqual([
+      BOOT,
+      '\r',
+      'kill -9 $$\n',
+    ]);
+  });
+
+  it('drops input held for a spawn that was refused', () => {
+    sessions.beginSpawn('hero-refresh');
+    sessions.write('hero-refresh', 'never\r');
+    sessions.endSpawn('hero-refresh');
+
+    // A later spawn of the same entity does not replay it.
+    sessions.open(OPEN);
+    emitData({ sessionId: mintedFor('hero-refresh'), chunk: '$ ' });
+    vi.advanceTimersByTime(6_000);
+
+    expect(
+      vi.mocked(supervisor.write).mock.calls.some((call) => call[1] === 'never\r'),
+    ).toBe(false);
+  });
+
+  it('still drops input for an entity nobody is spawning', () => {
+    expect(sessions.write('hero-refresh', 'ghost\r')).toBe(false);
+
+    sessions.open(OPEN);
+    emitData({ sessionId: mintedFor('hero-refresh'), chunk: '$ ' });
+    vi.advanceTimersByTime(6_000);
+
+    expect(
+      vi.mocked(supervisor.write).mock.calls.some((call) => call[1] === 'ghost\r'),
+    ).toBe(false);
+  });
+
+  it('delivers input held for a terminal as soon as its spawn lands', () => {
+    sessions.beginSpawn('term-1');
+    sessions.write('term-1', 'ls\r');
+
+    sessions.openTerminal({ entityId: 'term-1', projectId: 'nova-web', cols: 80, rows: 24 });
+    sessions.endSpawn('term-1');
+
+    expect(vi.mocked(supervisor.write).mock.calls).toEqual([[mintedFor('term-1'), 'ls\r']]);
   });
 
   it('writes the bootstrap exactly once', () => {
@@ -1858,6 +1921,9 @@ describe('the history', () => {
     patch: Record<string, unknown>;
   }
 
+  /** The hook runtime's metrics callback, captured when `createSessions` starts it (Pro #273). */
+  let onMetrics: ((entityId: string, metrics: SessionMetrics) => void) | undefined;
+
   const withHistory = (written: Written[], resumable?: Record<string, string>) =>
     createSessions({
       supervisor,
@@ -1866,6 +1932,15 @@ describe('the history', () => {
       config: () => CONFIG,
       userDataPath: USER_DATA_PATH,
       newSessionUuid: () => TEST_UUID,
+      hooks: {
+        envFor: () => ({}),
+        start: (opts: { onMetrics: (entityId: string, metrics: SessionMetrics) => void }) => {
+          onMetrics = opts.onMetrics;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+        writeContainerSession: () => Promise.resolve(null),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
       history: {
         /*
           Both verbs land in one list. What these tests assert is *what main
@@ -1879,7 +1954,12 @@ describe('the history', () => {
           written.push({ id, patch: { ...patch } });
         },
         resumable: (id) => resumable?.[id],
-        all: () => [],
+        // The records the patches fold into, as the real history would hold them.
+        all: () => {
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const { id, patch } of written) byId.set(id, { ...(byId.get(id) ?? { id }), ...patch });
+          return [...byId.values()] as unknown as SessionRecord[];
+        },
         flush: () => {},
         dispose: () => {},
       },
@@ -2043,6 +2123,47 @@ describe('the history', () => {
   });
 
   /**
+   * A `/model` or `/effort` inside a session, as its status line reports it (Pro #273).
+   * Kept in the history so a resume launches on what the session last ran.
+   */
+  describe('the live pick', () => {
+    beforeEach(() => {
+      onMetrics = undefined;
+    });
+
+    it('records the model and effort the session is running now, for a resume', () => {
+      const written: Written[] = [];
+      withHistory(written).open({ ...OPEN, model: 'opus', effort: 'high' });
+      expect(onMetrics).toBeDefined();
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low' });
+      expect(patchesFor(written, 'hero-refresh')).toContainEqual({ model: 'sonnet', effort: 'low' });
+    });
+
+    it('records nothing when the meters repeat the pick the history already holds', () => {
+      const written: Written[] = [];
+      withHistory(written).open({ ...OPEN, model: 'opus', effort: 'high' });
+      const picks = () =>
+        patchesFor(written, 'hero-refresh').filter((patch) => Object.keys(patch).join() === 'model,effort');
+
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low' });
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low', contextPct: 40 });
+      expect(picks()).toEqual([{ model: 'sonnet', effort: 'low' }]);
+
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'max' });
+      expect(picks()).toEqual([
+        { model: 'sonnet', effort: 'low' },
+        { model: 'sonnet', effort: 'max' },
+      ]);
+    });
+
+    it('still sends the meters to the renderer', () => {
+      withHistory([]).open(OPEN);
+      onMetrics!('hero-refresh', { contextPct: 12 });
+      expect(sent.some((entry) => entry.channel === CH.sessionMetrics)).toBe(true);
+    });
+  });
+
+  /**
    * Picking a previous run's conversation back up (HIVE-88).
    *
    * The renderer asks; the history decides whether it can; the command line and
@@ -2182,6 +2303,60 @@ describe('the history', () => {
       settle(mintedFor('hero-refresh'));
 
       expect(supervisor.write).toHaveBeenCalledWith(mintedFor('hero-refresh'), BOOT);
+    });
+
+    describe('on what the session last ran (Pro #273)', () => {
+      const typed = () =>
+        vi
+          .mocked(supervisor.write)
+          .mock.calls.map(([, text]) => text)
+          .join('\n');
+      const recorded = (patch: Record<string, unknown>): Written[] => [{ id: 'hero-refresh', patch }];
+
+      it('relaunches claude on the model and effort its status line last reported', () => {
+        const written = recorded({ model: 'sonnet', effort: 'low' });
+        // The renderer still holds the spawn's pick and sends it.
+        withHistory(written, { 'hero-refresh': PRIOR }).open({ ...OPEN, model: 'opus', effort: 'high', resume: true });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model sonnet --effort low');
+        expect(typed()).toContain(`--resume ${PRIOR}`);
+        // The history's `begin` for this run records the pick it launched with.
+        const begun = patchesFor(written, 'hero-refresh').find((patch) => 'sessionUuid' in patch);
+        expect(begun).toMatchObject({ sessionUuid: PRIOR, model: 'sonnet', effort: 'low' });
+      });
+
+      it('drops the effort when the live model takes none', () => {
+        withHistory(recorded({ model: 'haiku' }), { 'hero-refresh': PRIOR }).open({
+          ...OPEN,
+          model: 'opus',
+          effort: 'high',
+          resume: true,
+        });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model haiku');
+        expect(typed()).not.toContain('--effort');
+      });
+
+      it('keeps the request pick when the history holds nothing usable', () => {
+        withHistory(recorded({ model: 'mystery; rm -rf ~', effort: 'xhigh' }), { 'hero-refresh': PRIOR }).open({
+          ...OPEN,
+          model: 'opus',
+          effort: 'high',
+          resume: true,
+        });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model opus --effort high');
+      });
+
+      it('a fresh spawn ignores the recorded pick', () => {
+        withHistory(recorded({ model: 'sonnet', effort: 'low' })).open({ ...OPEN, model: 'opus', effort: 'high' });
+        settle(mintedFor('hero-refresh'));
+
+        expect(typed()).toContain('--model opus --effort high');
+      });
     });
   });
 

@@ -743,8 +743,18 @@ export const useUiStore = create<UiState>()((set) => ({
       return state.inboxDrawer.open ? {} : { stackUp: true };
     }),
   hideStack: () => set({ stackUp: false }),
-  toggleStack: () => set((state) => ({ stackUp: !state.stackUp })),
-  openInboxDrawer: (thread) => set({ inboxDrawer: { open: true, thread: thread ?? null }, stackUp: false }),
+  // Settings holds the stack back, so the pill under it closes Settings and shows the stack rather than toggling it unseen.
+  toggleStack: () =>
+    set((state) =>
+      state.settings ? { settings: false, settingsSection: null, stackUp: true } : { stackUp: !state.stackUp },
+    ),
+  openInboxDrawer: (thread) =>
+    set({
+      inboxDrawer: { open: true, thread: thread ?? null },
+      stackUp: false,
+      settings: false,
+      settingsSection: null,
+    }),
   closeInboxDrawer: () => set({ inboxDrawer: { open: false, thread: null } }),
   markAnsweredHere: (thread) =>
     set((state) => (state.answeredHere.has(thread) ? {} : { answeredHere: new Set([...state.answeredHere, thread]) })),

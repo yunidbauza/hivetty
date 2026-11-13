@@ -155,12 +155,16 @@ const ISSUE_NOUNS = '(?:jira|ticket|issue|story|task|card|bug|epic)';
  *
  * Anchored at the **end** — it is tested against everything preceding the key,
  * so a match means the verb phrase runs right up to it.
+ *
+ * The tail is `(?:[#:]\s*)?$`, never `[#:]?\s*$`: with no `#` or `:` that
+ * `\s*` only re-splits the run the `\s+` before it already took, which is
+ * quadratic on a long space run, and this runs once per key token (HIVE-356).
  */
 const INTENT_LEAD_IN = new RegExp(
   `(?:^|[^a-z])(?:${INTENT_VERBS.join('|')})\\s+` +
     `(?:${DETERMINERS}\\s+)*` +
     `(?:${ISSUE_NOUNS}\\s+)*` +
-    `[#:]?\\s*$`,
+    `(?:[#:]\\s*)?$`,
   'i',
 );
 
@@ -251,7 +255,11 @@ export function ticketKeyFromPrompt(prompt: string): string | null {
      * spelling, so it is left alone rather than widened here — `(?:\w+\s+)*`
      * would start refusing real intent like "what I want is to work on ABC-123".
      */
-    const lookback = before.slice(0, lead.index + 1).replace(/[^a-z\s]+$/i, '');
+    // A backwards loop, not `/[^a-z\s]+$/`: that backtracks quadratically on a
+    // long non-letter run, and it runs once per guarded candidate (HIVE-356).
+    let end = lead.index + 1;
+    while (end > 0 && !/[a-z\s]/i.test(before[end - 1]!)) end--;
+    const lookback = before.slice(0, end);
     if (INTERROGATIVE_LEAD.test(lookback)) continue;
 
     return key;
