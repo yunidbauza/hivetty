@@ -92,6 +92,10 @@ export function createBuilderProgress({
   now?: () => number;
 }): BuilderProgress {
   const links = new Map<string, Link>();
+  /** A deferred step's throw, logged like ipc logs a synchronous one: `onEntry` never rejects. */
+  const warn = (id: string) => (cause: unknown) => {
+    console.warn(`[ledger] could not tick a build from ${id}:`, cause);
+  };
   /** Asks whose link waits on a plan read; entries in their threads wait too. */
   const pending = new Map<string, Promise<void>>();
   /** Each session's build last started: the one on screen (HIVE-359). */
@@ -165,15 +169,19 @@ export function createBuilderProgress({
       links.set(entry.id, { entityId: entry.from, builder, file, ticked: new Set(), tasks: [], state: 'building' });
     if (known !== undefined) {
       make(known);
-      // The shell may have edited it since the last Write: refresh the recorded text before the builder starts.
-      if (path !== undefined && !replaying) void plans.note(entry.from, path, cwd);
+      // The shell may have edited it since the last Write: refresh the linked file's recorded text, in the
+      // background, so the builder's first post most likely starts on it.
+      if (!replaying) void plans.note(entry.from, known, cwd).catch(warn(entry.id));
       return undefined;
     }
     if (path === undefined || replaying) return undefined;
     // A plan no hook announced (a subagent's or the shell's): read it from under the session's own cwd, then link.
-    const read = plans.note(entry.from, path, cwd).then((file) => {
-      if (file !== undefined) make(file);
-    });
+    const read = plans
+      .note(entry.from, path, cwd)
+      .then((file) => {
+        if (file !== undefined) make(file);
+      })
+      .catch(warn(entry.id));
     pending.set(entry.id, read);
     return read.finally(() => pending.delete(entry.id));
   }
@@ -185,7 +193,7 @@ export function createBuilderProgress({
     const askId = entry.thread;
     // A post or answer that beat its link's read waits for it, so ticks stay in order.
     const waiting = askId === undefined ? undefined : pending.get(askId);
-    if (waiting !== undefined) return waiting.then(() => handle(entry, at));
+    if (waiting !== undefined) return waiting.then(() => handle(entry, at)).catch(warn(entry.id));
     const linked = askId === undefined ? undefined : links.get(askId);
     if (askId === undefined || linked === undefined) return;
     // An ended build takes nothing more; it is kept so replay knows when it ended.

@@ -381,6 +381,33 @@ describe('createBuilderProgress', () => {
     rmSync(outside, { recursive: true, force: true });
   });
 
+  it('never rejects: a failed link read or a throw in a deferred tick is logged, not thrown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    write('unread.md');
+    const failing = createBuilderProgress({
+      plans: { ...plans, note: () => Promise.reject(new Error('history')) },
+      knowsSession: () => true,
+      cwdOf: () => root,
+    });
+    await expect(failing.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/unread.md' } }))).resolves.toBeUndefined();
+
+    const throwing = createBuilderProgress({
+      plans: {
+        ...plans,
+        offer: () => {
+          throw new Error('renderer');
+        },
+      },
+      knowsSession: () => true,
+      cwdOf: () => root,
+    });
+    const linking = throwing.onEntry(ask({ id: 'A2', meta: { stage: 'build', plan: '.hive/plans/unread.md' } }));
+    await expect(throwing.onEntry(post(1, {}, { thread: 'A2' }))).resolves.toBeUndefined();
+    await linking;
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('never links a plan file only another session read (HIVE-359)', async () => {
     const otherRoot = realpathSync(mkdtempSync(join(tmpdir(), 'hive-builds-other-')));
     mkdirSync(join(otherRoot, '.hive', 'plans'), { recursive: true });
