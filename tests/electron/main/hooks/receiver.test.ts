@@ -4999,9 +4999,18 @@ describe('hook receiver: plan files and plan mode reach onPlan (HIVE-180)', () =
     ]);
   });
 
-  it("never hands over a subagent's plan-file write, whole or truncated", async () => {
+  it("hands over a subagent's plan-file write, whole or truncated: the session's plan, whoever wrote it", async () => {
     await post(toolBody('Write', { file_path: PLAN_PATH, content: 'x' }, SUBAGENT));
     await post(toolBody('Write', { file_path: PLAN_PATH, content: 'x'.repeat(70 * 1024) }, SUBAGENT));
+
+    expect(planCalls).toHaveLength(2);
+    for (const call of planCalls) {
+      expect(call).toMatchObject({ entityId: 'sess-01', op: { kind: 'plan-file-touched', path: PLAN_PATH } });
+    }
+  });
+
+  it("never hands over a subagent's task tools", async () => {
+    await post(toolBody('TodoWrite', { todos: [{ content: 'a', status: 'pending' }] }, SUBAGENT));
 
     expect(planCalls).toEqual([]);
   });
