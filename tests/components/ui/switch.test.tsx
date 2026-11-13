@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { createRef } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Switch } from '@components/ui/switch';
@@ -13,6 +14,13 @@ import { Switch } from '@components/ui/switch';
  */
 
 describe('Switch', () => {
+  it('hands its control to a ref, so a caller can return focus to it', () => {
+    const ref = createRef<HTMLButtonElement>();
+    render(<Switch ref={ref} label="Session finished" checked={false} onCheckedChange={vi.fn()} />);
+
+    expect(ref.current).toBe(screen.getByRole('switch', { name: 'Session finished' }));
+  });
+
   it('exposes a switch role carrying its label and state', () => {
     render(<Switch label="Session finished" checked={false} onCheckedChange={vi.fn()} />);
 

@@ -57,9 +57,8 @@ import type {
 } from '@shared/config-contract';
 import type {
   DirEntry,
-  FileContent,
+  FileRead,
   FsChangedEvent,
-  FsRefusal,
   FsResult,
   ReadDirRequest,
   ReadFileRequest,
@@ -461,7 +460,7 @@ const bridge: HiveBridge = {
       ipcRenderer.invoke(CH.fsReadDir, request),
     readFile: (
       request: ReadFileRequest,
-    ): Promise<FsResult<FileContent | FsRefusal>> =>
+    ): Promise<FsResult<FileRead>> =>
       ipcRenderer.invoke(CH.fsReadFile, request),
     writeFile: (request: WriteFileRequest): Promise<WriteFileResult> =>
       ipcRenderer.invoke(CH.fsWriteFile, request),

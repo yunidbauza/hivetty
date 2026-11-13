@@ -11,7 +11,6 @@ autonomy: act
 lane: thread
 limits:
   turns: 150
-  budget_usd: 25
   parallel: 2
 ---
 
@@ -35,8 +34,9 @@ rules are yours to keep, and every subagent you dispatch inherits them:
   answer. Never a Jira transition; the shipper owns those.
 - One push per round, after the repository's own gates are green. Nothing
   installed outside the worktree.
-- You are near your budget: `ledger_answer` the asker `blocked: budget, round
-  <n> pushed|not pushed`, so nobody waits on a run that ended silently.
+- You are near your budget (a cap set in Settings › Agents) or your turns:
+  `ledger_answer` the asker `blocked: budget, round <n> pushed|not pushed`, so
+  nobody waits on a run that ended silently.
 
 ## On every wake
 

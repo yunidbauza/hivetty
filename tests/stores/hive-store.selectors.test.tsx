@@ -68,7 +68,7 @@ import {
   usePrFlapCounts,
   useSessionPr,
   useSessionPrRow,
-  useNextTransition,
+  useTicketTransitions,
   useOpenTicket,
   useTicketEvents,
   useTicketGroups,
@@ -2757,16 +2757,16 @@ describe('Work page selectors (HIVE-203)', () => {
     });
   });
 
-  describe('useNextTransition', () => {
-    it('is undefined without transitions, and the forward one with them', () => {
-      const { result } = renderHook(() => useNextTransition('GRAC-3018'));
-      expect(result.current).toBeUndefined();
+  describe('useTicketTransitions', () => {
+    it('is empty without transitions, and every cached one with them', () => {
+      const { result } = renderHook(() => useTicketTransitions('GRAC-3018'));
+      expect(result.current).toEqual([]);
 
       const done = { id: '31', name: 'Finish', to: { name: 'Done', statusCategory: 'done' as const } };
       const back = { id: '11', name: 'Reopen', to: { name: 'To Do', statusCategory: 'todo' as const } };
       act(() => useHiveStore.setState({ ticketDetails: { 'GRAC-3018': { key: 'GRAC-3018', transitions: [back, done], problems: {} } } }));
 
-      expect(result.current).toEqual(done);
+      expect(result.current).toEqual([back, done]);
     });
   });
 

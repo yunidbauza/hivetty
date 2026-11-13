@@ -70,8 +70,9 @@ import { isThisMachineAction } from './notification-contract';
  * 14 → 15: `CH` gained `jira:issue-changed` (#336).
  * 15 → 16: `CH` gained `github:user-repos` (the clone picker).
  * 16 → 17 (HIVE-359): `plan:changed` and `plans:list`' plans gained `part`, and their `build` gained `startedAt` and the state `done`.
+ * 17 → 18 (HIVE-419): `ConfigSnapshot` and `config:set-runtime` gained `skipPermissions`; `fs:read-file` may answer `{ dataUrl, mtimeMs, size }` for an image.
  */
-export const REMOTE_PROTOCOL_VERSION = 17;
+export const REMOTE_PROTOCOL_VERSION = 18;
 
 /**
  * What a frame is for.

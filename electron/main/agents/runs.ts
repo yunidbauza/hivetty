@@ -151,6 +151,8 @@ export interface RunTrackerDeps {
         lastTurn: boolean;
         kind: RunKind;
         promptHash?: string;
+        /** The conversation this lane lost, its transcript gone (HIVE-404). */
+        sessionLost?: string;
       })
     | { problem: string };
   /**
@@ -1058,6 +1060,19 @@ export function createRunTracker(deps: RunTrackerDeps): RunTracker {
           ...(onLane ? { lane } : {}),
         },
       });
+
+      /*
+        Said once, as the overmind, so the person knows the lane's memory was lost rather than
+        handed over (HIVE-404): the wake itself already started it fresh.
+      */
+      if (command.sessionLost !== undefined) {
+        deps.appendLedger({
+          from: 'overmind',
+          kind: 'event',
+          body: `${name}'s ${lane} lane lost its session (transcript gone) and started fresh.`,
+          meta: { agent: name, lane, sessionLost: command.sessionLost },
+        });
+      }
 
       /*
         The run's own identity, for the MCP host `claude` starts from this

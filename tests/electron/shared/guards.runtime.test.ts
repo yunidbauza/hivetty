@@ -63,6 +63,17 @@ describe('parseSetRuntimeRequest', () => {
     });
   });
 
+  it('accepts skipPermissions on its own, in both positions', () => {
+    expect(parseSetRuntimeRequest({ skipPermissions: true })).toEqual({ skipPermissions: true });
+    // `false` is the way back to prompts; a guard that dropped it would make the switch one-way.
+    expect(parseSetRuntimeRequest({ skipPermissions: false })).toEqual({ skipPermissions: false });
+  });
+
+  it('refuses a coerced skipPermissions rather than guessing', () => {
+    expect(() => parseSetRuntimeRequest({ skipPermissions: 'true' })).toThrow(/expected a boolean/);
+    expect(() => parseSetRuntimeRequest({ skipPermissions: 1 })).toThrow(/expected a boolean/);
+  });
+
   it('refuses a coerced boolean rather than guessing what was meant', () => {
     // `Boolean('false')` is `true`. For a switch that governs whether this app
     // runs the user's rc file, silently inverting is the wrong leniency.

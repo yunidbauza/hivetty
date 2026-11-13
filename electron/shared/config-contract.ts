@@ -439,6 +439,14 @@ export const LOGIN_ENV_PROBE_ARGS: readonly string[] = [
  */
 export const DEFAULT_IMPORT_LOGIN_ENV = true;
 
+/**
+ * Whether interactive sessions start with `--dangerously-skip-permissions`. Default **off**.
+ *
+ * Off because on means nothing asks before a tool runs and no permission card reaches the inbox.
+ * Settings turns it on only behind a confirm. Agent wakes never read it: their fence is HIVE-119's.
+ */
+export const DEFAULT_SKIP_PERMISSIONS = false;
+
 /** Which project's environment to diagnose. Omitted id means the top-level env. */
 export interface DiagnoseEnvRequest {
   id?: string;
@@ -1357,6 +1365,8 @@ export interface ConfigSnapshot {
    * is the pre-HIVE-84 behaviour.
    */
   importLoginEnv: boolean;
+  /** Whether new interactive sessions skip permission prompts (Pro #259). See {@link DEFAULT_SKIP_PERMISSIONS}. */
+  skipPermissions: boolean;
   /**
    * Human-readable problems, in the order they were found.
    *
@@ -1824,6 +1834,7 @@ export function emptySnapshot(
     sessionMetrics: DEFAULT_SESSION_METRICS,
     disabledSessionPlugins: [...DEFAULT_DISABLED_SESSION_PLUGINS],
     importLoginEnv: DEFAULT_IMPORT_LOGIN_ENV,
+    skipPermissions: DEFAULT_SKIP_PERMISSIONS,
     env: {},
     projects: [],
     notifications: { ...DEFAULT_NOTIFICATIONS },
@@ -2025,6 +2036,8 @@ export interface SetRuntimeRequest {
    * The Settings control says so rather than implying a live change.
    */
   importLoginEnv?: boolean;
+  /** Whether new sessions skip permission prompts. A plain boolean for the reason `importLoginEnv` gives. Takes effect on the next spawn. */
+  skipPermissions?: boolean;
 }
 
 /**

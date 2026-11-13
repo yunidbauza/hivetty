@@ -53,6 +53,12 @@ const build = (over: Partial<Parameters<typeof wakeCommand>[0]> = {}) =>
   });
 
 describe('wakeCommand', () => {
+  it('never skips permission prompts: an agent keeps its fence whatever Settings says (Pro #259)', () => {
+    // wakeCommand takes no config at all, so no setting can reach it; this pins that it never grows the flag.
+    expect(build().args).not.toContain('--dangerously-skip-permissions');
+    expect(build().args).toContain('--permission-prompt-tool');
+  });
+
   it('spawns the resolved binary, never a bare name', () => {
     expect(build().file).toBe('/opt/bin/claude');
   });
@@ -610,6 +616,14 @@ describe('wakeCommand never grants a once-only tool (retro B)', () => {
 
   it('leaves jira_transition grantable by name', () => {
     expect(granted(['mcp__hive__jira_transition']).allowed).toContain('mcp__hive__jira_transition');
+  });
+
+  it('a wide or scoped rule never puts pr_merge on the CLI allow list (HIVE-409)', () => {
+    for (const tools of [['mcp__hive__*'], ['*'], ['mcp__hive'], ['mcp__hive__pr_merge'], ['mcp__hive__pr_merge(behiques/hivetty#*)']]) {
+      const { allowed } = granted(tools);
+      expect(allowed, tools[0]).not.toContain('mcp__hive__pr_merge');
+      expect(allowed.some((rule) => rule.includes('pr_merge') || rule === '*' || rule.startsWith('mcp__hive__*') || rule === 'mcp__hive')).toBe(false);
+    }
   });
 });
 

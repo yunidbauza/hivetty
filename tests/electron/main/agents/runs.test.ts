@@ -52,6 +52,7 @@ describe('createRunTracker', () => {
   let left: { ask: { id: string; ref?: string } | undefined; claims: string[] };
   /** The prompt hash a session-starting command carries. Set per test. */
   let promptHash: string | undefined;
+  let sessionLost: string | undefined;
   let commandCalls: number;
   let commandArgs: {
     name: string;
@@ -82,6 +83,7 @@ describe('createRunTracker', () => {
     handoff = undefined;
     left = { ask: undefined, claims: [] };
     promptHash = undefined;
+    sessionLost = undefined;
     commandCalls = 0;
     commandArgs = [];
     parallel = 1;
@@ -113,6 +115,7 @@ describe('createRunTracker', () => {
           lastTurn,
           kind: options?.kind ?? 'standing',
           ...(promptHash === undefined ? {} : { promptHash }),
+          ...(sessionLost === undefined ? {} : { sessionLost }),
         };
       },
       parallelFor: () => parallel,
@@ -192,6 +195,27 @@ describe('createRunTracker', () => {
       meta: { run: 'run-1', trigger: 'ledger' },
     });
     expect(state.read('a').status).toBe('working');
+  });
+
+  it('tells the overmind once when a lane lost its conversation and started fresh (HIVE-404)', () => {
+    sessionLost = 'gone-uuid';
+    tracker.run('shipper', 'ledger', undefined, { lane: 'repo:a/x' });
+
+    const lost = ledger.filter((entry) => entry.meta?.['sessionLost'] !== undefined);
+    expect(lost).toEqual([
+      {
+        from: 'overmind',
+        kind: 'event',
+        body: "shipper's repo:a/x lane lost its session (transcript gone) and started fresh.",
+        meta: { agent: 'shipper', lane: 'repo:a/x', sessionLost: 'gone-uuid' },
+      },
+    ]);
+  });
+
+  it('says nothing of a lost session when the wake resumed its own', () => {
+    tracker.run('shipper', 'ledger', undefined, { lane: 'repo:a/x' });
+
+    expect(ledger.some((entry) => entry.meta?.['sessionLost'] !== undefined)).toBe(false);
   });
 
   /*

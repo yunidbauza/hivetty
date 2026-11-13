@@ -6,9 +6,11 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { parseAgent } from '../../../../electron/main/agents/definition';
 import { baseOf } from '../../../../electron/main/seed/merge';
 import { seedShipped, type SeedReport } from '../../../../electron/main/seed/seed';
 import { readUserSkills } from '../../../../electron/main/skills/read';
+import { patchFrontmatter } from '../../../../electron/shared/agent-contract';
 
 /**
  * The seed's one rule, tested from every side: the user's edits win
@@ -145,6 +147,92 @@ describe('seedShipped', () => {
       parts: Record<string, { keys: Record<string, string> }>;
     };
     expect(manifest.parts['agents/builder/AGENT.md']?.keys.lane).toBeDefined();
+  });
+
+  it('lifts card grants out of an agent tools: once, so the shipped tools: arrives (HIVE-409)', async () => {
+    const rel = 'agents/shipper/AGENT.md';
+    const v1 = '---\nname: shipper\ntools: [Read, Write, Skill, Bash(gh pr view *), mcp__hive__jira_transition]\n---\nPrompt v1.\n';
+    const v2 = '---\nname: shipper\ntools: [Read, Write, Skill, Bash, mcp__hive__jira_transition]\n---\nPrompt v2.\n';
+    await ship(rel, v1);
+    await seed();
+    // A card wrote into tools: before grants: existed.
+    await writeFile(
+      join(target, rel),
+      v1.replace('mcp__hive__jira_transition]', 'Bash(git -C * fetch *), Bash, mcp__hive__jira_transition]'),
+      'utf8',
+    );
+    await ship(rel, v2);
+
+    const first = await seed();
+
+    const lifted = await onDisk(rel);
+    expect(lifted).toContain('tools: [Read, Write, Skill, Bash, mcp__hive__jira_transition]\n');
+    expect(lifted).toContain('grants: []');
+    expect(lifted).toContain('Prompt v2.');
+    expect(first.merged).toEqual([rel]);
+
+    const second = await seed();
+
+    expect(await onDisk(rel)).toBe(lifted);
+    expect(second.kept).toEqual([rel]);
+  });
+
+  it("keeps a card's grant through a shipped tools: update, and the wake holds both (HIVE-409)", async () => {
+    const rel = 'agents/drone/AGENT.md';
+    const shipped = (tools: string): string =>
+      `---\nname: drone\ndescription: d\nicon: Robot\ntools: [${tools}]\n---\nPrompt.\n`;
+    await ship(rel, shipped('Read, Bash'));
+    await seed();
+    // The exact call a permission card makes (permissions.ts).
+    await writeFile(join(target, rel), patchFrontmatter(await onDisk(rel), 'grants', '[Edit]'), 'utf8');
+    await ship(rel, shipped('Read, Bash, Grep'));
+
+    await seed();
+
+    const text = await onDisk(rel);
+    expect(text).toContain('tools: [Read, Bash, Grep]\n');
+    expect(text).toContain('grants: [Edit]');
+    const parsed = parseAgent(text, { folder: 'drone', skillNames: [], hiveSkillNames: [], integrations: [] });
+    if (!('def' in parsed)) throw new Error(`expected a definition: ${JSON.stringify(parsed.problems)}`);
+    expect(parsed.def.tools).toEqual(['Read', 'Bash', 'Grep', 'Edit']);
+  });
+
+  describe('an older shipped tools: is not a card grant (HIVE-418)', () => {
+    const rel = 'agents/shipper/AGENT.md';
+    const v1 = '---\nname: shipper\ntools: [Read, Write, Skill, Bash, mcp__hive__jira_comment]\n---\nPrompt v1.\n';
+    const v2 = '---\nname: shipper\ntools: [Read, Write, Skill, Bash]\n---\nPrompt v2.\n';
+
+    it('an edited body with an untouched older tools: takes the new tools:, the removed entry gone', async () => {
+      await ship(rel, v1);
+      await seed();
+      await writeFile(join(target, rel), v1.replace('Prompt v1.', 'Prompt v1, my notes.'), 'utf8');
+      await ship(rel, v2);
+
+      await seed();
+
+      const text = await onDisk(rel);
+      expect(text).toContain('tools: [Read, Write, Skill, Bash]\n');
+      expect(text).not.toContain('mcp__hive__jira_comment');
+      expect(text).toContain('Prompt v1, my notes.');
+    });
+
+    it('lifts only what a card appended to the older tools:', async () => {
+      await ship(rel, v1);
+      await seed();
+      await writeFile(
+        join(target, rel),
+        v1.replace('mcp__hive__jira_comment]', 'mcp__hive__jira_comment, Edit]').replace('Prompt v1.', 'Prompt v1, my notes.'),
+        'utf8',
+      );
+      await ship(rel, v2);
+
+      await seed();
+
+      const text = await onDisk(rel);
+      expect(text).toContain('tools: [Read, Write, Skill, Bash]\n');
+      expect(text).toContain('grants: [Edit]');
+      expect(text).not.toContain('mcp__hive__jira_comment');
+    });
   });
 
   it('never leaves an older app a whole-file hash that would overwrite a merged file', async () => {

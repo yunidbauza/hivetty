@@ -115,6 +115,8 @@ export interface ParsedConfig {
    * decided this app should not run their rc file once per launch.
    */
   importLoginEnv: boolean | null;
+  /** Pro #259. `null` for "the file did not say", resolved to {@link DEFAULT_SKIP_PERMISSIONS}. */
+  skipPermissions: boolean | null;
   /**
    * The workspace environment block, exactly as the file declared it.
    *
@@ -281,6 +283,8 @@ const TOP_LEVEL_KEYS = [
   'disabledSessionPlugins',
   // HIVE-84. Whether the app asks the login shell for its `PATH` at startup.
   'importLoginEnv',
+  // Pro #259. Whether interactive sessions start with --dangerously-skip-permissions.
+  'skipPermissions',
 ];
 /**
  * `shell`, `claudeCommand` and `env` are story 104's per-project overrides.
@@ -1316,6 +1320,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     sessionMetrics: null,
     disabledSessionPlugins: null,
     importLoginEnv: null,
+    skipPermissions: null,
     projects: [],
     errors,
     version: null,
@@ -1379,6 +1384,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     label,
     errors,
   );
+  const skipPermissions = optionalBoolean(document, 'skipPermissions', label, errors);
   // Story 108. `optionalEnv` reads its target off `record.env` internally —
   // the same call shape the per-project overrides below use (`optionalEnv(entry, at, errors)`)
   // — so it is handed the document itself, not `document.env`, and it already
@@ -1394,6 +1400,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       sessionMetrics,
       disabledSessionPlugins,
       importLoginEnv,
+      skipPermissions,
       env,
       notifications,
       jira,
@@ -1416,6 +1423,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
       sessionMetrics,
       disabledSessionPlugins,
       importLoginEnv,
+      skipPermissions,
       env,
       notifications,
       jira,
@@ -1534,6 +1542,7 @@ export function parseConfig(text: string, label: string): ParsedConfig {
     sessionMetrics,
     disabledSessionPlugins,
     importLoginEnv,
+    skipPermissions,
     env,
     notifications,
     jira,

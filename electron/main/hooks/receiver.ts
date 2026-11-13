@@ -14,9 +14,13 @@ import {
 } from '@shared/config-contract';
 import {
   PR_LOOKUP_MAX_BYTES,
+  PR_MERGE_MAX_BYTES,
+  PR_MERGE_PATH,
   PR_PATH,
   type PrLookup,
   type PrLookupReply,
+  type PrMergeReply,
+  type PrMergeRequest,
 } from '@shared/github-contract';
 import {
   parseAddJiraCommentRequest,
@@ -26,6 +30,7 @@ import {
   parseLedgerPostBody,
   parseLedgerReadQuery,
   parsePrLookup,
+  parsePrMerge,
   parseProjectAutoMergeRequest,
 } from '@shared/guards';
 import {
@@ -270,6 +275,11 @@ export interface ReceiverOptions {
    * the default says the integration is not wired rather than "no such PR".
    */
   onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /**
+   * Merge one PR (HIVE-409), `mcp__hive__pr_merge`'s action. The fence decided consent before the call
+   * arrived. Optional for the same reason; the default merges nothing and says why.
+   */
+  onPrMerge?: (caller: string, request: PrMergeRequest) => Promise<PrMergeReply>;
   /**
    * The Jira tools (HIVE-174), optional for the reason the two above are. The
    * default answers every call with a `JiraResult` refusal naming the cause,
@@ -553,6 +563,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     },
     onPrLookup = () =>
       Promise.resolve({ pr: null, reason: 'the GitHub integration is not wired to this receiver' }),
+    onPrMerge = () =>
+      Promise.resolve({ merged: false as const, reason: 'merging is not wired to this receiver; nothing was merged' }),
     onJira = JIRA_NOT_WIRED,
     knowsSession,
     knowsAgent,
@@ -1083,6 +1095,35 @@ export function createReceiver(options: ReceiverOptions): Receiver {
     }
   }
 
+  /** `/pr/merge` (HIVE-409): one merge, parsed by the shared guard; `gh`'s refusal rides in the 200. */
+  async function handlePrMerge(
+    headers: Record<string, string | string[] | undefined>,
+    body: string,
+    truncated: boolean,
+  ): Promise<Reply> {
+    const refusal = reject(headers);
+    if (refusal !== null) return refusal;
+
+    if (truncated) {
+      return { status: 413, json: { reason: `body exceeds ${PR_MERGE_MAX_BYTES} bytes` } };
+    }
+
+    const caller = headers[HOOK_HEADER_SESSION] as string;
+    let request: PrMergeRequest;
+    try {
+      request = parsePrMerge(body === '' ? {} : JSON.parse(body));
+    } catch (cause) {
+      return { status: 400, json: { reason: describeCause(cause) } };
+    }
+
+    try {
+      return { status: 200, json: await onPrMerge(caller, request) };
+    } catch {
+      // A fixed sentence, as `/pr` answers: a thrown error can quote a path.
+      return { status: 500, json: { reason: 'the pull request could not be merged; read its state before trying again' } };
+    }
+  }
+
   /**
    * A party asked who else is here (HIVE-127).
    *
@@ -1399,6 +1440,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         unwrap<ProjectsDirectory>(handleProjectAutoMerge(headers, JSON.stringify(request), false)),
       pr: async (lookup) =>
         unwrap<PrLookupReply>(await handlePr(headers, JSON.stringify(lookup), false)),
+      prMerge: async (request) =>
+        unwrap<PrMergeReply>(await handlePrMerge(headers, JSON.stringify(request), false)),
       jiraGet: async (request) =>
         unwrap<JiraResult<JiraToolIssue>>(
           await handleJiraGet(headers, JSON.stringify(request), false),
@@ -1687,6 +1730,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
             handle: handleProjectAutoMerge,
           },
           { path: PR_PATH, cap: PR_LOOKUP_MAX_BYTES, handle: handlePr },
+          // HIVE-409: the merge, a subject and a body under 32 KB.
+          { path: PR_MERGE_PATH, cap: PR_MERGE_MAX_BYTES, handle: handlePrMerge },
           // HIVE-174: the Jira tools, one route each, one cap.
           { path: JIRA_GET_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraGet },
           { path: JIRA_TRANSITION_PATH, cap: JIRA_TOOL_MAX_BYTES, handle: handleJiraTransition },

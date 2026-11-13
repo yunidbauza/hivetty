@@ -472,3 +472,56 @@ describe('EditorPane — markdown', () => {
   });
 });
 
+
+describe('EditorPane — images', () => {
+  beforeEach(() => {
+    act(() => {
+      useUiStore.getState().reset();
+    });
+  });
+
+  it('shows a raster image instead of the binary message', async () => {
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { dataUrl: 'data:image/png;base64,AAAA', mtimeMs: 100, size: 3 },
+    });
+    await openFile('docs/shot.png');
+    const { container } = render(<EditorPane />);
+
+    expect(screen.getByRole('img', { name: 'shot.png' })).toHaveAttribute(
+      'src',
+      'data:image/png;base64,AAAA',
+    );
+    expect(screen.queryByText(/this file is binary/)).toBeNull();
+    expect(container.querySelector('.cm-content')).toBeNull();
+  });
+
+  const SVG = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>';
+
+  it('opens an SVG in Preview, as an image of its text', async () => {
+    readFile.mockResolvedValue(content(SVG));
+    await openFile('logo.svg');
+    const { container } = render(<EditorPane />);
+
+    const image = screen.getByRole('img', { name: 'logo.svg' });
+    expect(image.getAttribute('src')).toBe(
+      `data:image/svg+xml;charset=utf-8,${encodeURIComponent(SVG)}`,
+    );
+    expect(container.querySelector('.cm-content')).toBeNull();
+  });
+
+  it('switches an SVG to Source and back, with no Split', async () => {
+    readFile.mockResolvedValue(content(SVG));
+    useAppearanceStore.setState({ editorNav: 'single' });
+    await openFile('logo.svg');
+    const { container } = render(<EditorPane />);
+
+    expect(screen.queryByRole('radio', { name: 'Split' })).toBeNull();
+    await userEvent.click(screen.getByRole('radio', { name: 'Source' }));
+    expect(docText(container)).toContain('<svg');
+    expect(screen.queryByRole('img', { name: 'logo.svg' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Preview' }));
+    expect(screen.getByRole('img', { name: 'logo.svg' })).toBeInTheDocument();
+  });
+});

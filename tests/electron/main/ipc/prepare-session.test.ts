@@ -23,6 +23,8 @@ const paths: { settings: string | null; plugin: string | null; mcp: string | nul
   mcp: null,
 };
 const open = vi.fn();
+/** Where the spawn window opened and closed, as a count of `calls` at each end (HIVE-386). */
+const spawnWindow: string[] = [];
 const restart = vi.fn((_request: unknown) => Promise.resolve());
 
 vi.mock('electron', () => ({
@@ -148,6 +150,8 @@ vi.mock('../../../../electron/main/sessions/index', async (importOriginal) => {
       ...actual.createSessions(options),
       open,
       restart,
+      beginSpawn: () => spawnWindow.push(`begin@${String(calls.length)}`),
+      endSpawn: () => spawnWindow.push(`end@${String(calls.length)}`),
       containerRemoval: (entityId: string) => {
         calls.push(`sessions.containerRemoval ${entityId}`);
         return Promise.resolve();
@@ -170,6 +174,7 @@ const REQUEST = { sessionId: 'sess-07', projectId: 'hero', cols: 80, rows: 24 };
 beforeEach(() => {
   handlers.clear();
   calls.length = 0;
+  spawnWindow.length = 0;
   paths.settings = '/u/hive/claude-hooks.settings.json';
   paths.plugin = '/u/hive/plugin';
   paths.mcp = '/u/hive/hive.mcp.json';
@@ -229,5 +234,25 @@ describe('prepareSession (HIVE-235)', () => {
     await invoke(CH.ptySpawn, REQUEST);
 
     expect((open.mock.calls[0]![0] as { files: unknown }).files).toEqual({});
+  });
+
+  it('holds input across every await, and closes the window when open throws (HIVE-386)', async () => {
+    await invoke(CH.ptySpawn, REQUEST);
+    // Opened before the first await's work, closed after the last one's.
+    expect(spawnWindow).toEqual(['begin@0', 'end@5']);
+
+    spawnWindow.length = 0;
+    open.mockImplementationOnce(() => {
+      throw new Error('at capacity');
+    });
+    await expect(invoke(CH.ptySpawn, REQUEST)).rejects.toThrow('at capacity');
+    expect(spawnWindow.at(-1)).toMatch(/^end@/);
+  });
+
+  it('holds input for a terminal across the login-env wait (HIVE-386)', async () => {
+    // The real `openTerminal` refuses this unmapped project: the window closes anyway.
+    await expect(invoke(CH.ptySpawnTerminal, REQUEST)).rejects.toThrow('not mapped');
+
+    expect(spawnWindow).toEqual(['begin@0', 'end@0']);
   });
 });

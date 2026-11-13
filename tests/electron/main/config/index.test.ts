@@ -1097,6 +1097,18 @@ describe('reorderProjects', () => {
 });
 
 describe('setRuntime (story 104)', () => {
+  it('writes skipPermissions, defaulting to off when the file is silent', async () => {
+    const path = writeConfig({ version: 2, projects: [] });
+    const module = await mutable();
+    expect(module.getConfig().skipPermissions).toBe(false);
+
+    expect(module.setRuntime({ skipPermissions: true }).skipPermissions).toBe(true);
+    expect(JSON.parse(readFileSync(path, 'utf8')).skipPermissions).toBe(true);
+
+    module.setRuntime({ skipPermissions: false });
+    expect(JSON.parse(readFileSync(path, 'utf8')).skipPermissions).toBe(false);
+  });
+
   it('writes the shell without restating the command', async () => {
     const path = writeConfig({
       version: 2,

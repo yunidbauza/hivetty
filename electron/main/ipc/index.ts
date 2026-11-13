@@ -41,9 +41,8 @@ import type {
 } from '@shared/config-contract';
 import type {
   DirEntry,
-  FileContent,
+  FileRead,
   FsChangedEvent,
-  FsRefusal,
   FsResult,
   ResolveResult,
   RootInfo,
@@ -3272,6 +3271,17 @@ export function registerIpcHandlers(
       return answerPrLookup(github, lookup);
     },
     /*
+      HIVE-409. The fence has already decided: an auto-merge project's rule, or a card's once. This only
+      runs it, with `github` bound as `onPrLookup` argues, after the same login-env await.
+    */
+    onPrMerge: async (caller, request) => {
+      await loginEnvStatus();
+      const result = await github.merge(request);
+      const where = `${request.repo}#${String(request.number)}`;
+      console.info(`[github] ${caller} merge ${where}: ${result.ok ? 'merged' : result.error.message}`);
+      return result.ok ? { merged: true, output: result.value } : { merged: false, reason: result.error.message };
+    },
+    /*
       HIVE-174. `jira` is declared further down for the same reason `github`
       is, and the same argument covers it: each method runs on a request, after
       this body has executed. Built per call so nothing here captures a binding
@@ -4646,7 +4656,7 @@ export function registerIpcHandlers(
 
   handle(
     CH.fsReadFile,
-    (_event, payload): Promise<FsResult<FileContent | FsRefusal>> =>
+    (_event, payload): Promise<FsResult<FileRead>> =>
       readFileContent(parseReadFileRequest(payload)),
   );
 
@@ -5361,35 +5371,46 @@ export function registerIpcHandlers(
      * Costs nothing in the ordinary case: the probe starts at boot and has
      * long since resolved by the time anyone opens a session.
      */
-    await loginEnvStatus();
-    const files = await prepareSession(request.sessionId, request.projectId, { container: true });
-    sessions?.open({
-      entityId: request.sessionId,
-      projectId: request.projectId,
-      cols: request.cols,
-      rows: request.rows,
-      task: request.task,
-      model: request.model,
-      effort: request.effort,
-      name: request.name,
-      // HIVE-88. Forwarded only here — a restart is never a resume.
-      resume: request.resume,
-      files,
-    });
+    // HIVE-386: the terminal is on screen through these awaits, so what is typed meanwhile is held.
+    sessions?.beginSpawn(request.sessionId);
+    try {
+      await loginEnvStatus();
+      const files = await prepareSession(request.sessionId, request.projectId, { container: true });
+      sessions?.open({
+        entityId: request.sessionId,
+        projectId: request.projectId,
+        cols: request.cols,
+        rows: request.rows,
+        task: request.task,
+        model: request.model,
+        effort: request.effort,
+        name: request.name,
+        // HIVE-88. Forwarded only here — a restart is never a resume.
+        resume: request.resume,
+        files,
+      });
+    } finally {
+      sessions?.endSpawn(request.sessionId);
+    }
   });
 
   handle(CH.ptySpawnTerminal, async (_event, payload) => {
     const request = parseSpawnTerminalRequest(payload);
     // The login-shell import is the only precondition a plain shell shares
     // with a session: no skills sync, no MCP config, no container files.
-    await loginEnvStatus();
-    sessions?.openTerminal({
-      entityId: request.sessionId,
-      projectId: request.projectId,
-      cols: request.cols,
-      rows: request.rows,
-      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
-    });
+    sessions?.beginSpawn(request.sessionId);
+    try {
+      await loginEnvStatus();
+      sessions?.openTerminal({
+        entityId: request.sessionId,
+        projectId: request.projectId,
+        cols: request.cols,
+        rows: request.rows,
+        ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      });
+    } finally {
+      sessions?.endSpawn(request.sessionId);
+    }
   });
 
   handle(CH.ptyRestart, async (_event, payload) => {

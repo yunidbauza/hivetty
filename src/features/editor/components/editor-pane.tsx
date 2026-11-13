@@ -40,6 +40,18 @@ function PaneMessage({ icon, children }: { icon: string; children: string }) {
   );
 }
 
+/**
+ * An image, fitted to the pane and never scaled up. Only ever an `<img>`: an
+ * SVG inside one runs no script and loads nothing, which inline markup would.
+ */
+function ImageView({ src, name }: { src: string; name: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-6">
+      <img src={src} alt={name} className="max-h-full max-w-full object-contain" />
+    </div>
+  );
+}
+
 export function EditorPane() {
   const file = useActiveFile();
   const appearance = useEditorAppearance();
@@ -321,11 +333,18 @@ export function EditorPane() {
         </PaneMessage>
       ) : null}
 
-      {file.refusal === null && file.text === null && file.loading ? (
+      {file.refusal === null && file.text === null && file.image === null && file.loading ? (
         <PaneMessage icon="ph-file">{readingPhrase}</PaneMessage>
       ) : null}
 
-      {text === null ? null : markdown && markdown.view !== 'source' ? (
+      {file.image === null ? null : <ImageView src={file.image} name={file.name} />}
+
+      {text === null ? null : markdown?.svg && markdown.view !== 'source' ? (
+        <ImageView
+          src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(text)}`}
+          name={file.name}
+        />
+      ) : markdown && markdown.view !== 'source' ? (
         <MarkdownStage
           key={file.key}
           file={{ ...file, text }}

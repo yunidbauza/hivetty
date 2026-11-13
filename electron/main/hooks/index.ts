@@ -9,7 +9,7 @@ import {
   type ReceiverBindConfig,
   type ResolvedContainer,
 } from '@shared/config-contract';
-import type { PrLookup, PrLookupReply } from '@shared/github-contract';
+import type { PrLookup, PrLookupReply, PrMergeReply, PrMergeRequest } from '@shared/github-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
   HOOK_ENV_SESSION,
@@ -189,6 +189,8 @@ export interface HookHandlers {
   /** HIVE-173: the two workflow lookups; the receiver has honest defaults for both. */
   onProjectsList?: (caller: string) => ProjectsDirectory;
   onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** Merge one PR (HIVE-409); see the receiver option of the same name. */
+  onPrMerge?: (caller: string, request: PrMergeRequest) => Promise<PrMergeReply>;
   /** Retro B: the auto-merge switch; the receiver's default refuses with a reason. */
   onProjectAutoMerge?: (caller: string, request: ProjectAutoMergeRequest) => ProjectsDirectory;
   /** HIVE-174: the Jira tools; the receiver's default refuses with a reason. */
@@ -449,6 +451,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
       onProjectsList,
       onProjectAutoMerge,
       onPrLookup,
+      onPrMerge,
       onJira,
       onEvent,
       onAgentEvent,
@@ -496,6 +499,7 @@ export function createHookRuntime(options: HookRuntimeOptions): HookRuntime {
         onProjectsList,
         onProjectAutoMerge,
         onPrLookup,
+        onPrMerge,
         onJira,
         knowsSession,
         knowsAgent,

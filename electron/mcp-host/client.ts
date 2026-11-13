@@ -4,7 +4,7 @@ import {
   PROJECTS_PATH,
   type ProjectsDirectory,
 } from '@shared/config-contract';
-import { PR_PATH, type PrLookupReply } from '@shared/github-contract';
+import { PR_MERGE_PATH, PR_PATH, type PrLookupReply, type PrMergeReply } from '@shared/github-contract';
 import {
   HOOK_HEADER_RUN_TOKEN,
   HOOK_HEADER_SESSION,
@@ -28,6 +28,7 @@ import {
 } from '@shared/ledger-contract';
 import {
   PR_LOOKUP_TIMEOUT_MS,
+  PR_MERGE_TIMEOUT_MS,
   RECEIVER_TIMEOUT_MS,
   ReceiverError,
   type ReceiverClient,
@@ -164,6 +165,8 @@ export function createReceiverClient({
     // HIVE-173: the same shape, the same empty body, for the same reason.
     projects: () => call<ProjectsDirectory>(PROJECTS_PATH, {}),
     pr: (lookup) => call<PrLookupReply>(PR_PATH, lookup, PR_LOOKUP_TIMEOUT_MS),
+    // HIVE-409: the merge waits on GitHub, so it has its own limit above `gh`'s.
+    prMerge: (request) => call<PrMergeReply>(PR_MERGE_PATH, request, PR_MERGE_TIMEOUT_MS),
     // HIVE-174: three small bodies, the same headers; Jira's own refusals ride in the 200.
     jiraGet: (request) => call<JiraResult<JiraToolIssue>>(JIRA_GET_PATH, request),
     jiraTransition: (request) => call<JiraResult<JiraToolTransitionReply>>(JIRA_TRANSITION_PATH, request),

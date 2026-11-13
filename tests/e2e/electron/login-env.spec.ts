@@ -195,7 +195,7 @@ test('names an imported token but never renders its value', async ({}, testInfo)
     timeout: 15_000,
   });
 
-  await expect(page.getByText('GH_TOKEN')).toBeVisible();
+  await expect(page.locator('code', { hasText: 'GH_TOKEN' })).toBeVisible();
 
   // The security property, asserted against the whole rendered pane rather
   // than one element: a credential must not reach the renderer at all.

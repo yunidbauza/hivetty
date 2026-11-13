@@ -577,3 +577,13 @@ describe('sessionCommand container projects', () => {
     );
   });
 });
+
+describe('sessionCommand skipPermissions (Pro #259)', () => {
+  it('passes --dangerously-skip-permissions only when asked, before the task', () => {
+    expect(sessionCommand('claude', { skipPermissions: true, task: 'go' })).toBe(
+      "claude --dangerously-skip-permissions -- 'go' && exit",
+    );
+    expect(sessionCommand('claude', { skipPermissions: false })).toBe('claude && exit');
+    expect(sessionCommand('claude', {})).toBe('claude && exit');
+  });
+});

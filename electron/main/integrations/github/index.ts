@@ -5,6 +5,7 @@ import type {
   JobLog,
   PrCommentRequest,
   PrDetail,
+  PrMergeRequest,
   PrRecord,
   PrRef,
   PrRuns,
@@ -20,7 +21,7 @@ import type {
 import { probeCommand } from '../../config/probe';
 
 import { createActionsClient } from './actions';
-import { ghError } from './classify';
+import { classifyGhFailure, ghError } from './classify';
 import { createGithubClient, type GithubClient } from './client';
 import type { RepoRef } from './query';
 import { createRepoResolver, type RepoResolver } from './repos';
@@ -113,7 +114,18 @@ export interface Github {
   jobLog(request: RunRef): Promise<GhResult<JobLog>>;
   /** Re-run a run's failed jobs. Refused, before any `gh run`, when no configured project maps `owner/repo` (HIVE-206). */
   rerunFailed(request: RunRef): Promise<GhResult<true>>;
+  /**
+   * Squash-merge one PR at an exact head (HIVE-409), `mcp__hive__pr_merge`'s action. Refused, before any
+   * `gh pr`, when no configured project maps the repository. Answers with what `gh` printed.
+   */
+  merge(request: PrMergeRequest): Promise<GhResult<string>>;
 }
+
+/** The merge's own timeout: GitHub can take a while to land a squash on a busy repository. */
+const MERGE_TIMEOUT_MS = 60_000;
+
+/** At most this much of what `gh` said on a failed merge reaches the agent. */
+const MERGE_REASON_MAX = 1_000;
 
 interface GithubDeps {
   /** The current config. Read per call — projects change while the app runs. */
@@ -434,6 +446,35 @@ export function createGithub(deps: GithubDeps): Github {
       const scope = await scoped(owner, repo);
       if (!scope.ok) return scope;
       return createActionsClient(scope.gh, deps.run).rerunFailed(scope.ref, id);
+    },
+
+    /*
+      `execFile`, no shell, so a subject's `&` is text. `--repo` is the resolver's spelling and comes
+      last, as `merge-pr` spells it. Consent is not checked here: the fence decided before the call
+      arrived. Unlike the sweep's reads, what `gh` said on a failure is passed on (capped): "Head branch
+      was modified" is the one thing the shipper needs to act on.
+    */
+    async merge(request) {
+      const [owner = '', name = ''] = request.repo.split('/');
+      const scope = await scoped(owner, name);
+      if (!scope.ok) return scope;
+      const args = [
+        'pr', 'merge', String(request.number), '--squash', '--match-head-commit', request.sha,
+        ...(request.subject === undefined ? [] : ['--subject', request.subject]),
+        ...(request.body === undefined ? [] : ['--body', request.body]),
+        '--repo', `${scope.ref.owner}/${scope.ref.name}`,
+      ];
+      const result = await deps.run(scope.gh, args, { timeoutMs: MERGE_TIMEOUT_MS }).catch(() => null);
+      if (result === null) return { ok: false, error: ghError('not-installed', 'GitHub CLI (`gh`) could not be started.') };
+      if (result.code === 0) return { ok: true, value: result.stdout.trim() };
+      const classified = classifyGhFailure(result.stderr, result.timedOut);
+      if (result.timedOut) {
+        return { ok: false, error: ghError('timeout', `${classified.message} The merge may still have landed: read the PR's state before trying again.`) };
+      }
+      // The classifier's fallback is worded for a read; this was a merge.
+      const lead = classified.kind === 'unknown' ? 'The merge did not happen.' : classified.message;
+      const said = (result.stderr || result.stdout).trim().slice(0, MERGE_REASON_MAX);
+      return { ok: false, error: ghError(classified.kind, said === '' ? lead : `${lead} gh said: ${said}`) };
     },
   };
 }

@@ -286,7 +286,16 @@ test('an unmapped spawn prints main’s refusal in the console, verbatim', async
   await expect
     .poll(consoleText, { timeout: 15_000 })
     .toContain(`${UNMAPPED} is not mapped`);
-  expect(await consoleText()).toContain('hive-config.json');
+  /*
+    The path is matched with the rows joined (HIVE-389). The refusal is one
+    line, and xterm wraps it at the column width, so where it breaks depends on
+    how long the checkout path is: from `.claude/worktrees/` it broke inside
+    `hive-config.json`. The path holds no spaces, so dropping the row breaks
+    cannot hide a missing character, and matching the whole path is what
+    "verbatim" claims.
+  */
+  const joined = (await consoleText()).replace(/\n/g, '');
+  expect(joined).toContain(out('hive-config.json'));
 });
 
 test('spawn delivers its task to the agent, as one argument', async () => {

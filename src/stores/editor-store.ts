@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 
 import { baseName, readFile, writeFile } from '@lib/explorer/fs-client';
+import { isSvgFile } from '@lib/explorer/is-svg';
 import { isMarkdownFile } from '@lib/markdown/is-markdown';
 
 /**
@@ -48,7 +49,10 @@ import { isMarkdownFile } from '@lib/markdown/is-markdown';
  */
 type BufferRefusal = 'binary' | 'too-large';
 
-/** How a markdown file is shown. Files with no preview never get one. */
+/** Files with a Source/Preview toggle: markdown, and SVG. */
+const hasPreview = (name: string) => isMarkdownFile(name) || isSvgFile(name);
+
+/** How a markdown or SVG file is shown. Files with no preview never get one. */
 export type MarkdownView = 'source' | 'preview' | 'split';
 
 interface OpenFile {
@@ -83,8 +87,10 @@ interface OpenFile {
   /** The last segment, for the tab strip. Derived once rather than on every render. */
   name: string;
 
-  /** `null` until the first read resolves. */
+  /** `null` until the first read resolves, and for an image. */
   text: string | null;
+  /** A raster image's `data:` URL, as main read it; `null` for everything else. */
+  image: string | null;
   /** What the last read or write saw. `0` before the first read lands. */
   mtimeMs: number;
   /**
@@ -245,6 +251,7 @@ const blank = (
   rootKey,
   name: baseName(relPath),
   text: null,
+  image: null,
   mtimeMs: 0,
   size: 0,
   loading: true,
@@ -308,6 +315,24 @@ export const useEditorStore = create<EditorState>()((set, get) => {
         loading: false,
         refusal: result.value.refused,
         size: result.value.size,
+        // An image overwritten by one too large to read must not keep showing
+        // the old picture under the refusal.
+        image: null,
+      });
+      return;
+    }
+
+    if ('dataUrl' in result.value) {
+      patch(key, {
+        loading: false,
+        image: result.value.dataUrl,
+        text: null,
+        mtimeMs: result.value.mtimeMs,
+        size: result.value.size,
+        staleOnDisk: false,
+        missing: false,
+        refusal: null,
+        error: null,
       });
       return;
     }
@@ -315,6 +340,7 @@ export const useEditorStore = create<EditorState>()((set, get) => {
     patch(key, {
       loading: false,
       text: result.value.text,
+      image: null,
       mtimeMs: result.value.mtimeMs,
       size: result.value.size,
       dirty: false,
@@ -434,7 +460,7 @@ export const useEditorStore = create<EditorState>()((set, get) => {
 
     setView: (key, view) => {
       const file = get().openFiles.find((entry) => entry.key === key);
-      if (file && isMarkdownFile(file.name)) patch(key, { view });
+      if (file && hasPreview(file.name)) patch(key, { view });
     },
 
     /**
@@ -709,16 +735,16 @@ export const useActiveFile = (): OpenFile | null =>
   );
 
 /**
- * The active file when it can be previewed — markdown, read, not refused —
- * with the view the user chose for it. Primitives only, so a keystroke in the
+ * The active file when it can be previewed — markdown or SVG, read, not
+ * refused — with the view the user chose for it. Primitives only, so a keystroke in the
  * buffer does not re-render the toggle.
  */
 const activeMarkdownSelector = (state: EditorState) => {
   const file = state.openFiles.find((entry) => entry.key === state.activeKey);
-  if (!file || !isMarkdownFile(file.name) || file.refusal !== null || file.text === null) {
+  if (!file || !hasPreview(file.name) || file.refusal !== null || file.text === null) {
     return null;
   }
-  return { key: file.key, chosen: file.view };
+  return { key: file.key, chosen: file.view, svg: isSvgFile(file.name) };
 };
 
 export const useActiveMarkdownFile = () => useEditorStore(useShallow(activeMarkdownSelector));

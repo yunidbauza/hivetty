@@ -107,6 +107,61 @@ describe('openFile', () => {
     expect(fileAt(key)).toMatchObject({ refusal: 'binary', size: 4096, text: null });
   });
 
+  it('holds an image read as its data URL, with no text', async () => {
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { dataUrl: 'data:image/png;base64,AAAA', mtimeMs: 300, size: 3 },
+    });
+
+    store().openFile('demo', 'logo.png');
+    const key = fileKey('demo', 'logo.png');
+    await vi.waitFor(() => expect(fileAt(key)?.loading).toBe(false));
+
+    expect(fileAt(key)).toMatchObject({
+      image: 'data:image/png;base64,AAAA',
+      text: null,
+      refusal: null,
+      mtimeMs: 300,
+      size: 3,
+    });
+  });
+
+  it('silently reloads an image the watcher reports', async () => {
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { dataUrl: 'data:image/png;base64,AAAA', mtimeMs: 300, size: 3 },
+    });
+    store().openFile('demo', 'logo.png');
+    const key = fileKey('demo', 'logo.png');
+    await vi.waitFor(() => expect(fileAt(key)?.loading).toBe(false));
+
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { dataUrl: 'data:image/png;base64,BBBB', mtimeMs: 400, size: 3 },
+    });
+    store().reconcile('demo', ['logo.png'], '');
+
+    await vi.waitFor(() => expect(fileAt(key)?.image).toBe('data:image/png;base64,BBBB'));
+  });
+
+  it('drops the old picture when a reloaded image is refused', async () => {
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { dataUrl: 'data:image/png;base64,AAAA', mtimeMs: 300, size: 3 },
+    });
+    store().openFile('demo', 'logo.png');
+    const key = fileKey('demo', 'logo.png');
+    await vi.waitFor(() => expect(fileAt(key)?.loading).toBe(false));
+
+    readFile.mockResolvedValue({
+      ok: true,
+      value: { refused: 'too-large', size: 30_000_000 },
+    });
+    await store().reload(key);
+
+    expect(fileAt(key)).toMatchObject({ refusal: 'too-large', image: null });
+  });
+
   it('records a failure, and marks a missing file as missing', async () => {
     readFile.mockResolvedValue({
       ok: false,
@@ -765,12 +820,24 @@ describe('markdown view', () => {
     expect(fileAt(KEY)?.view).toBeNull();
   });
 
+  it('previews an SVG too, and keeps the view chosen for it', async () => {
+    const LOGO = fileKey('demo', 'logo.svg');
+    const { result } = renderHook(() => useActiveMarkdownFile());
+    await act(async () => {
+      store().openFile('demo', 'logo.svg');
+    });
+    expect(result.current).toEqual({ key: LOGO, chosen: null, svg: true });
+
+    act(() => store().setView(LOGO, 'source'));
+    expect(fileAt(LOGO)?.view).toBe('source');
+  });
+
   it('names the active markdown file once it has text, and nothing else', async () => {
     const { result } = renderHook(() => useActiveMarkdownFile());
     await act(async () => {
       store().openFile('demo', 'README.md');
     });
-    expect(result.current).toEqual({ key: README, chosen: null });
+    expect(result.current).toEqual({ key: README, chosen: null, svg: false });
 
     await act(async () => {
       store().openFile('demo', 'src/app.ts');

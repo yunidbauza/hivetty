@@ -5,6 +5,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +14,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProjectConfig } from '../../../../electron/shared/config-contract';
-import { MAX_FILE_BYTES } from '../../../../electron/shared/fs-contract';
+import { MAX_FILE_BYTES, MAX_IMAGE_BYTES } from '../../../../electron/shared/fs-contract';
 
 /**
  * The read verbs, against real files.
@@ -144,7 +145,7 @@ describe('readFileContent', () => {
     const result = await readFileContent({ projectId: 'demo', relPath: 'a.ts' });
 
     expect(result.ok).toBe(true);
-    if (!result.ok || 'refused' in result.value) throw new Error('expected content');
+    if (!result.ok || !('text' in result.value)) throw new Error('expected content');
     expect(result.value.text).toBe('export {};\n');
     expect(result.value.size).toBe(11);
     expect(result.value.mtimeMs).toBeGreaterThan(0);
@@ -176,6 +177,38 @@ describe('readFileContent', () => {
 
     expect(result.ok).toBe(true);
     expect(result.ok && result.value).toMatchObject({ refused: 'binary', size: 4 });
+  });
+
+  it('reads an image as a data URL rather than refusing it as binary', async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x1a]);
+    writeFileSync(join(root, 'shot.PNG'), bytes);
+
+    const result = await readFileContent({ projectId: 'demo', relPath: 'shot.PNG' });
+
+    expect(result.ok && result.value).toMatchObject({
+      dataUrl: `data:image/png;base64,${bytes.toString('base64')}`,
+      size: 6,
+    });
+    expect(result.ok && 'mtimeMs' in result.value && result.value.mtimeMs).toBeGreaterThan(0);
+  });
+
+  it('reads an image past the text cap, up to the image cap', async () => {
+    writeFileSync(join(root, 'big.jpg'), Buffer.alloc(MAX_FILE_BYTES + 1));
+
+    const result = await readFileContent({ projectId: 'demo', relPath: 'big.jpg' });
+
+    expect(result.ok && 'dataUrl' in result.value && result.value.dataUrl).toMatch(
+      /^data:image\/jpeg;base64,/,
+    );
+  });
+
+  it('refuses an image over the image cap as too large', async () => {
+    writeFileSync(join(root, 'huge.png'), '');
+    truncateSync(join(root, 'huge.png'), MAX_IMAGE_BYTES + 1);
+
+    const result = await readFileContent({ projectId: 'demo', relPath: 'huge.png' });
+
+    expect(result.ok && result.value).toEqual({ refused: 'too-large', size: MAX_IMAGE_BYTES + 1 });
   });
 
   it('refuses a file over the cap, and reports its size', async () => {

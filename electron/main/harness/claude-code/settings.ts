@@ -9,7 +9,7 @@ import {
   HOOK_HEADER_TOKEN,
 } from '@shared/hook-contract';
 import { METRICS_REFRESH_SECONDS } from '@shared/metrics-contract';
-import { ONCE_ONLY_TOOLS } from '@shared/permission-rules';
+import { FENCE_ONLY_TOOLS } from '@shared/permission-rules';
 
 import type { HookTransport } from '../port';
 
@@ -336,9 +336,10 @@ export function hookSettings(
       `project_auto_merge` must ask the person on every call, and Claude
       Code's "Yes, don't ask again" writes an allow rule into the user's own
       settings that would cover it. An ask rule outranks any allow, so the
-      prompt comes back every time.
+      prompt comes back every time. `pr_merge` is on the same list (HIVE-409):
+      a session merges only when the person says so on that prompt.
     */
-    permissions: { ask: [...ONCE_ONLY_TOOLS] },
+    permissions: { ask: [...FENCE_ONLY_TOOLS] },
   };
 }
 

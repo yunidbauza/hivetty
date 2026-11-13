@@ -7,7 +7,7 @@ import { TicketNextAction } from '@features/work/components/ticket-next-action';
 import { useHiveStore } from '@stores/hive-store';
 import type { JiraIssue, JiraTransition } from '@shared/jira-contract';
 
-/** "Move to <status>", shared by the ticket page and the Ticket tab (HIVE-202). */
+/** "Move to ⌄": every status the workflow allows, shared by the ticket page and the Ticket tab (HIVE-202). */
 
 const applyJiraTransition = vi.fn();
 
@@ -29,6 +29,8 @@ const ticket: Ticket = {
   url: 'https://jira.example/browse/GRAC-3018',
 };
 const done: JiraTransition = { id: '31', name: 'Finish', to: { name: 'Done', statusCategory: 'done' } };
+const review: JiraTransition = { id: '21', name: 'Review', to: { name: 'In Review', statusCategory: 'in-progress' } };
+const back: JiraTransition = { id: '11', name: 'Reopen', to: { name: 'To Do', statusCategory: 'todo' } };
 const moved: JiraIssue = {
   key: 'GRAC-3018',
   summary: ticket.title,
@@ -50,61 +52,63 @@ const seed = (transitions: JiraTransition[]) =>
 beforeEach(() => {
   vi.clearAllMocks();
   useHiveStore.getState().reset();
-  seed([done]);
+  seed([back, review, done]);
 });
 
+const openMenu = () => userEvent.click(screen.getByRole('button', { name: 'Move to' }));
+
 describe('TicketNextAction (HIVE-202)', () => {
-  it('offers the one step forward, with the given class', () => {
+  it('is a plain action row with the given class, not a centred button', () => {
     render(<TicketNextAction ticketKey="GRAC-3018" className="action" />);
 
-    expect(screen.getByRole('button', { name: 'Move to Done' })).toHaveClass('action');
+    const trigger = screen.getByRole('button', { name: 'Move to' });
+    expect(trigger).toHaveClass('action');
+    expect(trigger).not.toHaveClass('justify-center', 'font-semibold');
   });
 
-  it('draws the destination as the header status pill, coloured by its category', () => {
+  it('lists every status the workflow allows, each as the header status pill', async () => {
     render(<TicketNextAction ticketKey="GRAC-3018" />);
+    await openMenu();
 
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['To Do', 'In Review', 'Done']);
     expect(screen.getByText('Done')).toHaveClass('rounded-full', 'bg-chip', 'uppercase', 'text-green');
   });
 
-  it('keeps a space between "Move to" and the status pill in its text', () => {
-    render(<TicketNextAction ticketKey="GRAC-3018" />);
-
-    // jsdom has no layout, so the accessible name cannot tell inline from flex: the text content is the check.
-    expect(screen.getByRole('button', { name: 'Move to Done' }).textContent).toBe('Move to Done');
-  });
-
-  it('draws nothing when there is no step forward', () => {
+  it('draws nothing when the workflow offers no move', () => {
     seed([]);
     render(<TicketNextAction ticketKey="GRAC-3018" />);
 
     expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('moves the ticket one step forward', async () => {
+  it('applies the picked transition, not only the forward one', async () => {
     applyJiraTransition.mockResolvedValue({ ok: true, value: moved });
     render(<TicketNextAction ticketKey="GRAC-3018" />);
+    await openMenu();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move to Done' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'In Review' }));
 
-    expect(applyJiraTransition).toHaveBeenCalledWith({ key: 'GRAC-3018', transitionId: '31' });
+    expect(applyJiraTransition).toHaveBeenCalledWith({ key: 'GRAC-3018', transitionId: '21' });
     expect(useHiveStore.getState().tickets[0]).toMatchObject({ status: 'Done', statusCategory: 'done' });
   });
 
-  it('says why a move was refused, in amber, and keeps the button', async () => {
+  it('says why a move was refused, in amber, and keeps the action', async () => {
     applyJiraTransition.mockResolvedValue({ ok: false, error: { kind: 'unknown', message: 'No transition' } });
     render(<TicketNextAction ticketKey="GRAC-3018" />);
+    await openMenu();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move to Done' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Done' }));
 
     expect(await screen.findByText('No transition')).toHaveClass('text-amber-text');
-    expect(screen.getByRole('button', { name: 'Move to Done' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Move to' })).toBeEnabled();
   });
 
   it('names a missing bridge', async () => {
     applyJiraTransition.mockResolvedValue(null);
     render(<TicketNextAction ticketKey="GRAC-3018" />);
+    await openMenu();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Move to Done' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Done' }));
 
     expect(await screen.findByText(/./, { selector: 'p.text-amber-text' })).toBeInTheDocument();
   });

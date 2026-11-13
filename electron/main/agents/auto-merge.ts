@@ -1,5 +1,6 @@
 import type { ConfigSnapshot, ProjectConfig } from '@shared/config-contract';
 import { OVERMIND, type LedgerPostRequest } from '@shared/ledger-contract';
+import { PR_MERGE_TOOL_NAME } from '@shared/permission-rules';
 
 import type { RepoRef } from '../integrations/github/query';
 
@@ -46,8 +47,12 @@ export const AUTO_MERGE_AGENT = 'shipper';
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
 /**
- * The rule for one repository, or `null` when the slug could not be composed
- * safely.
+ * The rules for one repository, both merge paths, or `[]` when the slug could
+ * not be composed safely.
+ *
+ * The MCP merge (`mcp__hive__pr_merge`, HIVE-409) names the repository in its
+ * own field, so its rule is `<owner>/<name>#*` and `matches` compares the
+ * composed `<repo>#<number>` exactly. The Bash merge:
  *
  * `--repo <slug>` is the **last** thing on the line, with no wildcard after
  * it. `gh` reads the last `--repo` it is given, so a trailing `*` would let
@@ -58,9 +63,10 @@ const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
  * case-sensitive where GitHub's slugs are not, which fails closed: a merge
  * spelled in another case raises the card.
  */
-export function autoMergeRule(repo: RepoRef): string | null {
-  if (!SAFE_SEGMENT.test(repo.owner) || !SAFE_SEGMENT.test(repo.name)) return null;
-  return `Bash(gh pr merge * --repo ${repo.owner}/${repo.name})`;
+export function autoMergeRules(repo: RepoRef): string[] {
+  if (!SAFE_SEGMENT.test(repo.owner) || !SAFE_SEGMENT.test(repo.name)) return [];
+  const slug = `${repo.owner}/${repo.name}`;
+  return [`Bash(gh pr merge * --repo ${slug})`, `${PR_MERGE_TOOL_NAME}(${slug}#*)`];
 }
 
 /** Pure: the rules for `name`, given the projects and what is known of their repositories. */
@@ -75,8 +81,7 @@ export function autoMergeRulesFor(
     if (project.autoMerge !== true) continue;
     const repo = repoOf(project.id);
     if (repo === undefined) continue;
-    const rule = autoMergeRule(repo);
-    if (rule !== null && !rules.includes(rule)) rules.push(rule);
+    for (const rule of autoMergeRules(repo)) if (!rules.includes(rule)) rules.push(rule);
   }
   return rules;
 }

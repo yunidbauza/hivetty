@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   AUTO_MERGE_AGENT,
-  autoMergeRule,
+  autoMergeRules,
   autoMergeRulesFor,
   createAutoMergeGrants,
 } from '../../../../electron/main/agents/auto-merge';
@@ -29,7 +29,7 @@ const hive: RepoRef = { owner: 'yunidbauza', name: 'the-hive' };
 
 describe('autoMergeRule', () => {
   it('composes the narrowest rule the grammar allows, and the real merge command matches it', () => {
-    const rule = autoMergeRule(hive);
+    const rule = autoMergeRules(hive)[0];
 
     expect(rule).toBe('Bash(gh pr merge * --repo yunidbauza/the-hive)');
     expect(
@@ -54,11 +54,11 @@ describe('autoMergeRule', () => {
     expect(command).toContain('--subject "Plan tab follows the builder (#214)"');
     expect(command).toContain('--body "HIVE-349 · https://github.com/yunidbauza/the-hive/pull/214"');
     expect(command).not.toContain('<');
-    expect(matches(autoMergeRule(hive)!, 'Bash', { command })).toBe(true);
+    expect(matches(autoMergeRules(hive)[0]!, 'Bash', { command })).toBe(true);
   });
 
   it('does not match another repository, another verb, or a chained command', () => {
-    const rule = autoMergeRule(hive)!;
+    const rule = autoMergeRules(hive)[0]!;
 
     expect(matches(rule, 'Bash', { command: 'gh pr merge 1 --squash --repo yunidbauza/other' })).toBe(false);
     expect(matches(rule, 'Bash', { command: 'gh pr close 1 --repo yunidbauza/the-hive' })).toBe(false);
@@ -71,7 +71,7 @@ describe('autoMergeRule', () => {
 
   it('cannot be widened by a second --repo after the granted one; an earlier one is overridden', () => {
     // `gh` takes the last `--repo`. Nothing may follow the granted slug.
-    const rule = autoMergeRule(hive)!;
+    const rule = autoMergeRules(hive)[0]!;
 
     expect(
       matches(rule, 'Bash', {
@@ -91,9 +91,25 @@ describe('autoMergeRule', () => {
   });
 
   it('refuses a slug that carries anything the glob or the rule list reads', () => {
-    expect(autoMergeRule({ owner: 'a*b', name: 'x' })).toBeNull();
-    expect(autoMergeRule({ owner: 'a', name: 'x,y' })).toBeNull();
-    expect(autoMergeRule({ owner: 'a b', name: 'x' })).toBeNull();
+    expect(autoMergeRules({ owner: 'a*b', name: 'x' })).toEqual([]);
+    expect(autoMergeRules({ owner: 'a', name: 'x,y' })).toEqual([]);
+    expect(autoMergeRules({ owner: 'a b', name: 'x' })).toEqual([]);
+  });
+});
+
+describe('autoMergeRules (HIVE-409)', () => {
+  it('an auto-merge project grants both merge paths', () => {
+    expect(autoMergeRules({ owner: 'behiques', name: 'hivetty' })).toEqual([
+      'Bash(gh pr merge * --repo behiques/hivetty)',
+      'mcp__hive__pr_merge(behiques/hivetty#*)',
+    ]);
+  });
+
+  it('the MCP rule allows that repository and no other', () => {
+    const rule = autoMergeRules(hive)[1]!;
+    const input = { repo: 'yunidbauza/the-hive', number: 214, sha: 'a'.repeat(40) };
+    expect(matches(rule, 'mcp__hive__pr_merge', input)).toBe(true);
+    expect(matches(rule, 'mcp__hive__pr_merge', { ...input, repo: 'yunidbauza/the-hive-2' })).toBe(false);
   });
 });
 
@@ -109,7 +125,8 @@ describe('autoMergeRulesFor', () => {
   it('grants only the shipper', () => {
     expect(autoMergeRulesFor('fixer', projects, repoOf)).toEqual([]);
     expect(autoMergeRulesFor('builder', projects, repoOf)).toEqual([]);
-    expect(autoMergeRulesFor(AUTO_MERGE_AGENT, projects, repoOf)).toHaveLength(2);
+    // Two projects, each with both merge paths (HIVE-409).
+    expect(autoMergeRulesFor(AUTO_MERGE_AGENT, projects, repoOf)).toHaveLength(4);
   });
 
   it('grants nothing for a project without consent, or without a known slug', () => {
@@ -117,7 +134,7 @@ describe('autoMergeRulesFor', () => {
       id === 'the-hive' ? hive : undefined,
     );
 
-    expect(rules).toEqual(['Bash(gh pr merge * --repo yunidbauza/the-hive)']);
+    expect(rules).toEqual(['Bash(gh pr merge * --repo yunidbauza/the-hive)', 'mcp__hive__pr_merge(yunidbauza/the-hive#*)']);
   });
 });
 
@@ -136,6 +153,7 @@ describe('createAutoMergeGrants', () => {
 
     expect(grants.grantsFor(AUTO_MERGE_AGENT)).toEqual([
       'Bash(gh pr merge * --repo yunidbauza/the-hive)',
+      'mcp__hive__pr_merge(yunidbauza/the-hive#*)',
     ]);
     // Known now: no second resolve for the same wake.
     expect(resolve).toHaveBeenCalledTimes(1);
@@ -161,7 +179,7 @@ describe('createAutoMergeGrants', () => {
       ]);
     const grants = createAutoMergeGrants({ projects: () => projects, resolve: () => answer() });
     await grants.refresh();
-    expect(grants.grantsFor(AUTO_MERGE_AGENT)).toHaveLength(2);
+    expect(grants.grantsFor(AUTO_MERGE_AGENT)).toHaveLength(4);
 
     answer = async () => {
       throw new Error('offline');
@@ -171,6 +189,7 @@ describe('createAutoMergeGrants', () => {
 
     expect(grants.grantsFor(AUTO_MERGE_AGENT)).toEqual([
       'Bash(gh pr merge * --repo yunidbauza/the-hive)',
+      'mcp__hive__pr_merge(yunidbauza/the-hive#*)',
     ]);
   });
 

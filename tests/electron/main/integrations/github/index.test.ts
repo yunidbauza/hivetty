@@ -684,3 +684,69 @@ describe('userRepos', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('merge (HIVE-409)', () => {
+  const SHA = 'a'.repeat(40);
+  const recording = (calls: string[][], answer = { code: 0, stdout: 'Merged.\n', stderr: '', timedOut: false }): RunAsync =>
+    (_file, args) => {
+      calls.push([...args]);
+      if (args[0] === 'repo') {
+        return Promise.resolve({ code: 0, stdout: JSON.stringify({ nameWithOwner: 'acme/nova-web' }), stderr: '', timedOut: false });
+      }
+      return Promise.resolve(answer);
+    };
+  const github = (run: RunAsync) =>
+    createGithub({ config: () => config([project()]), env: () => ({ PATH: withGh() }), run, now: () => 0 });
+  const merges = (calls: string[][]) => calls.filter((args) => args[0] === 'pr');
+
+  it('runs gh with each field as one argv entry, the resolver’s spelling, --repo last', async () => {
+    const calls: string[][] = [];
+    const result = await github(recording(calls)).merge({
+      repo: 'ACME/Nova-Web', number: 229, sha: SHA, subject: 'Account & devices; x', body: 'b "q"',
+    });
+    expect(result).toEqual({ ok: true, value: 'Merged.' });
+    expect(merges(calls)).toEqual([[
+      'pr', 'merge', '229', '--squash', '--match-head-commit', SHA,
+      '--subject', 'Account & devices; x', '--body', 'b "q"', '--repo', 'acme/nova-web',
+    ]]);
+  });
+
+  it('leaves out a subject and body it was not given', async () => {
+    const calls: string[][] = [];
+    await github(recording(calls)).merge({ repo: 'acme/nova-web', number: 7, sha: SHA });
+    expect(merges(calls)).toEqual([['pr', 'merge', '7', '--squash', '--match-head-commit', SHA, '--repo', 'acme/nova-web']]);
+  });
+
+  it('refuses a repository that is not a configured project, before any gh pr call', async () => {
+    const calls: string[][] = [];
+    const result = await github(recording(calls)).merge({ repo: 'victim/other', number: 1, sha: SHA });
+    expect(result).toMatchObject({ ok: false, error: { kind: 'no-repos' } });
+    expect(merges(calls)).toEqual([]);
+  });
+
+  it('a gh failure is an error carrying what gh said', async () => {
+    const run = recording([], { code: 1, stdout: '', stderr: 'Head branch was modified. Review and try the merge again.\n', timedOut: false });
+    const result = await github(run).merge({ repo: 'acme/nova-web', number: 229, sha: SHA });
+    expect(result).toEqual({ ok: false, error: { kind: 'unknown', message: 'The merge did not happen. gh said: Head branch was modified. Review and try the merge again.' } });
+  });
+
+  it('a gh that cannot start is not-installed', async () => {
+    const run: RunAsync = (_file, args) =>
+      args[0] === 'repo'
+        ? Promise.resolve({ code: 0, stdout: JSON.stringify({ nameWithOwner: 'acme/nova-web' }), stderr: '', timedOut: false })
+        : Promise.reject(new Error('spawn ENOENT'));
+    await expect(github(run).merge({ repo: 'acme/nova-web', number: 1, sha: SHA })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'not-installed' },
+    });
+  });
+
+  it('a timeout says the merge may still have landed', async () => {
+    const run = recording([], { code: -1, stdout: '', stderr: '', timedOut: true });
+    await expect(github(run).merge({ repo: 'acme/nova-web', number: 1, sha: SHA })).resolves.toMatchObject({
+      ok: false,
+      error: { kind: 'timeout' },
+    });
+  });
+});

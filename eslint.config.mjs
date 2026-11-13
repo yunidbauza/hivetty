@@ -111,6 +111,9 @@ export default tseslint.config(
        * `pnpm lint` into a hang.
        */
       '.claude/worktrees/**',
+      // The Hive's working folder (specs, plans, scratch scripts): git-ignored by its own
+      // `.hive/.gitignore`, so never part of the repo, and its files are not the app's to lint.
+      '.hive/**',
     ],
   },
   js.configs.recommended,

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { AGENTS_PATH } from '@shared/agent-contract';
 import { PROJECT_AUTO_MERGE_PATH, PROJECTS_PATH } from '@shared/config-contract';
-import { PR_PATH } from '@shared/github-contract';
+import { PR_MERGE_PATH, PR_PATH } from '@shared/github-contract';
 import { JIRA_COMMENT_PATH, JIRA_GET_PATH, JIRA_TRANSITION_PATH, JIRA_USERS_PATH } from '@shared/jira-contract';
 import { HOOK_HEADER_SESSION, HOOK_HEADER_TOKEN } from '@shared/hook-contract';
 import {
@@ -248,6 +248,20 @@ describe('projects() and pr() (HIVE-173)', () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`http://127.0.0.1:4100${PR_PATH}`);
     expect(JSON.parse(init.body as string)).toEqual({ repo: 'acme/nova', number: 7 });
+  });
+});
+
+describe('prMerge() (HIVE-409)', () => {
+  it('posts the request to the merge route as its body and returns the reply whole', async () => {
+    const reply = { merged: false, reason: 'gh said: Head branch was modified.' };
+    const fetchImpl = vi.fn(async () => jsonResponse(200, reply));
+    const request = { repo: 'behiques/hivetty', number: 229, sha: 'a'.repeat(40), subject: 'A & B' };
+
+    expect(await client(fetchImpl as never).prMerge(request)).toEqual(reply);
+
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`http://127.0.0.1:4100${PR_MERGE_PATH}`);
+    expect(JSON.parse(init.body as string)).toEqual(request);
   });
 });
 

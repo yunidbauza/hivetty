@@ -842,6 +842,20 @@ describe('ui-store — the inbox stack (HIVE-198, HIVE-228)', () => {
     useUiStore.getState().openInboxDrawer();
     expect(useUiStore.getState().inboxDrawer).toEqual({ open: true, thread: null });
   });
+
+  it('the pill under Settings closes Settings and raises the stack, even when it was already up', () => {
+    useUiStore.getState().pushArrival('a', false);
+    useUiStore.getState().openSettings('agents');
+    useUiStore.getState().toggleStack();
+    expect(useUiStore.getState()).toMatchObject({ settings: false, settingsSection: null, stackUp: true });
+  });
+
+  it('opening the drawer closes Settings', () => {
+    useUiStore.getState().openSettings('agents');
+    useUiStore.getState().openInboxDrawer();
+    expect(useUiStore.getState()).toMatchObject({ settings: false, settingsSection: null });
+    expect(useUiStore.getState().inboxDrawer.open).toBe(true);
+  });
 });
 
 describe('awaySince (HIVE-200)', () => {

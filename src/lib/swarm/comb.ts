@@ -493,7 +493,7 @@ function drawCell(ctx: CanvasRenderingContext2D, c: CombCell, layout: CombLayout
   }
 }
 
-/** At scale a name shows only where it needs you or failed, as a tag drawn over the comb. */
+/** At scale a name shows only where it needs you, failed, or an agent is working, as a tag drawn over the comb. */
 function drawTag(ctx: CanvasRenderingContext2D, c: CombCell, R: number, p: SwarmPalette): void {
   const col = colourOf(p, c.state);
   ctx.font = `600 10px ${SANS}`;
@@ -552,7 +552,12 @@ export function drawComb(
     for (const f of flyers) drawMuta(ctx, f.spine, t, f.k * 3.7, f.turn, scale, ps, tone);
   });
 
-  if (sc) for (const cell of layout.cells) if (cell.state === 'summons' || cell.state === 'failed') drawTag(ctx, cell, layout.R, palette);
+  // Working agents' tags first, so a long one never covers a tag that needs you or failed.
+  if (sc) {
+    const working = layout.cells.filter((c) => c.state === 'morphing' && c.project === SWARM);
+    const urgent = layout.cells.filter((c) => c.state === 'summons' || c.state === 'failed');
+    for (const cell of [...working, ...urgent]) drawTag(ctx, cell, layout.R, palette);
+  }
 
   // A keyboard-focused cell (HIVE-223): the sr-only buttons are invisible, so the canvas shows which one has focus.
   const focused = focusedId === null ? undefined : layout.cells.find((cell) => cell.id === focusedId);
