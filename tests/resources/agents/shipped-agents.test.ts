@@ -146,11 +146,13 @@ describe('the Jira writes are consented, not standing', () => {
     expect(result.def.limits.parallel).toBe(parallel);
   });
 
-  it('gives the shipper a day that fits a real shipping day, and a per-run cap its lanes reserve (HIVE-189)', () => {
-    const source = readFileSync(join(resources, 'agents', 'shipper', 'AGENT.md'), 'utf8');
-    const result = parseAgent(source, { folder: 'shipper', skillNames: shippedSkills, hiveSkillNames: shippedSkills, integrations: ['slack'] });
-    if (!('def' in result)) throw new Error('shipper does not parse');
-    expect(result.def.limits).toMatchObject({ dailyUsd: 40, budgetUsd: 2, parallel: 3 });
+  // A fresh install spends without a cap; a budget is the user's to set, and the seed keeps one they set.
+  it.each(['shipper', 'builder', 'fixer', 'acr'])('%s ships with no daily cap and no per-run budget', (name) => {
+    const source = readFileSync(join(resources, 'agents', name, 'AGENT.md'), 'utf8');
+    const result = parseAgent(source, { folder: name, skillNames: shippedSkills, hiveSkillNames: shippedSkills, integrations: ['slack'] });
+    if (!('def' in result)) throw new Error(`${name} does not parse`);
+    expect(result.def.limits.dailyUsd).toBeUndefined();
+    expect(result.def.limits.budgetUsd).toBeUndefined();
   });
 });
 

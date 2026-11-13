@@ -13,8 +13,6 @@ autonomy: act
 lane: repo
 limits:
   turns: 60
-  budget_usd: 2
-  daily_usd: 40
   rotate_after: 100
   parallel: 3
 ---
