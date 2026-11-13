@@ -25,6 +25,8 @@ import {
   isContainerRuntime,
   isReservedAgentName,
   isWakeOn,
+  listProblem,
+  parseList,
   repoLane,
   threadLane,
 } from '../../../electron/shared/agent-contract';
@@ -376,5 +378,44 @@ describe('the daily budget per run (HIVE-187)', () => {
     expect(runReservation({ dailyUsd: 8 }, 0)).toBe(0);
     expect(runReservation({ budgetUsd: 2, dailyUsd: 8 }, 1)).toBe(2);
     expect(runReservation({}, 2)).toBe(0);
+  });
+});
+
+describe('quoted list entries (HIVE-355)', () => {
+  it('strips one matching pair of single or double quotes', () => {
+    expect(parseList(`['Bash(touch *)', "Read", Grep]`)).toEqual(['Bash(touch *)', 'Read', 'Grep']);
+    expect(parseList(`["'a'"]`)).toEqual(["'a'"]);
+  });
+
+  it('leaves quotes inside an entry alone', () => {
+    expect(parseList(`[Bash(echo 'hi')]`)).toEqual([`Bash(echo 'hi')`]);
+  });
+
+  it('keeps an entry with an unmatched quote as written, so a rewrite does not lose it', () => {
+    expect(parseList(`['Bash(x, Read"]`)).toEqual([`'Bash(x`, `Read"`]);
+  });
+
+  it('reports nothing for a well-formed list', () => {
+    expect(listProblem(`['Bash(touch *)', "Read", Grep]`)).toBeNull();
+    expect(listProblem('[]')).toBeNull();
+  });
+
+  it('reports a value that is not a list', () => {
+    expect(listProblem('Read')).toBe('Must be a list, like [a, b].');
+  });
+
+  it('reports an unmatched quote with the entry', () => {
+    expect(listProblem(`[Read, 'Bash(x]`)).toBe(
+      `'Bash(x has an unmatched quote. A list entry cannot hold a comma, even quoted.`,
+    );
+    expect(listProblem(`["]`)).toBe(
+      `" has an unmatched quote. A list entry cannot hold a comma, even quoted.`,
+    );
+  });
+
+  it('reports a comma inside quotes rather than supporting it', () => {
+    expect(listProblem(`['Bash(a, b)']`)).toBe(
+      `'Bash(a has an unmatched quote. A list entry cannot hold a comma, even quoted.`,
+    );
   });
 });

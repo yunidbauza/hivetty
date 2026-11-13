@@ -779,3 +779,22 @@ describe('lane (HIVE-184)', () => {
     expect(definition(withLane('thread')).limits.parallel).toBe(1);
   });
 });
+
+describe('quoted list entries (HIVE-355)', () => {
+  const withTools = (value: string): string =>
+    GOOD.replace('tools: [Read, Grep, WebFetch]', `tools: ${value}`);
+
+  it('reads a quoted tool as the bare rule', () => {
+    expect(definition(withTools(`['Bash(touch *)', "Read"]`)).tools).toEqual([
+      'Bash(touch *)',
+      'Read',
+    ]);
+  });
+
+  it('reports a comma inside quotes on the field', () => {
+    expect(problems(withTools(`['Bash(a, b)']`))).toContainEqual({
+      field: 'tools',
+      reason: `'Bash(a has an unmatched quote. A list entry cannot hold a comma, even quoted.`,
+    });
+  });
+});

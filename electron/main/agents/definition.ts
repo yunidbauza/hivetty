@@ -22,6 +22,7 @@ import {
   isContainerRuntime,
   isReservedAgentName,
   isWakeOn,
+  listProblem,
   parseDays,
   parseDuration,
   parseList,
@@ -108,7 +109,7 @@ function checkKind(spec: FieldSpec, raw: string): string | null {
         ? 'Must be a number of minutes (5m), hours (2h), or daily.'
         : null;
     case 'list':
-      return parseList(raw) === null ? 'Must be a list, like [a, b].' : null;
+      return listProblem(raw);
     case 'time-list':
       return parseTimes(raw) === null
         ? 'Must be a list of local times, like [09:00, 17:00].'
