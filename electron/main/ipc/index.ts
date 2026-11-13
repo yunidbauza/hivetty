@@ -784,6 +784,8 @@ const progressOfBuilds = (): BuilderProgress | null => {
   builderProgress ??= createBuilderProgress({
     plans: sessions.planStore(),
     knowsSession: (id) => sessions?.entities().includes(id) ?? false,
+    // The session's own cwd: the only folder a build ask's plan path may be read from.
+    cwdOf: (id) => sessions?.observedCwd(id),
   });
   return builderProgress;
 };

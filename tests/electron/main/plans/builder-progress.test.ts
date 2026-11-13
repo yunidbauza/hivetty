@@ -68,7 +68,7 @@ describe('createBuilderProgress', () => {
     FILE = write('p.md');
     plans = createPlans({ send: vi.fn() });
     await touch(plans, FILE);
-    progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-') });
+    progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-'), cwdOf: () => root });
   });
 
   afterEach(() => {
@@ -335,24 +335,70 @@ describe('createBuilderProgress', () => {
     expect(statuses()).toEqual(['completed', 'pending']);
   });
 
-  it('never links a plan file the session did not read, even one on disk (HIVE-359)', () => {
+  it('links a plan file no hook announced, read from under the session cwd (a fork or the shell wrote it)', async () => {
     write('unread.md');
 
-    progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/unread.md' } }));
-    progress.onEntry(post(1));
+    await progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/unread.md' } }));
+    expect(plans.get('sess-01')?.file).toBe(FILE); // linking moves nothing
+    await progress.onEntry(post(1));
 
+    expect(plans.get('sess-01')).toMatchObject({ file: join(root, '.hive', 'plans', 'unread.md'), build: { askId: 'A1', state: 'building' } });
+    expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+  });
+
+  it('a builder post that lands while the link read is in flight still ticks, in order', async () => {
+    write('unread.md');
+    const linking = progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/unread.md' } }));
+    const first = progress.onEntry(post(1, { state: 'started' }));
+    const second = progress.onEntry(post(1));
+    await Promise.all([linking, first, second]);
+
+    expect(statuses()).toEqual(['completed', 'pending', 'pending']);
+  });
+
+  it('starts on the text the shell left after the last Write', async () => {
+    writeFileSync(FILE, `${PLAN}## Task 4: Task 4\n`); // no hook fires for a shell edit
+    await progress.onEntry(ask());
+    await vi.waitFor(() => expect(plans.planOf('sess-01', FILE)?.tasks).toHaveLength(4));
+    await progress.onEntry(post(1));
+
+    expect(statuses()).toEqual(['completed', 'pending', 'pending', 'pending']);
+  });
+
+  it('never links a plan outside the session cwd, nor one when the session has no cwd', async () => {
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'hive-out-')));
+    mkdirSync(join(outside, '.hive', 'plans'), { recursive: true });
+    writeFileSync(join(outside, '.hive', 'plans', 'x.md'), PLAN);
+    await progress.onEntry(ask({ meta: { stage: 'build', plan: join(outside, '.hive', 'plans', 'x.md') } }));
+    await progress.onEntry(post(1));
     expect(plans.get('sess-01')?.build).toBeUndefined();
+
+    const blind = createBuilderProgress({ plans, knowsSession: () => true, cwdOf: () => undefined });
+    write('unread.md');
+    await blind.onEntry(ask({ id: 'A2', meta: { stage: 'build', plan: '.hive/plans/unread.md' } }));
+    await blind.onEntry(post(1, {}, { thread: 'A2' }));
+    expect(plans.get('sess-01')?.build).toBeUndefined();
+    rmSync(outside, { recursive: true, force: true });
   });
 
   it('never links a plan file only another session read (HIVE-359)', async () => {
-    const b = write('b.md');
-    await touch(plans, b, 'sess-02');
+    const otherRoot = realpathSync(mkdtempSync(join(tmpdir(), 'hive-builds-other-')));
+    mkdirSync(join(otherRoot, '.hive', 'plans'), { recursive: true });
+    const b = join(otherRoot, '.hive', 'plans', 'b.md');
+    writeFileSync(b, PLAN);
+    await plans.apply({ entityId: 'sess-02', op: { kind: 'plan-file-touched', path: b }, cwd: otherRoot });
+    progress = createBuilderProgress({
+      plans,
+      knowsSession: (id) => id.startsWith('sess-'),
+      cwdOf: (id) => (id === 'sess-01' ? root : otherRoot),
+    });
 
-    progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/b.md' } }));
-    progress.onEntry(post(1));
+    await progress.onEntry(ask({ meta: { stage: 'build', plan: '.hive/plans/b.md' } }));
+    await progress.onEntry(post(1));
 
     expect(plans.get('sess-01')?.build).toBeUndefined();
     expect(plans.get('sess-02')?.build).toBeUndefined();
+    rmSync(otherRoot, { recursive: true, force: true });
   });
 
   it('with two builds live, shows the one started last and still ticks the other (HIVE-359)', async () => {
@@ -397,14 +443,14 @@ describe('createBuilderProgress', () => {
   describe('replay', () => {
     const relaunch = async () => {
       plans = createPlans({ send: vi.fn() });
-      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-') });
+      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-'), cwdOf: () => root });
       // The restore re-read of the session's plan file.
       await plans.restore('sess-01', [{ file: FILE, at: 0 }], root);
     };
 
     const relaunchWith = async (files: { file: string; at: number }[]) => {
       plans = createPlans({ send: vi.fn() });
-      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-') });
+      progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-'), cwdOf: () => root });
       await plans.restore('sess-01', files, root);
     };
 
