@@ -1489,6 +1489,27 @@ different way.
 | `skills` | Which skills this agent may invoke | Names checked against what exists on the machine |
 | `mcp` | Which outside systems are plugged in, and as whom | Entries in the agent's `--mcp-config`; whose OAuth token is used |
 | `tools` | Which calls proceed **without stopping to ask** | `--allowedTools` grants; `permissions.ask` + `--permission-prompt-tool` fence |
+| `grants` | Rules a permission card granted (HIVE-409) | Held exactly as `tools`; written by the app only |
+
+`grants:` is written by the app only, when a card's answer grants a standing
+rule. The seed never changes it and never shows it as a customisation, so
+shipped updates to `tools:` keep arriving. Before `grants:` existed a card
+wrote into `tools:`, which made that list the person's and held every later
+shipped change back. On the first seed after HIVE-409, `liftGrants`
+(`electron/main/seed/lift-grants.ts`) does a one-time lift for a file with no
+`grants:` yet: `tools:` becomes the shipped list, and every entry beyond it
+moves to `grants:`, except a scoped `X(…)` that a bare `X` already covers.
+Rules naming the merge always move, so the merge grant stays there by name
+even beside a bare `Bash`. What a wake allows can only grow; a shipped tool
+someone removed by hand comes back, once. Writing `grants:` is what makes the
+lift run once.
+
+The lift reads the file's base first (HIVE-418): the manifest's recorded `tools` hash, or the history's
+legacy base. A card always appended to the end of `tools:`, so the longest prefix of the installed list
+that hashes to the base is the older shipped list. If the whole list matches, nothing is lifted and
+`mergeParts` updates `tools:` like any other part. If a shorter prefix matches, only what follows it
+moves to `grants:`. Either way, an entry a release removed never comes back as a grant. With no base,
+or no prefix that matches, the lift works as described above.
 
 `mcp` decides whether a system's tools exist in the process at all, and on whose
 behalf — Claude Code holds the user's Slack OAuth **not** in the Keychain but in
@@ -1701,6 +1722,19 @@ what exists and never runs on a denied call. The slug is checked against
 GitHub's own alphabet before it is composed, so nothing the glob reads can
 arrive through a repository name. A project whose repository is not known yet
 grants nothing and schedules a refresh; its merge raises the card, once.
+
+**Merging through the tool (HIVE-409).** `mcp__hive__pr_merge { repo, number,
+sha, subject, body }` is the merge `merge-pr` uses. Main runs `gh pr merge
+--squash --match-head-commit` itself through `execFile`, with no shell, so a
+subject with `&` or `;` is text. An `autoMerge` project now grants a second
+rule beside the Bash one, `mcp__hive__pr_merge(<owner>/<name>#*)`. The fence
+allows the tool only by that rule or by a card's once literal naming one PR
+(`literal:mcp__hive__pr_merge:<owner>/<name>#<N>`). No wide rule (`*`,
+`mcp__hive`, `mcp__hive__*`, the bare name) allows it. It is in
+`FENCE_ONLY_TOOLS`, so it never reaches the CLI's own `--allowedTools`, bare
+or scoped, and a session's settings always ask for it. Its card offers once
+only. The Bash merge stays as the fallback for an older HiveTTY. It still
+matches only as its own call with `--repo` last.
 
 ### The fence, measured
 

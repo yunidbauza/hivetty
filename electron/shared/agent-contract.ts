@@ -625,6 +625,8 @@ export const AGENT_FIELDS: readonly FieldSpec[] = [
   { path: 'skills', kind: 'list', required: false },
   { path: 'mcp', kind: 'list', required: false },
   { path: 'tools', kind: 'list', required: false },
+  // HIVE-409. Rules a permission card granted; written by `permissions.ts` only, never shipped, never seeded.
+  { path: 'grants', kind: 'list', required: false },
   { path: 'autonomy', kind: 'enum', required: false, values: AUTONOMIES },
   { path: 'lane', kind: 'enum', required: false, values: AGENT_LANES },
   { path: 'limits.turns', kind: 'number', required: false },
@@ -755,12 +757,49 @@ export function parseDuration(text: string): number | null {
   return match[2] === 'h' ? size * 3_600_000 : size * 60_000;
 }
 
-export function parseList(text: string): string[] | null {
+function splitList(text: string): string[] | null {
   if (!text.startsWith('[') || !text.endsWith(']')) return null;
 
   const inner = text.slice(1, -1).trim();
 
   return inner === '' ? [] : inner.split(',').map((part) => part.trim());
+}
+
+/** One matching pair of `'…'` or `"…"` off the ends; anything else as written. */
+function unquote(entry: string): string {
+  const quote = entry[0];
+
+  return entry.length >= 2 && (quote === "'" || quote === '"') && entry.endsWith(quote)
+    ? entry.slice(1, -1)
+    : entry;
+}
+
+/**
+ * `[a, 'b c']` → the entries, one pair of YAML quotes off each (HIVE-355).
+ *
+ * An entry with an unmatched quote comes back as written rather than turning
+ * the list `null`: the grant writer and the form both read `null` as `[]` and
+ * would rewrite the field without it. {@link listProblem} is what reports it.
+ */
+export function parseList(text: string): string[] | null {
+  return splitList(text)?.map(unquote) ?? null;
+}
+
+/**
+ * Why `text` is not a usable list, or `null`. A comma inside quotes is
+ * reported rather than supported: both writers join entries unquoted, so a
+ * quoted comma would split in two on the next save.
+ */
+export function listProblem(text: string): string | null {
+  const parts = splitList(text);
+
+  if (parts === null) return 'Must be a list, like [a, b].';
+
+  const bad = parts.find((part) => unquote(part) === part && /^['"]|['"]$/.test(part));
+
+  return bad === undefined
+    ? null
+    : `${bad} has an unmatched quote. A list entry cannot hold a comma, even quoted.`;
 }
 
 /** `[09:00, 17:00]` → the times, sorted. `null` when any of it is not a time. */

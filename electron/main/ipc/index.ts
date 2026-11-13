@@ -3272,6 +3272,17 @@ export function registerIpcHandlers(
       return answerPrLookup(github, lookup);
     },
     /*
+      HIVE-409. The fence has already decided: an auto-merge project's rule, or a card's once. This only
+      runs it, with `github` bound as `onPrLookup` argues, after the same login-env await.
+    */
+    onPrMerge: async (caller, request) => {
+      await loginEnvStatus();
+      const result = await github.merge(request);
+      const where = `${request.repo}#${String(request.number)}`;
+      console.info(`[github] ${caller} merge ${where}: ${result.ok ? 'merged' : result.error.message}`);
+      return result.ok ? { merged: true, output: result.value } : { merged: false, reason: result.error.message };
+    },
+    /*
       HIVE-174. `jira` is declared further down for the same reason `github`
       is, and the same argument covers it: each method runs on a request, after
       this body has executed. Built per call so nothing here captures a binding

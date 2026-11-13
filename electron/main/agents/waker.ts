@@ -9,7 +9,7 @@ import {
 import { AUTH_ENV_KEYS, DEFAULT_ENV_ARG, isSessionEnvDenied } from '@shared/config-contract';
 import { HOOK_ENV_GRANTS, HOOK_ENV_RECEIVER_URL } from '@shared/hook-contract';
 import { HIVE_CONSENT_TOOLS, HIVE_STANDING_GRANTS } from '@shared/ledger-tools';
-import { namesTool, ONCE_ONLY_TOOLS } from '@shared/permission-rules';
+import { FENCE_ONLY_TOOLS, namesTool } from '@shared/permission-rules';
 
 import { createPathMap } from '../container/path-map';
 import { withHostAlias } from '../hooks/container-origin';
@@ -84,8 +84,9 @@ interface WakeInput {
    *
    * Not merged into `def.tools`, because the definition is the durable record
    * and this is deliberately not durable. A permanent grant takes the other
-   * road: it is written into `AGENT.md` when the answer arrives, and reaches
-   * the next wake as an ordinary `def.tools` entry.
+   * road: it is written into `AGENT.md`'s `grants:` when the answer arrives
+   * (HIVE-409), and reaches the next wake as an ordinary `def.tools` entry,
+   * which `definition.ts` folds `grants:` into.
    */
   grants?: readonly string[];
   /**
@@ -311,14 +312,21 @@ export function systemPromptFor(
  * the fence's `matches` refuses a once-only tool to every rule but a one-shot
  * literal; narrowing it too would leave a `*` agent asking about every `Bash`
  * call once the blanket left the argv.
+ *
+ * `pr_merge` too (HIVE-409): the fence allows it by the auto-merge rule alone,
+ * so neither a wide rule nor that scoped rule may reach the CLI.
  */
 function grantableTools(tools: readonly string[]): string[] {
-  const onceOnly = [...ONCE_ONLY_TOOLS];
-  return tools.flatMap((rule) =>
-    onceOnly.some((tool) => namesTool(rule, tool))
-      ? HIVE_CONSENT_TOOLS.filter((tool) => !ONCE_ONLY_TOOLS.has(tool) && namesTool(rule, tool))
-      : [rule],
-  );
+  const fenceOnly = [...FENCE_ONLY_TOOLS];
+  return tools.flatMap((rule) => {
+    // A scoped rule for a fence-only tool (the auto-merge `mcp__hive__pr_merge(owner/name#*)`) stays with
+    // the fence: the CLI has no specifier grammar for an MCP tool, so it could allow every call.
+    const open = rule.indexOf('(');
+    if (open !== -1 && FENCE_ONLY_TOOLS.has(rule.slice(0, open))) return [];
+    return fenceOnly.some((tool) => namesTool(rule, tool))
+      ? HIVE_CONSENT_TOOLS.filter((tool) => !FENCE_ONLY_TOOLS.has(tool) && namesTool(rule, tool))
+      : [rule];
+  });
 }
 
 export function wakeCommand(input: WakeInput): WakeCommand {

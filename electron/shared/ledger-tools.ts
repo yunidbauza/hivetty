@@ -349,6 +349,30 @@ export const PR_TOOL: McpToolDefinition = {
 };
 
 /**
+ * A squash merge main runs with no shell (HIVE-409): every field is one argv entry, so a subject with `&`
+ * or `;` is text. Consent is the fence's: the auto-merge rule on a project that has it on, or a card.
+ */
+export const PR_MERGE_TOOL: McpToolDefinition = {
+  name: 'pr_merge',
+  description:
+    'Squash-merge one pull request at an exact head commit. HiveTTY runs the GitHub CLI merge itself, with no shell, so the subject and body are passed exactly as written. Use it instead of a Bash merge. Consent: on a project with auto-merge on it runs without asking; otherwise the person answers a card. Answers with what gh printed, or why it did not merge.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      repo: { type: 'string', description: 'owner/name, as `projects` lists it.' },
+      number: { type: 'integer', description: 'The pull request number.' },
+      sha: {
+        type: 'string',
+        description: 'The 40-character head commit you checked; the merge fails if the head has moved.',
+      },
+      subject: { type: 'string', description: 'The squash commit subject, one line, at most 200 characters.' },
+      body: { type: 'string', description: 'The squash commit body, at most 20,000 characters.' },
+    },
+    required: ['repo', 'number', 'sha'],
+  },
+};
+
+/**
  * What every agent holds without naming it (HIVE-174): the ledger vocabulary,
  * the reads, and the prompt tool the CLI calls on the agent's behalf.
  *
@@ -374,12 +398,14 @@ export const HIVE_STANDING_GRANTS: readonly string[] = [
  * The tools that write outside the Hive, or change what it may do unasked;
  * consent is a `tools:` entry or a card. `project_auto_merge` is a card only:
  * it grants unattended merging, so its ladder has no standing rung
- * (`rungsFor`) and no shipped agent names it in `tools:`.
+ * (`rungsFor`) and no shipped agent names it in `tools:`. `pr_merge` is consent by the
+ * auto-merge rule or a card only (HIVE-409): no `tools:` entry grants it (`matches`).
  */
 export const HIVE_CONSENT_TOOLS: readonly string[] = [
   'mcp__hive__jira_transition',
   'mcp__hive__jira_comment',
   'mcp__hive__project_auto_merge',
+  'mcp__hive__pr_merge',
 ];
 
 /**

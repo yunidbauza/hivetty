@@ -146,11 +146,13 @@ describe('the Jira writes are consented, not standing', () => {
     expect(result.def.limits.parallel).toBe(parallel);
   });
 
-  it('gives the shipper a day that fits a real shipping day, and a per-run cap its lanes reserve (HIVE-189)', () => {
-    const source = readFileSync(join(resources, 'agents', 'shipper', 'AGENT.md'), 'utf8');
-    const result = parseAgent(source, { folder: 'shipper', skillNames: shippedSkills, hiveSkillNames: shippedSkills, integrations: ['slack'] });
-    if (!('def' in result)) throw new Error('shipper does not parse');
-    expect(result.def.limits).toMatchObject({ dailyUsd: 40, budgetUsd: 2, parallel: 3 });
+  // A fresh install spends without a cap; a budget is the user's to set, and the seed keeps one they set.
+  it.each(['shipper', 'builder', 'fixer', 'acr'])('%s ships with no daily cap and no per-run budget', (name) => {
+    const source = readFileSync(join(resources, 'agents', name, 'AGENT.md'), 'utf8');
+    const result = parseAgent(source, { folder: name, skillNames: shippedSkills, hiveSkillNames: shippedSkills, integrations: ['slack'] });
+    if (!('def' in result)) throw new Error(`${name} does not parse`);
+    expect(result.def.limits.dailyUsd).toBeUndefined();
+    expect(result.def.limits.budgetUsd).toBeUndefined();
   });
 });
 
@@ -250,5 +252,16 @@ describe('the shipper merge gate', () => {
 
   it('merge-pr says the thread count can be ninety seconds old and what a HOLD on it does', () => {
     expect(read('skills', 'merge-pr', 'SKILL.md')).toMatch(/ninety\s+seconds/);
+  });
+
+  // HIVE-409: the merge goes through the MCP tool, so a title with `&` or `;` is text; Bash is the fallback.
+  it('merge-pr and the shipper merge with mcp__hive__pr_merge, and name the Bash merge as the fallback', () => {
+    const skill = read('skills', 'merge-pr', 'SKILL.md');
+    expect(skill).toMatch(/mcp__hive__pr_merge \{ repo: [^}]*number: [^}]*sha: [^}]*subject: [^}]*body: [^}]*\}/);
+    expect(skill).toMatch(/not in your tools[^.]*fall back\s+to the Bash merge/);
+    expect(skill).toMatch(/gh pr merge <N> --squash --match-head-commit [^\n]*--repo <owner>\/<repo>\n/);
+    const shipper = read('agents', 'shipper', 'AGENT.md');
+    expect(shipper).toMatch(/mcp__hive__pr_merge/);
+    expect(shipper).toMatch(/fall\s+back\s+to the Bash merge/);
   });
 });

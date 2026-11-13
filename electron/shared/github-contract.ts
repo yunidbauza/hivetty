@@ -203,6 +203,34 @@ export interface PrLookupReply {
   reason?: string;
 }
 
+/**
+ * The receiver route `mcp__hive__pr_merge` is served on (HIVE-409): a squash merge at an exact head that
+ * main runs through `execFile`, so a subject's `&` or `;` is text and never shell grammar.
+ */
+export const PR_MERGE_PATH = '/pr/merge';
+
+/** The body cap on {@link PR_MERGE_PATH}: the longest subject and body, with room. */
+export const PR_MERGE_MAX_BYTES = 32_768;
+
+/** The longest squash subject {@link PR_MERGE_PATH} accepts, on one line. */
+export const PR_MERGE_SUBJECT_MAX = 200;
+
+/** The longest squash body {@link PR_MERGE_PATH} accepts. */
+export const PR_MERGE_BODY_MAX = 20_000;
+
+export interface PrMergeRequest {
+  /** `owner/name`, as GitHub spells it. */
+  repo: string;
+  number: number;
+  /** The 40-character head commit the caller checked; the merge fails if the head has moved. */
+  sha: string;
+  subject?: string;
+  body?: string;
+}
+
+/** What {@link PR_MERGE_PATH} answers: gh's output, or why it did not merge. */
+export type PrMergeReply = { merged: true; output: string } | { merged: false; reason: string };
+
 /** How many comments, reviews, threads, requests and checks one PR page reads (HIVE-205). */
 export const GH_DETAIL_PAGE = 100;
 

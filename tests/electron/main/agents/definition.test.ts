@@ -308,6 +308,18 @@ describe('parseAgent — refusals', () => {
     expect(problems(source)[0]?.field).toBe('tools');
   });
 
+  it('holds a grants: entry like a tools: entry, once (HIVE-409)', () => {
+    const source = GOOD.replace('tools: [Read, Grep, WebFetch]', 'tools: [Read, Grep]\ngrants: [Grep, Edit]');
+
+    expect(definition(source).tools).toEqual(['Read', 'Grep', 'Edit']);
+  });
+
+  it('refuses an empty grants entry, on grants', () => {
+    const source = GOOD.replace('tools: [Read, Grep, WebFetch]', 'grants: [, Edit]');
+
+    expect(problems(source)).toContainEqual(expect.objectContaining({ field: 'grants' }));
+  });
+
   it('refuses a missing required field, naming it', () => {
     expect(problems(GOOD.replace(/^icon: .*$/m, ''))).toContainEqual({
       field: 'icon',
@@ -777,5 +789,24 @@ describe('lane (HIVE-184)', () => {
 
   it('parses a lane without parallel > 1; the cap serializes its lanes', () => {
     expect(definition(withLane('thread')).limits.parallel).toBe(1);
+  });
+});
+
+describe('quoted list entries (HIVE-355)', () => {
+  const withTools = (value: string): string =>
+    GOOD.replace('tools: [Read, Grep, WebFetch]', `tools: ${value}`);
+
+  it('reads a quoted tool as the bare rule', () => {
+    expect(definition(withTools(`['Bash(touch *)', "Read"]`)).tools).toEqual([
+      'Bash(touch *)',
+      'Read',
+    ]);
+  });
+
+  it('reports a comma inside quotes on the field', () => {
+    expect(problems(withTools(`['Bash(a, b)']`))).toContainEqual({
+      field: 'tools',
+      reason: `'Bash(a has an unmatched quote. A list entry cannot hold a comma, even quoted.`,
+    });
   });
 });

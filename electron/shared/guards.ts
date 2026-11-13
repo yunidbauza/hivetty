@@ -72,12 +72,14 @@ import { MAX_FILE_BYTES, MAX_RESOLVE_CANDIDATES } from './fs-contract';
 import type {
   PrCommentRequest,
   PrLookup,
+  PrMergeRequest,
   PrRef,
   PrRunsRequest,
   PrThreadRequest,
   PrViewedRequest,
   RunRef,
 } from './github-contract';
+import { PR_MERGE_BODY_MAX, PR_MERGE_SUBJECT_MAX } from './github-contract';
 import type {
   AckRequest,
   PromptReport,
@@ -3027,6 +3029,33 @@ export function parsePrLookup(input: unknown): PrLookup {
     throw new TypeError('pr lookup.number must be a positive integer');
   }
   return { repo, number };
+}
+
+const HEAD_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * The body of a `PR_MERGE_PATH` request (HIVE-409). Every field reaches `gh` as one argv entry, never a
+ * shell, so the checks are about refusing nonsense with a sentence the model can act on: the repo and
+ * number as `parsePrLookup` reads them, a full head commit, and capped texts with a one-line subject.
+ */
+export function parsePrMerge(input: unknown): PrMergeRequest {
+  const { repo, number } = parsePrLookup(input);
+  const source = asRecord(input, 'pr merge');
+  const sha = source.sha;
+  if (typeof sha !== 'string' || !HEAD_SHA.test(sha)) {
+    throw new TypeError('pr merge.sha must be the 40-character head commit, in lowercase hex');
+  }
+  const text = (key: 'subject' | 'body', max: number, oneLine: boolean): string | undefined => {
+    const value = source[key];
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || value.length > max || (oneLine && /[\r\n]/.test(value))) {
+      throw new TypeError(`pr merge.${key} must be a string of at most ${String(max)} characters${oneLine ? ' on one line' : ''}`);
+    }
+    return value;
+  };
+  const subject = text('subject', PR_MERGE_SUBJECT_MAX, true);
+  const body = text('body', PR_MERGE_BODY_MAX, false);
+  return { repo, number, sha, ...(subject === undefined ? {} : { subject }), ...(body === undefined ? {} : { body }) };
 }
 
 /**

@@ -37,6 +37,7 @@ import {
   parseSpawnTerminalRequest,
   parseWriteRequest,
   parsePrLookup,
+  parsePrMerge,
   parseJiraTransitionByName,
   parseSetSessionPluginRequest,
 } from '../../../electron/shared/guards';
@@ -1896,6 +1897,35 @@ describe('parsePrLookup (HIVE-173)', () => {
     ]) {
       expect(() => parsePrLookup(bad)).toThrow(/pr lookup/);
     }
+  });
+});
+
+describe('parsePrMerge (HIVE-409)', () => {
+  const ok = { repo: 'behiques/hivetty', number: 229, sha: 'a'.repeat(40) };
+
+  it('accepts the minimum and the optional texts', () => {
+    expect(parsePrMerge(ok)).toEqual(ok);
+    expect(parsePrMerge({ ...ok, subject: 'Account & devices', body: 'x\ny' })).toEqual({
+      ...ok,
+      subject: 'Account & devices',
+      body: 'x\ny',
+    });
+  });
+
+  it.each([
+    [{ ...ok, repo: 'nope' }, 'repo'],
+    [{ ...ok, repo: 'a/b --admin' }, 'repo'],
+    [{ ...ok, number: 0 }, 'number'],
+    [{ ...ok, number: 1.5 }, 'number'],
+    [{ ...ok, sha: 'abc' }, 'sha'],
+    [{ ...ok, sha: 'G'.repeat(40) }, 'sha'],
+    [{ ...ok, sha: undefined }, 'sha'],
+    [{ ...ok, subject: 'x'.repeat(201) }, 'subject'],
+    [{ ...ok, subject: 'a\nb' }, 'subject'],
+    [{ ...ok, subject: 7 }, 'subject'],
+    [{ ...ok, body: 'x'.repeat(20_001) }, 'body'],
+  ])('refuses %j (%s)', (input, field) => {
+    expect(() => parsePrMerge(input)).toThrow(field);
   });
 });
 

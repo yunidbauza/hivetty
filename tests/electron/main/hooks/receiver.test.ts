@@ -17,7 +17,7 @@ import {
   ProjectAutoMergeRefused,
   type ProjectsDirectory,
 } from '../../../../electron/shared/config-contract';
-import { PR_PATH, type PrLookupReply } from '../../../../electron/shared/github-contract';
+import { PR_MERGE_PATH, PR_PATH, type PrLookupReply, type PrMergeReply } from '../../../../electron/shared/github-contract';
 import {
   JIRA_COMMENT_PATH,
   JIRA_GET_PATH,
@@ -3024,6 +3024,11 @@ describe('the projects and pr routes (HIVE-173)', () => {
         if (failNext) return Promise.reject(new Error('spawn gh EACCES /Users/someone/bin/gh'));
         return Promise.resolve(lookup.number === RECORD.number ? { pr: RECORD } : { pr: null, reason: 'not in the sweep' });
       },
+      onPrMerge: (caller, request): Promise<PrMergeReply> => {
+        seen.push({ caller, lookup: request });
+        if (failNext) return Promise.reject(new Error('spawn gh EACCES /Users/someone/bin/gh'));
+        return Promise.resolve({ merged: true, output: 'merged' });
+      },
     });
     const started = await receiver.start();
     expect(started).not.toBeNull();
@@ -3099,8 +3104,43 @@ describe('the projects and pr routes (HIVE-173)', () => {
     expect(body.reason).not.toContain('/Users');
   });
 
+  const MERGE = { repo: 'acme/the-hive', number: 214, sha: 'a'.repeat(40), subject: 'A & B; C' };
+
+  it('merges for a well-formed request, passing it whole (HIVE-409)', async () => {
+    const response = await post(PR_MERGE_PATH, JSON.stringify(MERGE), { [HOOK_HEADER_SESSION]: CALLER });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ merged: true, output: 'merged' });
+    expect(seen).toEqual([{ caller: CALLER, lookup: MERGE }]);
+  });
+
+  it('refuses a malformed merge with 400 naming the field, calling nothing (HIVE-409)', async () => {
+    const response = await post(PR_MERGE_PATH, JSON.stringify({ ...MERGE, sha: 'abc' }), { [HOOK_HEADER_SESSION]: CALLER });
+    const body = (await response.json()) as { reason: string };
+
+    expect(response.status).toBe(400);
+    expect(body.reason).toMatch(/sha/);
+    expect(seen).toEqual([]);
+  });
+
+  it('refuses a merge body over the cap with 413 (HIVE-409)', async () => {
+    const response = await post(PR_MERGE_PATH, JSON.stringify({ ...MERGE, body: 'x'.repeat(40_000) }), { [HOOK_HEADER_SESSION]: CALLER });
+
+    expect(response.status).toBe(413);
+    expect(seen).toEqual([]);
+  });
+
+  it('answers 500 with a fixed sentence when the merge throws, never the error text (HIVE-409)', async () => {
+    failNext = true;
+    const response = await post(PR_MERGE_PATH, JSON.stringify(MERGE), { [HOOK_HEADER_SESSION]: CALLER });
+    const body = (await response.json()) as { reason: string };
+
+    expect(response.status).toBe(500);
+    expect(body.reason).toBe('the pull request could not be merged; read its state before trying again');
+  });
+
   it('refuses an unknown id and a foreign token on both routes', async () => {
-    for (const path of [PROJECTS_PATH, PR_PATH]) {
+    for (const path of [PROJECTS_PATH, PR_PATH, PR_MERGE_PATH]) {
       const unknown = await post(path, '{}', { [HOOK_HEADER_SESSION]: 'nobody-at-all' });
       expect(unknown.status).toBe(404);
       const foreign = await fetch(`${origin()}${path}`, {
