@@ -1,8 +1,7 @@
 import type {
   DirEntry,
-  FileContent,
+  FileRead,
   FsChangedEvent,
-  FsRefusal,
   FsResult,
   FsSearchMode,
   ResolvedLink,
@@ -110,7 +109,7 @@ export async function readFile(
   projectId: string,
   relPath: string,
   sessionId?: string,
-): Promise<FsResult<FileContent | FsRefusal>> {
+): Promise<FsResult<FileRead>> {
   const bridge = window.hive?.fs;
   if (!bridge) return NO_BRIDGE;
   return bridge.readFile({ projectId, relPath, sessionId });

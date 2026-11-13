@@ -9,6 +9,8 @@ import {
 
 interface ActiveMarkdownView {
   key: string;
+  /** An SVG: Source and Preview only, and Preview whatever the markdown setting says. */
+  svg: boolean;
   view: MarkdownView;
   setView: (view: MarkdownView) => void;
 }
@@ -33,5 +35,6 @@ export function useMarkdownView(): ActiveMarkdownView | null {
   );
 
   if (active === null) return null;
-  return { key: active.key, view: active.chosen ?? opensIn, setView: choose };
+  const fallback = active.svg ? 'preview' : opensIn;
+  return { key: active.key, svg: active.svg, view: active.chosen ?? fallback, setView: choose };
 }

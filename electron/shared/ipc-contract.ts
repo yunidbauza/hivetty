@@ -75,9 +75,8 @@ import type {
 } from './config-contract';
 import type {
   DirEntry,
-  FileContent,
+  FileRead,
   FsChangedEvent,
-  FsRefusal,
   FsResult,
   ReadDirRequest,
   ReadFileRequest,
@@ -2402,7 +2401,7 @@ export interface HiveBridge {
      */
     readFile(
       request: ReadFileRequest,
-    ): Promise<FsResult<FileContent | FsRefusal>>;
+    ): Promise<FsResult<FileRead>>;
     /** Write, unless the file moved on. See {@link WriteFileResult}. */
     writeFile(request: WriteFileRequest): Promise<WriteFileResult>;
     /**

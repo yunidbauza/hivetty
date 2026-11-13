@@ -41,9 +41,8 @@ import type {
 } from '@shared/config-contract';
 import type {
   DirEntry,
-  FileContent,
+  FileRead,
   FsChangedEvent,
-  FsRefusal,
   FsResult,
   ResolveResult,
   RootInfo,
@@ -4657,7 +4656,7 @@ export function registerIpcHandlers(
 
   handle(
     CH.fsReadFile,
-    (_event, payload): Promise<FsResult<FileContent | FsRefusal>> =>
+    (_event, payload): Promise<FsResult<FileRead>> =>
       readFileContent(parseReadFileRequest(payload)),
   );
 
