@@ -1,5 +1,13 @@
 import { CH } from '@shared/ipc-contract';
-import type { PlanChangedEvent, PlanFileRead, PlanSource, PlanTask, PlanUpdate, SessionPlan } from '@shared/plan-contract';
+import {
+  isPlanFilePath,
+  type PlanChangedEvent,
+  type PlanFileRead,
+  type PlanSource,
+  type PlanTask,
+  type PlanUpdate,
+  type SessionPlan,
+} from '@shared/plan-contract';
 
 import { parsePlanFile, parsePlanPart } from './parse-plan-file';
 import { readPlanFile } from './read-plan-file';
@@ -33,6 +41,14 @@ export interface Plans {
   planOf(entityId: string, file: string): SessionPlan | undefined;
   /** The builder of the session's shown build posted at `at` (HIVE-359 follow-up). Main's memory only, never published. */
   buildSeen(entityId: string, at: number): void;
+  /**
+   * A plan file a build ask names, read and recorded without being shown (link-time read). The path came from
+   * the ledger, so it must name a `.hive/plans/*.md` strictly under the asking session's cwd, read under the same
+   * confinement as a hook-driven read. A new file goes first in the session's order, so `lastRead` never moves; a
+   * recorded one keeps its place and what is on screen. Resolves to the realpath, or `undefined` when refused.
+   * Never rejects, never offers or publishes a plan.
+   */
+  note(entityId: string, filePath: string, cwd: string | undefined): Promise<string | undefined>;
 }
 
 /** Lower wins. A source is accepted over a live plan of the same or a higher number. */
@@ -199,6 +215,26 @@ export function createPlans({
     });
   }
 
+  async function note(entityId: string, filePath: string, cwd: string | undefined): Promise<string | undefined> {
+    if (!isPlanFilePath(filePath)) return undefined;
+    const read = await readPlanFile(filePath, cwd);
+    if (read === undefined || !isPlanFilePath(read.file) || parsePlanFile(read.text).length === 0) return undefined;
+    const records = planFiles.get(entityId) ?? new Map<string, { at: number; read: string; text?: string }>();
+    const last = records.get(read.file);
+    if (last !== undefined) {
+      // Kept in place (`Map.set` on a known key keeps its position); `text`, what the panel took, stays, so a
+      // later hook-driven read still offers the change.
+      if (last.read !== read.text) {
+        records.set(read.file, { ...last, read: read.text, at: now() });
+        onPlanFiles?.(entityId, filesOf(entityId));
+      }
+      return read.file;
+    }
+    planFiles.set(entityId, new Map([[read.file, { at: now(), read: read.text }], ...records]));
+    onPlanFiles?.(entityId, filesOf(entityId));
+    return read.file;
+  }
+
   return {
     apply({ entityId, op, cwd }) {
       switch (op.kind) {
@@ -247,5 +283,6 @@ export function createPlans({
     buildSeen(entityId, at) {
       buildSeenAt.set(entityId, at);
     },
+    note,
   };
 }

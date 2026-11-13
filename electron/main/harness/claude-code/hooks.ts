@@ -412,9 +412,11 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
   const uuidField = typeof sessionUuid === 'string' && sessionUuid !== '' ? { sessionUuid } : {};
 
   /*
-    The plan panel's sources (HIVE-179, HIVE-180). The main agent only: a
-    subagent's work shares the session's id space but is not the session's
-    plan, so `agent_id` is read off a truncated prefix too. PreToolUse is
+    The plan panel's sources (HIVE-179, HIVE-180). The main agent only,
+    except a `Write` or `Edit` to a `.hive/plans/*.md` file, which counts
+    from a subagent too: a subagent's task list is not the session's plan,
+    but a plan file it writes is. `agent_id` is read off a truncated prefix
+    too. PreToolUse is
     ignored — a task's id exists only in the response, and a denied call
     never ran.
 
@@ -430,18 +432,17 @@ function readSession(entityId: string, body: string, truncated: boolean): HookRe
   if (event === 'PostToolUse' && typeof toolName === 'string') {
     const callerAgent = truncated ? AGENT_ID_IN_PREFIX.exec(body)?.[1] : agentId;
     let op: PlanOp | undefined;
-    if (callerAgent === undefined) {
-      if (toolName === 'Write' || toolName === 'Edit') {
-        const filePath = truncated
-          ? FILE_PATH_IN_PREFIX.exec(body)?.[1]
-          : (toolInput as { file_path?: unknown } | null | undefined)?.file_path;
-        op = planOpOf(toolName, { file_path: filePath }, undefined);
-      } else if (TASK_TOOL_NAMES.has(toolName) || toolName === 'ExitPlanMode') {
-        if (!truncated) {
-          op = planOpOf(toolName, toolInput, toolResponse);
-        } else if (toolName === 'ExitPlanMode') {
-          console.warn(`[hive] plan mode plan over ${String(HOOK_MAX_BODY_BYTES)} bytes, dropped (${entityId})`);
-        }
+    if (toolName === 'Write' || toolName === 'Edit') {
+      // A plan file is the session's plan whoever wrote it: a fork that drafts one is still this session's planning.
+      const filePath = truncated
+        ? FILE_PATH_IN_PREFIX.exec(body)?.[1]
+        : (toolInput as { file_path?: unknown } | null | undefined)?.file_path;
+      op = planOpOf(toolName, { file_path: filePath }, undefined);
+    } else if (callerAgent === undefined && (TASK_TOOL_NAMES.has(toolName) || toolName === 'ExitPlanMode')) {
+      if (!truncated) {
+        op = planOpOf(toolName, toolInput, toolResponse);
+      } else if (toolName === 'ExitPlanMode') {
+        console.warn(`[hive] plan mode plan over ${String(HOOK_MAX_BODY_BYTES)} bytes, dropped (${entityId})`);
       }
     }
     if (op !== undefined) effects.push({ kind: 'plan', update: { entityId, op, ...cwdField } });

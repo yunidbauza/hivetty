@@ -1,3 +1,5 @@
+import { isAbsolute, join } from 'node:path';
+
 import type { LedgerEntry } from '@shared/ledger-contract';
 import type { PlanBuild, PlanTask, PlanTaskStatus, SessionPlan } from '@shared/plan-contract';
 
@@ -9,7 +11,7 @@ interface Link {
   entityId: string;
   /** The party the ask went to: the only one whose posts tick it. */
   builder: string | undefined;
-  /** The plan file's realpath, one the session itself read (HIVE-359). */
+  /** The plan file's realpath, recorded by the session's own read or read from under its cwd at link time. */
   file: string;
   /** Task ids this build ticked: the ones its answer completes. */
   ticked: Set<string>;
@@ -32,14 +34,18 @@ interface Link {
  * plan (HIVE-179); the ledger is the only path. Authorship is the predicate:
  * the link is the ask's `from` — a session id main minted from the caller's
  * header, never body text — and only the party the ask went to may tick it.
- * Main never reads a file on the ledger's word: an ask links only to a plan
- * file the session itself read, from the text main read then.
+ * An ask names a plan path; main reads it only as a `.hive/plans/*.md`
+ * strictly under the asking session's own cwd (`Plans.note`, confined like a
+ * hook-driven read), so a plan a subagent or the shell wrote links like one
+ * the main agent wrote. A recorded plan links at once and its text is
+ * refreshed in the background; an unrecorded one links when its read lands,
+ * and entries in its thread wait for it.
  * A build silent for `STALE_BUILD_MS` stops holding the session's next plan file.
  *
  * - **Link.** A `build` ask naming `meta.plan` (or, with no `meta.stage`, a
  *   body `plan:` line) from a known session links to any plan file that
- *   session read, not only its current one (HIVE-359). Linking moves nothing:
- *   a held ask may wait days.
+ *   session read, not only its current one (HIVE-359), or to one read then
+ *   from under its cwd. Linking moves nothing: a held ask may wait days.
  * - **Start.** The builder's first `build` post in the thread, or the answer
  *   when there was none, puts the plan on screen with `build: building`. The
  *   session's last started build is the one shown.
@@ -67,7 +73,8 @@ interface Link {
  */
 /** What `ipc/index.ts` feeds every ledger entry to (HIVE-180). */
 export interface BuilderProgress {
-  onEntry(entry: LedgerEntry): void;
+  /** A promise only while a link read, or a wait for one, is in flight. Never rejects. */
+  onEntry(entry: LedgerEntry): Promise<void> | void;
   /** Fold `entries` onto `entityId`'s plan once its restore re-read is done. */
   replay(entityId: string, entries: readonly LedgerEntry[]): void;
 }
@@ -75,13 +82,22 @@ export interface BuilderProgress {
 export function createBuilderProgress({
   plans,
   knowsSession,
+  cwdOf,
   now = Date.now,
 }: {
   plans: Plans;
   knowsSession: (id: string) => boolean;
+  /** The session's own cwd: the only folder a build ask's plan path may be read from. */
+  cwdOf: (entityId: string) => string | undefined;
   now?: () => number;
 }): BuilderProgress {
   const links = new Map<string, Link>();
+  /** A deferred step's throw, logged like ipc logs a synchronous one: `onEntry` never rejects. */
+  const warn = (id: string) => (cause: unknown) => {
+    console.warn(`[ledger] could not tick a build from ${id}:`, cause);
+  };
+  /** Asks whose link waits on a plan read; entries in their threads wait too. */
+  const pending = new Map<string, Promise<void>>();
   /** Each session's build last started: the one on screen (HIVE-359). */
   const shown = new Map<string, string>();
   /** Replay folds without offering, then shows once (HIVE-359). */
@@ -124,12 +140,11 @@ export function createBuilderProgress({
     if (shown.get(link.entityId) === askId) plans.buildSeen(link.entityId, at);
   };
 
-  function link(entry: LedgerEntry, meta: Record<string, unknown>): void {
+  function link(entry: LedgerEntry, meta: Record<string, unknown>): Promise<void> | undefined {
     /*
       A session sometimes sends the ask with `plan:` only in its body, meta
       reduced to `intent` (INCORP-620). The body's line counts when meta names
-      no stage: the suffix match below still confines it to the session's own
-      plan files.
+      no stage: it is read under the same confinement as a meta path.
     */
     const bodyPlan = meta.stage === undefined ? /^plan:\s*(\S+)\s*$/m.exec(entry.body)?.[1] : undefined;
     const planPath = meta.plan ?? bodyPlan;
@@ -140,25 +155,45 @@ export function createBuilderProgress({
       could fail or complete a build that is not theirs.
     */
     if (entry.to === undefined) return;
+    const builder = entry.to;
     /*
       Any plan file the session itself read (HIVE-359), not only its current
       one: a split's plans are all written before the first ask. The latest
       read wins a tie. Linking moves nothing; a held ask may wait days.
     */
-    const suffix = `/${planPath.replace(/^\.?\//, '')}`;
-    const file = plans.files(entry.from).findLast((read) => read.file.endsWith(suffix))?.file;
-    if (file === undefined) return;
-    links.set(entry.id, { entityId: entry.from, builder: entry.to, file, ticked: new Set(), tasks: [], state: 'building' });
+    const cwd = cwdOf(entry.from);
+    const relative = planPath.replace(/^\.?\//, '');
+    const path = isAbsolute(planPath) ? planPath : cwd === undefined ? undefined : join(cwd, relative);
+    const known = plans.files(entry.from).findLast((read) => read.file.endsWith(`/${relative}`))?.file;
+    const make = (file: string) =>
+      links.set(entry.id, { entityId: entry.from, builder, file, ticked: new Set(), tasks: [], state: 'building' });
+    if (known !== undefined) {
+      make(known);
+      // The shell may have edited it since the last Write: refresh the linked file's recorded text, in the
+      // background, so the builder's first post most likely starts on it.
+      if (!replaying) void plans.note(entry.from, known, cwd).catch(warn(entry.id));
+      return undefined;
+    }
+    if (path === undefined || replaying) return undefined;
+    // A plan no hook announced (a subagent's or the shell's): read it from under the session's own cwd, then link.
+    const read = plans
+      .note(entry.from, path, cwd)
+      .then((file) => {
+        if (file !== undefined) make(file);
+      })
+      .catch(warn(entry.id));
+    pending.set(entry.id, read);
+    return read.finally(() => pending.delete(entry.id));
   }
 
   /** One path for live and replayed entries; `at` stamps the ticks. */
-  function handle(entry: LedgerEntry, at: number): void {
+  function handle(entry: LedgerEntry, at: number): Promise<void> | undefined {
     const meta = entry.meta ?? {};
-    if (entry.kind === 'ask') {
-      link(entry, meta);
-      return;
-    }
+    if (entry.kind === 'ask') return link(entry, meta);
     const askId = entry.thread;
+    // A post or answer that beat its link's read waits for it, so ticks stay in order.
+    const waiting = askId === undefined ? undefined : pending.get(askId);
+    if (waiting !== undefined) return waiting.then(() => handle(entry, at)).catch(warn(entry.id));
     const linked = askId === undefined ? undefined : links.get(askId);
     if (askId === undefined || linked === undefined) return;
     // An ended build takes nothing more; it is kept so replay knows when it ended.
