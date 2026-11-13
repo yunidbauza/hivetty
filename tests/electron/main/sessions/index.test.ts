@@ -18,6 +18,8 @@ import type {
 } from '../../../../electron/shared/hook-contract';
 import type { StatusSignal } from '../../../../electron/shared/harness-contract';
 import { CH } from '../../../../electron/shared/ipc-contract';
+import type { SessionMetrics } from '../../../../electron/shared/metrics-contract';
+import type { SessionRecord } from '../../../../electron/shared/session-history-contract';
 
 import { claudeCodeAdapter } from '../../../../electron/main/harness/claude-code';
 import { sessionAdapter } from '../../../../electron/main/harness/registry';
@@ -1919,6 +1921,9 @@ describe('the history', () => {
     patch: Record<string, unknown>;
   }
 
+  /** The hook runtime's metrics callback, captured when `createSessions` starts it (Pro #273). */
+  let onMetrics: ((entityId: string, metrics: SessionMetrics) => void) | undefined;
+
   const withHistory = (written: Written[], resumable?: Record<string, string>) =>
     createSessions({
       supervisor,
@@ -1927,6 +1932,15 @@ describe('the history', () => {
       config: () => CONFIG,
       userDataPath: USER_DATA_PATH,
       newSessionUuid: () => TEST_UUID,
+      hooks: {
+        envFor: () => ({}),
+        start: (opts: { onMetrics: (entityId: string, metrics: SessionMetrics) => void }) => {
+          onMetrics = opts.onMetrics;
+          return Promise.resolve();
+        },
+        stop: () => Promise.resolve(),
+        writeContainerSession: () => Promise.resolve(null),
+      } as unknown as Parameters<typeof createSessions>[0]['hooks'],
       history: {
         /*
           Both verbs land in one list. What these tests assert is *what main
@@ -1940,7 +1954,12 @@ describe('the history', () => {
           written.push({ id, patch: { ...patch } });
         },
         resumable: (id) => resumable?.[id],
-        all: () => [],
+        // The records the patches fold into, as the real history would hold them.
+        all: () => {
+          const byId = new Map<string, Record<string, unknown>>();
+          for (const { id, patch } of written) byId.set(id, { ...(byId.get(id) ?? { id }), ...patch });
+          return [...byId.values()] as unknown as SessionRecord[];
+        },
         flush: () => {},
         dispose: () => {},
       },
@@ -2101,6 +2120,47 @@ describe('the history', () => {
     });
 
     expect(patchesFor(written, 'clone-1')).toEqual([]);
+  });
+
+  /**
+   * A `/model` or `/effort` inside a session, as its status line reports it (Pro #273).
+   * Kept in the history so a resume launches on what the session last ran.
+   */
+  describe('the live pick', () => {
+    beforeEach(() => {
+      onMetrics = undefined;
+    });
+
+    it('records the model and effort the session is running now, for a resume', () => {
+      const written: Written[] = [];
+      withHistory(written).open({ ...OPEN, model: 'opus', effort: 'high' });
+      expect(onMetrics).toBeDefined();
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low' });
+      expect(patchesFor(written, 'hero-refresh')).toContainEqual({ model: 'sonnet', effort: 'low' });
+    });
+
+    it('records nothing when the meters repeat the pick the history already holds', () => {
+      const written: Written[] = [];
+      withHistory(written).open({ ...OPEN, model: 'opus', effort: 'high' });
+      const picks = () =>
+        patchesFor(written, 'hero-refresh').filter((patch) => Object.keys(patch).join() === 'model,effort');
+
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low' });
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'low', contextPct: 40 });
+      expect(picks()).toEqual([{ model: 'sonnet', effort: 'low' }]);
+
+      onMetrics!('hero-refresh', { model: 'Sonnet 5.5', effort: 'max' });
+      expect(picks()).toEqual([
+        { model: 'sonnet', effort: 'low' },
+        { model: 'sonnet', effort: 'max' },
+      ]);
+    });
+
+    it('still sends the meters to the renderer', () => {
+      withHistory([]).open(OPEN);
+      onMetrics!('hero-refresh', { contextPct: 12 });
+      expect(sent.some((entry) => entry.channel === CH.sessionMetrics)).toBe(true);
+    });
   });
 
   /**

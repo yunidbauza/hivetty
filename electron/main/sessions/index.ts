@@ -76,6 +76,7 @@ import { createBootstrap, type Bootstrap } from './bootstrap';
 import { createChangedFiles } from './changed-files';
 import { createBranchReader, resolveGit, type BranchReaderOptions } from './git';
 import type { SessionHistory } from './history';
+import { livePick } from './live-pick';
 import { createSessionRegistry, type SessionRegistry } from './registry';
 import { createTitleReader, type TitleReader } from './title';
 
@@ -1050,6 +1051,24 @@ export function createSessions(options: SessionsOptions): Sessions {
    */
   void skills?.sync();
 
+  /**
+   * Meters on their way to the renderer. The model and effort in them are what the session runs now, after any
+   * `/model` or `/effort` inside it, so the history keeps them: a resume launches with them, not the spawn's pick
+   * (Pro #273). Recorded only when they differ from what the history holds, since every `record` schedules a
+   * whole-file rewrite and the meters repeat the same pick on every status-line tick.
+   */
+  const sendMetrics = (event: SessionMetricsEvent): void => {
+    const pick = livePick(event.metrics);
+    if (history !== undefined && (pick.model !== undefined || pick.effort !== undefined)) {
+      const held = history.all().find((record) => record.id === event.entityId);
+      const changed =
+        (pick.model !== undefined && pick.model !== held?.model) ||
+        (pick.effort !== undefined && pick.effort !== held?.effort);
+      if (changed) history.record(event.entityId, pick);
+    }
+    send(CH.sessionMetrics, event);
+  };
+
   void hooks?.start({
     knowsSession: (entityId) => registry.sessionFor(entityId) !== undefined,
     /*
@@ -1288,11 +1307,7 @@ export function createSessions(options: SessionsOptions): Sessions {
      * one place that would benefit from the comparison already makes it, with
      * the previous value in hand rather than a copy kept here.
      */
-    onMetrics: (entityId, metrics) =>
-      send(CH.sessionMetrics, {
-        entityId,
-        metrics,
-      } satisfies SessionMetricsEvent),
+    onMetrics: (entityId, metrics) => sendMetrics({ entityId, metrics }),
   });
 
   /**
