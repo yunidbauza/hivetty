@@ -3,7 +3,7 @@ import type { AgentWriteResult } from '@shared/agent-contract';
 import { OVERMIND } from '@shared/ledger-contract';
 import type { LedgerEntry, LedgerPostRequest } from '@shared/ledger-contract';
 import { CLOSING_KINDS, laneOfRun } from '@shared/ledger-derive';
-import { isToolName, oneShotRuleFor, rungsFor } from '@shared/permission-rules';
+import { ALLOW_PROJECT, isToolName, mergeTarget, oneShotRuleFor, rungsFor } from '@shared/permission-rules';
 
 import { patchFrontmatter } from './patch';
 import { isClosedLane } from './scheduler-rules';
@@ -61,7 +61,7 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-const isPermissionAsk = (entry: LedgerEntry): boolean =>
+export const isPermissionAsk = (entry: LedgerEntry): boolean =>
   entry.kind === 'ask' && entry.meta?.['kind'] === 'permission';
 
 export interface PermissionDeps {
@@ -77,6 +77,11 @@ export interface PermissionDeps {
   append: (request: LedgerPostRequest) => void;
   read: (name: string) => Promise<string | null>;
   write: (name: string, source: string) => Promise<AgentWriteResult>;
+  /**
+   * Turn on `autoMerge` for the project holding `repo`: main's config writer through
+   * `projectAutoMergeFor`. Absent in a harness without config, where allow-project fails closed.
+   */
+  mergeUnattended?: (repo: string) => Promise<{ ok: true; project: string } | { ok: false; reason: string }>;
 }
 
 export interface Permissions {
@@ -263,7 +268,12 @@ export function createPermissions(deps: PermissionDeps): Permissions {
           continue;
         }
 
-        if (answer.body !== 'allow-once') continue;
+        /*
+          `allow-project` also grants the card's own merge once. A switch that failed is refused by
+          `onAnswer` (and `consumed` then skips it); a card with no merge never offered the rung.
+        */
+        if (answer.body !== 'allow-once' && answer.body !== ALLOW_PROJECT) continue;
+        if (answer.body === ALLOW_PROJECT && mergeTarget(ask.meta) === undefined) continue;
 
         /*
           `meta.tool` is model-supplied and this road used to take it
@@ -404,6 +414,17 @@ export function createPermissions(deps: PermissionDeps): Permissions {
           nobody ever answered. Nothing widens, but the refusal is recorded.
         */
         refuse(ask, name, `no such option "${entry.body}"`);
+        return;
+      }
+
+      if (rung.id === ALLOW_PROJECT) {
+        const target = mergeTarget(ask.meta);
+        const result =
+          target === undefined || deps.mergeUnattended === undefined
+            ? { ok: false as const, reason: 'no repository to switch' }
+            : await deps.mergeUnattended(target.repo);
+        if (!result.ok) refuse(ask, name, result.reason);
+        // The one-shot merge is `grantsFor`'s, at the wake this answer triggers; a refusal above consumes it.
         return;
       }
 

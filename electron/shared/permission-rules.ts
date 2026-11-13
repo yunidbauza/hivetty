@@ -25,7 +25,10 @@ export type PermissionDecision =
   | { behavior: 'allow'; updatedInput: Record<string, unknown> }
   | { behavior: 'deny'; message: string };
 
-export type RungId = 'allow-once' | 'allow-family' | 'allow-tool';
+export type RungId = 'allow-once' | 'allow-family' | 'allow-tool' | 'allow-project';
+
+/** The merge card's project switch: turn on auto-merge for the repository, and merge this one. */
+export const ALLOW_PROJECT = 'allow-project';
 
 export interface Rung {
   id: RungId;
@@ -120,6 +123,21 @@ export const isPrMerge = (toolName: string): boolean => toolName === PR_MERGE_TO
 
 /** `owner/name` with nothing the glob or the `#` separator reads; the merge specifier's repository. */
 const MERGE_REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+/**
+ * The PR a `pr_merge` ask names, shaped as the fence's specifier is (it reaches a card's caption), or
+ * `undefined` for any other ask or a malformed one.
+ */
+export function mergeTarget(meta: Record<string, unknown> | undefined): { repo: string; number: number } | undefined {
+  if (meta?.['tool'] !== PR_MERGE_TOOL_NAME) return undefined;
+  const input = meta['input'];
+  const fields = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
+  const repo = fields['repo'];
+  const number = fields['number'];
+  return typeof repo === 'string' && MERGE_REPO.test(repo) && typeof number === 'number' && Number.isSafeInteger(number) && number > 0
+    ? { repo, number }
+    : undefined;
+}
 
 /**
  * Whether a `tools:` rule names `toolName` outright: the name itself, its MCP
@@ -487,6 +505,22 @@ export function rungsFor(
       caption: 'runs this once. asks again next time.',
     },
   ];
+
+  /*
+    The merge card teaches the project switch. No rule: allow-project writes nothing to AGENT.md, and
+    `permissions.ts` resolves the repository to a configured project before anything is switched.
+  */
+  if (toolName === PR_MERGE_TOOL_NAME) {
+    const target = mergeTarget({ tool: toolName, input });
+    if (target !== undefined) {
+      rungs.push({
+        id: ALLOW_PROJECT,
+        label: 'merge unattended for this project',
+        caption: `turns on auto-merge for ${target.repo} and merges this one.`,
+      });
+    }
+    return rungs;
+  }
 
   // No standing rung grants a fence-only tool (`matches`), so the card offers none (HIVE-409).
   if (FENCE_ONLY_TOOLS.has(toolName)) return rungs;
