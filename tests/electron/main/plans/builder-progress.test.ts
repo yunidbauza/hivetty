@@ -8,6 +8,7 @@ import { createPlans, type Plans } from '../../../../electron/main/plans';
 import { createBuilderProgress } from '../../../../electron/main/plans/builder-progress';
 import { STALE_BUILD_MS } from '../../../../electron/main/plans/store';
 import type { LedgerEntry } from '../../../../electron/shared/ledger-contract';
+import type { PlanFileRead } from '../../../../electron/shared/plan-contract';
 import { toPlanUpdate, type ClaudePlanCall } from '../../../support/plan-calls';
 
 const onTool = (plans: Plans, call: ClaudePlanCall) => {
@@ -475,7 +476,7 @@ describe('createBuilderProgress', () => {
       await plans.restore('sess-01', [{ file: FILE, at: 0 }], root);
     };
 
-    const relaunchWith = async (files: { file: string; at: number }[]) => {
+    const relaunchWith = async (files: PlanFileRead[]) => {
       plans = createPlans({ send: vi.fn() });
       progress = createBuilderProgress({ plans, knowsSession: (id) => id.startsWith('sess-'), cwdOf: () => root });
       await plans.restore('sess-01', files, root);
@@ -511,6 +512,23 @@ describe('createBuilderProgress', () => {
       progress.replay('sess-01', log);
 
       expect(plans.get('sess-01')?.file).toBe(b);
+    });
+
+    it('keeps a finished build when the next plan was only linked by an ask that never started (HIVE-420)', async () => {
+      write('b.md', '## Task 1: X\n');
+      const log = [
+        ask(),
+        post(1, {}, { ts: 3_000 }),
+        { ...answer('PR open'), ts: 4_000 },
+        ask({ id: 'A2', meta: { stage: 'build', plan: '.hive/plans/b.md' } }),
+      ];
+      vi.setSystemTime(5_000);
+      for (const item of log) await progress.onEntry(item);
+      await relaunchWith(plans.files('sess-01'));
+
+      progress.replay('sess-01', log);
+
+      expect(plans.get('sess-01')).toMatchObject({ file: FILE, build: { askId: 'A1', state: 'done' } });
     });
 
     it('treats a build silent past STALE_BUILD_MS as ended at its last post (HIVE-359 follow-up)', async () => {

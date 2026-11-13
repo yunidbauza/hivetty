@@ -712,16 +712,44 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
       await plans.note('sess-01', first, root);
       writeFileSync(p, '## Task 1: A\n## Task 2: B\n'); // a shell edit: no hook
       const before = onPlanFiles.mock.calls.length;
+      const readAt = plans.files('sess-01').find((read) => read.file === p)?.at;
       vi.advanceTimersByTime(1000);
 
       await plans.note('sess-01', p, root);
       await plans.note('sess-01', p, root); // unchanged: the history is not told again
 
-      expect(onPlanFiles).toHaveBeenCalledTimes(before + 1); // the new read time reaches the history
+      // A link-time read is not a write (HIVE-420): the time stands, so the history has nothing new.
+      expect(onPlanFiles).toHaveBeenCalledTimes(before);
+      expect(plans.files('sess-01').find((read) => read.file === p)?.at).toBe(readAt);
 
       expect(plans.planOf('sess-01', p)?.tasks).toHaveLength(2);
       expect(plans.get('sess-01')?.tasks).toHaveLength(1);
       expect(plans.files('sess-01').map((read) => read.file)).toEqual([first, p]);
+    });
+
+    it('marks a file only a link read as noted, and a hook-driven read clears it with a real time (HIVE-420)', async () => {
+      vi.setSystemTime(1_000);
+      const onPlanFiles = vi.fn();
+      const plans = createPlans({ send: vi.fn(), onPlanFiles });
+      const p = write('linked.md');
+
+      await plans.note('sess-01', p, root);
+      expect(plans.files('sess-01')).toEqual([{ file: p, at: 1_000, noted: true }]);
+
+      vi.setSystemTime(2_000);
+      await plans.apply({ entityId: 'sess-01', op: { kind: 'plan-file-touched', path: p }, cwd: root });
+      expect(plans.files('sess-01')).toEqual([{ file: p, at: 2_000 }]);
+      expect(onPlanFiles).toHaveBeenLastCalledWith('sess-01', [{ file: p, at: 2_000 }]);
+    });
+
+    it('keeps the noted mark through a restore (HIVE-420)', async () => {
+      const plans = createPlans({ send: vi.fn() });
+      const p = write('linked.md');
+      const shown = write('shown.md');
+
+      await plans.restore('sess-01', [{ file: p, at: 10, noted: true }, { file: shown, at: 20 }], root);
+
+      expect(plans.files('sess-01')).toEqual([{ file: p, at: 10, noted: true }, { file: shown, at: 20 }]);
     });
 
     it('refuses a file outside the cwd, a symlink out of it, a non-plan path, and no cwd', async () => {

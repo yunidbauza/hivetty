@@ -48,6 +48,8 @@ export interface PlanPart {
 export interface PlanFileRead {
   file: string;
   at: number;
+  /** Only a build ask's link has read this text, never the session (HIVE-420): not a write, so the relaunch replay skips it. */
+  noted?: true;
 }
 
 export interface SessionPlan {
