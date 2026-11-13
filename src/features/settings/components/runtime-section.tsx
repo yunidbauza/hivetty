@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@components/ui/button';
 import { SelectField } from '@components/ui/select-field';
@@ -535,6 +535,20 @@ function ProjectOverrides({
  */
 function SkipPermissionsSwitch({ checked }: { checked: boolean }) {
   const [confirming, setConfirming] = useState(false);
+  const control = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+
+  // The confirm replaced the switch and took focus with it; hand focus back once the switch is mounted again.
+  useEffect(() => {
+    if (confirming || !returnFocus.current) return;
+    returnFocus.current = false;
+    control.current?.focus();
+  }, [confirming]);
+
+  const close = () => {
+    returnFocus.current = true;
+    setConfirming(false);
+  };
 
   if (confirming) {
     return (
@@ -543,9 +557,9 @@ function SkipPermissionsSwitch({ checked }: { checked: boolean }) {
         title="Start every Claude Code session with --dangerously-skip-permissions?"
         confirmLabel="Skip prompts"
         className="rounded-lg border border-red"
-        onCancel={() => setConfirming(false)}
+        onCancel={close}
         onConfirm={() => {
-          setConfirming(false);
+          close();
           void setRuntimeConfig({ skipPermissions: true });
         }}
       >
@@ -557,6 +571,7 @@ function SkipPermissionsSwitch({ checked }: { checked: boolean }) {
 
   return (
     <Switch
+      ref={control}
       label="Skip permission prompts"
       description="Sessions start with --dangerously-skip-permissions: nothing asks before a tool runs, so no permission card reaches the inbox. Agents keep their fence."
       checked={checked}

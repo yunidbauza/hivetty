@@ -242,6 +242,21 @@ describe('RuntimeSection — skip permission prompts (Pro #259/#261)', () => {
     expect(setRuntimeConfig).toHaveBeenCalledWith({ skipPermissions: false });
   });
 
+  it('returns focus to the switch when the confirm closes, by Cancel or by confirming (Pro #262)', async () => {
+    const user = userEvent.setup();
+    install({ skipPermissions: false });
+    render(<RuntimeSection />);
+    expect(toggle()).not.toHaveFocus();
+
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(toggle()).toHaveFocus();
+
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Skip prompts' }));
+    expect(toggle()).toHaveFocus();
+  });
+
   it('names no other CLI', () => {
     install();
     render(<RuntimeSection />);
