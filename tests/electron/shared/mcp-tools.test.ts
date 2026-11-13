@@ -16,6 +16,7 @@ const stub = (overrides: Partial<ReceiverClient> = {}): ReceiverClient => ({
   // HIVE-173: the same resting states, for the same reason.
   projects: vi.fn(async () => ({ projects: [] })),
   pr: vi.fn(async () => ({ pr: null, reason: 'not exercised' })),
+  // HIVE-409: a merge that is not wired, which is a reply and not a throw.
   prMerge: vi.fn(async () => ({ merged: false as const, reason: 'not exercised' })),
   // HIVE-174: a Jira that is not wired, which is a JiraResult and not a throw.
   jiraGet: vi.fn(async () => NOT_WIRED),
@@ -58,6 +59,7 @@ describe('createToolHandlers — listing', () => {
       'agents',
       'projects',
       'pr',
+      'pr_merge',
       'jira_get',
       'jira_transition',
       'jira_comment',
@@ -788,6 +790,52 @@ describe('createToolHandlers — projects and pr (HIVE-173)', () => {
       expect(textOf(result)).toMatch(/pr needs repo/);
     }
     expect(pr).not.toHaveBeenCalled();
+  });
+});
+
+describe('createToolHandlers — pr_merge (HIVE-409)', () => {
+  const SHA = 'a'.repeat(40);
+
+  it('forwards exactly the fields it was given and answers with what gh printed', async () => {
+    const prMerge = vi.fn(async () => ({ merged: true as const, output: 'Squashed and merged.' }));
+    const result = await createToolHandlers(stub({ prMerge })).callTool('pr_merge', {
+      repo: 'behiques/hivetty', number: 229, sha: SHA, subject: 'Account & devices (#229)',
+    });
+
+    expect(prMerge).toHaveBeenCalledWith({ repo: 'behiques/hivetty', number: 229, sha: SHA, subject: 'Account & devices (#229)' });
+    expect(result.isError).toBe(false);
+    expect(textOf(result)).toBe('Merged behiques/hivetty#229.\nSquashed and merged.');
+    expect(result.structuredContent).toEqual({ merged: true });
+  });
+
+  it('a merge gh refused is a failed result carrying the reason', async () => {
+    const prMerge = vi.fn(async () => ({ merged: false as const, reason: 'gh said: Head branch was modified.' }));
+    const result = await createToolHandlers(stub({ prMerge })).callTool('pr_merge', { repo: 'behiques/hivetty', number: 229, sha: SHA });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toBe('pr_merge: behiques/hivetty#229 was not merged. gh said: Head branch was modified.');
+  });
+
+  it('refuses a malformed call, calling nothing', async () => {
+    const prMerge = vi.fn();
+    const handlers = createToolHandlers(stub({ prMerge }));
+
+    for (const args of [{}, { repo: 'behiques/hivetty', number: 229 }, { repo: 'behiques/hivetty', number: 229, sha: 'abc' }, { repo: 'x', number: 1, sha: SHA }]) {
+      const result = await handlers.callTool('pr_merge', args);
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/^pr_merge: pr (lookup|merge)\./);
+    }
+    expect(prMerge).not.toHaveBeenCalled();
+  });
+
+  it('a receiver refusal becomes readable text', async () => {
+    const prMerge = vi.fn(async () => {
+      throw new ReceiverError(413, 'body exceeds 32768 bytes');
+    });
+    const result = await createToolHandlers(stub({ prMerge })).callTool('pr_merge', { repo: 'behiques/hivetty', number: 1, sha: SHA });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('body exceeds 32768 bytes');
   });
 });
 
