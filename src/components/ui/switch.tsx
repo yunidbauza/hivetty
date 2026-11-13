@@ -1,5 +1,5 @@
 import { Switch as SwitchPrimitive } from 'radix-ui';
-import { useId } from 'react';
+import { useId, type Ref } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -27,6 +27,8 @@ interface SwitchProps {
   /** Rendered under the label, for the "why you might want this" line. */
   description?: string;
   disabled?: boolean;
+  /** The control itself, for a caller that hands focus back to it (React 19: a plain prop). */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Switch({
@@ -35,6 +37,7 @@ export function Switch({
   onCheckedChange,
   description,
   disabled = false,
+  ref,
 }: SwitchProps) {
   const id = useId();
   const describedBy = description === undefined ? undefined : `${id}-description`;
@@ -59,6 +62,7 @@ export function Switch({
       </div>
 
       <SwitchPrimitive.Root
+        ref={ref}
         id={id}
         checked={checked}
         onCheckedChange={onCheckedChange}
