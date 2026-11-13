@@ -6,6 +6,7 @@ import {
   hashPart,
   mergeParts,
   parseParts,
+  USER_ONLY_PARTS,
 } from '../../../../electron/main/seed/merge';
 
 /**
@@ -271,5 +272,27 @@ describe('mergeParts', () => {
     const mine = v1.replace('---\n', '---\n# pinned\n');
 
     expect(mergeParts(mine, v1, baseOf(v1)).text).toBe(mine);
+  });
+});
+
+describe('grants: (HIVE-409)', () => {
+  it('is kept and never reported as customised or moved', () => {
+    const shipped = '---\nname: s\ntools: [Read, Bash]\n---\nBody\n';
+    const current = '---\nname: s\ntools: [Read, Bash]\ngrants: [Edit]\n---\nBody\n';
+    const result = mergeParts(current, shipped, baseOf(shipped));
+    expect(result.text).toContain('grants: [Edit]');
+    expect(result.customised.map((c) => c.path)).not.toContain('grants');
+    expect(result.moved).not.toContain('grants');
+    expect(USER_ONLY_PARTS.has('grants')).toBe(true);
+  });
+
+  it('is kept when tools: also changes upstream', () => {
+    const v1 = '---\nname: s\ntools: [Read, Bash]\n---\nBody\n';
+    const v2 = '---\nname: s\ntools: [Read, Bash, Grep]\n---\nBody\n';
+    const current = '---\nname: s\ntools: [Read, Bash]\ngrants: [Edit]\n---\nBody\n';
+    const result = mergeParts(current, v2, baseOf(v1));
+    expect(result.text).toContain('tools: [Read, Bash, Grep]');
+    expect(result.text).toContain('grants: [Edit]');
+    expect(result.customised).toEqual([]);
   });
 });
