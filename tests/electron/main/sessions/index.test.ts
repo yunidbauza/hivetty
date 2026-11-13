@@ -1906,6 +1906,44 @@ describe('session authentication', () => {
   });
 });
 
+describe('skip permission prompts (Pro #259)', () => {
+  const typedWith = (config: ConfigSnapshot): string => {
+    const instance = createSessions({
+      supervisor,
+      send: (channel, payload) =>
+        sent.push({ channel, payload: payload as Record<string, unknown> }),
+      config: () => config,
+      userDataPath: USER_DATA_PATH,
+      newSessionUuid: () => TEST_UUID,
+    });
+    instance.open(OPEN);
+    const sessionId = mintedFor('hero-refresh');
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(8);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(SUBMIT);
+    instance.dispose();
+    return vi
+      .mocked(supervisor.write)
+      .mock.calls.filter(([id]) => id === sessionId)
+      .map(([, data]) => data)
+      .join('');
+  };
+
+  it('launches with --dangerously-skip-permissions when the config turns it on', () => {
+    expect(typedWith({ ...CONFIG, skipPermissions: true })).toContain(
+      '--dangerously-skip-permissions',
+    );
+  });
+
+  it('asks for permissions as before by default', () => {
+    const typed = typedWith(CONFIG);
+    // The control: the launch line was typed at all, so the absence below means something.
+    expect(typed).toContain('claude');
+    expect(typed).not.toContain('--dangerously-skip-permissions');
+  });
+});
+
 /**
  * What reaches the history (HIVE-87).
  *

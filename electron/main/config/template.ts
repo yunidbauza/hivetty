@@ -38,6 +38,8 @@ export const CONFIG_TEMPLATE = `${JSON.stringify(
       'Optional, default true. The app injects a blank status line into each session so it can read context and rate-limit usage for the header. Set false to keep your own status line and Claude Code\'s footer key hints; the header\'s gauges then stay empty.',
     '//importLoginEnv':
       'Optional, default true. At startup the app runs your login shell once and adopts its PATH (plus GH_TOKEN / GITHUB_TOKEN if it has them, and this process does not). Without it a Finder-launched app inherits launchd\'s four-entry PATH and cannot find gh, claude, or anything else you installed. Set false if you would rather this app never ran your rc file.',
+    '//skipPermissions':
+      'Optional, default false. New sessions start with --dangerously-skip-permissions: nothing asks before a tool runs, so no permission card reaches the inbox. Sessions already running and agents are unchanged; agents keep their own permission fence.',
     '//projects':
       'id is stable and referenced by sessions; name is what you see; key is the 2-4 letter alias you type into the console ("spawn <key> <task>"), generated for you if you leave it out. "~" is expanded; the path must be an existing directory.',
     '//example': [

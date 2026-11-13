@@ -187,6 +187,12 @@ export interface LaunchSpec {
    * reads the config and passes it.
    */
   subscriptionAuth?: boolean;
+  /**
+   * Start the session with every permission granted (`skipPermissions` in the config, Pro #259).
+   * A literal flag holding no user text. Interactive sessions only; agent wakes build their own argv
+   * in `agents/waker.ts` and keep HIVE-119's fence.
+   */
+  skipPermissions?: boolean;
   model?: SessionModel;
   effort?: SessionEffort;
   /**

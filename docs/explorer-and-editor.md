@@ -12,6 +12,8 @@ what follows is about the two seams that made necessary.
 > - One recursive watcher, on the visible project, 300 ms debounce, 2 s ceiling.
 > - The editor seam is fenced like the terminal's, but its colour is CSS (`--cc-code-*`).
 > - Clean buffers reload silently; saves use optimistic concurrency on mtime.
+> - A raster image reads as a `data:` URL (6 MB cap, so it fits one remote frame) and shows as an `<img>`; an SVG
+>   opens in Preview from its buffer, with Source one toggle away.
 > - A markdown file previews from the buffer through an app-owned model: no
 >   `innerHTML`, links decided by `classifyHref`, relative ones answered by `fs:resolve`.
 
@@ -21,7 +23,7 @@ what follows is about the two seams that made necessary.
 [The tree](#the-tree) · [The editor seam](#the-editor-seam) ·
 [Placement](#placement-and-the-one-rule-that-unifies-it) ·
 [Freshness and saving](#freshness-and-saving) ·
-[Markdown preview](#markdown-preview) · [Testing](#testing)
+[Markdown preview](#markdown-preview) · [Image preview](#image-preview) · [Testing](#testing)
 
 ## The filesystem seam
 
@@ -138,7 +140,9 @@ dependency, nested ignore files have to compose to be worth having, and it hides
 `.env.local`.
 
 A read **refuses** rather than errors in two cases, and the distinction is
-user-visible: over 1 MB, and a NUL byte in the first 8 KB. Neither is a failure
+user-visible: over 1 MB, and a NUL byte in the first 8 KB. A raster image is
+decided by extension before either check (see [Image preview](#image-preview)),
+and refused only past `MAX_IMAGE_BYTES`. Neither is a failure
 — the app looked and decided there was nothing worth rendering. An `FsError`
 (`ENOENT`, `EACCES`, `EISDIR`) reads differently and is rendered differently.
 
@@ -497,6 +501,28 @@ exist only once an `EditorView` mounts them.
 it: the editor fence cannot import `features/`, and the preview needs source
 lines, `<details>`, link classes and highlighted fences. Moving PR markdown
 onto `lib/markdown/` is the natural follow-up.
+
+## Image preview
+
+A file whose extension is in `IMAGE_TYPES` (`electron/shared/fs-contract.ts`:
+png, jpg, jpeg, gif, webp, bmp, ico, avif) is read whole by `readFileContent`
+and answered as `ImageContent`, a `data:` URL with its mtime and size. The
+extension is checked before the 1 MB cap and the NUL sniff, because every PNG
+fails the sniff. Past `MAX_IMAGE_BYTES` (6 MB) it is refused `too-large`. The cap is 6 MB, not
+larger, because the reply crosses a server-mode socket base64-encoded (4/3 the
+bytes) and a remote client drops any frame over `POST_ATTACH_FRAME_MAX_BYTES`
+(8 MiB); 6 MB encodes to 8,000,000 characters with room for the envelope.
+
+A `data:` URL rather than a custom protocol: the CSP already allows
+`img-src data:`, and a protocol is a second way to name a file that would have
+to be held to the containment rules above. The buffer holds the URL as
+`image`; the watcher reloads it like any clean buffer, and it is never dirty.
+
+**SVG is text**, so it reads as `FileContent` and opens in CodeMirror like any
+other file. It gets the markdown toggle minus Split, opening in Preview whatever
+`markdownOpensIn` says; the preview is the buffer encoded into a
+`data:image/svg+xml` URL, so unsaved edits show. Both previews are an `<img>`,
+never inline markup: an SVG inside `<img>` runs no script and loads nothing.
 
 ## Testing
 

@@ -1052,12 +1052,14 @@ export function parseSetRuntimeRequest(input: unknown): SetRuntimeRequest {
     'claudeCommand',
     'env',
     'importLoginEnv',
+    'skipPermissions',
   ]);
   if (
     raw.shell === undefined &&
     raw.claudeCommand === undefined &&
     raw.env === undefined &&
-    raw.importLoginEnv === undefined
+    raw.importLoginEnv === undefined &&
+    raw.skipPermissions === undefined
   ) {
     return fail('setRuntime: nothing to change');
   }
@@ -1087,6 +1089,9 @@ export function parseSetRuntimeRequest(input: unknown): SetRuntimeRequest {
             'setRuntime.importLoginEnv',
           ),
         }
+      : {}),
+    ...(raw.skipPermissions !== undefined
+      ? { skipPermissions: assertBoolean(raw.skipPermissions, 'setRuntime.skipPermissions') }
       : {}),
   };
 }

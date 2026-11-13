@@ -53,6 +53,19 @@ export interface FileContent {
 }
 
 /**
+ * A raster image, read whole so the editor stage can show it.
+ *
+ * A `data:` URL rather than a custom protocol: the CSP already allows
+ * `img-src data:`, and a protocol would be a second way to name a file that has
+ * to be held to the containment rules every `fs:` verb already obeys.
+ */
+export interface ImageContent {
+  dataUrl: string;
+  mtimeMs: number;
+  size: number;
+}
+
+/**
  * Why the editor declined to show a file it could perfectly well have read.
  *
  * A refusal is **not** an error, and the distinction is user-visible: an error
@@ -66,6 +79,9 @@ export interface FsRefusal {
   refused: FsRefusalReason;
   size: number;
 }
+
+/** What `fs:read-file` answers on success: text, an image, or a refusal. */
+export type FileRead = FileContent | ImageContent | FsRefusal;
 
 /**
  * Something actually failed.
@@ -281,6 +297,34 @@ export interface FsChangedEvent {
  * already paid for the read.
  */
 export const MAX_FILE_BYTES = 1_000_000;
+
+/**
+ * The largest image the stage will preview, in bytes. Higher than the text cap
+ * because a retina screenshot is routinely past 1 MB, and an image is shown,
+ * not parsed into an editor.
+ *
+ * 6 MB, not Pro's 20: the preview crosses a server-mode socket as a base64
+ * data URL (4/3 the bytes), and a remote client refuses any frame over
+ * `POST_ATTACH_FRAME_MAX_BYTES` (8 MiB) by dropping its connection. 6 MB
+ * encodes to 8,000,000 characters, leaving room for the frame's envelope.
+ */
+export const MAX_IMAGE_BYTES = 6_000_000;
+
+/**
+ * Raster extensions the stage previews as images, with their MIME types. SVG is
+ * absent on purpose: it is text, opens in the editor, and previews from the
+ * buffer in the renderer.
+ */
+export const IMAGE_TYPES: Readonly<Record<string, string>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.avif': 'image/avif',
+};
 
 /**
  * How much of a file is sniffed for a NUL byte before calling it binary.

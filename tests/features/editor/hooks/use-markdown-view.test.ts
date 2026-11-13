@@ -31,6 +31,13 @@ describe('useMarkdownView', () => {
     expect(result.current?.view).toBe('split');
   });
 
+  it('opens an SVG in Preview whatever the markdown setting says', async () => {
+    act(() => useAppearanceStore.getState().setMarkdownOpensIn('source'));
+    const { result } = renderHook(() => useMarkdownView());
+    await act(async () => useEditorStore.getState().openFile('demo', 'logo.svg'));
+    expect(result.current).toMatchObject({ svg: true, view: 'preview' });
+  });
+
   it('is null for a file with no preview', async () => {
     const { result } = renderHook(() => useMarkdownView());
     await act(async () => useEditorStore.getState().openFile('demo', 'src/a.ts'));

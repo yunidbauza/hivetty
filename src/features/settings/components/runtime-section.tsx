@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@components/ui/button';
 import { SelectField } from '@components/ui/select-field';
@@ -10,6 +10,7 @@ import { EnvDiagnosticView } from '@features/settings/components/env-diagnostic-
 import { EnvEditor } from '@features/settings/components/env-editor';
 import { PathSourceGroup } from '@features/settings/components/path-source-group';
 import { SettingsSectionHeader } from '@features/settings/components/settings-section-header';
+import { InlineConfirm } from '@features/shared/components/inline-confirm';
 import { SettingsGroup } from '@features/shared/components/settings-group';
 import { useProjectConfig } from '@hooks/use-project-config';
 import {
@@ -342,6 +343,13 @@ export function RuntimeSection() {
         />
       </SettingsGroup>
 
+      <SettingsGroup
+        title="Permission prompts"
+        description="Whether a new session asks before a tool runs."
+      >
+        <SkipPermissionsSwitch checked={snapshot.skipPermissions} />
+      </SettingsGroup>
+
       {/*
         Directly under the switch that decides it. This group used to sit in
         Integrations, where it explained a missing `gh` but could not offer the
@@ -518,5 +526,59 @@ function ProjectOverrides({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * On asks first, inline as every confirm in Settings does; off is the safe way and writes at once (Pro #259/#261).
+ * Claude only: CE launches one CLI, so the copy names its flag outright.
+ */
+function SkipPermissionsSwitch({ checked }: { checked: boolean }) {
+  const [confirming, setConfirming] = useState(false);
+  const control = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+
+  // The confirm replaced the switch and took focus with it; hand focus back once the switch is mounted again.
+  useEffect(() => {
+    if (confirming || !returnFocus.current) return;
+    returnFocus.current = false;
+    control.current?.focus();
+  }, [confirming]);
+
+  const close = () => {
+    returnFocus.current = true;
+    setConfirming(false);
+  };
+
+  if (confirming) {
+    return (
+      <InlineConfirm
+        label="Skip permission prompts?"
+        title="Start every Claude Code session with --dangerously-skip-permissions?"
+        confirmLabel="Skip prompts"
+        className="rounded-lg border border-red"
+        onCancel={close}
+        onConfirm={() => {
+          close();
+          void setRuntimeConfig({ skipPermissions: true });
+        }}
+      >
+        New sessions run tools, edit files and run commands without asking, and no permission card reaches the
+        inbox. Sessions already running and agents are unchanged.
+      </InlineConfirm>
+    );
+  }
+
+  return (
+    <Switch
+      ref={control}
+      label="Skip permission prompts"
+      description="Sessions start with --dangerously-skip-permissions: nothing asks before a tool runs, so no permission card reaches the inbox. Agents keep their fence."
+      checked={checked}
+      onCheckedChange={(next) => {
+        if (next) setConfirming(true);
+        else void setRuntimeConfig({ skipPermissions: false });
+      }}
+    />
   );
 }

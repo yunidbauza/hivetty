@@ -1,10 +1,9 @@
 import { open, readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 
 import type {
   DirEntry,
-  FileContent,
-  FsRefusal,
+  FileRead,
   FsResult,
   ReadDirRequest,
   ReadFileRequest,
@@ -14,7 +13,9 @@ import type {
 import {
   BINARY_SNIFF_BYTES,
   HIDDEN_ENTRIES,
+  IMAGE_TYPES,
   MAX_FILE_BYTES,
+  MAX_IMAGE_BYTES,
 } from '@shared/fs-contract';
 
 import { asFailure, projectRoot, resolveExisting } from './paths';
@@ -124,7 +125,7 @@ async function looksBinary(absolute: string, size: number): Promise<boolean> {
 
 export async function readFileContent(
   request: ReadFileRequest,
-): Promise<FsResult<FileContent | FsRefusal>> {
+): Promise<FsResult<FileRead>> {
   try {
     const { absolute } = await resolveExisting(
       request.projectId,
@@ -138,6 +139,32 @@ export async function readFileContent(
         ok: false,
         error: { code: 'EISDIR', message: 'that is not a file' },
       };
+    }
+
+    /*
+      An image is decided by its extension, before the text cap and the sniff:
+      every PNG has a NUL in its first bytes, and the point is to show it.
+    */
+    const mime = IMAGE_TYPES[extname(absolute).toLowerCase()];
+    if (mime !== undefined) {
+      if (stats.size > MAX_IMAGE_BYTES) {
+        return { ok: true, value: { refused: 'too-large', size: stats.size } };
+      }
+      const handle = await open(absolute, 'r');
+      try {
+        const bytes = await handle.readFile();
+        const fresh = await handle.stat();
+        return {
+          ok: true,
+          value: {
+            dataUrl: `data:${mime};base64,${bytes.toString('base64')}`,
+            mtimeMs: fresh.mtimeMs,
+            size: fresh.size,
+          },
+        };
+      } finally {
+        await handle.close();
+      }
     }
 
     /**

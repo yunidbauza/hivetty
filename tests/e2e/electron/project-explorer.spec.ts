@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { expect, test, type Page } from '@playwright/test';
@@ -267,6 +267,48 @@ test('expanding reads lazily, and clicking a file opens it in the editor', async
     // Full-stage placement is the default, so the strip carries a way back.
     await expect(page.getByRole('tab', { name: 'Terminal' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'app.ts' })).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+/**
+ * An image opens as itself, not as "this file is binary".
+ *
+ * The real guide screenshot, so the bytes are a PNG main must not sniff away,
+ * and `naturalWidth` proves the `data:` URL decoded under the app's CSP.
+ */
+test('a PNG previews as an image, and an SVG toggles Preview and Source', async ({}, testInfo) => {
+  const repo = testInfo.outputPath('repo');
+  mkdirSync(repo, { recursive: true });
+  copyFileSync(join(process.cwd(), 'docs/assets/guide/09-agents-tab.png'), join(repo, 'shot.png'));
+  writeFileSync(
+    join(repo, 'logo.svg'),
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>\n',
+  );
+  const { app, page } = await launch((name) => testInfo.outputPath(name), repo);
+
+  try {
+    const tree = page.locator('[data-panel="explorer"]');
+    await tree.getByRole('button', { name: 'shot.png' }).click();
+
+    const shot = page.getByRole('img', { name: 'shot.png' });
+    await expect(shot).toBeVisible();
+    await expect(page.getByText(/this file is binary/)).toHaveCount(0);
+    expect(await shot.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    await page.screenshot({ path: testInfo.outputPath('png-preview.png') });
+
+    await tree.getByRole('button', { name: 'logo.svg' }).click();
+    const logo = page.getByRole('img', { name: 'logo.svg' });
+    await expect(logo).toBeVisible();
+    expect(await logo.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(40);
+    await expect(page.getByRole('radio', { name: 'Split' })).toHaveCount(0);
+
+    await page.getByRole('radio', { name: 'Source' }).click();
+    await expect(page.locator('.cm-content')).toContainText('<svg');
+    await expect(logo).toHaveCount(0);
+    await page.getByRole('radio', { name: 'Preview' }).click();
+    await expect(logo).toBeVisible();
   } finally {
     await app.close();
   }

@@ -51,7 +51,8 @@ adapter.
 - **`LaunchSpec` is what the core knows:** the configured `command` (`claudeCommand`,
   `{env}` placeholder and all), `model`, `effort`, `name`, `task`, `sessionUuid` plus
   `resume`, the three paths (`settingsPath`, `pluginDir`, `mcpConfig`),
-  `subscriptionAuth`, and a `ContainerSpawn` for a container project.
+  `subscriptionAuth`, `skipPermissions` (the literal `--dangerously-skip-permissions`;
+  interactive sessions only, never agent wakes), and a `ContainerSpawn` for a container project.
 - **`LaunchPlan` is what it gets back:** `command` for `bootstrap.arm` to type into the
   login shell, `stripEnv` for the spawn to remove from the pty environment, and
   `submitDelayMs` for the bootstrap's text-then-`\r` split (HIVE-63).

@@ -195,6 +195,75 @@ describe('RuntimeSection — login shell environment', () => {
   });
 });
 
+describe('RuntimeSection — skip permission prompts (Pro #259/#261)', () => {
+  const toggle = () => screen.getByRole('switch', { name: 'Skip permission prompts' });
+
+  it('reflects the stored value', () => {
+    install({ skipPermissions: true });
+    render(<RuntimeSection />);
+    expect(toggle()).toBeChecked();
+  });
+
+  it('asks before turning on, and writes nothing when cancelled', async () => {
+    const user = userEvent.setup();
+    install({ skipPermissions: false });
+    render(<RuntimeSection />);
+
+    await user.click(toggle());
+    const confirm = screen.getByRole('alertdialog', { name: 'Skip permission prompts?' });
+    expect(confirm).toHaveTextContent('--dangerously-skip-permissions');
+    expect(setRuntimeConfig).not.toHaveBeenCalled();
+
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(setRuntimeConfig).not.toHaveBeenCalled();
+  });
+
+  it('writes true once confirmed', async () => {
+    const user = userEvent.setup();
+    install({ skipPermissions: false });
+    render(<RuntimeSection />);
+
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Skip prompts' }));
+
+    expect(setRuntimeConfig).toHaveBeenCalledWith({ skipPermissions: true });
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+  });
+
+  it('turns off at once, with no confirm', async () => {
+    const user = userEvent.setup();
+    install({ skipPermissions: true });
+    render(<RuntimeSection />);
+
+    await user.click(toggle());
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(setRuntimeConfig).toHaveBeenCalledWith({ skipPermissions: false });
+  });
+
+  it('returns focus to the switch when the confirm closes, by Cancel or by confirming (Pro #262)', async () => {
+    const user = userEvent.setup();
+    install({ skipPermissions: false });
+    render(<RuntimeSection />);
+    expect(toggle()).not.toHaveFocus();
+
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(toggle()).toHaveFocus();
+
+    await user.click(toggle());
+    await user.click(screen.getByRole('button', { name: 'Skip prompts' }));
+    expect(toggle()).toHaveFocus();
+  });
+
+  it('names no other CLI', () => {
+    install();
+    render(<RuntimeSection />);
+    expect(screen.queryByText(/codex|copilot|sandbox/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('RuntimeSection — workspace environment', () => {
   it('saves a workspace variable through setRuntimeConfig', async () => {
     const user = userEvent.setup();

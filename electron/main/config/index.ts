@@ -5,6 +5,7 @@ import {
   DEFAULT_BIND,
   DEFAULT_CLAUDE_COMMAND,
   DEFAULT_IMPORT_LOGIN_ENV,
+  DEFAULT_SKIP_PERMISSIONS,
   DEFAULT_JIRA,
   DEFAULT_RECEIVER,
   DEFAULT_REMOTE,
@@ -157,6 +158,7 @@ export function loadConfig(): ConfigSnapshot {
     // Absent means on (HIVE-84) — see `DEFAULT_IMPORT_LOGIN_ENV` for why the
     // default has to be the one that makes a packaged build work.
     importLoginEnv: parsed.importLoginEnv ?? DEFAULT_IMPORT_LOGIN_ENV,
+    skipPermissions: parsed.skipPermissions ?? DEFAULT_SKIP_PERMISSIONS,
     // Defaults *under* whatever the file named, so a file declaring only a site
     // still answers for both fields (HIVE-67).
     jira: { ...DEFAULT_JIRA, ...parsed.jira },
@@ -857,6 +859,7 @@ export function setRuntime(request: SetRuntimeRequest): ConfigSnapshot {
       ...(request.importLoginEnv !== undefined
         ? { importLoginEnv: request.importLoginEnv }
         : {}),
+      ...(request.skipPermissions !== undefined ? { skipPermissions: request.skipPermissions } : {}),
     })),
   );
 }

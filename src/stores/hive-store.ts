@@ -144,7 +144,6 @@ import {
 } from '@shared/ipc-contract';
 import {
   ISSUE_KEY_PATTERN,
-  nextTransition,
   type JiraComment,
   type JiraIssue,
   type JiraTransition,
@@ -8969,16 +8968,11 @@ export const useTicketEvents = (ticketKey: string): LedgerEntry[] => {
   }, [history, ledger, query]);
 };
 
-/** The one step forward from the ticket's status, from its cached transitions (HIVE-203, D6). */
-export const useNextTransition = (ticketKey: string): JiraTransition | undefined => {
-  const ticket = useOpenTicket(ticketKey);
-  const transitions = useHiveStore((state) => state.ticketDetails[ticketKey]?.transitions);
+const NO_TRANSITIONS: JiraTransition[] = [];
 
-  return useMemo(
-    () => (ticket === undefined ? undefined : nextTransition(transitions ?? [], ticket.statusCategory)),
-    [ticket, transitions],
-  );
-};
+/** Every move the workflow allows from the ticket's status, from its cached transitions (HIVE-203). */
+export const useTicketTransitions = (ticketKey: string): JiraTransition[] =>
+  useHiveStore((state) => state.ticketDetails[ticketKey]?.transitions ?? NO_TRANSITIONS);
 
 /** The Ticket tab's links, sorted into arcs with the verdict and counts (HIVE-202). */
 export const useTicketLinks = (ticketKey: string): TicketLinksModel | undefined => {

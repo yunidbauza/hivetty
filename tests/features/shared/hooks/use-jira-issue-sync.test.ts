@@ -2,7 +2,7 @@ import { renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useJiraIssueSync } from '@features/shared/hooks/use-jira-issue-sync';
-import { useHiveStore, useNextTransition, useOpenTicket } from '@stores/hive-store';
+import { useHiveStore, useOpenTicket, useTicketTransitions } from '@stores/hive-store';
 
 import type { JiraIssue, JiraTransition } from '@shared/jira-contract';
 
@@ -61,7 +61,7 @@ describe('useJiraIssueSync (live ticket status)', () => {
 
   it('a pushed issue moves the status and "Move to" together, and unmounting unsubscribes', async () => {
     const { unmount } = renderHook(() => useJiraIssueSync());
-    const shown = renderHook(() => [useOpenTicket('HIVE-235')?.status, useNextTransition('HIVE-235')?.to.name]);
+    const shown = renderHook(() => [useOpenTicket('HIVE-235')?.status, useTicketTransitions('HIVE-235')[0]?.to.name]);
     expect(shown.result.current).toEqual(['To Do', 'In Progress']);
 
     push?.(pushed);

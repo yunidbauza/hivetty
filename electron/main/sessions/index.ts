@@ -2589,6 +2589,8 @@ export function createSessions(options: SessionsOptions): Sessions {
         after the host has already sanitised. Neither one is sufficient alone.
       */
       subscriptionAuth: snapshot.subscriptionAuth,
+      // Pro #259. Interactive sessions only: agent wakes never pass through here.
+      ...(snapshot.skipPermissions ? { skipPermissions: true } : {}),
       /**
        * The opening instruction becomes `claude`'s initial prompt, on this
        * command line, rather than a second write into the pty afterwards

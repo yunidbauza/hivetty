@@ -17,6 +17,7 @@ import {
   DEFAULT_BIND,
   DEFAULT_CLAUDE_COMMAND,
   DEFAULT_IMPORT_LOGIN_ENV,
+  DEFAULT_SKIP_PERMISSIONS,
   DEFAULT_DISABLED_SESSION_PLUGINS,
   DEFAULT_SESSION_METRICS,
   DEFAULT_SUBSCRIPTION_AUTH,
@@ -272,6 +273,7 @@ export function writeConfig(
       disabledSessionPlugins:
         validated.disabledSessionPlugins ?? [...DEFAULT_DISABLED_SESSION_PLUGINS],
       importLoginEnv: validated.importLoginEnv ?? DEFAULT_IMPORT_LOGIN_ENV,
+      skipPermissions: validated.skipPermissions ?? DEFAULT_SKIP_PERMISSIONS,
       env: validated.env ?? {},
       projects,
       // Re-resolved from the document that was just written, not carried over
