@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -670,6 +670,88 @@ describe('createPlans: plan file and plan mode (HIVE-180)', () => {
     plans.forget('sess-01');
     void onTool(plans, create('3', 'C'));
     expect(plans.get('sess-01')?.file).toBeUndefined();
+  });
+  describe('note (link-time read)', () => {
+    const write = (name: string, text = PLAN_TEXT): string => {
+      const path = join(root, '.hive', 'plans', name);
+      writeFileSync(path, text);
+      return path;
+    };
+
+    it('records a plan file no hook announced, without showing it', async () => {
+      const send = vi.fn();
+      const plans = createPlans({ send });
+      const later = write('later.md', '## Task 1: A\n## Task 2: B\n');
+
+      await expect(plans.note('sess-01', later, root)).resolves.toBe(later);
+
+      expect(plans.files('sess-01').map((read) => read.file)).toEqual([later]);
+      expect(plans.planOf('sess-01', later)?.tasks.map((task) => task.title)).toEqual(['A', 'B']);
+      expect(plans.get('sess-01')).toBeUndefined();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it("never moves the session's last read: a noted file goes first in the order", async () => {
+      const plans = createPlans({ send: vi.fn() });
+      const shown = write('shown.md');
+      await plans.apply({ entityId: 'sess-01', op: { kind: 'plan-file-touched', path: shown }, cwd: root });
+      const noted = write('noted.md');
+
+      await plans.note('sess-01', noted, root);
+
+      expect(plans.files('sess-01').map((read) => read.file)).toEqual([noted, shown]);
+      expect(plans.get('sess-01')?.file).toBe(shown);
+    });
+
+    it('refreshes the text of a file already recorded, keeping its place and what is on screen', async () => {
+      const onPlanFiles = vi.fn();
+      const plans = createPlans({ send: vi.fn(), onPlanFiles });
+      const first = write('first.md', '## Task 1: A\n');
+      const p = write('p2.md', '## Task 1: A\n');
+      await plans.apply({ entityId: 'sess-01', op: { kind: 'plan-file-touched', path: p }, cwd: root });
+      await plans.note('sess-01', first, root);
+      writeFileSync(p, '## Task 1: A\n## Task 2: B\n'); // a shell edit: no hook
+      const before = onPlanFiles.mock.calls.length;
+      vi.advanceTimersByTime(1000);
+
+      await plans.note('sess-01', p, root);
+      await plans.note('sess-01', p, root); // unchanged: the history is not told again
+
+      expect(onPlanFiles).toHaveBeenCalledTimes(before + 1); // the new read time reaches the history
+
+      expect(plans.planOf('sess-01', p)?.tasks).toHaveLength(2);
+      expect(plans.get('sess-01')?.tasks).toHaveLength(1);
+      expect(plans.files('sess-01').map((read) => read.file)).toEqual([first, p]);
+    });
+
+    it('refuses a file outside the cwd, a symlink out of it, a non-plan path, and no cwd', async () => {
+      const plans = createPlans({ send: vi.fn() });
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), 'hive-out-')));
+      mkdirSync(join(outside, '.hive', 'plans'), { recursive: true });
+      const foreign = join(outside, '.hive', 'plans', 'x.md');
+      writeFileSync(foreign, '## Task 1: A\n');
+      symlinkSync(foreign, join(root, '.hive', 'plans', 'link.md'));
+      writeFileSync(join(root, 'notes.md'), '## Task 1: A\n');
+
+      await expect(plans.note('sess-01', foreign, root)).resolves.toBeUndefined();
+      await expect(plans.note('sess-01', join(root, '.hive', 'plans', 'link.md'), root)).resolves.toBeUndefined();
+      await expect(plans.note('sess-01', join(root, 'notes.md'), root)).resolves.toBeUndefined();
+      await expect(plans.note('sess-01', write('p3.md'), undefined)).resolves.toBeUndefined();
+      // A non-plan path is refused by its name, even when it resolves to a real plan file.
+      symlinkSync(write('real.md'), join(root, 'alias.md'));
+      await expect(plans.note('sess-01', join(root, 'alias.md'), root)).resolves.toBeUndefined();
+      // A plan-named path is refused by what it resolves to, when that is not a plan file.
+      symlinkSync(join(root, 'notes.md'), join(root, '.hive', 'plans', 'sneaky.md'));
+      await expect(plans.note('sess-01', join(root, '.hive', 'plans', 'sneaky.md'), root)).resolves.toBeUndefined();
+      expect(plans.files('sess-01')).toEqual([]);
+      rmSync(outside, { recursive: true, force: true });
+    });
+
+    it('records nothing for a file with no tasks', async () => {
+      const plans = createPlans({ send: vi.fn() });
+      await expect(plans.note('sess-01', write('empty.md', '# nothing\n'), root)).resolves.toBeUndefined();
+      expect(plans.files('sess-01')).toEqual([]);
+    });
   });
 });
 
