@@ -269,6 +269,34 @@ describe('AskCard', () => {
     );
   });
 
+  it("offers a merge card's project switch beside once", () => {
+    seedLedger([
+      {
+        ...ask,
+        body: 'Allow mcp__hive__pr_merge?\nbehiques/hivetty#229',
+        meta: {
+          kind: 'permission',
+          tool: 'mcp__hive__pr_merge',
+          input: { repo: 'behiques/hivetty', number: 229 },
+          rungs: [
+            { id: 'allow-once', label: 'once', caption: 'runs this once. asks again next time.' },
+            {
+              id: 'allow-project',
+              label: 'merge unattended for this project',
+              caption: 'turns on auto-merge for behiques/hivetty and merges this one.',
+            },
+          ],
+          options: ['allow-once', 'allow-project', 'deny'],
+          default: 'allow-once',
+        },
+      },
+    ]);
+    render(<AskCard notif={{ ...notif, kind: 'agent.permission' }} thread="a41" />);
+
+    expect(screen.getByRole('radio', { name: 'once' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'merge unattended for this project' })).toBeTruthy();
+  });
+
   /** A normal ask must not be affected by the permission-controls branch above it. */
   it('leaves an ordinary ask rendering its options as buttons', () => {
     seedLedger([ask]);

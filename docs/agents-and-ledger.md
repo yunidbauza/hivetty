@@ -1732,9 +1732,21 @@ allows the tool only by that rule or by a card's once literal naming one PR
 (`literal:mcp__hive__pr_merge:<owner>/<name>#<N>`). No wide rule (`*`,
 `mcp__hive`, `mcp__hive__*`, the bare name) allows it. It is in
 `FENCE_ONLY_TOOLS`, so it never reaches the CLI's own `--allowedTools`, bare
-or scoped, and a session's settings always ask for it. Its card offers once
-only. The Bash merge stays as the fallback for an older HiveTTY. It still
+or scoped. Its card offers once and the project switch (`allow-project`,
+"merge unattended for this project"), which turns `autoMerge` on for the
+project holding the repository through `projectAutoMergeFor` and grants that
+one merge. The Bash merge stays as the fallback for an older HiveTTY. It still
 matches only as its own call with `--repo` last.
+
+**A session's merge.** A pty session has no fence, so main decides its
+`pr_merge` itself (`agents/session-merge.ts`): a project with `autoMerge` on
+merges at once; an answered card for that exact PR (`allow-once`, or the
+project switch) merges once and is spent; anything else raises the same
+permission card, from the session, and answers "not merged, waiting on card
+A12, call again once answered". A second call while the card is open raises no
+second card. The session's settings no longer ask for `pr_merge` (Claude Code's
+own prompt could only ask, every time); they still ask for
+`project_auto_merge`.
 
 ### The fence, measured
 

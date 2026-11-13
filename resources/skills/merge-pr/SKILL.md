@@ -179,7 +179,8 @@ mcp__hive__pr_merge { repo: "<owner>/<repo>", number: <N>, sha: "<the SHA the CL
 HiveTTY runs `gh pr merge --squash --match-head-commit` itself, with no
 shell, so a title with `&` or `;` is text and needs no stripping. On a
 project with auto-merge on it runs at once; otherwise the person answers a
-card. The tool answers with what `gh` printed, or why it did not merge.
+card, which can also turn auto-merge on for the project. The tool answers
+with what `gh` printed, or why it did not merge.
 
 The subject and body are always explicit: GitHub's default squash message
 lists every commit and adds a `Co-authored-by` line per commit author, bots

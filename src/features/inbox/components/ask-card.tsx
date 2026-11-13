@@ -56,7 +56,7 @@ const strings = (value: unknown): string[] =>
 const text = (value: unknown): string | undefined =>
   typeof value === 'string' && value !== '' ? value : undefined;
 
-const RUNG_IDS: readonly RungId[] = ['allow-once', 'allow-family', 'allow-tool'];
+const RUNG_IDS: readonly RungId[] = ['allow-once', 'allow-family', 'allow-tool', 'allow-project'];
 
 const isRungId = (value: unknown): value is RungId =>
   typeof value === 'string' && (RUNG_IDS as readonly string[]).includes(value);

@@ -20,6 +20,7 @@ import { SNAPSHOT_READ_BUDGET_MS, createRemoteListener } from '@remote-host/list
 import {
   AGENT_LIMIT_DEFAULTS,
   formatRunCost,
+  SESSION_ID_PREFIX_PATTERN,
   STANDING_LANE,
   type AgentLane,
   type AgentLinesPush,
@@ -206,6 +207,7 @@ import {
   type RunTracker,
 } from '../agents/runs';
 import { createScheduler, type Scheduler } from '../agents/scheduler';
+import { sessionMergeConsent } from '../agents/session-merge';
 import { createAgentState, type AgentState } from '../agents/state';
 import { mergeRunState } from '../agents/summary';
 import { createWakeCommand } from '../agents/wake-command';
@@ -3044,6 +3046,29 @@ export function registerIpcHandlers(
     },
     read: (name) => agentRegistry.read(name),
     write: (name, source) => agentRegistry.write(name, source),
+    /*
+      The merge card's project switch, through the same writer the MCP tool uses.
+      `autoMergeGrants` is built further down; this runs only when an answer arrives.
+    */
+    mergeUnattended: async (repo) => {
+      await autoMergeGrants?.refresh();
+      const project = autoMergeGrants?.projectFor(repo);
+      if (project === undefined) return { ok: false, reason: `no configured project has ${repo}` };
+      try {
+        projectAutoMergeFor(
+          { project, on: true },
+          {
+            config: getConfig,
+            setAutoMerge: setProjectAutoMerge,
+            announce: (snapshot) => send(CH.configChanged, snapshot),
+          },
+        );
+      } catch (cause) {
+        return { ok: false, reason: cause instanceof Error ? cause.message : String(cause) };
+      }
+      console.info(`[projects] permission card set autoMerge on on ${project}`);
+      return { ok: true, project };
+    },
   });
 
   /**
@@ -3277,6 +3302,26 @@ export function registerIpcHandlers(
       runs it, with `github` bound as `onPrLookup` argues, after the same login-env await.
     */
     onPrMerge: async (caller, request) => {
+      /*
+        An agent's merge passed the fence before it got here. A session has no fence, so its consent is
+        decided now: auto-merge, an answered card for this PR, or a new card and no merge.
+      */
+      if (SESSION_ID_PREFIX_PATTERN.test(caller)) {
+        const consent = await sessionMergeConsent(
+          {
+            autoMergeOn: async (repo) => {
+              if (autoMergeGrants?.projectFor(repo) === undefined) await autoMergeGrants?.refresh();
+              const id = autoMergeGrants?.projectFor(repo);
+              return getConfig().projects.some((project) => project.id === id && project.autoMerge === true);
+            },
+            entries: () => ledger.read({}).entries,
+            append: (entry) => ledger.append(entry),
+          },
+          caller,
+          request,
+        );
+        if (!consent.merge) return { merged: false, reason: consent.reason };
+      }
       await loginEnvStatus();
       const result = await github.merge(request);
       const where = `${request.repo}#${String(request.number)}`;
