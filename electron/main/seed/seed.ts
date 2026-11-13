@@ -14,7 +14,8 @@ import { AGENT_FILE, AGENTS_DIR } from '@shared/agent-contract';
 import { RESERVED_SKILL_NAME } from '@shared/skills-contract';
 
 import { legacyBase, readHistory, type History } from './history';
-import { baseOf, mergeParts, parseParts, type PartBase } from './merge';
+import { liftGrants } from './lift-grants';
+import { baseOf, mergeParts, ownKey, parseParts, type PartBase } from './merge';
 
 /**
  * Seeding the skills and agents the app ships into `~/.hive` (HIVE-162).
@@ -111,6 +112,9 @@ export interface SeedOptions {
 const MERGED = new RegExp(`^(?:${AGENTS_DIR}/[^/]+/${AGENT_FILE}|skills/[^/]+/SKILL\\.md)$`);
 
 export const isMerged = (rel: string): boolean => MERGED.test(rel);
+
+/** An agent's definition, whose `tools:` a card once wrote into (HIVE-409). */
+const AGENT_DEFINITION = new RegExp(`^${AGENTS_DIR}/[^/]+/${AGENT_FILE}$`);
 
 const sha256 = (bytes: Uint8Array): string =>
   createHash('sha256').update(bytes).digest('hex');
@@ -323,7 +327,10 @@ export async function seedShipped(options: SeedOptions): Promise<SeedReport> {
           continue;
         }
 
-        const result = mergeParts(current, text, base);
+        // HIVE-409: card grants leave tools: once, so the shipped tools: can arrive. HIVE-418: against the
+        // base, so an older shipped list (or its prefix) is never read as a card's grant.
+        const lifted = AGENT_DEFINITION.test(rel) ? liftGrants(current, text, ownKey(base.keys, 'tools')) : current;
+        const result = mergeParts(lifted, text, base);
 
         parts[rel] = result.base;
         /*
