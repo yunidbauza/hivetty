@@ -31,6 +31,17 @@ change any of these for one project. **Import my login shell's PATH at startup**
 Finder-launched app find Homebrew tools. Two diagnostics explain why `claude` was or was not
 found, and which variables your rc file overrode.
 
+### Skip permission prompts
+
+**Skip permission prompts**, under **Permission prompts**, is off by default. Turning it on asks first; with it
+on, every new session starts with `--dangerously-skip-permissions`, so it runs tools, edits files and runs
+commands without stopping to ask, and no permission card reaches the inbox. Sessions already running are
+unchanged, and agents never read it: they keep their own permission fence. Turning it off writes at once.
+
+```json
+{ "skipPermissions": true }
+```
+
 ![Settings › Runtime](../assets/guide/18-settings-runtime.png)
 
 **Example.** Point one project at a wrapper script:
