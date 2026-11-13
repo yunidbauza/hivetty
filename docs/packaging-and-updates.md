@@ -266,6 +266,14 @@ Two entry points, one code path, two ways of answering:
   A found release gets a confirm dialog rather than an Inbox row; the user is
   right there.
 
+**A release still being published is not an error.** The updater finds the newest
+tag through GitHub's release feed, which lists a tag the moment it is pushed, while
+its `latest-mac.yml` arrives only when the release workflow finishes, about fifteen
+minutes later. A check in that window gets electron-updater's
+`ERR_UPDATER_CHANNEL_FILE_NOT_FOUND`. `updater.ts` reads that code as "still being
+published": the timer stays silent and the menu says to try again in a few minutes,
+in place of the 404 dialog.
+
 Nothing downloads without a yes (`autoDownload: false`) and nothing installs
 without a second one (`autoInstallOnAppQuit: false`). The second flag matters
 more than it looks: left at its default, an update the user declined would swap
