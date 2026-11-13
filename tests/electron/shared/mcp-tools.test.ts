@@ -16,6 +16,7 @@ const stub = (overrides: Partial<ReceiverClient> = {}): ReceiverClient => ({
   // HIVE-173: the same resting states, for the same reason.
   projects: vi.fn(async () => ({ projects: [] })),
   pr: vi.fn(async () => ({ pr: null, reason: 'not exercised' })),
+  prMerge: vi.fn(async () => ({ merged: false as const, reason: 'not exercised' })),
   // HIVE-174: a Jira that is not wired, which is a JiraResult and not a throw.
   jiraGet: vi.fn(async () => NOT_WIRED),
   jiraTransition: vi.fn(async () => NOT_WIRED),

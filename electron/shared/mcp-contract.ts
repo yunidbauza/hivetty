@@ -1,6 +1,6 @@
 import type { AgentsDirectory } from './agent-contract';
 import type { ProjectAutoMergeRequest, ProjectsDirectory } from './config-contract';
-import type { PrLookup, PrLookupReply } from './github-contract';
+import type { PrLookup, PrLookupReply, PrMergeReply, PrMergeRequest } from './github-contract';
 import type {
   JiraComment,
   JiraResult,
@@ -184,6 +184,8 @@ export interface ReceiverClient {
   projects(): Promise<ProjectsDirectory>;
   /** One PR record from the Hive's own GitHub sweep (HIVE-173). */
   pr(lookup: PrLookup): Promise<PrLookupReply>;
+  /** Merge one PR (HIVE-409). The fence decided consent before this is called. */
+  prMerge(request: PrMergeRequest): Promise<PrMergeReply>;
   /** The Jira tools (HIVE-174), each a `JiraResult` so a Jira refusal is an answer, not a transport error. */
   jiraGet(request: JiraToolKeyRequest): Promise<JiraResult<JiraToolIssue>>;
   jiraTransition(request: JiraTransitionByName): Promise<JiraResult<JiraToolTransitionReply>>;
