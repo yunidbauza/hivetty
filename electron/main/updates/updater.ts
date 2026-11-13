@@ -11,6 +11,9 @@ import {
 
 import { demoteToManual } from './capability';
 
+/** electron-updater's code for a release whose `latest-mac.yml` is not there (yet). Read as a string: this file never imports it. */
+const RELEASE_STILL_PUBLISHING = 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND';
+
 /**
  * The update cycle, with every platform dependency held at arm's length.
  *
@@ -416,6 +419,22 @@ export function createUpdater(deps: UpdaterDeps): Updater {
        */
       void download();
     } catch (cause) {
+      /*
+        The newest tag is visible the moment it is pushed, but its `latest-mac.yml` is uploaded only when
+        the release workflow finishes, about fifteen minutes later. electron-updater reports that 404 with
+        this code. It is a release on its way, not a failure: say so, and let the next check find it.
+      */
+      if ((cause as { code?: unknown } | null)?.code === RELEASE_STILL_PUBLISHING) {
+        state = 'idle';
+        log('[hive] update check: the newest release is still being published');
+        if (origin === 'menu') {
+          inform({
+            message: 'An update is still being published.',
+            detail: 'Its files are uploading. Try again in a few minutes.',
+          });
+        }
+        return;
+      }
       state = 'error';
       error = cause instanceof Error ? cause.message : String(cause);
       log(`[hive] update check failed: ${error}`);

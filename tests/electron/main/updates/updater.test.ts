@@ -220,6 +220,34 @@ describe('createUpdater — the menu', () => {
     expect(h.engine.check).not.toHaveBeenCalled();
   });
 
+  /**
+   * A tag is visible to the updater the moment it is pushed, but its `latest-mac.yml` lands only when
+   * the release workflow finishes, about fifteen minutes later. A check in that window is not a failure.
+   */
+  it('a release still being published is not an error, to the menu or the timer', async () => {
+    const publishing = () =>
+      Object.assign(new Error('Cannot find latest-mac.yml in the latest release artifacts: HttpError: 404'), {
+        code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+      });
+
+    const asked = harness(SELF_INSTALL);
+    asked.engine.check.mockRejectedValue(publishing());
+    const menu = createUpdater(asked.deps);
+    await menu.check('menu');
+    expect(asked.inform).toHaveBeenCalledWith({
+      message: 'An update is still being published.',
+      detail: 'Its files are uploading. Try again in a few minutes.',
+    });
+    expect(menu.status()).toMatchObject({ state: 'idle', error: null });
+
+    const background = harness(SELF_INSTALL);
+    background.engine.check.mockRejectedValue(publishing());
+    const timer = createUpdater(background.deps);
+    await timer.check('auto');
+    expect(background.inform).not.toHaveBeenCalled();
+    expect(timer.status()).toMatchObject({ state: 'idle', error: null });
+  });
+
   it('reports a failed check to the person who asked, and stays quiet for the timer', async () => {
     const asked = harness(SELF_INSTALL);
     asked.engine.check.mockRejectedValue(new Error('getaddrinfo ENOTFOUND'));
