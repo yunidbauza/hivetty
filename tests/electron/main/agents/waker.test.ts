@@ -53,6 +53,12 @@ const build = (over: Partial<Parameters<typeof wakeCommand>[0]> = {}) =>
   });
 
 describe('wakeCommand', () => {
+  it('never skips permission prompts: an agent keeps its fence whatever Settings says (Pro #259)', () => {
+    // wakeCommand takes no config at all, so no setting can reach it; this pins that it never grows the flag.
+    expect(build().args).not.toContain('--dangerously-skip-permissions');
+    expect(build().args).toContain('--permission-prompt-tool');
+  });
+
   it('spawns the resolved binary, never a bare name', () => {
     expect(build().file).toBe('/opt/bin/claude');
   });
