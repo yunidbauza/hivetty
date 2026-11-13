@@ -100,6 +100,11 @@ export interface AutoMergeGrants {
   grantsFor(name: string): string[];
   /** Resolve every project's repository now. Never rejects. */
   refresh(): Promise<void>;
+  /**
+   * The configured project whose repository is `repo` (`owner/name`, any case), from the last refresh.
+   * A project removed since the refresh answers nothing.
+   */
+  projectFor(repo: string): string | undefined;
 }
 
 export function createAutoMergeGrants(deps: AutoMergeDeps): AutoMergeGrants {
@@ -127,6 +132,14 @@ export function createAutoMergeGrants(deps: AutoMergeDeps): AutoMergeGrants {
 
   return {
     refresh,
+    projectFor(repo) {
+      const wanted = repo.toLowerCase();
+      const live = new Set(deps.projects().map((project) => project.id));
+      for (const [id, ref] of known) {
+        if (live.has(id) && `${ref.owner}/${ref.name}`.toLowerCase() === wanted) return id;
+      }
+      return undefined;
+    },
     grantsFor(name) {
       const projects = deps.projects();
       // Drop slugs for projects that no longer exist, so a removed entry

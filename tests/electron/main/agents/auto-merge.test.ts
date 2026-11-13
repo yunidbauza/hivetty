@@ -193,6 +193,20 @@ describe('createAutoMergeGrants', () => {
     ]);
   });
 
+  it('projectFor names the project a repository belongs to, after a refresh', async () => {
+    let projects = [project({ id: 'p1' })];
+    const grants = createAutoMergeGrants({
+      projects: () => projects,
+      resolve: async () => new Map([['p1', { owner: 'behiques', name: 'hivetty' }]]),
+    });
+    expect(grants.projectFor('behiques/hivetty')).toBeUndefined();
+    await grants.refresh();
+    expect(grants.projectFor('Behiques/HiveTTY')).toBe('p1');
+    expect(grants.projectFor('other/repo')).toBeUndefined();
+    projects = [];
+    expect(grants.projectFor('behiques/hivetty')).toBeUndefined();
+  });
+
   it('collapses concurrent refreshes into one resolve', async () => {
     const resolve = vi.fn(async () => new Map<string, RepoRef>());
     const grants = createAutoMergeGrants({ projects: () => [], resolve });

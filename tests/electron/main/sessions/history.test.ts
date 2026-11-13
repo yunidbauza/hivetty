@@ -146,6 +146,18 @@ describe('session history', () => {
       });
     });
 
+    it('round-trips the noted mark of a plan file only a link read (HIVE-420)', () => {
+      const history = createSessionHistory(file, () => 1000);
+      history.record('sess-01', { project: 'the-hive', task: '', status: 'working' });
+      history.record('sess-01', { planFiles: [{ file: '/repo/.hive/plans/a.md', at: 5, noted: true }, { file: '/repo/.hive/plans/b.md', at: 6 }] });
+      history.flush();
+
+      expect(createSessionHistory(file, () => 2000).all()[0]?.planFiles).toEqual([
+        { file: '/repo/.hive/plans/a.md', at: 5, noted: true },
+        { file: '/repo/.hive/plans/b.md', at: 6 },
+      ]);
+    });
+
     // The file is a bare array of rows (as the cases at ~587 write it).
     const row = { id: 'sess-01', project: 'the-hive', task: '', status: 'working', createdAt: 1 };
 

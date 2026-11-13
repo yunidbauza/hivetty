@@ -262,7 +262,7 @@ describe('the settings file grants no permissions', () => {
       const raw = await readFile(path, 'utf8');
       const written = JSON.parse(raw) as Record<string, unknown>;
 
-      expect(written['permissions']).toEqual({ ask: ['mcp__hive__project_auto_merge', 'mcp__hive__pr_merge'] });
+      expect(written['permissions']).toEqual({ ask: ['mcp__hive__project_auto_merge'] });
       /*
         Asserted on the raw text too. A nested grant somewhere else in the file
         would satisfy the property check above and still be a permission the
@@ -320,7 +320,7 @@ describe('agentSettings', () => {
 
   it('leaves the shared settings file only the once-only ask rule', () => {
     expect(hookSettings('http://127.0.0.1:1/hook').permissions).toEqual({
-      ask: ['mcp__hive__project_auto_merge', 'mcp__hive__pr_merge'],
+      ask: ['mcp__hive__project_auto_merge'],
     });
   });
 

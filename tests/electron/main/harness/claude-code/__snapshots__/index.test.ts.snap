@@ -729,8 +729,7 @@ exports[`the files a Claude Code session is launched with > alias container set 
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "statusLine": {
@@ -1210,8 +1209,7 @@ exports[`the files a Claude Code session is launched with > session rewrite cont
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "statusLine": {
@@ -1411,8 +1409,7 @@ exports[`the files a Claude Code session is launched with > session settings, co
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "enabledPlugins": {
@@ -1576,8 +1573,7 @@ exports[`the files a Claude Code session is launched with > session settings, co
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "statusLine": {
@@ -1853,8 +1849,7 @@ exports[`the files a Claude Code session is launched with > session settings, ht
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "enabledPlugins": {
@@ -2106,8 +2101,7 @@ exports[`the files a Claude Code session is launched with > session settings, ht
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "statusLine": {
@@ -2455,8 +2449,7 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   },
   "statusLine": {
@@ -2819,8 +2812,7 @@ exports[`the files a Claude Code session is launched with > shared exec-env cont
   "theme": "dark-ansi",
   "permissions": {
     "ask": [
-      "mcp__hive__project_auto_merge",
-      "mcp__hive__pr_merge"
+      "mcp__hive__project_auto_merge"
     ]
   }
 }

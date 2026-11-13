@@ -7,6 +7,7 @@ import {
   isPrMerge,
   isToolName,
   matches,
+  mergeTarget,
   namesTool,
   ONCE_ONLY_TOOLS,
   oneShotRuleFor,
@@ -793,9 +794,23 @@ describe('pr_merge on the fence (HIVE-409)', () => {
     expect(matches(rule, TOOL, { ...IN, repo: 'behiques/other' })).toBe(false);
   });
 
-  it('its card offers once and nothing standing (no #280 project switch in CE)', () => {
-    expect(rungsFor(TOOL, IN).map((r) => r.id)).toEqual(['allow-once']);
-    expect(defaultRungFor(rungsFor(TOOL, IN))).toBe('allow-once');
+  it('its card offers once and the project switch, and defaults to once', () => {
+    const rungs = rungsFor(TOOL, IN);
+    expect(rungs.map((r) => r.id)).toEqual(['allow-once', 'allow-project']);
+    expect(rungs[1]).toEqual({
+      id: 'allow-project',
+      label: 'merge unattended for this project',
+      caption: `turns on auto-merge for ${String(IN.repo)} and merges this one.`,
+    });
+    expect(rungs[1]).not.toHaveProperty('rule');
+    expect(defaultRungFor(rungs)).toBe('allow-once');
+  });
+
+  it('mergeTarget reads a pr_merge ask, and nothing else', () => {
+    expect(mergeTarget({ tool: TOOL, input: IN })).toEqual({ repo: IN.repo, number: IN.number });
+    expect(mergeTarget({ tool: 'Bash', input: IN })).toBeUndefined();
+    expect(mergeTarget({ tool: TOOL, input: { ...IN, repo: 'a/b#1' } })).toBeUndefined();
+    expect(mergeTarget(undefined)).toBeUndefined();
   });
 
   it('a malformed input composes nothing', () => {
