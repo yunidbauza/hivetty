@@ -11,7 +11,7 @@ import {
   type ConfigSnapshot,
   type ProjectConfig,
 } from '@shared/config-contract';
-import type { PrLookup, PrLookupReply } from '@shared/github-contract';
+import type { PrLookup, PrLookupReply, PrMergeReply, PrMergeRequest } from '@shared/github-contract';
 import type { StatusSignal } from '@shared/harness-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
@@ -228,6 +228,8 @@ export interface SessionsOptions {
   /** HIVE-173: forwarded to the receiver untouched; its defaults stand when absent. */
   onProjectsList?: (caller: string) => ProjectsDirectory;
   onPrLookup?: (caller: string, lookup: PrLookup) => Promise<PrLookupReply>;
+  /** Merge one PR (HIVE-409); see the receiver option of the same name. */
+  onPrMerge?: (caller: string, request: PrMergeRequest) => Promise<PrMergeReply>;
   /** Retro B: the auto-merge switch, forwarded to the receiver untouched. */
   onProjectAutoMerge?: (caller: string, request: ProjectAutoMergeRequest) => ProjectsDirectory;
   /** HIVE-174: forwarded to the receiver untouched. */
@@ -567,6 +569,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     onProjectsList,
     onProjectAutoMerge,
     onPrLookup,
+    onPrMerge,
     onJira,
     onAgentTurnEnded,
   } = options;
@@ -1089,6 +1092,7 @@ export function createSessions(options: SessionsOptions): Sessions {
     onProjectsList,
     onProjectAutoMerge,
     onPrLookup,
+    onPrMerge,
     onJira,
     /**
      * An agent's hooks, and the end of the road for them (HIVE-115).

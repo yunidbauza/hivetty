@@ -13,7 +13,7 @@ import {
   PROJECTS_PATH,
   type ResolvedContainer,
 } from '../../../../electron/shared/config-contract';
-import { PR_PATH } from '../../../../electron/shared/github-contract';
+import { PR_MERGE_PATH, PR_PATH } from '../../../../electron/shared/github-contract';
 import { JIRA_GET_PATH } from '../../../../electron/shared/jira-contract';
 import {
   HOOK_ENV_RECEIVER_URL,
@@ -998,6 +998,35 @@ describe('start forwards the projects and PR lookups (HIVE-173)', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ projects: [] });
     expect(seen).toEqual([{ caller: 'sess-a', request: { project: 'hive', on: false } }]);
+  });
+
+  // HIVE-409: the receiver's default merges nothing, so a dropped forward would refuse every merge quietly.
+  it('forwards the PR merge handler to its route, with the caller', async () => {
+    const seen: { caller: string; request: unknown }[] = [];
+    runtime = createHookRuntime({ userDataPath: dir, sessionMetrics: () => false, ledger });
+    await runtime.start({
+      ...noopHandlers,
+      onPrMerge: (caller, request) => {
+        seen.push({ caller, request });
+        return Promise.resolve({ merged: true, output: 'composed' });
+      },
+    });
+    const env = runtime.envFor('sess-a');
+    const request = { repo: 'acme/p', number: 3, sha: 'a'.repeat(40) };
+
+    const response = await fetch(`${env['HIVE_RECEIVER_URL']}${PR_MERGE_PATH}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [HOOK_HEADER_SESSION]: 'sess-a',
+        [HOOK_HEADER_TOKEN]: env['HIVE_HOOK_TOKEN'] ?? '',
+      },
+      body: JSON.stringify(request),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ merged: true, output: 'composed' });
+    expect(seen).toEqual([{ caller: 'sess-a', request }]);
   });
 });
 
