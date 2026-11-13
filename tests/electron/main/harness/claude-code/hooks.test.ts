@@ -127,11 +127,25 @@ describe('readHook, plan, file and prompt effects (HIVE-236)', () => {
     expect(session(json({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: '/r/a.ts' } })).effects)
       .toEqual([{ kind: 'file-edit' }, status('tool-end')]);
   });
-  it("ignores a subagent's edit for both plan and changed files", () => {
+  it("takes a subagent's write to a plan file: the session's plan, whoever wrote it", () => {
     expect(session(json({ hook_event_name: 'PostToolUse', agent_id: 'ag-1', tool_name: 'Write', tool_input: { file_path: '/r/.hive/plans/p.md' } })).effects)
+      .toEqual([
+        { kind: 'plan', update: { entityId: 'sess-07', op: { kind: 'plan-file-touched', path: '/r/.hive/plans/p.md' } } },
+        status('tool-end', { agentId: 'ag-1' }),
+      ]);
+    expect(session('{"agent_id":"ag-1","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/r/.hive/plans/p.md","content":"', true).effects)
+      .toEqual([
+        { kind: 'plan', update: { entityId: 'sess-07', op: { kind: 'plan-file-touched', path: '/r/.hive/plans/p.md' } } },
+        status('tool-end'),
+      ]);
+  });
+  it("still ignores a subagent's edit for changed files, and its task tools for the plan", () => {
+    expect(session(json({ hook_event_name: 'PostToolUse', agent_id: 'ag-1', tool_name: 'Write', tool_input: { file_path: '/r/src/x.ts' } })).effects)
       .toEqual([status('tool-end', { agentId: 'ag-1' })]);
     expect(session('{"agent_id":"ag-1","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"', true).effects)
       .toEqual([status('tool-end')]);
+    const todo = session(json({ hook_event_name: 'PostToolUse', agent_id: 'ag-1', tool_name: 'TodoWrite', tool_input: { todos: [{ content: 'a', status: 'pending' }] } })).effects;
+    expect(todo.some((effect) => effect.kind === 'plan')).toBe(false);
   });
   it('drops a truncated plan-mode plan and says so', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
