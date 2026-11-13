@@ -2319,7 +2319,15 @@ Its progress is two posts per task, both in the build ask's thread
 N, worktree, checkout }` when its commit lands (HIVE-180). The plan panel reads
 them: `electron/main/plans/builder-progress.ts` links a build ask to any `hive:plan`
 file the session read, and moves the panel to it on the builder's first post
-in the thread (HIVE-359). It ticks task N from the builder's posts in that
+in the thread (HIVE-359). The link holds whether the session's main agent, a
+subagent or the shell wrote the plan: a subagent's `Write` or `Edit` to a
+`.hive/plans/*.md` file counts as the session's, and a plan path no hook
+announced is read at link time by `Plans.note`. Main reads that path only as
+a `.hive/plans/*.md` strictly under the asking session's own cwd (realpath'd,
+1 MiB cap, the same confinement as a hook-driven read); the ask's `from` is
+minted by main, so only the session itself can name its plans. Entries in the
+thread wait for that read, so ticks stay in order, and a plan already
+recorded has its text refreshed in case the shell edited it. It ticks task N from the builder's posts in that
 thread, and ends the build on the answer — `failed:` or `blocked:` marks it,
 anything else completes the tasks it ticked (every task if none) and marks it
 done. A post without `thread` is invisible

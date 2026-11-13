@@ -206,7 +206,9 @@ the next plan (`electron/main/sessions/index.ts:1193`).
 Plans live in main's memory, so a relaunch starts with none. What survives is
 the session history row's `planFiles`: every plan file the session read, in read
 order, each realpath with when its text was first read, recorded by main when
-the read is accepted (never taken from the ledger) and cleared on `/clear`. A
+the read is accepted and cleared on `/clear`. A path reaches it from a hook or,
+for a plan a build ask names, from the ledger, and then only once main has read
+it as a `.hive/plans/*.md` strictly under the session's cwd (`Plans.note`). A
 row written before HIVE-359 kept one `planFile`, which loads as a one-file list.
 When a restored row is resumed, main re-reads those files in order through
 `Plans.restore`, the last one on screen. Each is confined to the cwd the row
