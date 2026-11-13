@@ -76,6 +76,9 @@ export const RECEIVER_TIMEOUT_MS = 5_000;
  */
 export const PR_LOOKUP_TIMEOUT_MS = 25_000;
 
+/** The `pr_merge` call's own limit (HIVE-409): above `github.merge`'s sixty seconds, so `gh`'s timeout is the one read. */
+export const PR_MERGE_TIMEOUT_MS = 70_000;
+
 /** The only JSON-RPC version MCP uses. */
 export const JSONRPC_VERSION = '2.0';
 
