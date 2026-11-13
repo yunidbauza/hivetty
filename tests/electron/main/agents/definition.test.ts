@@ -308,6 +308,18 @@ describe('parseAgent — refusals', () => {
     expect(problems(source)[0]?.field).toBe('tools');
   });
 
+  it('holds a grants: entry like a tools: entry, once (HIVE-409)', () => {
+    const source = GOOD.replace('tools: [Read, Grep, WebFetch]', 'tools: [Read, Grep]\ngrants: [Grep, Edit]');
+
+    expect(definition(source).tools).toEqual(['Read', 'Grep', 'Edit']);
+  });
+
+  it('refuses an empty grants entry, on grants', () => {
+    const source = GOOD.replace('tools: [Read, Grep, WebFetch]', 'grants: [, Edit]');
+
+    expect(problems(source)).toContainEqual(expect.objectContaining({ field: 'grants' }));
+  });
+
   it('refuses a missing required field, naming it', () => {
     expect(problems(GOOD.replace(/^icon: .*$/m, ''))).toContainEqual({
       field: 'icon',

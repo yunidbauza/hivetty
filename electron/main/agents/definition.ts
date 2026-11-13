@@ -349,11 +349,19 @@ export function parseAgent(source: string, ctx: ParseContext): ParseResult {
     });
   }
 
-  const tools = parseList(shaped('tools') ?? '[]') ?? [];
+  const written = parseList(shaped('tools') ?? '[]') ?? [];
+  const granted = parseList(shaped('grants') ?? '[]') ?? [];
 
-  if (tools.some((tool) => tool === '')) {
+  if (written.some((tool) => tool === '')) {
     problems.push({ field: 'tools', reason: 'A tool name cannot be empty.' });
   }
+
+  if (granted.some((tool) => tool === '')) {
+    problems.push({ field: 'grants', reason: 'A granted rule cannot be empty.' });
+  }
+
+  // A card's grants are held exactly as a tools: entry is (HIVE-409); kept apart only in the file, so seed updates to tools: reach it.
+  const tools = [...new Set([...written, ...granted])];
 
   /*
     The shared `number` rule accepts `1.5`, and a cap of one and a half runs
