@@ -389,6 +389,14 @@ export interface Sessions {
    * record a write that never happened and never retry it.
    */
   write(entityId: string, data: string): boolean;
+  /**
+   * A spawn for this entity is on its way (HIVE-386). `ptySpawn` awaits the
+   * login env and the session's files before `open` registers anything, with
+   * the terminal already on screen; input written meanwhile is held, not lost.
+   */
+  beginSpawn(entityId: string): void;
+  /** That spawn landed or was refused: release what it held, or drop it. Call it in a `finally`. */
+  endSpawn(entityId: string): void;
   resize(entityId: string, cols: number, rows: number): void;
   /**
    * Make Claude re-read its size: SIGWINCH at the size it already has.
@@ -615,6 +623,22 @@ export function createSessions(options: SessionsOptions): Sessions {
    * else that arrives in the same window.
    */
   const heldInput = new Map<string, string[]>();
+  /**
+   * Entities whose spawn is still awaiting its preconditions (HIVE-386). Input
+   * for one of these is held like input before the bootstrap; input for any
+   * other unregistered entity is still dropped, so nothing typed at a dead
+   * session replays into a later restart.
+   *
+   * A Set, not a count: two overlapping spawns of one entity (a re-mount)
+   * share it, and the first to end closes the window for both.
+   */
+  const spawning = new Set<string>();
+
+  function hold(entityId: string, data: string): void {
+    const held = heldInput.get(entityId) ?? [];
+    held.push(data);
+    heldInput.set(entityId, held);
+  }
 
   /** Release everything held for this entity, in the order it was written. */
   function flushHeldInput(entityId: string): void {
@@ -2750,7 +2774,11 @@ export function createSessions(options: SessionsOptions): Sessions {
 
     write(entityId, data) {
       const sessionId = registry.sessionFor(entityId);
-      if (sessionId === undefined) return false;
+      if (sessionId === undefined) {
+        // Held for a spawn on its way, reported unwritten for the reason below (HIVE-386).
+        if (spawning.has(entityId)) hold(entityId, data);
+        return false;
+      }
 
       /**
        * Held, not dropped and not delivered early. See {@link heldInput}.
@@ -2767,14 +2795,23 @@ export function createSessions(options: SessionsOptions): Sessions {
        * session that was still starting.
        */
       if (bootstrap.isPending(entityId)) {
-        const held = heldInput.get(entityId) ?? [];
-        held.push(data);
-        heldInput.set(entityId, held);
+        hold(entityId, data);
         return false;
       }
 
       ptyIpc.write(sessionId, data);
       return true;
+    },
+
+    beginSpawn(entityId) {
+      spawning.add(entityId);
+    },
+
+    endSpawn(entityId) {
+      spawning.delete(entityId);
+      // Refused: nothing to deliver to. Bootstrapping: `onComplete` releases it, after the `\r`.
+      if (registry.sessionFor(entityId) === undefined) heldInput.delete(entityId);
+      else if (!bootstrap.isPending(entityId)) flushHeldInput(entityId);
     },
 
     resize(entityId, cols, rows) {

@@ -573,6 +573,67 @@ describe('what a session runs', () => {
     ).toBe(false);
   });
 
+  /**
+   * The spawn's own awaits (HIVE-386): `ptySpawn` waits on the login env and
+   * the session's files before `open` registers anything, with the terminal
+   * already on screen. Input in that window used to find no session and vanish.
+   */
+  it('holds input written while the spawn is still on its way', () => {
+    sessions.beginSpawn('hero-refresh');
+    expect(sessions.write('hero-refresh', 'kill -9 $$\n')).toBe(false);
+
+    sessions.open(OPEN);
+    sessions.endSpawn('hero-refresh');
+    const sessionId = mintedFor('hero-refresh');
+    expect(vi.mocked(supervisor.write).mock.calls).toHaveLength(0);
+
+    emitData({ sessionId, chunk: '$ ' });
+    vi.advanceTimersByTime(158 + SUBMIT);
+
+    expect(vi.mocked(supervisor.write).mock.calls.map((call) => call[1])).toEqual([
+      BOOT,
+      '\r',
+      'kill -9 $$\n',
+    ]);
+  });
+
+  it('drops input held for a spawn that was refused', () => {
+    sessions.beginSpawn('hero-refresh');
+    sessions.write('hero-refresh', 'never\r');
+    sessions.endSpawn('hero-refresh');
+
+    // A later spawn of the same entity does not replay it.
+    sessions.open(OPEN);
+    emitData({ sessionId: mintedFor('hero-refresh'), chunk: '$ ' });
+    vi.advanceTimersByTime(6_000);
+
+    expect(
+      vi.mocked(supervisor.write).mock.calls.some((call) => call[1] === 'never\r'),
+    ).toBe(false);
+  });
+
+  it('still drops input for an entity nobody is spawning', () => {
+    expect(sessions.write('hero-refresh', 'ghost\r')).toBe(false);
+
+    sessions.open(OPEN);
+    emitData({ sessionId: mintedFor('hero-refresh'), chunk: '$ ' });
+    vi.advanceTimersByTime(6_000);
+
+    expect(
+      vi.mocked(supervisor.write).mock.calls.some((call) => call[1] === 'ghost\r'),
+    ).toBe(false);
+  });
+
+  it('delivers input held for a terminal as soon as its spawn lands', () => {
+    sessions.beginSpawn('term-1');
+    sessions.write('term-1', 'ls\r');
+
+    sessions.openTerminal({ entityId: 'term-1', projectId: 'nova-web', cols: 80, rows: 24 });
+    sessions.endSpawn('term-1');
+
+    expect(vi.mocked(supervisor.write).mock.calls).toEqual([[mintedFor('term-1'), 'ls\r']]);
+  });
+
   it('writes the bootstrap exactly once', () => {
     sessions.open(OPEN);
     const sessionId = mintedFor('hero-refresh');
