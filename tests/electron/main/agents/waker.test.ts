@@ -611,6 +611,14 @@ describe('wakeCommand never grants a once-only tool (retro B)', () => {
   it('leaves jira_transition grantable by name', () => {
     expect(granted(['mcp__hive__jira_transition']).allowed).toContain('mcp__hive__jira_transition');
   });
+
+  it('a wide or scoped rule never puts pr_merge on the CLI allow list (HIVE-409)', () => {
+    for (const tools of [['mcp__hive__*'], ['*'], ['mcp__hive'], ['mcp__hive__pr_merge'], ['mcp__hive__pr_merge(behiques/hivetty#*)']]) {
+      const { allowed } = granted(tools);
+      expect(allowed, tools[0]).not.toContain('mcp__hive__pr_merge');
+      expect(allowed.some((rule) => rule.includes('pr_merge') || rule === '*' || rule.startsWith('mcp__hive__*') || rule === 'mcp__hive')).toBe(false);
+    }
+  });
 });
 
 describe('the lane in the wake prompt (HIVE-188)', () => {
