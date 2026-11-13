@@ -18,10 +18,11 @@ import { isClosedLane } from './scheduler-rules';
  *   triggers, handed to that wake's `HIVE_GRANTS`, and retired by an `event`
  *   so a later wake cannot pick it up a second time. It is composed as a
  *   `literal:` rule naming the one call — a channel that exists only here
- *   and only for one wake, and that must never reach `tools:`. It cannot:
+ *   and only for one wake, and that must never reach `grants:`. It cannot:
  *   the permanent road writes only rules that came out of `rungsFor`, and
  *   `isToolName` forbids the `:` a forged one would need.
- * - `allow-family` / `allow-tool` are written into `AGENT.md` **here**, the
+ * - `allow-family` / `allow-tool` are written into `AGENT.md`'s `grants:`
+ *   (HIVE-409; never `tools:`, which the seed keeps current) **here**, the
  *   moment the answer arrives, so the grant is visible in Settings › Agents
  *   before the agent has even woken. The next wake then carries it as an
  *   ordinary `def.tools` entry, through no special path at all.
@@ -48,7 +49,7 @@ import { isClosedLane } from './scheduler-rules';
  * and passes through the MCP host unfiltered, so `meta.rungs` is
  * model-supplied text. An agent could post a rung labelled `once`, captioned
  * "runs this once", and carrying `rule: "*"` — one user click would then have
- * written `*` into `tools:`, which `matches` grants for everything. So the
+ * written `*` into `grants:`, which `matches` grants for everything. So the
  * ladder is **recomputed** here from `meta.tool` and `meta.input` with the
  * same `rungsFor` that wrote it, and only the recomputed rung's `rule` is
  * ever written. `meta.rungs` is display data, which is all the module
@@ -192,7 +193,7 @@ export function createPermissions(deps: PermissionDeps): Permissions {
   /**
    * Answer every other open card of `name`'s that the rule just granted
    * settles. Only a card whose own `rungId` rung is that exact rule: its
-   * `onAnswer` then finds the rule already in `tools:` and widens nothing.
+   * `onAnswer` then finds the rule already in `tools:` or `grants:` and widens nothing.
    * Each answer wakes its own lane through the ordinary path.
    */
   const answerDuplicates = (granted: LedgerEntry, rungId: string, rule: string): void => {
@@ -432,10 +433,15 @@ export function createPermissions(deps: PermissionDeps): Permissions {
         `current` fall back to `[]`, and the write silently discard every
         tool the user had already granted.
       */
-      const toolsField = readFrontmatter(source)?.fields.get('tools');
-      const current = (toolsField === undefined ? null : parseList(toolsField.value)) ?? [];
+      const fields = readFrontmatter(source)?.fields;
+      const listOf = (key: 'tools' | 'grants'): string[] => {
+        const field = fields?.get(key);
+        return (field === undefined ? null : parseList(field.value)) ?? [];
+      };
+      const tools = listOf('tools');
+      const granted = listOf('grants');
 
-      if (current.includes(rung.rule)) {
+      if (tools.includes(rung.rule) || granted.includes(rung.rule)) {
         deps.append({
           from: OVERMIND,
           to: ask.from,
@@ -450,7 +456,8 @@ export function createPermissions(deps: PermissionDeps): Permissions {
         return;
       }
 
-      const entries = [...current, rung.rule];
+      // A card writes grants:, which the seed never touches (HIVE-409); tools: is the shipped list.
+      const entries = [...granted, rung.rule];
 
       /*
         The second shape check, on the exact bytes about to be written.
@@ -460,13 +467,13 @@ export function createPermissions(deps: PermissionDeps): Permissions {
         half of a composed rule — the path dirname, the WebFetch host, the
         Bash head — then turned out to be guarded only by a denylist of `,`
         and `*`, which a `\n` or a `]` walks straight through. A rule
-        carrying either forges a **second `tools:` line**: `readFrontmatter`
+        carrying either forges a **second `grants:` (or `tools:`) line**: `readFrontmatter`
         builds a `Map`, the later key wins, and `parseAgent` reports no
         problem at all, so the agent quietly ends up holding a tool nobody
         granted while the one the user did grant disappears.
 
         This is deliberately redundant with the composer, and it must stay
-        redundant. It is also not only about `rung.rule`: `current` is read
+        redundant. It is also not only about `rung.rule`: `granted` is read
         off whatever is on disk, and `parseList` splits on `,` alone, so an
         entry already in the file can carry a `]` into the value being
         composed here. Refusing the whole write is the only safe answer —
@@ -486,12 +493,12 @@ export function createPermissions(deps: PermissionDeps): Permissions {
         refuse(
           ask,
           name,
-          `${JSON.stringify(unwritable)} cannot be written into tools: safely`,
+          `${JSON.stringify(unwritable)} cannot be written into grants: safely`,
         );
         return;
       }
 
-      const patched = patchFrontmatter(source, 'tools', `[${entries.join(', ')}]`);
+      const patched = patchFrontmatter(source, 'grants', `[${entries.join(', ')}]`);
 
       const result = await deps.write(name, patched);
 

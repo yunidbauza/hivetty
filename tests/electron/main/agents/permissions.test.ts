@@ -440,7 +440,7 @@ describe('isPermissionAnswer', () => {
 });
 
 describe('onAnswer', () => {
-  it('appends the family rule to tools: and records it', async () => {
+  it('appends the family rule to grants: and records it', async () => {
     const d = deps([ask('a1', 'drone', RUNGS)]);
     await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-family') as never);
 
@@ -459,7 +459,7 @@ describe('onAnswer', () => {
   it('writes the bare tool for allow-tool', async () => {
     const d = deps([ask('a1', 'drone', RUNGS)]);
     await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-tool') as never);
-    expect(d.write.mock.calls[0]![1]).toMatch(/tools:.*\bBash\b/);
+    expect(d.write.mock.calls[0]![1]).toMatch(/grants: \[Bash\]/);
   });
 
   it('writes nothing for allow-once or deny', async () => {
@@ -540,37 +540,72 @@ describe('onAnswer', () => {
   /**
    * The second shape check, at the write itself (ship review).
    *
-   * `current` is read off whatever is on disk, and `parseList` splits on `,`
+   * `grants:` is read off whatever is on disk, and `parseList` splits on `,`
    * alone — so an entry already in the file can carry a `]` into the value
    * being composed. Written out, that closes the list early and the file
-   * gains a second `tools:` line, which `readFrontmatter` lets win. The whole
+   * gains a second key line, which `readFrontmatter` lets win. The whole
    * write is refused rather than partially made.
    */
   it.each([
-    ['---\nname: drone\ntools: [Read, Wri]te]\n---\n\nBody.\n', '"Wri]te"'],
-    ['---\nname: drone\ntools: [Read, W[rite]\n---\n\nBody.\n', '"W[rite"'],
+    ['---\nname: drone\ntools: [Read]\ngrants: [Wri]te]\n---\n\nBody.\n', '"Wri]te"'],
+    ['---\nname: drone\ntools: [Read]\ngrants: [W[rite]\n---\n\nBody.\n', '"W[rite"'],
     // HIVE-355: `parseList` strips one pair, so `"'*'"` reads as `'*'`; written
     // back unquoted it would read as `*`, which allows every tool.
-    ['---\nname: drone\ntools: ["\'*\'", Grep]\n---\n\nBody.\n', '"\'*\'"'],
+    ['---\nname: drone\ntools: [Read]\ngrants: ["\'*\'", Grep]\n---\n\nBody.\n', '"\'*\'"'],
     // Whitespace inside a quote pair survives `parseList` but not the next
     // read of the unquoted file, which trims it: ` *` becomes `*`.
-    ['---\nname: drone\ntools: [" *", Grep]\n---\n\nBody.\n', '" *"'],
-    ['---\nname: drone\ntools: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
-    ['---\nname: drone\ntools: [" * ", Grep]\n---\n\nBody.\n', '" * "'],
-    ['---\nname: drone\ntools: [" *", Grep]\n---\n\nBody.\n', '" *"'],
-    ['---\nname: drone\ntools: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
-    ['---\nname: drone\ntools: ["﻿*", Grep]\n---\n\nBody.\n', '"﻿*"'],
-  ])('refuses the write when an entry cannot go into tools: safely', async (source, quoted) => {
+    ['---\nname: drone\ntools: [Read]\ngrants: [" *", Grep]\n---\n\nBody.\n', '" *"'],
+    ['---\nname: drone\ntools: [Read]\ngrants: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
+    ['---\nname: drone\ntools: [Read]\ngrants: [" * ", Grep]\n---\n\nBody.\n', '" * "'],
+    ['---\nname: drone\ntools: [Read]\ngrants: [" *", Grep]\n---\n\nBody.\n', '" *"'],
+    ['---\nname: drone\ntools: [Read]\ngrants: ["* ", Grep]\n---\n\nBody.\n', '"* "'],
+    ['---\nname: drone\ntools: [Read]\ngrants: ["﻿*", Grep]\n---\n\nBody.\n', '"﻿*"'],
+  ])('refuses the write when an entry cannot go into grants: safely', async (source, quoted) => {
     const d = deps([ask('a1', 'drone', RUNGS)], { read: vi.fn(async () => source) });
     await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-family') as never);
 
     expect(d.write).not.toHaveBeenCalled();
     expect(d.append).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: `could not grant to drone: ${quoted} cannot be written into tools: safely`,
+        body: `could not grant to drone: ${quoted} cannot be written into grants: safely`,
         meta: expect.objectContaining({ grantFailed: 'a1' }),
       }),
     );
+  });
+
+  it('allow-tool writes grants:, and tools: stays byte-identical (HIVE-409)', async () => {
+    const d = deps([ask('a1', 'drone', RUNGS)]);
+    await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-tool') as never);
+    const written = d.write.mock.calls[0]![1];
+    expect(written).toContain('tools: [Read]\n');
+    expect(written).toContain('grants: [Bash]');
+  });
+
+  it('a second grant appends to grants:', async () => {
+    const source = '---\nname: drone\ntools: [Read]\ngrants: [Bash(git *)]\n---\n\nBody.\n';
+    const d = deps([ask('a1', 'drone', RUNGS)], { read: vi.fn(async () => source) });
+    await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-tool') as never);
+    expect(d.write.mock.calls[0]![1]).toContain('grants: [Bash(git *), Bash]');
+    expect(d.write.mock.calls[0]![1]).toContain('tools: [Read]\n');
+  });
+
+  it.each([
+    '---\nname: drone\ntools: [Bash]\n---\n',
+    '---\nname: drone\ntools: [Read]\ngrants: [Bash]\n---\n',
+  ])('a rule already in tools: or grants: writes nothing and reports granted', async (source) => {
+    const d = deps([ask('a1', 'drone', RUNGS)], { read: vi.fn(async () => source) });
+    await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-tool') as never);
+    expect(d.write).not.toHaveBeenCalled();
+    expect(d.append).toHaveBeenCalledWith(expect.objectContaining({ meta: { granted: 'a1', rule: 'Bash' } }));
+  });
+
+  it('an unwritable tools: entry no longer blocks a grant, since tools: is not rewritten', async () => {
+    const source = '---\nname: drone\ntools: [Read, Wri]te]\n---\n\nBody.\n';
+    const d = deps([ask('a1', 'drone', RUNGS)], { read: vi.fn(async () => source) });
+    await createPermissions(d).onAnswer(answer('n1', 'a1', 'allow-family') as never);
+    const written = d.write.mock.calls[0]![1];
+    expect(written).toContain('tools: [Read, Wri]te]\n');
+    expect(written).toContain('grants: [Bash(git *)]');
   });
 
   it('preserves existing tools when the source has a trailing comment on tools:', async () => {

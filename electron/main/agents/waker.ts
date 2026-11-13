@@ -84,8 +84,9 @@ interface WakeInput {
    *
    * Not merged into `def.tools`, because the definition is the durable record
    * and this is deliberately not durable. A permanent grant takes the other
-   * road: it is written into `AGENT.md` when the answer arrives, and reaches
-   * the next wake as an ordinary `def.tools` entry.
+   * road: it is written into `AGENT.md`'s `grants:` when the answer arrives
+   * (HIVE-409), and reaches the next wake as an ordinary `def.tools` entry,
+   * which `definition.ts` folds `grants:` into.
    */
   grants?: readonly string[];
   /**
