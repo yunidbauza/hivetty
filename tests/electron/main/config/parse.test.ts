@@ -103,6 +103,20 @@ describe('parseConfig — importLoginEnv (HIVE-84)', () => {
   });
 });
 
+describe('parseConfig — skipPermissions (Pro #259)', () => {
+  it('reads the key, and distinguishes an explicit false from silence', () => {
+    expect(parseConfig(JSON.stringify({ version: 2, skipPermissions: true }), 'config').skipPermissions).toBe(true);
+    expect(parseConfig(JSON.stringify({ version: 2, skipPermissions: false }), 'config').skipPermissions).toBe(false);
+    expect(parseConfig(JSON.stringify({ version: 2 }), 'config').skipPermissions).toBeNull();
+  });
+
+  it('reports a non-boolean rather than coercing it', () => {
+    const parsed = parseConfig(JSON.stringify({ version: 2, skipPermissions: 'yes' }), 'config');
+    expect(parsed.errors.join('\n')).toMatch(/skipPermissions/);
+    expect(parsed.skipPermissions).toBeNull();
+  });
+});
+
 describe('parseConfig — fatal versus advisory', () => {
   it('marks malformed JSON fatal', () => {
     expect(parseConfig('{oops', 'config').fatal).toBe(true);
