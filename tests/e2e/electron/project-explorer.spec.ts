@@ -281,7 +281,7 @@ test('expanding reads lazily, and clicking a file opens it in the editor', async
 test('a PNG previews as an image, and an SVG toggles Preview and Source', async ({}, testInfo) => {
   const repo = testInfo.outputPath('repo');
   mkdirSync(repo, { recursive: true });
-  copyFileSync(join(process.cwd(), 'docs/assets/guide/19-account-centre.png'), join(repo, 'shot.png'));
+  copyFileSync(join(process.cwd(), 'docs/assets/guide/09-agents-tab.png'), join(repo, 'shot.png'));
   writeFileSync(
     join(repo, 'logo.svg'),
     '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40"/></svg>\n',
