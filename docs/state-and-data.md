@@ -451,7 +451,7 @@ Components never read a store object directly and never call `getState()`.
 | `useOpenTicket(key)` | the list's ticket, else the issue `ticketDetails[key]` read for itself |
 | `useTicketProperties(key)` | the page's key/values: status, priority (tag, else Jira), side, project, assignee, agent, epic |
 | `useTicketEvents(key)` | the ticket's ledger events: `ticketDetails[key].history` plus the tail, deduped and in id order |
-| `useNextTransition(key)` | the first transition exactly one status category forward, or nothing |
+| `useTicketTransitions(key)` | every transition the workflow allows from the ticket's status, from `ticketDetails[key].transitions` (empty until read) |
 | `useTicketLinks(key)` | the Ticket tab's links on three arcs (waits on, blocks, relates) with the verdict, open blockers and per-arc status counts (HIVE-202) |
 | `useTicketCriteria(key)` | the acceptance-criteria list under its heading, else the description, else nothing |
 | `useLatestComment(key)` | the newest comment read |

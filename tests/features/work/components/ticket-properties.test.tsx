@@ -103,11 +103,11 @@ describe('TicketProperties (HIVE-203)', () => {
     expect(useUiStore.getState()).toMatchObject({ picker: true, pickerTicket: 'GRAC-3018' });
   });
 
-  it('offers the step forward among its actions', () => {
+  it('offers the move menu among its actions', () => {
     render(<TicketProperties ticketKey="GRAC-3018" />);
 
     const actions = screen.getByRole('heading', { name: 'Actions' }).parentElement!;
-    expect(within(actions).getByRole('button', { name: 'Move to Done' })).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: 'Move to' })).toBeInTheDocument();
   });
 
   it('links to Jira outside the app', () => {

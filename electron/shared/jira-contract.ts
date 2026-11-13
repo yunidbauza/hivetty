@@ -262,17 +262,8 @@ export interface JiraTransition {
   };
 }
 
-/** Forward is up this ladder (HIVE-174); the Work page's next step reads it too (HIVE-203). */
+/** Forward is up this ladder (HIVE-174). */
 export const STATUS_CATEGORY_RANK: Record<JiraStatusCategory, number> = { todo: 0, 'in-progress': 1, done: 2 };
-
-/** The first transition Jira lists whose target is exactly one category forward, or nothing. */
-export function nextTransition(
-  transitions: readonly JiraTransition[],
-  current: JiraStatusCategory,
-): JiraTransition | undefined {
-  const want = STATUS_CATEGORY_RANK[current] + 1;
-  return transitions.find((transition) => STATUS_CATEGORY_RANK[transition.to.statusCategory] === want);
-}
 
 /** How many of Jira's own error strings are carried across IPC (HIVE-70). */
 export const JIRA_MAX_DETAILS = 10;
