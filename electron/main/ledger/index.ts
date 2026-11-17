@@ -48,6 +48,13 @@ interface LedgerOptions {
    * means "never", which is what every existing test constructs.
    */
   isGoneSession?: (id: string) => boolean;
+  /**
+   * Whether `id` names an agent the person has paused. An `ask` to one is
+   * refused: it would sit in the pause queue until its ttl, a day, with the
+   * asker reading `asking` the whole time and its own work stalled behind it.
+   * Absent means "never".
+   */
+  isPausedAgent?: (id: string) => boolean;
   now?: () => number;
 }
 
@@ -148,6 +155,22 @@ export function createLedger(options: LedgerOptions): Ledger {
         return refuse(
           413,
           `body is ${request.body.length} characters; the limit is ${LEDGER_BODY_MAX}`,
+        );
+      }
+      /*
+        Only an ask: a post is still held for the resume (HIVE-120), and a
+        reply closes a thread rather than opening one. An agent's ask to
+        itself is a note for its own next wake, which the resume delivers.
+      */
+      if (
+        request.kind === 'ask' &&
+        request.to !== undefined &&
+        request.to !== request.from &&
+        options.isPausedAgent?.(request.to) === true
+      ) {
+        return refuse(
+          409,
+          `${request.to} is paused: an ask would wait unanswered until someone resumes it. Post instead, or ask another party.`,
         );
       }
 
