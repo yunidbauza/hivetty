@@ -80,6 +80,31 @@ describe('createLedger', () => {
     }
   });
 
+  it('refuses an ask to a paused agent, so the asker is not left asking for a day', () => {
+    const pausing = createLedger({
+      dir,
+      now: () => clock,
+      knowsParty: () => true,
+      isPausedAgent: (id) => id === 'slack',
+    });
+
+    expect(pausing.append({ from: 'shipper', to: 'slack', kind: 'ask', body: 'announce?' })).toEqual({
+      ok: false,
+      status: 409,
+      reason: 'slack is paused: an ask would wait unanswered until someone resumes it. Post instead, or ask another party.',
+    });
+    expect(pausing.read({}).entries).toHaveLength(0);
+
+    // A post is still held for its resume (HIVE-120), its own ask to itself still lands, and other agents are asked as before.
+    for (const entry of [
+      { from: 'shipper', to: 'slack', kind: 'post' },
+      { from: 'slack', to: 'slack', kind: 'ask' },
+      { from: 'shipper', to: 'acr', kind: 'ask' },
+    ] as const) {
+      expect(pausing.append({ ...entry, body: 'x' })).toMatchObject({ ok: true });
+    }
+  });
+
   it('accepts a post from a known party', () => {
     const result = ledger.append({ from: 'sess-a', kind: 'post', body: 'hello' });
 

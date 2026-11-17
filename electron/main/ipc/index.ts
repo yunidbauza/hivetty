@@ -2035,6 +2035,7 @@ export function registerIpcHandlers(
         always was, the second expires as it always did.
       */
       history?.resumable(id) !== undefined,
+    isPausedAgent: (id) => knownAgents.has(id) && agentState?.read(id).status === 'paused',
   });
 
   // HIVE-364. The ledger loads without calling a listener and the hub keeps
