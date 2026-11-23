@@ -57,7 +57,8 @@ function defaultIo(): ServerLockIo {
         process.kill(pid, 0);
       } catch (cause) {
         if (errorCode(cause) === 'ESRCH') return null;
-        throw cause;
+        // EPERM: the pid exists but is another user's; the start time below still tells us if it is ours
+        if (errorCode(cause) !== 'EPERM') throw cause;
       }
       try {
         const started = execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
