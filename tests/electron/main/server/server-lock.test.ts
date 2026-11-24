@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -176,5 +176,42 @@ describe('the hive lock on a real folder (HIVE-227)', () => {
     const claim = claimServerLock(path);
     expect(claim.kind).toBe('claimed');
     if (claim.kind === 'claimed') claim.release();
+  });
+
+  describe('when the recorded pid now belongs to another user (EPERM)', () => {
+    const otherUsersPid = 1;
+
+    beforeEach(() => {
+      const realKill = process.kill.bind(process);
+      vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+        if (pid === otherUsersPid) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+        return realKill(pid, signal);
+      });
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('takes over a lock whose pid was reused (start time differs)', () => {
+      const path = join(dir, 'hive.lock');
+      writeFileSync(path, JSON.stringify({ pid: otherUsersPid, identity: '1:long ago' }));
+
+      const claim = claimServerLock(path);
+      expect(claim.kind).toBe('claimed');
+      if (claim.kind === 'claimed') claim.release();
+    });
+
+    it('still refuses when that other-user process really is the holder', () => {
+      const path = join(dir, 'hive.lock');
+      const startTime = execFileSync('ps', ['-o', 'lstart=', '-p', String(otherUsersPid)], {
+        encoding: 'utf8',
+      }).trim();
+      writeFileSync(
+        path,
+        JSON.stringify({ pid: otherUsersPid, identity: `${String(otherUsersPid)}:${startTime}` }),
+      );
+
+      expect(claimServerLock(path)).toEqual({ kind: 'active', pid: otherUsersPid });
+    });
   });
 });
